@@ -138,4 +138,40 @@ class DebugLogBudgetSpec extends ToolSpecBase {
         then:
         script.getDebugLogEntries([__reqT0: 1234567880000L])*.message == ['retained error']
     }
+
+    @spock.lang.Unroll
+    def "duplicate recovery callbacks cannot repeat an active or completed fetch (failure=#failure)"() {
+        given:
+        def rows = coldHistory()
+        script.getDebugLogReadResult([__reqT0: 1234567880000L])
+        def job = runInMillisCalls[0][2].data as Map
+        hubGet.register('/logs/past/json') { params ->
+            script.runDebugLogHistoryFetch(job)
+            if (failure) throw new IllegalStateException('503 failed first fetch')
+            JsonOutput.toJson(rows)
+        }
+
+        when:
+        script.runDebugLogHistoryFetch(job)
+        script.runDebugLogHistoryFetch(job)
+
+        then:
+        hubGet.calls.size() == 1
+
+        when:
+        if (failure) {
+            script.getDebugLogReadResult([__reqT0: 1234567880000L])
+            def retryJob = runInMillisCalls[1][2].data as Map
+            assert retryJob.fetchId != job.fetchId
+            hubGet.register('/logs/past/json') { params -> JsonOutput.toJson(rows) }
+            script.runDebugLogHistoryFetch(retryJob)
+        }
+
+        then:
+        script.getDebugLogEntries([__reqT0: 1234567880000L])*.message == ['retained error']
+        hubGet.calls.size() == (failure ? 2 : 1)
+
+        where:
+        failure << [false, true]
+    }
 }

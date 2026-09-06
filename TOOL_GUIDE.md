@@ -1181,13 +1181,19 @@ Surfaced via `hub_get_tool_guide(section='slow_ops')`. Hubitat's cloud relay can
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, and the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
 The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and the round-zero response marks it `rejoined: true`; it cannot reserve or run a second write. This lets a client safely replay a mutation-free preflight whose HTTP response was lost. To INTENTIONALLY run the same write twice while the first record is still live, vary the arguments (for example the rule name or an added comment field) or wait out the record TTL -- a byte-identical repeat always coalesces. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
 
 Why `input_required`/`requestState` rather than the spec's Tasks primitive: each continuation round is one bounded HTTP leg of ONE logical tool call -- the server never holds a client-facing job object with its own lifecycle, and compatible clients (the official SDKs included) continue automatically inside a single `call_tool()` with no polling code. Tasks model work that outlives the request exchange with independent status/cancel semantics; the one operation here that genuinely outlives its exchange (package deployment, which recompiles this app) returns immediately and publishes a durable, request-correlated outcome instead. `input_required` with no `inputRequests` is the spec's state-only continuation shape: the server is asking the client to continue the exchange, not to answer a question.
+
+### Slow log and diagnostic reads
+
+When the transport has a time budget, `hub_get_jobs`, `hub_get_performance_stats`, and native log reads through `hub_get_logs` use background fetches and the same `requestState` continuation. Cold MCP history recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. A warm read can finish on its first call. Reads hold no write lease, and their log payloads stay outside persisted continuation records.
+
+`hub_delete_debug_logs` waits for recovery before clearing, then retains its small terminal result so replay cannot clear again. Reload recovery reads existing native history; old state-backed entries are discarded once when updating to native storage. Legacy clients that receive `status: "in_progress"` repeat the same read or clear call.
 
 ### Global write concurrency cap
 

@@ -6634,7 +6634,10 @@ def runDebugLogHistoryFetch(Map job = [:]) {
     def buffer = initDebugLogs()
     synchronized (buffer) {
         if (job.appId != buffer.appId || job.generation != buffer.generation ||
-            !job.fetchId || job.fetchId != buffer.fetchId || buffer.hydrated) return
+            !job.fetchId || job.fetchId != buffer.fetchId || buffer.hydrated ||
+            buffer.fetchClaimId == job.fetchId) return
+        // A scheduled callback can be redelivered while its original fetch is running.
+        buffer.fetchClaimId = job.fetchId
     }
     try {
         _fetchDebugLogHistory(buffer, job.generation.toString(), job.fetchId.toString())
@@ -6714,6 +6717,7 @@ def clearDebugLogEntries(Map args = [:]) {
         buffer.entries = []
         buffer.hydrated = true
         buffer.remove("fetchId")
+        buffer.remove("fetchClaimId")
         buffer.remove("fetchStartedAt")
         buffer.remove("fetchError")
         def result = [clearedCount: history.error ? null : count]
