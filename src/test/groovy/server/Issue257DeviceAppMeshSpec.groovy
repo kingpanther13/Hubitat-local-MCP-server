@@ -504,6 +504,83 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.capabilitiesNote.contains("1 of them without a capabilities list")
     }
 
+    def "an AUTHORIZED device the feed lists with an EMPTY capabilities list gets its capabilities from the model, flagged partial"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80, capabilities: ["Switch", "Refresh"])]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 80, label: "Authorized Switch", capabilities: []],
+                               [id: 99, label: "Hall", capabilities: ["MotionSensor"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []],
+                                         [key: "DEV-99", data: [id: 99, name: "Hall"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, "Switch", null, null, null, "all")
+
+        then: 'an empty list is no answer; the model fills the authorized device in and capabilityFilter finds it'
+        result.devices*.id == ["80"]
+        result.devices[0].capabilities.containsAll(["Switch", "Refresh"])
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("listed them without capabilities")
+        !result.containsKey("idsComplete")
+    }
+
+    def "the feed-alone inventory names the feed as its source and exposes idsComplete:false on the response"() {
+        given: 'the tree cannot be read and the feed carries ids but no capabilities lists'
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 80, label: "A"], [id: 99, label: "B"]]) }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
+
+        when:
+        def summary = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+        def ids = script.toolListDevices(false, 0, 0, null, null, null, "ids", null, null, "all")
+
+        then: 'source is where the records came from; the id set is unvouched on BOTH shapes'
+        summary.source == "/hub2/vrb/devices"
+        summary.capabilitiesPartial == true
+        summary.idsComplete == false
+        ids.source == "/hub2/vrb/devices"
+        ids.idsComplete == false
+        ids.deviceIds == [80, 99]
+    }
+
+    def "a complete inventory carries no idsComplete key"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 80, label: "A", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "A"], children: []]]]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.capabilitiesPartial == null
+        !result.containsKey("idsComplete")
+    }
+
+    def "a capability-less feed that lists a device the tree lacks flags the tree's omission, not the missing capability source"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 80, label: "A"], [id: 99, label: "B"]]) }
+        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "A"], children: []]]]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.source == "/hub2/devicesList"
+        result.capabilitiesPartial == true
+        result.idsComplete == false
+        result.capabilitiesNote.contains("tree (/hub2/devicesList) omitted 1")
+        !result.capabilitiesNote.contains("No capability-bearing source")
+    }
+
     def "scope='all' falls past a vrb feed whose entries carry no capabilities list"() {
         given:
         settingsMap.selectedDevices = [dev(id: 80)]

@@ -5020,7 +5020,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
 // The body is intentionally minimal — the server only needs the
 // navigation marker to perform the transition. We don't need to mirror
 // every hidden button input on the source page.
-private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null, Long reqT0 = null) {
+private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null, Long reqT0 = null, boolean recoverEmptyRender = false) {
     // For plain page navigation use hrefName="name" + hrefIndex=0. The
     // server treats the marker `_action_href_name|<page>|0` as a generic
     // navigation request.
@@ -5071,7 +5071,9 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         if (resp?.data) {
             try {
                 def navResp = new groovy.json.JsonSlurper().parseText(resp.data) as Map
-                return _rmRecoverEmptyNavRender(appId, targetPage, hrefParams, navResp, reqT0)
+                // Opt-in (the walkStep sites only): every other caller navigates to COMMIT state and
+                // never reads the render, so a re-read would cost them a pause and a GET for nothing.
+                return recoverEmptyRender ? _rmRecoverEmptyNavRender(appId, targetPage, hrefParams, navResp, reqT0) : navResp
             } catch (Exception parseExc) {
                 mcpLog("debug", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} response wasn't JSON (${parseExc.message}) -- caller will plain-fetch the schema")
             }
@@ -8683,7 +8685,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
         def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
             (hcParams?.n != null ? (hcParams.n as Integer) : 0)
         def fromPage = hrefContext.fromPage?.toString() ?: page
-        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long)
+        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long, true)
         if (navResp?.navRetried == true) navRetriedBefore = true
         beforeCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
     } else {
@@ -8840,7 +8842,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
         // of doing a separate GET that would lose the param state.
         // An empty render is recovered inside _rmNavigateToPage (one re-READ, never a second
         // POST); navRetried is set only when that substitute render is what the caller sees.
-        def navResp = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams, null, spec?.__reqT0 as Long)
+        def navResp = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams, null, spec?.__reqT0 as Long, true)
         if (navResp?.navRetried == true) opResult.navRetried = true
         opResult.navResponseConfigPage = navResp?.configPage
         opResult.navigated = [from: page, to: target, hrefName: hrefName, hrefIndex: hrefIndex, hrefParams: hrefParams]
@@ -8872,7 +8874,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
         def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
             (hcParams?.n != null ? (hcParams.n as Integer) : 0)
         def fromPage = hrefContext.fromPage?.toString() ?: page
-        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long)
+        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long, true)
         if (navResp?.navRetried == true) opResult.navRetried = true
         afterCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
     } else {
@@ -9478,7 +9480,14 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
                                           thenNodes: vrb.data.thenNodes ?: [],
                                           elseNodes: vrb.data.elseNodes ?: []]
             } else {
-                snapshot.vrbRuleJson = vrb.data.ruleJson?.toString()
+                // Capture the document the read RESOLVED (the hub's own loader prefers the parsed
+                // graphDocument), not the raw bytes: a blank or {"nodes":[]} ruleJson beside a
+                // populated graphDocument would snapshot as unreadable or as an empty graph, and a
+                // restore would then replay the empty graph and verify zero against zero. The key
+                // keeps its name so existing backups still restore.
+                def doc = vrb.data.definition
+                snapshot.vrbRuleJson = (doc instanceof Map && doc.nodes instanceof List && !doc.nodes.isEmpty()) ?
+                        groovy.json.JsonOutput.toJson(doc) : vrb.data.ruleJson?.toString()
             }
         }
     }

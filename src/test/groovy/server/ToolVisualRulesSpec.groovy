@@ -1099,14 +1099,13 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         posts.isEmpty()                  // refused before any hub write
     }
 
-    def "set attaches health via the caller's appId when an edit-failure map omits appId (graph-save reject) -- codex review"() {
+    def "set attaches health to a graph-save rejection, which names the rule it failed on"() {
         given:
         enableWrite()
         def graphState = [name: 'Hall light', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}',
                           validationErrors: []]
         hubGet.register('/app/ruleBuilder20Json/9') { params -> json(graphState) }
         hubGet.register('/app/ruleBuilderJson/9') { params -> json([graphAppState: true]) }
-        // The hub rejects the graph SAVE -> _vrbApplySave returns success:false with NO appId.
         stubPostJson { path, body -> [success: false, errorMessage: "hub rejected", validationErrors: ["bad node"]] }
 
         when:
@@ -1114,9 +1113,27 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.appId == null             // the impl's reject map omits appId...
-        result.health != null            // ...but health still attaches via the caller's appId (fallback)
+        result.appId == 9                // the shared tail's rejection carries the id a batch caller attributes by
+        result.health != null
         result.health.ruleFormat == 'vrb-graph'
+    }
+
+    def "a create-time save failure omits appId and, with no caller id to fall back on, attaches no health"() {
+        given: 'the child is made, then the save POST throws'
+        enableWrite()
+        registerAppsList([])
+        stubCreateChild(19)
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false -> throw new RuntimeException('socket timeout') }
+        hubGet.register('/installedapp/json/19') { params -> '' }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Never saved', definition: graphDefinition(), confirm: true])
+
+        then: 'the one case the health attach legitimately leaves bare (see toolSetVisualRule)'
+        result.success == false
+        result.error.contains('Saving the new Visual Rule failed')
+        !result.containsKey('appId')
+        !result.containsKey('health')
     }
 
     def "edit with a definition format that mismatches the rule's format returns success=false without saving"() {

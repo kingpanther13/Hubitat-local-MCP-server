@@ -7352,6 +7352,8 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
 // present without a `capabilities` key (the caller fills authorized devices in from the Groovy
 // model), a feed device the tree omits is present from the feed, and either omission flags the
 // result partial with a counted note.
+// `source` is the endpoint the records were built from: the tree, unless the feed supplied
+// capabilities for them (the union), or the feed alone when the tree could not be used.
 // Returns [source, capabilities, records] (+ partialNote when capabilities is false but records
 // exist, + idsComplete:false whenever the ID SET cannot be vouched for -- the two sources
 // disagree about it: the feed lists a device the tree lacks; the tree could not be read so the
@@ -7404,7 +7406,10 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
             parsed.each { entry ->
                 if (!(entry instanceof Map) || entry.id == null) return
                 def rec = [id: entry.id, label: entry.label]
-                if (entry.capabilities instanceof List) { rec.capabilities = entry.capabilities; feedHasCapabilities = true }
+                // An EMPTY list is not an answer: the feed lists devices it cannot see into with
+                // `capabilities: []`, and an authorized device would then hide from capabilityFilter
+                // behind a list the model could have filled. Treat it exactly like an absent list.
+                if (entry.capabilities instanceof List && !entry.capabilities.isEmpty()) { rec.capabilities = entry.capabilities; feedHasCapabilities = true }
                 feed[entry.id.toString()] = rec
             }
             if (feed.isEmpty()) {
@@ -7475,7 +7480,7 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         }
         if (missingCapabilities == 0 && idsComplete) return [source: "/hub2/vrb/devices", capabilities: true, records: records]
         if (missingCapabilities > 0) {
-            notes.add(0, "The Visual Rule Builder device feed (/hub2/vrb/devices) omitted ${missingCapabilities} of ${spine.size()} device(s) listed by /hub2/devicesList; those carry capabilities only when MCP-authorized, so capabilityFilter cannot match them otherwise.")
+            notes.add(0, "The Visual Rule Builder device feed (/hub2/vrb/devices) omitted ${missingCapabilities} of ${spine.size()} device(s) listed by /hub2/devicesList, or listed them without capabilities; those carry capabilities only when MCP-authorized, so capabilityFilter cannot match them otherwise.")
         }
         mcpLog("warn", logCategory, "${logPrefix}: ${notes.join(' ')}")
         def out = [source: "/hub2/vrb/devices", capabilities: false, records: records, partialNote: notes.join(" ").toString()]
@@ -7486,14 +7491,13 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
     // The spine could not be used (unreadable, or it contradicted the feed). The feed alone is
     // still a usable inventory, but nothing can vouch for its completeness, so it is reported
     // partial with the reason and idsComplete:false -- never as the complete capability-bearing
-    // answer the successful path returns. A feed with no capabilities list anywhere is an id
-    // source here too, and says so through `source`.
+    // answer the successful path returns. The records ARE the feed's, so `source` names it.
     if (feed != null) {
         def why = spineContradicted ?
                 "answered no devices while /hub2/vrb/devices listed ${feed.size()} and was not trusted" :
                 "could not be read (${spineFailure?.fetchError ?: spineFailure?.failure})"
         mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList ${why}; inventory is the /hub2/vrb/devices feed alone")
-        return [source: feedHasCapabilities ? "/hub2/vrb/devices" : "/hub2/devicesList", capabilities: false, idsComplete: false, records: feed.values() as List,
+        return [source: "/hub2/vrb/devices", capabilities: false, idsComplete: false, records: feed.values() as List,
                 partialNote: "The whole-hub device tree (/hub2/devicesList) ${why}, so this inventory is the Visual Rule Builder device feed (/hub2/vrb/devices) alone and may omit devices the feed filters out. Retry to cross-check.".toString()]
     }
     return spineFailure
@@ -9094,7 +9098,7 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 - **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
 - **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
 - **cursor** -- `nextCursor` is returned alongside `nextOffset`.
-- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized=false` means it must be added to this app's device list in the hub UI. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply.
+- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized=false` means it must be added to this app's device list in the hub UI. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply. Two honesty flags ride both shapes: `capabilitiesPartial` + `capabilitiesNote` when capabilities could not be established for every record (an empty list may mean unknown), and `idsComplete: false` (present only then) when the record SET itself could not be vouched for -- the hub's device tree could not be read, answered empty, or disagreed with the picker feed -- so branch on that field, not on the note's wording.
 
 ### hub_get_device
 

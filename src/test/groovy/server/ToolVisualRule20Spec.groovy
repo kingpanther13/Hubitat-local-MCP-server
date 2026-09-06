@@ -1021,6 +1021,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.success == false
         result.error == 'Hub rejected the graph save: state write failed'
         result.storageError == 'state write failed'
+        result.storedSuccessfully == false
         result.activated == false
     }
 
@@ -1324,6 +1325,116 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         e.message.contains('Dropped 1')
         e.message.toLowerCase().contains('trigger')
         posts.isEmpty()
+    }
+
+    def "a bare rename of a rule whose stored document is unreadable is refused, nothing written"() {
+        given: 'ruleJson is not a JSON object and there is no graphDocument -- the read reports definitionParseError'
+        enableWrite()
+        hubGet.register('/app/ruleBuilder20Json/874') { params -> json([name: 'Before', rulePaused: false, ruleJson: '[1,2]', validationErrors: []]) }
+        stubPostJson()
+
+        when:
+        def result = script.toolSetVisualRule([appId: 874, name: 'After', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('could not be read')
+        result.error.contains('nothing was written')
+        posts.isEmpty()
+    }
+
+    def "a set response carries the runtimeGraph the post-save read answered"() {
+        given:
+        enableWrite()
+        def state = stubGraphChild(875)
+        state.name = 'Live'
+        state.ruleJson = json(validGraph())
+        hubGet.register('/app/ruleBuilder20Json/875') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, validationErrors: [], runtimeGraph: [triggerNodeIds: ['t1']]])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 875, confirm: true, definition: validGraph()])
+
+        then:
+        result.success == true
+        result.runtimeGraph == [triggerNodeIds: ['t1']]
+        result.activated == true
+    }
+
+    def "a graph read infers activation only with runtime evidence or a document"() {
+        given: 'three wire shapes: no runtimeGraph key + blank ruleJson; no key + a document; runtimeGraph:null + a document'
+        hubGet.register('/app/ruleBuilder20Json/876') { params -> json([name: 'Shell', rulePaused: false, ruleJson: '', validationErrors: []]) }
+        hubGet.register('/app/ruleBuilder20Json/877') { params -> json([name: 'Old firmware', rulePaused: false, ruleJson: json(validGraph()), validationErrors: []]) }
+        hubGet.register('/app/ruleBuilder20Json/878') { params -> json([name: 'Stopped', rulePaused: false, ruleJson: json(validGraph()), validationErrors: [], runtimeGraph: null]) }
+
+        expect:
+        script.toolGetVisualRule([appId: 876]).activated == false
+        script.toolGetVisualRule([appId: 877]).activated == true
+        script.toolGetVisualRule([appId: 878]).activated == false
+    }
+
+    def "a versioned create whose answer is lost and whose child never appears refuses to create again"() {
+        given: 'createchild answers 200 with no Location; the parent shows no new child on either read'
+        enableWrite()
+        int appsListCalls = 0
+        hubGet.register('/hub2/appsList') { params ->
+            appsListCalls++
+            json([apps: [[key: 700, data: [id: 700, appTypeId: 99, name: 'Visual Rules Builder', type: 'Visual Rules Builder', disabled: false], children: []]]])
+        }
+        script.metaClass.pauseExecution = { Long ms -> }
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            [status: 200, location: null, data: '<html>configure page</html>']
+        }
+        stubPostJson()
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Lost', definition: editorDefinition(), confirm: true])
+
+        then: 'the list was re-read once more, then no create of any kind -- not the legacy route either'
+        appsListCalls == 3
+        result.success == false
+        result.error.contains('create outcome is unknown')
+        result.error.contains('hub_get_visual_rule')
+        rawPaths == [CREATE_2_0]
+        posts.isEmpty()
+    }
+
+    def "a versioned create that loses its Location adopts a fresh 1.0 shell when a classic definition asked for one"() {
+        given: 'createchild answers 200 with no Location; one new child typed 1.0 with a blank name appeared'
+        enableWrite()
+        def children = []
+        hubGet.register('/hub2/appsList') { params ->
+            json([apps: [[key: 700, data: [id: 700, appTypeId: 99, name: 'Visual Rules Builder', type: 'Visual Rules Builder', disabled: false],
+                          children: children.collect { [key: it, data: [id: it, name: '', type: 'Visual Rule Builder 1.0', disabled: false], children: []] }]]])
+        }
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            if (path.startsWith('/installedapp/createchild/')) {
+                children << 816
+                return [status: 200, location: null, data: '<html>configure page</html>']
+            }
+            [status: 302, location: '/installedapp/list', data: null]
+        }
+        def savedState = [:]
+        stubPostJson { path, body -> savedState.putAll(new JsonSlurper().parseText(body) as Map); null }
+        hubGet.register('/installedapp/json/816') { params -> json([id: 816, name: '', type: 'Visual Rule Builder 1.0', disabled: false, user: false]) }
+        hubGet.register('/app/ruleBuilder20Json/816') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/816') { params -> savedState ? json(savedState) : '{}' }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Adopted 1.0', definition: classicDefinition(), confirm: true])
+
+        then:
+        result.success == true
+        result.appId == 816
+        result.version == '1.0'
+        result.format == 'classic'
+        rawPaths == [CREATE_1_0]
+        posts[0].path == '/app/ruleBuilderJson/816'
     }
 
     def "a rename re-posts the ruleJson bytes the hub returned, ahead of its parsed graphDocument"() {

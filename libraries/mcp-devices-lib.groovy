@@ -770,6 +770,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
             r.capabilitiesPartial = true
             r.capabilitiesNote = _allHubCapabilitiesNote(inventory)
         }
+        if (inventory.idsComplete == false) r.idsComplete = false
         if (labelFilter) r.labelFilter = labelFilter
         if (capabilityFilter) r.capabilityFilter = capabilityFilter
         if (limit && limit > 0) {
@@ -797,6 +798,8 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         result.capabilitiesPartial = true
         result.capabilitiesNote = _allHubCapabilitiesNote(inventory)
     }
+    // The record SET, as distinct from its capabilities: a caller branches on this field.
+    if (inventory.idsComplete == false) result.idsComplete = false
     if (labelFilter) result.labelFilter = labelFilter
     if (capabilityFilter) result.capabilityFilter = capabilityFilter
     if (limit && limit > 0) {

@@ -346,6 +346,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/500') { params -> throw new RuntimeException('410 -- rule gone') }
         hubGet.register('/app/ruleBuilder20Json/500') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/500') { params -> '{}' }
+        hubGet.register('/installedapp/json/500') { params -> '' }  // existence probe: gone
         registerVrbParent()
         stubCreateChild(510)
         def savedState = [:]
@@ -416,6 +417,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         stubDownload(json(snapshot).getBytes('UTF-8'))
         hubGet.register('/app/ruleBuilder20Json/500') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/500') { params -> '{}' }
+        hubGet.register('/installedapp/json/500') { params -> '' }  // existence probe: gone
         registerVrbParent()
         stubCreateChild(510)
         def savedState = [:]
@@ -467,6 +469,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
                                          vrbRulePaused: false, vrbDefinition: classicDefinition()])
         stubDownload(json(snapshot).getBytes('UTF-8'))
         hubGet.register('/installedapp/configure/json/600') { params -> throw new RuntimeException('Vue child -- no classic config page') }
+        hubGet.register('/installedapp/json/600') { params -> json([id: 600, name: 'r', type: 'Visual Rule Builder 1.0', disabled: false, user: false]) }
         def state600 = [name: 'Hall light (drifted)', rulePaused: true, promptHistory: []] + classicDefinition()
         hubGet.register('/app/ruleBuilder20Json/600') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/600') { params -> json(state600) }
@@ -525,6 +528,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
                                          vrbRulePaused: false, vrbRuleJson: json(graphDefinition())])
         stubDownload(json(snapshot).getBytes('UTF-8'))
         hubGet.register('/installedapp/configure/json/630') { params -> throw new RuntimeException('Vue child') }
+        hubGet.register('/installedapp/json/630') { params -> json([id: 630, name: 'r', type: 'Visual Rule Builder 1.0', disabled: false, user: false]) }
         hubGet.register('/app/ruleBuilder20Json/630') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/630') { params ->
             json(classicDefinition() + [name: 'Live classic', rulePaused: false, promptHistory: []])
@@ -553,6 +557,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/640') { params -> throw new RuntimeException('410 -- rule gone') }
         hubGet.register('/app/ruleBuilder20Json/640') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/640') { params -> '{}' }
+        hubGet.register('/installedapp/json/640') { params -> '' }  // existence probe: gone
         registerVrbParent()
         stubLegacyCreateOnly('<html><script>window.HubitatRuleBuilder20AppId = 999;</script></html>')
         def state999 = [name: null, rulePaused: false, ruleJson: null]
@@ -603,6 +608,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/644') { params -> throw new RuntimeException('410 -- rule gone') }
         hubGet.register('/app/ruleBuilder20Json/644') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/644') { params -> '{}' }
+        hubGet.register('/installedapp/json/644') { params -> '' }  // existence probe: gone
         registerVrbParent()
         stubCreateChild(998)
         def state998 = [name: null, rulePaused: false, ruleJson: null]
@@ -641,6 +647,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/643') { params -> throw new RuntimeException('410 -- rule gone') }
         hubGet.register('/app/ruleBuilder20Json/643') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/643') { params -> '{}' }
+        hubGet.register('/installedapp/json/643') { params -> '' }  // existence probe: gone
         registerVrbParent()
         stubCreateChild(997)
         def state997 = [name: null, rulePaused: false, ruleJson: null]
@@ -676,6 +683,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
                                          vrbRulePaused: false, vrbDefinition: classicDefinition()])
         stubDownload(json(snapshot).getBytes('UTF-8'))
         hubGet.register('/installedapp/configure/json/642') { params -> throw new RuntimeException('Vue child') }
+        hubGet.register('/installedapp/json/642') { params -> json([id: 642, name: 'r', type: 'Visual Rule Builder 2.0', disabled: false, user: false]) }
         def state642 = [name: 'Drifted', rulePaused: false, ruleJson: json(graphDefinition())]
         stubPostJson { path, body ->
             def b = new JsonSlurper().parseText(body)
@@ -712,6 +720,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/641') { params -> throw new RuntimeException('410 -- rule gone') }
         hubGet.register('/app/ruleBuilder20Json/641') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/641') { params -> '{}' }
+        hubGet.register('/installedapp/json/641') { params -> '' }  // existence probe: gone
         registerVrbParent()
         stubLegacyCreateOnly('<html><script>window.HubitatRuleBuilderAppId = 998;</script></html>')
         hubGet.register('/installedapp/json/998') { params -> '' }  // post-cleanup existence probe: gone
@@ -731,6 +740,71 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         and: 'the orphan shell created during the attempt was force-deleted; no save ever fired'
         rawPaths == [CREATE_2_0, '/app/createVisualRuleBuilderRule', '/installedapp/forcedelete/998/quiet']
         posts.isEmpty()
+    }
+
+    def "restore writes NOTHING and reports failure when the existence read of the original throws"() {
+        given: 'the snapshot is fine; whether app 660 still exists cannot be told'
+        enableWrite()
+        def snapshot = vrbSnapshot(660, [appLabel: 'Hall light', vrbFormat: 'classic',
+                                         vrbRulePaused: false, vrbDefinition: classicDefinition()])
+        stubDownload(json(snapshot).getBytes('UTF-8'))
+        hubGet.register('/installedapp/configure/json/660') { params -> throw new RuntimeException('410 -- rule gone') }
+        hubGet.register('/installedapp/json/660') { params -> throw new RuntimeException('socket timeout') }
+        registerVrbParent()
+        stubCreateChild(661)
+        stubPostJson()
+
+        when:
+        def result = script._rmRestoreFromBackup([type: 'rm-rule', fileName: 'mcp-rm-backup-660-t.json'])
+
+        then: 'no recreate (a second live copy is the failure this prevents), no save, a failure envelope'
+        result.success == false
+        result.originalRuleId == 660
+        result.error.contains('Could not determine whether app 660 still exists')
+        result.error.contains('nothing was written')
+        rawPaths.isEmpty()
+        posts.isEmpty()
+    }
+
+    def "restore reports failure, not a recreate, when the original is FOUND but its rule read throws"() {
+        given:
+        enableWrite()
+        def snapshot = vrbSnapshot(662, [appLabel: 'Hall light', vrbFormat: 'classic',
+                                         vrbRulePaused: false, vrbDefinition: classicDefinition()])
+        stubDownload(json(snapshot).getBytes('UTF-8'))
+        hubGet.register('/installedapp/configure/json/662') { params -> throw new RuntimeException('Vue child') }
+        hubGet.register('/installedapp/json/662') { params -> json([id: 662, name: 'r', type: 'Visual Rule Builder 1.0', disabled: false, user: false]) }
+        hubGet.register('/app/ruleBuilder20Json/662') { params -> throw new RuntimeException('status code: 500') }
+        registerVrbParent()
+        stubCreateChild(663)
+        stubPostJson()
+
+        when:
+        def result = script._rmRestoreFromBackup([type: 'rm-rule', fileName: 'mcp-rm-backup-662-t.json'])
+
+        then:
+        result.success == false
+        result.error.contains('still exists but could not be read')
+        rawPaths.isEmpty()
+        posts.isEmpty()
+    }
+
+    def "backup capture (graph VRB child) snapshots the document the read resolved when ruleJson is blank beside a graphDocument"() {
+        given:
+        stubUploads()
+        hubGet.register('/installedapp/configure/json/703') { params -> throw new RuntimeException('Vue child -- no classic config page') }
+        hubGet.register('/installedapp/statusJson/703') { params -> throw new RuntimeException('no statusJson either') }
+        hubGet.register('/app/ruleBuilder20Json/703') { params ->
+            json([name: 'Doc first', rulePaused: false, ruleJson: '', graphDocument: graphDefinition(), validationErrors: []])
+        }
+
+        when:
+        script._rmBackupRuleSnapshot(703, 'pre-delete')
+
+        then: 'the snapshot restores the document, not a blank'
+        def snap = parsedUpload()
+        snap.vrbFormat == 'graph'
+        new JsonSlurper().parseText(snap.vrbRuleJson as String).nodes.size() == graphDefinition().nodes.size()
     }
 
     def "restore of a graph snapshot whose vrbRuleJson is unparseable fails with a structured error"() {

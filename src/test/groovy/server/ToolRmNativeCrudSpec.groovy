@@ -10233,6 +10233,57 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.commitSignal == "schema_empty_no_commit_check_health"
     }
 
+    def "walkStep navigate does not re-read when the time budget is spent"() {
+        given: 'the LAN budget is 1 ms and the request clock started at epoch 1'
+        enableWrite()
+        settingsMap.lanBudgetMs = 1
+        def rereads = 0
+        registerEmptyRenderRule(100) { params ->
+            rereads++
+            JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", sections: [[input: [[name: "actType.1", type: "enum"]]]]]])
+        }
+        def navPosts = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (!(body?.any { k, v -> k.toString().startsWith("_action_href_") })) return [status: 200, location: null, data: "{}"]
+            navPosts++
+            [status: 200, location: null, data: JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", sections: []]])]
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "selectActions", operation: "navigate", navigate: [targetPage: "doActPage"], __reqT0: 1L],
+            confirm: true, __reqT0: 1L
+        ])
+
+        then:
+        navPosts == 1
+        rereads == 0
+        !(result.opResult?.containsKey("navRetried"))
+        result.after?.inputs == []
+    }
+
+    def "a non-walker navigate (the commit-only callers) never re-reads an empty render"() {
+        given: 'a direct call without the walker's opt-in'
+        enableWrite()
+        def rereads = 0
+        registerEmptyRenderRule(100) { params ->
+            rereads++
+            JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", sections: [[input: [[name: "actType.1", type: "enum"]]]]]])
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", sections: []]])]
+        }
+
+        when:
+        def navResp = script._rmNavigateToPage(100, "selectActions", "doActPage")
+
+        then: 'the empty render comes back as-is: no pause, no GET, no marker'
+        rereads == 0
+        navResp.configPage.sections == []
+        !navResp.containsKey("navRetried")
+    }
+
     def "walkStep navigate leaves an empty render of a PARAM page alone: its schema lives only in the nav response"() {
         given: 'an href that carries params, whose nav response renders empty'
         enableWrite()
