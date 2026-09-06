@@ -13563,12 +13563,27 @@ def refuse_unless_leased_test_hub(client: HubitatMcpClient) -> None:
     sacrificial hub and nowhere else. A hub without it has never been leased for e2e and is
     refused; so is a hub whose variable cannot be read (an unreadable hub proves nothing). One
     read, before the first sweep."""
-    try:
-        got = client.call_tool("hub_manage_variables", {
-            "tool": "hub_get_variable", "args": {"name": TEST_HUB_LEASE_VARIABLE}})
-    except Exception as exc:  # McpToolError 'not found', transport errors: neither proves a leased hub
-        _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} could not be read ({type(exc).__name__}: {str(exc)[:160]}); "
-                 "only the sacrificial test hub carries the e2e lease variable"])
+    # A relay 504 / connection error is a transport fact, not a hub fact: the CI cleanup step was
+    # refused on one (2026-09-06) and left the sweep undone. Transport errors get a few bounded
+    # retries; a tool-level answer ("Variable not found") refuses at once.
+    got = None
+    last_exc: Exception | None = None
+    for attempt in range(4):
+        try:
+            got = client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": TEST_HUB_LEASE_VARIABLE}})
+            break
+        except McpToolError as exc:  # the hub answered: the variable is not there
+            _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} is not present on this hub ({str(exc)[:120]}); "
+                     "only the sacrificial test hub carries the e2e lease variable"])
+        except Exception as exc:  # RelayLostResponseError / requests errors: the hub was not heard
+            last_exc = exc
+            if attempt < 3:
+                print(f"  lease-variable read attempt {attempt + 1}/4 failed ({type(exc).__name__}); retrying in 10s")
+                time.sleep(10)
+    if got is None:
+        _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} could not be read after 4 attempts "
+                 f"({type(last_exc).__name__}: {str(last_exc)[:160]}); an unreadable hub proves nothing"])
     if not isinstance(got, dict) or (got.get("name") != TEST_HUB_LEASE_VARIABLE and "value" not in got):
         _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} is not present on this hub; only the sacrificial test hub carries the e2e lease variable"])
 

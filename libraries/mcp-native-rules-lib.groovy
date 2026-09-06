@@ -6953,6 +6953,19 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
     def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
     def actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+    if (!actTypeField && doActPageCfg?.configPage?.error == null && !_timeBudgetExceeded(actionSpec?.__reqT0 as Long)) {
+        // RM occasionally renders doActPage EMPTY right after the "Create New Action" click
+        // (seen on the CI test hub under load: no actType.<N> in the schema, so every later
+        // write landed not_in_schema and the action came back partial). That is not an error
+        // page -- those carry configPage.error and are reported as they are -- so one re-read
+        // after a short pause; a second empty render flows into the schema-gated writes, which
+        // report it the way they always have.
+        mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
+        pauseExecution(750)
+        doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
+        doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
+        actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+    }
     if (actTypeField) {
         def m = (actTypeField.toString() =~ /^actType\.(\d+)$/)
         if (m.matches()) {

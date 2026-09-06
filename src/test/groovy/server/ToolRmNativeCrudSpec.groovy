@@ -8211,6 +8211,41 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.body?.containsKey("settings[actType.1]") || it.body?.containsKey("settings[logmsg.1]") }
     }
 
+    def "addAction re-reads a doActPage that rendered EMPTY after the Create New Action click, and commits"() {
+        given: 'the first doActPage read after the click carries no actType field; the second is the real page'
+        enableWrite()
+        def doActSchema = [
+            [name: "actType.1", type: "enum"],
+            [name: "actSubType.1", type: "enum"],
+            [name: "logmsg.1", type: "textarea"],
+            [name: "actionDone", type: "button"]
+        ]
+        def doActReads = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            doActReads++
+            doActReads == 1 ? ruleConfigJson(100, "r", []) : ruleConfigJson(100, "r", doActSchema)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.pauseExecution = { Long ms -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "log", message: "after empty render"], confirm: true])
+
+        then: 'the empty first render was re-read, and the actType write found its field'
+        doActReads >= 2
+        result.success == true
+        result.partial != true
+        posts.any { it.body?.containsKey("settings[actType.1]") }
+    }
+
     def "moveAction rejects unknown direction at the dispatcher"() {
         given:
         enableWrite()
