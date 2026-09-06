@@ -10264,7 +10264,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "a non-walker navigate (the commit-only callers) never re-reads an empty render"() {
-        given: 'a direct call without the walker's opt-in'
+        given: "a direct call without the walker's opt-in"
         enableWrite()
         def rereads = 0
         registerEmptyRenderRule(100) { params ->
