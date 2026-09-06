@@ -355,22 +355,6 @@ def _getAllToolDefinitions_partFiles() {
                     filter: [type: "string", description: "Optional case-insensitive substring to match against file names, e.g. \"backup\" or \"mcp-rm-backup\"."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    files: [type: "array", description: "Files in File Manager", items: [type: "object", properties: [
-                        name: [type: "string", description: "File name"],
-                        directDownload: [type: "string", description: "Local download URL"],
-                        size: [type: "integer", description: "Size in bytes; present when known"],
-                        lastModified: [type: "string", description: "Last-modified date; present when known"]
-                    ]]],
-                    total: [type: "integer", description: "Total files matched"],
-                    storage: [type: "string", description: "Storage location note"],
-                    note: [type: "string", description: "Present on HTML-fallback parse"],
-                    nextCursor: [type: "string", description: "Pagination cursor; present when more results remain"]
-                ],
-                required: ["files", "total"]
             ]
         ],
         [
@@ -384,23 +368,6 @@ def _getAllToolDefinitions_partFiles() {
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 60000"]
                 ],
                 required: ["fileName"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the read succeeded"],
-                    fileName: [type: "string", description: "File read"],
-                    totalLength: [type: "integer", description: "Total file length in chars"],
-                    offset: [type: "integer", description: "Start offset of this chunk"],
-                    chunkLength: [type: "integer", description: "Chars returned in this chunk"],
-                    hasMore: [type: "boolean", description: "More chunks remain"],
-                    content: [type: "string", description: "Chunk content"],
-                    directDownload: [type: "string", description: "Local download URL"],
-                    nextOffset: [type: "integer", description: "Offset for next chunk; present when hasMore"],
-                    remainingChars: [type: "integer", description: "Chars left; present when hasMore"],
-                    hint: [type: "string", description: "Next-call guidance; present when hasMore"]
-                ],
-                required: ["success", "fileName", "totalLength", "offset", "chunkLength", "hasMore", "content"]
             ]
         ],
         [
@@ -414,19 +381,6 @@ def _getAllToolDefinitions_partFiles() {
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
                 ],
                 required: ["fileName", "content", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the write succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    fileName: [type: "string", description: "File written"],
-                    contentLength: [type: "integer", description: "Chars written"],
-                    directDownload: [type: "string", description: "Local download URL"],
-                    backupFile: [type: "string", description: "Backup name; present when an existing file was overwritten"],
-                    backupDownload: [type: "string", description: "Backup download URL; present with backupFile"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -439,19 +393,6 @@ def _getAllToolDefinitions_partFiles() {
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
                 ],
                 required: ["fileName", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the deletion succeeded"],
-                    message: [type: "string", description: "Human-readable result, including backup status"],
-                    fileName: [type: "string", description: "Name of the file that was deleted"],
-                    backupFile: [type: "string", description: "Name of the auto-created backup file (present when a backup was made)"],
-                    backupDownload: [type: "string", description: "URL to download the backup (present when a backup was made)"],
-                    undoHint: [type: "string", description: "Guidance for recovering the deleted file (present when a backup was made)"],
-                    warning: [type: "string", description: "Present when the file could not be backed up before deletion"]
-                ],
-                required: ["success", "message", "fileName"]
             ]
         ],
     ]

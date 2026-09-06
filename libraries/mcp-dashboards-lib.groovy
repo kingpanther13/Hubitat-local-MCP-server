@@ -1031,15 +1031,6 @@ def _getAllToolDefinitions_partDashboards() {
                 properties: [
                     pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    dashboards: [type: "array", items: [type: "object", properties: dashFields]],
-                    count: [type: "integer"], note: [type: "string"],
-                    success: [type: "boolean"], error: [type: "string"]
-                ],
-                required: ["dashboards", "count"]
             ]
         ],
         [
@@ -1052,14 +1043,6 @@ def _getAllToolDefinitions_partDashboards() {
                     pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
                 ],
                 required: ["dashboardId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: dashFields + [
-                    layout: [type: "object"], partial: [type: "boolean"],
-                    success: [type: "boolean"], error: [type: "string"],
-                    availableIds: [type: "array"], note: [type: "string"]
-                ]
             ]
         ],
         [
@@ -1074,16 +1057,6 @@ def _getAllToolDefinitions_partDashboards() {
                     options: [type: "object", description: "Easy-only optional config; see hub_get_tool_guide(section='dashboards'). Rejected for type='legacy'."]
                 ],
                 required: ["name"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
-                    name: [type: "string"], dashboard: [type: "object"], dashboards: [type: "array"],
-                    message: [type: "string"], error: [type: "string"], note: [type: "string"],
-                    warnings: [type: "array"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1103,17 +1076,6 @@ def _getAllToolDefinitions_partDashboards() {
                     removeTileIds: [type: "array", description: "Legacy-only. Tile ids to remove; ids already gone are skipped.", items: [type: "integer"]]
                 ],
                 required: ["dashboardId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
-                    name: [type: "string"], deviceIds: [type: "array"],
-                    applied: [type: "array"], tileCount: [type: "integer"], layout: [type: "object"],
-                    dashboard: [type: "object"], dashboards: [type: "array"], message: [type: "string"],
-                    error: [type: "string"], note: [type: "string"], warnings: [type: "array"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1126,14 +1088,6 @@ def _getAllToolDefinitions_partDashboards() {
                     confirm: [type: "boolean", description: "Must be true (requires a recent backup + user approval)."]
                 ],
                 required: ["dashboardId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
-                    message: [type: "string"], error: [type: "string"], note: [type: "string"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1145,14 +1099,6 @@ def _getAllToolDefinitions_partDashboards() {
                     dashboardId: [type: "string", description: "Source installedAppId."]
                 ],
                 required: ["dashboardId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean"], sourceId: [type: "string"], newId: [type: "string"],
-                    type: [type: "string"], message: [type: "string"], error: [type: "string"], note: [type: "string"]
-                ],
-                required: ["success"]
             ]
         ]
     ]

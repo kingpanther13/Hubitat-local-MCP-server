@@ -4466,10 +4466,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.newActionIndex == 3
         result.health != null
 
-        and: "a SUCCESS envelope omits every null-valued key outright (the issue-342 rejection class)"
-        // Not `== null` assertions: with publishOutputSchemas on, a null against a
-        // non-nullable declaration is what a spec-validating client rejects, so the
-        // contract is key ABSENCE.
+        and: "a SUCCESS envelope omits every null-valued key outright"
         !result.containsKey("error")
         !result.containsKey("restoreHint")
         !result.containsKey("verifyHint")

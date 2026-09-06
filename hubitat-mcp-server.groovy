@@ -228,7 +228,7 @@ def mainPage() {
             }
             href name: "advancedOverrides", page: "advancedOverridesPage",
                  title: "Advanced: Per-tool Overrides & expert settings",
-                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and expert wire-format settings (output schema publication)."
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and configure Origin validation."
         }
 
         section("Best-Practice Guidance") {
@@ -453,18 +453,6 @@ def advancedOverridesPage() {
                   description: "Each tool is listed once; disabling it removes it from every gateway it belongs to.",
                   options: overrideOptions.tools, multiple: true, required: false, submitOnChange: true
         }
-        // publishOutputSchemas lives on this Advanced sub-page on purpose (issue #342):
-        // it changes the wire contract with spec-validating clients, so it must not sit
-        // in the main settings where a curious user flips it without reading.
-        section("Output schema publication") {
-            paragraph "<b>Recommended: leave OFF unless you know what you're doing — especially with Claude Desktop.</b> " +
-                      "Turning this ON advertises each base tool's outputSchema on tools/list and the gateway catalog, and the server then also returns structuredContent (a second, structured copy of the result) on every successful call to those tools, roughly doubling their response size. " +
-                      "Spec-validating clients hold the server to the advertised schema on every call, so any schema inaccuracy surfaces as a failed tool call on those clients. OFF is always the safe choice; nothing requires this setting.<br>" +
-                      "<b>Leave OFF if using Claude Desktop.</b>"
-            input "publishOutputSchemas", "bool", title: "Publish tool output schemas",
-                  description: "Leave OFF (default). ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.",
-                  defaultValue: false
-        }
         // Deny-by-default stays: this only ADDS names. It exists for reverse-proxy / remote-access
         // setups where a browser client's Origin reaches the hub and is neither the hub's own LAN
         // address nor cloud.hubitat.com.
@@ -625,39 +613,6 @@ def updated() {
         state.remove("capturedDeviceStates")
         mcpLog("info", "capture-migration", "Migrated ${migratedCount} captured state(s) from state to atomicState")
     }
-
-    // One-time reset of the advanced publishOutputSchemas toggle (issue #354).
-    // Also hooked into handleMcpRequest -- see _forcePublishSchemasOffOnce for why.
-    _forcePublishSchemasOffOnce()
-}
-
-// ===== One-time force publishOutputSchemas OFF migration (issue #354) =====
-// The advanced publishOutputSchemas toggle makes every tools/call fail on
-// spec-validating MCP clients (Claude Desktop): they hold the server to each
-// advertised outputSchema and reject any result lacking conforming
-// structuredContent. At least one install (issue #354) reached ON with the user
-// unable to recall setting it, so reset it OFF once for everybody. Called from BOTH updated() and
-// the top of handleMcpRequest because a code deploy (HPM update, hub_update_app)
-// recompiles the class WITHOUT firing updated() (the same fact
-// requiredParamsCatalogFingerprint relies on) -- an updated()-only migration would
-// miss every user who updates via HPM and never reopens the app page, so the
-// request-path hook catches them on their first MCP call after the update.
-//
-// atomicState.publishOutputSchemasForcedOff locks it to a single firing: a user
-// who deliberately re-enables the toggle AFTER the migration keeps their choice,
-// the same one-shot contract as the customEngineMigrated guard above (atomicState,
-// not state, because this also runs on the concurrent request path where a stale
-// state snapshot could lose the marker and re-fire onto a deliberate re-enable).
-// The marker is set unconditionally (even when the setting was already OFF/null)
-// so the guard also fast-exits the per-request hook -- which runs on every MCP
-// request -- once the migration has run.
-private void _forcePublishSchemasOffOnce() {
-    if (atomicState.publishOutputSchemasForcedOff == true) return
-    if (settings.publishOutputSchemas == true) {
-        app.updateSetting("publishOutputSchemas", [type: "bool", value: false])
-        mcpLog("info", "schema-migration", "Forced publishOutputSchemas=false (one-time reset, issue #354; the advanced toggle breaks strict MCP clients when left ON)")
-    }
-    atomicState.publishOutputSchemasForcedOff = true
 }
 
 def uninstalled() {
@@ -796,14 +751,6 @@ def handleMcpRequest() {
                 jsonRpcError(null, -32600, "Forbidden: the Origin header does not name a known identity for this MCP endpoint.")))
         }
     }
-
-    // Issue #354: reset publishOutputSchemas OFF once. Hooked here (not only in
-    // updated()) because an HPM code deploy recompiles the class without firing
-    // updated(), so HPM updaters would otherwise never get the reset until they
-    // reopened the app page. try/catch so a migration hiccup can never break
-    // request handling; the guard inside makes this a fast no-op after it runs.
-    try { _forcePublishSchemasOffOnce() }
-    catch (Exception e) { mcpLog("warn", "schema-migration", "one-time publishOutputSchemas reset skipped: ${e.message}") }
 
     def requestBody
     try {
@@ -1318,11 +1265,6 @@ def serverInstructions() {
 // request headers (MCP-Protocol-Version / Mcp-Method / Mcp-Name) are validated against
 // the body in handleMcpRequest. A header naming one of the LEGACY entries is served as
 // legacy -- those revisions define no mirrored headers to check.
-//
-// outputSchema (a 2025-06-18 feature) is declared on every tool but, by default,
-// NOT advertised on the wire (issue #290); enabling publishOutputSchemas
-// advertises it in wire form AND attaches structuredContent to advertised tools'
-// results per the spec MUST (issue #342).
 def supportedProtocolVersions() {
     [modernProtocolVersion(), "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 }
@@ -1794,20 +1736,6 @@ def handleToolsCallLegacy(msg) {
     } finally {
         if (writeLeaseId != null) _writeReleaseRequest(writeLeaseId)
     }
-}
-
-// True when toolName is a base tool (not a gateway, not gateway-folded) whose DEFINITION
-// declares an outputSchema -- the shape of the issue #290 advertised surface. This checks
-// the catalog shape ONLY: it does NOT check publishOutputSchemas or useGateways, so every
-// caller must additionally gate on `settings.publishOutputSchemas == true &&
-// settings.useGateways != false` (both handleToolsCall sites do). With those gates, it
-// answers "is this tool currently advertised with a schema", which is what obligates
-// structuredContent on results (issue #342).
-def _advertisesOutputSchema(toolName) {
-    def gwConfig = getGatewayConfig()
-    if (gwConfig.containsKey(toolName)) return false
-    if (gwConfig.values().any { it.tools?.contains(toolName) }) return false
-    return getAllToolDefinitions().find { it.name == toolName }?.outputSchema != null
 }
 
 // ==================== Slow-op time budgets ====================
@@ -3572,9 +3500,6 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     def envelopeBody = [content: [[type: "text", text: jsonText]]]
     if (isErrorOverride || (rendered instanceof Map && rendered.isError == true)) {
         envelopeBody.isError = true
-    } else if (settings.publishOutputSchemas == true && settings.useGateways != false
-            && rendered instanceof Map && _advertisesOutputSchema(toolName)) {
-        envelopeBody.structuredContent = rendered
     }
     def candidateResponse = jsonRpcResult(id, envelopeBody)
     String candidateJson = groovy.json.JsonOutput.toJson(candidateResponse)
@@ -3590,9 +3515,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         String tooLarge = groovy.json.JsonOutput.toJson(
             _responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))
         def body = [content: [[type: "text", text: tooLarge]]]
-        boolean schemaAdvertised = settings.publishOutputSchemas == true &&
-            settings.useGateways != false && _advertisesOutputSchema(toolName)
-        if (envelopeBody.isError == true || schemaAdvertised) body.isError = true
+        if (envelopeBody.isError == true) body.isError = true
         return jsonRpcResult(id, body)
     }
     return [__preserialized: candidateJson]
@@ -4026,7 +3949,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways publishOutputSchemas outputSchema output schema structured content claude desktop gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access"
             ]
         ],
         hub_read_devices: [
@@ -4513,12 +4436,6 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
                 def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
                 def title = displayMeta[name]?.title
                 if (title) entry.title = title as String
-                // Forward outputSchema only when the advanced publishOutputSchemas
-                // setting is on (issue #290) -- OFF by default. Wire form (required
-                // stripped, see _wireOutputSchema) matches the tools/list emission so
-                // spec-validating clients accept both result shapes (issue #342). The
-                // flat tools/list path never emits it (size).
-                if (settings.publishOutputSchemas == true && d?.outputSchema != null) entry.outputSchema = _wireOutputSchema(d.outputSchema)
                 entry
             }
         ]
@@ -4739,27 +4656,6 @@ private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     }
 }
 
-// Wire form of a published outputSchema (issue #342): strip `required` arrays recursively.
-// The definitions' `required` arrays document the SUCCESS shape, but the runtime error
-// contract ([success:false, error, note]) legitimately omits those keys, and per MCP spec
-// (2025-06-18 server/tools: servers MUST return structured results that CONFORM to a
-// published schema) spec-validating clients jsonschema-validate every non-isError result
-// against the advertised schema. Stripping `required` on the wire lets both shapes
-// validate; the success-shape documentation stays intact in the definitions and in
-// hub_get_tool_guide. The `v instanceof List` guard keeps a PROPERTY literally named
-// "required" (a Map under `properties`) intact -- only schema-keyword arrays are dropped.
-def _wireOutputSchema(schema) {
-    if (!(schema instanceof Map)) return schema
-    def out = [:]
-    schema.each { k, v ->
-        if (k == 'required' && v instanceof List) return
-        if (v instanceof Map) out[k] = _wireOutputSchema(v)
-        else if (v instanceof List) out[k] = v.collect { it instanceof Map ? _wireOutputSchema(it) : it }
-        else out[k] = v
-    }
-    return out
-}
-
 // When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
 // at call time. The hide rules live in the biTools / customEngineMode blocks below;
 // useGateways=false additionally flattens the catalog (every tool individually) and
@@ -4796,11 +4692,7 @@ def getToolDefinitions() {
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
         def transformed = applyDescriptionTransform(filtered, true)
         return transformed.collect { tool ->
-            // Flat mode ALWAYS drops outputSchema to protect the 124,000-byte tools/list
-            // cap (this is the all-tools-individually surface) -- independent of the
-            // publishOutputSchemas setting (issue #290), which only gates the gateway-mode
-            // base tools and the gateway catalog disclosure, where the budget has headroom.
-            def base = tool.findAll { it.key != 'outputSchema' }
+            def base = tool
             // hub_set_rule self-gateway: in flat mode its 25-param fat inputSchema is the
             // biggest single consumer of the tools/list budget, so fold it to a thin
             // {operation,args} selector (the agent probes for an operation's real schema
@@ -4860,24 +4752,9 @@ def getToolDefinitions() {
     // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
     // if a future author adds one to a base-tool description.
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
-    // outputSchema is opt-in (issue #290): the flat path above always strips it; on this
-    // gateway-mode base-tool surface (and the gateway catalog) it is emitted only when the
-    // advanced publishOutputSchemas setting is on (wire form -- see _wireOutputSchema; and
-    // handleToolsCall then attaches structuredContent per the spec MUST, issue #342).
-    boolean publishSchemas = settings.publishOutputSchemas == true
     return transformed.collect { tool ->
-        // Gateway entries already carry annotations (incl. readOnlyHint) from the
-        // collectMany above and never carry outputSchema, so return them untouched. Leaf
-        // base tools get their annotations from the canonical set here -- the presence of
-        // readOnlyHint (not just the annotations map) is the load-bearing signal -- and
-        // have their outputSchema stripped unless publishOutputSchemas is on.
         if (tool.annotations?.containsKey('readOnlyHint')) return tool
-        // Published schemas go out in wire form (required stripped -- see _wireOutputSchema)
-        // so spec-validating clients accept success AND error result shapes.
-        def leaf = (publishSchemas && tool.outputSchema != null)
-            ? tool.collectEntries { k, v -> [(k): (k == 'outputSchema' ? _wireOutputSchema(v) : v)] }
-            : tool.findAll { it.key != 'outputSchema' }
-        leaf + [annotations: (leaf.annotations ?: [:]) + annotationsForLeaf(leaf.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+        tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
 }
 
@@ -8721,7 +8598,7 @@ For replace/add every id is validated against the full hub device list (discover
 - `enableDeveloperMode` -- lockout protection; must stay UI-only to disable.
 - `disabled_tools` / `disabled_gateways` -- could self-disable this tool.
 
-**Schema refresh / reconnect.** Changing an `enable*` toggle, `useGateways`, or `publishOutputSchemas` reshapes `tools/list`; changing `selectedDevices` changes which devices are visible. So MCP clients may need to reconnect to refresh cached schemas / device visibility.
+**Schema refresh / reconnect.** Changing an `enable*` toggle or `useGateways` reshapes `tools/list`; changing `selectedDevices` changes which devices are visible. So MCP clients may need to reconnect to refresh cached schemas / device visibility.
 
 ### hub_update_package
 
@@ -9088,7 +8965,7 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 
 ### hub_list_devices
 
-**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands` (full field list in the tool's `outputSchema`). `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
+**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands`. `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
 
 **format='context' (the house-snapshot primitive).** One call answers "what's in this house and what state is it in": the `summary` field is a self-contained plain-text block -- a header (`Mode:`, `HSM:` when available, `Devices: N of M`) plus one line per device (`- Label (id, room) - Cap1, Cap2; attr=value, ...`). Attribute values carry the reported unit directly appended with no separator (`temperature=72.5°F`, `battery=87%`) -- parse on `=` accordingly -- and come from one currentStates read per device: the SAME per-device hub read summary mode pays (the saving vs ~21 per-attribute currentValue() calls is hub-side; the "cheap" part is the compact output). A device whose state read fails is marked `(state unavailable)` on its line rather than silently rendered attribute-less. The default attribute set: switch/level/motion/contact/presence/lock/temperature/humidity/illuminance/battery/power/energy/thermostat fields/speed/position/valve/water/smoke. Page size defaults to 50 (set `limit` to change); `nextCursor` is always emitted when more devices remain, and the header repeats it. Structured fields (`mode`, `hsmStatus`, `count`, `total`, filter echoes) ride alongside the text. Combine with the filters below for scoped snapshots ("what's on in the Kitchen" = `roomFilter` + `onlyOn`). Ignores `fields`/`detailed`; not available with `scope='all'`.
 
@@ -9305,7 +9182,7 @@ Rule Machine, Visual Rules Builder, and the other supported classic apps (Button
 
 `ruleFormat` says which engine answered: `rm` / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
 
-The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM `*BROKEN*` / `**Broken Trigger|Action|Condition**` markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check (the full key list plus `brokenMarkerCounts` lives in the tool's outputSchema).
+The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM `*BROKEN*` / `**Broken Trigger|Action|Condition**` markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check.
 
 **`source` parameter — which source(s) to read:**
 - `auto` (default): the preferred compiled-state verdict plus the RM HTML render detections + a cross-check.

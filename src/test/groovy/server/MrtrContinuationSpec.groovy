@@ -1953,7 +1953,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         out.success == false
         out.failedRuleIds == [12]
 
-        and: 'but NOT partial: every rule failed, so nothing was actioned. partial means some-actioned-some-not, per the leaf and the outputSchema -- reporting an all-failed batch as partial would tell a client some rules landed when none did'
+        and: 'but NOT partial: every rule failed, so nothing was actioned. partial means some-actioned-some-not -- reporting an all-failed batch as partial would tell a client some rules landed when none did'
         out.partial == false
     }
 
@@ -1996,7 +1996,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         out.failedRuleIds == [13]
         out.partial == true
 
-        and: 'the scalar tail\'s top-level ruleId is dropped: the outputSchema declares that field present only when exactly one rule was asked for, so leaving it would name the tail rule as if it were the whole batch'
+        and: 'the scalar tail\'s top-level ruleId is dropped: leaving it would name the tail rule as if it were the whole batch'
         !out.containsKey('ruleId')
 
         and: 'the note the leaf attaches to a row survives the synthesizer -- an allowlist silently drops whatever the leaf adds next'

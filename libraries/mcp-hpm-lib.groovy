@@ -646,49 +646,6 @@ Set includeDrift=true to ALSO cross-reference tracked state against what is actu
                     packageFilter: [type: "string", description: "Drift mode only (includeDrift=true): case-insensitive substring filter on packageName."],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor.[[FLAT_TRIM]] Page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large.[[/FLAT_TRIM]]"]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the package list was built"],
-                    hpmAppId: [description: "HPM installed-app ID (echo for caching)"],
-                    count: [type: "integer", description: "Packages returned"],
-                    packages: [type: "array", description: "Tracked HPM packages", items: [type: "object", properties: [
-                        manifestUrl: [type: "string", description: "Manifest URL"],
-                        packageName: [type: "string", description: "Package name"],
-                        version: [type: "string", description: "Package version"],
-                        beta: [type: "boolean", description: "Beta flag"],
-                        author: [type: "string", description: "Author"],
-                        apps: [type: "array", description: "App components", items: [type: "object", properties: [
-                            id: [type: "string", description: "Manifest-internal component ID"],
-                            name: [type: "string", description: "Component name"],
-                            required: [type: "boolean", description: "Component is required"],
-                            version: [type: "string", description: "Component version, when present"],
-                            heID: [type: "string", description: "Hubitat internal code ID; null if never installed"],
-                            _warning: [type: "string", description: "heID normalization note, when applied"]
-                        ]]],
-                        drivers: [type: "array", description: "Driver components", items: [type: "object", properties: [
-                            id: [type: "string", description: "Manifest-internal component ID"],
-                            name: [type: "string", description: "Component name"],
-                            required: [type: "boolean", description: "Component is required"],
-                            version: [type: "string", description: "Component version, when present"],
-                            heID: [type: "string", description: "Hubitat internal code ID; null if never installed"],
-                            _warning: [type: "string", description: "heID normalization note, when applied"]
-                        ]]],
-                        files: [type: "array", description: "File components", items: [type: "object", properties: [
-                            id: [type: "string", description: "Component ID"],
-                            name: [type: "string", description: "File name"]
-                        ]]],
-                        skippedAppCount: [type: "integer", description: "Non-Map app entries skipped (omitted when 0)"],
-                        skippedDriverCount: [type: "integer", description: "Non-Map driver entries skipped (omitted when 0)"],
-                        skippedFileCount: [type: "integer", description: "Non-Map file entries skipped (omitted when 0)"]
-                    ]]],
-                    skippedMalformed: [type: "array", description: "Manifest URLs skipped entirely (non-Map top level)", items: [type: "string"]],
-                    drift: [type: "object", description: "Drift cross-reference block; present when includeDrift=true"],
-                    total: [type: "integer", description: "Total matched (present when paginating)"],
-                    nextCursor: [type: "string", description: "Present when more results remain"]
-                ],
-                required: ["success"]
             ]
         ],
     ]
