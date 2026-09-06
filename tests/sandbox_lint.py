@@ -1729,6 +1729,40 @@ def check_tool_guide_pointers(src_override: str | None = None,
     for m in body_re.finditer(sections_block):
         section_bodies[m.group(1)] = m.group(2)
 
+    # 1b. A section whose text lives in its domain library reads `key: _fooGuideSection(),`
+    #     here -- the app file is a size budget (check_app_file_size), so a domain's guide body
+    #     travels with its domain. Resolve the method's returned literal out of libraries/*.groovy
+    #     so the key still counts as a section and the anchor check below still sees its text.
+    lib_src = ""
+    lib_dir = REPO_ROOT / "libraries"
+    if lib_dir.is_dir():
+        for lib in sorted(lib_dir.glob("*.groovy")):
+            lib_src += "\n" + lib.read_text(encoding="utf-8", errors="replace")
+    for key, method in re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*(_\w+)\(\)",
+                                  sections_block, re.MULTILINE):
+        section_keys.add(key)
+        method_body = re.search(
+            r"String\s+" + re.escape(method) + r"\(\)\s*\{\s*return\s+'''(.*?)'''",
+            lib_src,
+            re.DOTALL,
+        )
+        if method_body is None:
+            findings.append({
+                "file": str(server.relative_to(REPO_ROOT)),
+                "line": 1,
+                "severity": "error",
+                "rule": "tool-guide-section-method-unresolved",
+                "message": (
+                    f"getToolGuideSections key '{key}' delegates to {method}(), but no "
+                    f"`String {method}()` returning a ''' literal was found in "
+                    f"libraries/*.groovy. hub_get_tool_guide(section='{key}') would serve "
+                    f"nothing, and the content-anchor check cannot run for it."
+                ),
+                "source": "",
+            })
+            continue
+        section_bodies[key] = method_body.group(1)
+
     # 2. Extract every get_tool_guide(section='X') reference from the .groovy.
     #    Tolerate both single and double quotes; whitespace around the `=`.
     pointer_re = re.compile(r"get_tool_guide\(section\s*=\s*['\"]([a-z_][a-z0-9_]*)['\"]\)")
@@ -3849,6 +3883,67 @@ def run_self_test() -> int:
     return 0
 
 
+# hubitat-mcp-server.groovy is a size BUDGET -- the evidence is in check_app_file_size's docstring.
+APP_FILE_SIZE_ERROR = 695_000
+APP_FILE_SIZE_WARN = 675_000
+
+
+def check_app_file_size(size_override: int | None = None) -> list[dict]:
+    """Fail when hubitat-mcp-server.groovy outgrows the hub's app-source save ceiling.
+
+    The hub REFUSES to save an app source above a ceiling it does not publish. Largest size
+    PROVEN TO DEPLOY: 698,521 bytes, which the e2e test hub took on four separate runs. PROVEN
+    TO FAIL: 700,403 bytes -- HTTP 500 from /app/ajax/update, twice, with no fresh
+    lastSelfDeploy. A sibling PR's 682,927-byte file deployed on the same hub minutes later.
+    Hubitat's only published figure is a 2018 staff statement of a 500,000-character cap
+    (community.hubitat.com/t/app-line-length-limit/3421), since raised to a value it has not
+    published -- so the real ceiling sits somewhere between 698,521 and 700,403, and this guard
+    sits below the largest size proven to deploy rather than at the observed failure.
+
+    The growth that reached it was ordinary accretion, not one bad merge: the app file went
+    686,273 -> 698,707 bytes across a single feature branch's own commits, and the merge from
+    main added the last 1,696. That merge cut about 167 KB of Groovy overall, but every byte of
+    it came out of the LIBRARIES, which do not count against this budget -- which is the point.
+    Code with a domain owner belongs in that owner's library, where its size is free.
+
+    Nothing else catches an over-budget app file: it parses, lints and unit-tests clean, and only
+    the live install rejects it -- as a bare HTTP 500, on the e2e hub, after the run has already
+    armed the dead-man. size_override drives the self-test without a 700KB fixture.
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if size_override is not None:
+        size = size_override
+    elif server.is_file():
+        size = server.stat().st_size
+    else:
+        return findings
+    if size > APP_FILE_SIZE_ERROR:
+        findings.append({
+            "file": "hubitat-mcp-server.groovy", "line": 1, "severity": "error",
+            "rule": "app-file-size",
+            "message": (
+                f"hubitat-mcp-server.groovy is {size:,} bytes, over the "
+                f"{APP_FILE_SIZE_ERROR:,}-byte guard. The hub refuses to save an app source above "
+                f"an unpublished ceiling measured between 698,521 bytes (deployed) and 700,403 "
+                f"bytes (HTTP 500). Move the new code into the library that owns its domain."
+            ),
+            "source": "",
+        })
+    elif size > APP_FILE_SIZE_WARN:
+        findings.append({
+            "file": "hubitat-mcp-server.groovy", "line": 1, "severity": "warning",
+            "rule": "app-file-size",
+            "message": (
+                f"hubitat-mcp-server.groovy is {size:,} bytes, past the {APP_FILE_SIZE_WARN:,}-byte "
+                f"warning line and closing on the {APP_FILE_SIZE_ERROR:,}-byte guard. Land new code "
+                f"in its domain library rather than in the app spine."
+            ),
+            "source": "",
+        })
+    return findings
+
+
 def check_include_library_lockstep() -> list[dict]:
     """Every `#include mcp.X` in the app must stay in lockstep with its delivery (issues #209/#250):
     (1) a libraries/*.groovy whose library() declares (namespace=X.ns, name=X.name), and
@@ -4413,6 +4508,10 @@ def main() -> int:
 
     # BP20: no file-scope block comments in #include libraries (hub-parser hazard).
     all_findings.extend(check_library_no_file_scope_block_comments())
+
+    # The hub refuses to save an oversized app source, so the monolith is a budget: new code
+    # lands in its domain library, not in hubitat-mcp-server.groovy.
+    all_findings.extend(check_app_file_size())
 
     # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
     all_findings.extend(check_bm25_key_subscripts())
