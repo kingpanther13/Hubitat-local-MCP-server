@@ -7353,12 +7353,13 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
 // model), a feed device the tree omits is present from the feed, and either omission flags the
 // result partial with a counted note.
 // Returns [source, capabilities, records] (+ partialNote when capabilities is false but records
-// exist, + idsComplete:false when the ID SET itself may be short: the feed-alone fallback taken
-// when the spine could not be read, or when the tree answered EMPTY beside a populated feed --
-// contradictory data, so the feed is the honest answer but nothing vouches for its completeness).
+// exist, + idsComplete:false whenever the ID SET cannot be vouched for -- the two sources
+// disagree about it: the feed lists a device the tree lacks; the tree could not be read so the
+// feed stands alone; the tree answered EMPTY beside a populated feed (contradictory data, the
+// feed is the honest answer); or the tree answered EMPTY with no feed answer at all (an empty hub
+// and a dead endpoint look identical when nothing is alive to contradict either).
 // On failure records is null and `failure` is "fetch" (with fetchError) or "shape" -- a missing
-// body, a missing `devices` key or a malformed node. A well-formed inventory with no devices, and
-// no feed contradicting it, is NOT a failure: it is a hub with no devices. The caller owns the wording.
+// body, a missing `devices` key or a malformed node. The caller owns the wording.
 private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
     try {
         def txt = hubInternalGet("/device/listWithCapabilities/json")
@@ -7420,21 +7421,29 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
     }
 
     if (spine != null && feed == null) {
+        if (spine.isEmpty()) {
+            // Nothing is alive to contradict an empty tree: a hub with no devices and a dead
+            // endpoint answering {devices: []} look identical from here, so the id set cannot be
+            // vouched for. Zero records, flagged -- never zero devices passed off as the truth.
+            mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList reports no devices and /hub2/vrb/devices did not answer; the inventory cannot be vouched for")
+            return [source: "/hub2/devicesList", capabilities: false, idsComplete: false, records: spine,
+                    partialNote: "The whole-hub device tree (/hub2/devicesList) answered no devices and the Visual Rule Builder device feed (/hub2/vrb/devices) did not answer, so an empty hub cannot be told from a dead endpoint. Retry to cross-check."]
+        }
         // Capability-less last resort: the caller fills authorized devices in from the model.
-        if (spine.isEmpty()) mcpLog("debug", logCategory, "${logPrefix}: /hub2/devicesList reports no devices on this hub")
         return [source: "/hub2/devicesList", capabilities: false, records: spine]
     }
+    boolean spineContradicted = false
     if (spine != null && spine.isEmpty()) {
         // The tree says "no devices" while the feed lists some. A dead endpoint can answer empty,
         // so an empty spine is only trustworthy when nothing contradicts it; here the feed does,
         // and passing zero devices off as the complete truth is the one outcome that must not
         // happen. Fall through to the feed-alone answer, flagged partial with this reason.
         mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList answered no devices while /hub2/vrb/devices listed ${feed.size()}; using the feed alone")
-        spineFailure = [source: "/hub2/devicesList", failure: "empty"]
+        spineContradicted = true
         spine = null
     }
     if (spine != null) {
-        def missingCapabilities = 0
+        def missingCapabilities = 0   // spine devices the feed gave no capabilities list for
         def spineIds = [] as Set
         def records = spine.collect { d ->
             def key = d.id?.toString()
@@ -7444,33 +7453,47 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
             missingCapabilities++
             return [id: d.id, label: d.label]   // no `capabilities` key on purpose: routes to the model fill-in
         }
-        // The union's other direction: a device only the feed lists keeps its feed record.
+        // The union's other direction: a device only the feed lists keeps its feed record. Its
+        // presence PROVES the tree short, so the id set is complete only when there are none.
         def feedOnly = feed.findAll { key, rec -> !spineIds.contains(key) }.values() as List
+        def feedOnlyWithoutCapabilities = feedOnly.findAll { !it.containsKey("capabilities") }.size()
         records.addAll(feedOnly)
-        if (missingCapabilities == 0 && feedOnly.isEmpty()) return [source: "/hub2/vrb/devices", capabilities: true, records: records]
+        boolean idsComplete = feedOnly.isEmpty()
         def notes = []
-        if (missingCapabilities > 0) {
-            notes << "The Visual Rule Builder device feed (/hub2/vrb/devices) omitted ${missingCapabilities} of ${spine.size()} device(s) listed by /hub2/devicesList; those carry capabilities only when MCP-authorized, so capabilityFilter cannot match them otherwise."
-        }
         if (!feedOnly.isEmpty()) {
-            notes << "The whole-hub device tree (/hub2/devicesList) omitted ${feedOnly.size()} device(s) that the Visual Rule Builder device feed (/hub2/vrb/devices) lists; they are included from the feed."
+            notes << "The whole-hub device tree (/hub2/devicesList) omitted ${feedOnly.size()} device(s) that the Visual Rule Builder device feed (/hub2/vrb/devices) lists; they are included from the feed" +
+                    (feedOnlyWithoutCapabilities > 0 ? ", ${feedOnlyWithoutCapabilities} of them without a capabilities list (an empty list there means unknown, not none)." : ".")
+        }
+        if (!feedHasCapabilities) {
+            // A feed with no capabilities list anywhere is an id source, not a capability source:
+            // it omitted nothing, the caller fills authorized devices in from the model, and the
+            // no-capability-source wording applies (so no partialNote for that alone).
+            mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices carried no capabilities lists; inventory is /hub2/devicesList with the feed's ids unioned in")
+            def out = [source: "/hub2/devicesList", capabilities: false, records: records]
+            if (!idsComplete) { out.idsComplete = false; out.partialNote = notes.join(" ").toString() }
+            return out
+        }
+        if (missingCapabilities == 0 && idsComplete) return [source: "/hub2/vrb/devices", capabilities: true, records: records]
+        if (missingCapabilities > 0) {
+            notes.add(0, "The Visual Rule Builder device feed (/hub2/vrb/devices) omitted ${missingCapabilities} of ${spine.size()} device(s) listed by /hub2/devicesList; those carry capabilities only when MCP-authorized, so capabilityFilter cannot match them otherwise.")
         }
         mcpLog("warn", logCategory, "${logPrefix}: ${notes.join(' ')}")
-        // A feed with no capabilities list anywhere is an id source, not a capability source.
-        return [source: feedHasCapabilities ? "/hub2/vrb/devices" : "/hub2/devicesList", capabilities: false, records: records,
-                partialNote: notes.join(" ").toString()]
+        def out = [source: "/hub2/vrb/devices", capabilities: false, records: records, partialNote: notes.join(" ").toString()]
+        if (!idsComplete) out.idsComplete = false
+        return out
     }
 
-    // The spine could not be read (or contradicted the feed). The feed alone is still a usable
-    // inventory, but nothing can vouch for its completeness, so it is reported partial with the
-    // reason and idsComplete:false -- never as the complete capability-bearing answer the
-    // successful path returns.
+    // The spine could not be used (unreadable, or it contradicted the feed). The feed alone is
+    // still a usable inventory, but nothing can vouch for its completeness, so it is reported
+    // partial with the reason and idsComplete:false -- never as the complete capability-bearing
+    // answer the successful path returns. A feed with no capabilities list anywhere is an id
+    // source here too, and says so through `source`.
     if (feed != null) {
-        def why = spineFailure?.failure == "empty" ?
+        def why = spineContradicted ?
                 "answered no devices while /hub2/vrb/devices listed ${feed.size()} and was not trusted" :
                 "could not be read (${spineFailure?.fetchError ?: spineFailure?.failure})"
         mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList ${why}; inventory is the /hub2/vrb/devices feed alone")
-        return [source: "/hub2/vrb/devices", capabilities: false, idsComplete: false, records: feed.values() as List,
+        return [source: feedHasCapabilities ? "/hub2/vrb/devices" : "/hub2/devicesList", capabilities: false, idsComplete: false, records: feed.values() as List,
                 partialNote: "The whole-hub device tree (/hub2/devicesList) ${why}, so this inventory is the Visual Rule Builder device feed (/hub2/vrb/devices) alone and may omit devices the feed filters out. Retry to cross-check.".toString()]
     }
     return spineFailure
@@ -9532,7 +9555,7 @@ Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}
 - `navigate` -- forward into a sub-page via its href.
 - `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
 
-The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health` in each step's snapshot -- they are the fail-loud signals. On health: `skipped: true` means the probe was deliberately not run (time budget spent) and `unreadable: true` means it could not be read -- neither is evidence of breakage; only a checked verdict (broken/issues with unreadable false) is.
+The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health` in each step's snapshot -- they are the fail-loud signals. A page that rendered empty on a `navigate` (or on an `hrefContext` re-render) is re-read once and `opResult.navRetried: true` says the re-read supplied the page; if `after` is still empty the page really is (see `commitSignal`). On health: `skipped: true` means the probe was deliberately not run (time budget spent) and `unreadable: true` means it could not be read -- neither is evidence of breakage; only a checked verdict (broken/issues with unreadable false) is.
 
 Worked `drive` example (a multi-device switch trigger committed in one call, the `steps[]` form of the raw-mode example below). The trailing `done` is what runs the mainPage Done finalize (raw-mode step 6, `updateRule`); without it the trigger is written to settings but never subscribed, so the rule looks created yet never fires:
 ```

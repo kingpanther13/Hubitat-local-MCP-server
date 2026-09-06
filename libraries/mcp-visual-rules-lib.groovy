@@ -804,6 +804,16 @@ private List _vrb2Validate(Map graph) {
     return errors.collect { it.toString() }.unique()
 }
 
+// The one place the surface labels live: _vrb2UnknownTypes reports them, _vrb2TypeNames keys on
+// them, and the edit gate joins the two by this key.
+private String _vrb2Where(String kind) {
+    return kind == "trigger" ? "Trigger node" : (kind == "action" ? "Action node" : "Condition")
+}
+
+private String _vrb2TypeKey(String where, String type) {
+    return "${where}|${type}".toString()
+}
+
 private List _vrb2UnknownTypes(Map graph) {
     // [where, id, type] for every trigger/action/condition whose type is outside this build's catalogs.
     def out = []
@@ -811,11 +821,11 @@ private List _vrb2UnknownTypes(Map graph) {
     graph.nodes.each { node ->
         if (!(node instanceof Map)) return
         def type = node.type?.toString()
-        if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) out << [where: "Trigger node", id: node.id?.toString(), type: type]
-        else if (node.kind == "action" && !(type in _vrb2ActionTypes())) out << [where: "Action node", id: node.id?.toString(), type: type]
+        if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) out << [where: _vrb2Where("trigger"), id: node.id?.toString(), type: type]
+        else if (node.kind == "action" && !(type in _vrb2ActionTypes())) out << [where: _vrb2Where("action"), id: node.id?.toString(), type: type]
         else if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
             node.config.conditions.each { cond ->
-                if (cond instanceof Map && !(cond.type?.toString() in _vrb2ConditionTypes())) out << [where: "Condition", id: cond.id?.toString(), type: cond.type?.toString()]
+                if (cond instanceof Map && !(cond.type?.toString() in _vrb2ConditionTypes())) out << [where: _vrb2Where("condition"), id: cond.id?.toString(), type: cond.type?.toString()]
             }
         }
     }
@@ -830,10 +840,9 @@ private Set _vrb2TypeNames(def graph) {
     if (!(graph instanceof Map) || !(graph.nodes instanceof List)) return names
     graph.nodes.each { node ->
         if (!(node instanceof Map)) return
-        if (node.kind == "trigger" && node.type != null) names << "Trigger node|${node.type}".toString()
-        if (node.kind == "action" && node.type != null) names << "Action node|${node.type}".toString()
+        if (node.kind in ["trigger", "action"] && node.type != null) names << _vrb2TypeKey(_vrb2Where(node.kind.toString()), node.type.toString())
         if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
-            node.config.conditions.each { if (it instanceof Map && it.type != null) names << "Condition|${it.type}".toString() }
+            node.config.conditions.each { if (it instanceof Map && it.type != null) names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString()) }
         }
     }
     return names
@@ -935,11 +944,12 @@ private Map _vrbResolveTargetDefinition(String targetFormat, String definitionFo
         } catch (Exception e) {
             // Any compose/translate failure (a bad shape can also surface as a cast error) is a
             // pre-flight finding, never a raw throw -- this runs after the shell exists on the
-            // legacy-create fallback.
-            return [ok: false, validationErrors: [e.message?.toString() ?: "definition could not be composed into a 2.0 graph"]]
+            // legacy-create fallback. A translation warning (a dropped placeholder row) is the
+            // sentence that explains the failure, so it rides in front of it.
+            return [ok: false, validationErrors: translationWarnings + [e.message?.toString() ?: "definition could not be composed into a 2.0 graph"]]
         }
         def errors = _vrb2Validate(graph)
-        if (errors) return [ok: false, validationErrors: errors]
+        if (errors) return [ok: false, validationErrors: translationWarnings + errors]
         return [ok: true, definition: graph, translatedFrom: translatedFrom, warnings: translationWarnings + _vrb2CatalogWarnings(graph)]
     }
     if (definitionFormat == "classic") return [ok: true, definition: definitionMap, translatedFrom: null]
@@ -1227,16 +1237,37 @@ private Map _toolSetVisualRuleImpl(args) {
             // it. So a type name this build does not know is refused here unless the rule
             // already uses it -- that is the hub having accepted it, which is the only oracle.
             def knownToRule = _vrb2TypeNames(detected.data.definition)
-            def newUnknown = _vrb2UnknownTypes(resolved.definition).findAll { !("${it.where}|${it.type}".toString() in knownToRule) }
+            // A classic node-list cannot say which surface a type belongs to: the translator files
+            // an unknown whenNode type as a trigger (the condition catalog is closed), so a rule the
+            // hub accepted with a newer CONDITION type would present here as a trigger and be
+            // refused about a type it demonstrably uses. For translated input any surface the rule
+            // already uses vouches for the bare name; graph/editor input keeps the per-surface check.
+            def bareKnown = resolved.translatedFrom == "classic" ? (knownToRule.collect { it.substring(it.indexOf('|') + 1) } as Set) : ([] as Set)
+            def newUnknown = _vrb2UnknownTypes(resolved.definition).findAll { !(_vrb2TypeKey(it.where, it.type) in knownToRule) && !(it.type in bareKnown) }
             if (newUnknown) {
                 throw new IllegalArgumentException("Refusing to edit rule ${appId}: " + newUnknown.collect { "${it.where} '${it.id}' has type '${it.type}'" }.join("; ") +
                         " -- this build does not know that type and the rule does not use it today, so saving would stop a running rule as an inactive draft. Check the spelling against hub_get_tool_guide(section='visual_rule_reference'); a type the hub already accepted for this rule is allowed.")
             }
         }
+        // A classic read fed straight back carries the rule's name and pause flag inside the
+        // definition. They are ignored -- the top-level arguments govern -- and when they disagree
+        // with what governs, that is said rather than silently dropped.
+        def envelopeWarnings = []
+        if (normalized.format == "classic") {
+            def effectiveName = (name ?: detected.data.name?.toString())
+            def effectivePaused = hasPaused ? (paused == true) : (detected.data.rulePaused == true)
+            if (normalized.map.name != null && normalized.map.name.toString() != effectiveName) {
+                envelopeWarnings << "definition.name ('${normalized.map.name}') was ignored: the top-level name argument governs a rename, so the rule is named '${effectiveName}'.".toString()
+            }
+            if (normalized.map.rulePaused != null && (normalized.map.rulePaused == true) != effectivePaused) {
+                envelopeWarnings << "definition.rulePaused (${normalized.map.rulePaused}) was ignored: the top-level paused argument governs, so the rule is ${effectivePaused ? 'paused' : 'not paused'}.".toString()
+            }
+        }
         try {
             def result = _vrbApplySave(appId, detected.format, name ?: detected.data.name?.toString(), resolved.definition, hasPaused ? paused : null, detected.data.rulePaused == true, false)
             if (resolved.translatedFrom) result.translatedFrom = resolved.translatedFrom
-            if (resolved.warnings) result.preflightWarnings = resolved.warnings
+            def warnings = (resolved.warnings ?: []) + envelopeWarnings
+            if (warnings) result.preflightWarnings = warnings
             def previousDefinition = detected.format == "graph" ? detected.data.definition :
                     [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
             // A never-saved graph has no prior definition. Omit the optional recovery aid
@@ -1274,7 +1305,12 @@ private Map _toolSetVisualRuleImpl(args) {
                 if (stored) {
                     try {
                         def parsed = new groovy.json.JsonSlurper().parseText(stored)
-                        if (parsed instanceof Map) existing = parsed
+                        // The bytes win only when they hold a rule. The hub's own loader prefers the
+                        // parsed graphDocument, and the read follows it: a ruleJson of
+                        // {"nodes":[]} beside a populated graphDocument is a shape the read answers
+                        // with the document -- re-saving the bytes there would WIPE the rule, and
+                        // the counts check would pass zero against zero.
+                        if (parsed instanceof Map && parsed.nodes instanceof List && !parsed.nodes.isEmpty()) existing = parsed
                     } catch (Exception ignore) { /* fall through to the parsed graphDocument */ }
                 }
                 if (existing == null && detected.data.definition instanceof Map) existing = detected.data.definition
@@ -1293,7 +1329,12 @@ private Map _toolSetVisualRuleImpl(args) {
             // no longer accepts (a device deleted since the last save) is persisted as an INACTIVE
             // DRAFT: that comes back as activated:false + validationErrors + note, never as a
             // clean success, and a rejected save keeps the same diagnostics as any other.
-            return _vrbApplySave(appId, detected.format, name, existing, hasPaused ? paused : null, detected.data.rulePaused == true, false)
+            def out = _vrbApplySave(appId, detected.format, name, existing, hasPaused ? paused : null, detected.data.rulePaused == true, false)
+            // A rename ships no document back (it is the operation most likely to run in a loop),
+            // and its failure says which operation failed so a batch caller can attribute it.
+            if (out.success == false) out.error = "Rename failed: ${out.error}".toString()
+            else out.remove("definition")
+            return out
         }
         if (hasPaused) {
             def pauseResult = _vrbSetPaused(appId, paused)
@@ -1311,9 +1352,10 @@ private Map _toolSetVisualRuleImpl(args) {
         def out = [success: verified, appId: appId, format: detected.format, verified: verified,
                    name: after?.data?.name, rulePaused: after?.data?.rulePaused == true]
         if (!verified) {
-            out.error = "The pause request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
+            // This tail is also reached by a rename to the rule's CURRENT name (nothing to re-save).
+            out.error = "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
             out.note = "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
-            mcpLog("warn", "vrb", "Pause read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk})")
+            mcpLog("warn", "vrb", "${name ? 'Rename' : 'Pause'} read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk})")
         }
         return out
     } catch (Exception e) {
@@ -1334,7 +1376,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         def saved = _vrbSaveGraph(appId, name, definitionJson)
         if (saved.success == false) {
             mcpLog("warn", "vrb", "Graph save rejected for ${appId}: ${saved.errorMessage} ${saved.validationErrors ?: ''}")
-            def failed = [success: false, error: "Hub rejected the graph save: ${saved.errorMessage}",
+            def failed = [success: false, appId: appId, error: "Hub rejected the graph save: ${saved.errorMessage}",
                           validationErrors: saved.validationErrors, activated: false,
                           note: created ? _vrbTryCleanupShell(appId) : "The rule's previous definition is untouched."]
             // containsKey is enough: _vrbSaveGraphMeta sets these only when the hub sent a
@@ -1368,7 +1410,11 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
     def nameOk = after != null && _vrbNameMatches(after, name)
     def pauseOk = pausedRequested == null || ((after?.data?.rulePaused == true) == pausedRequested)
     def countsOk = after != null && _vrbDefinitionCountsMatch(format, definition, after.data)
-    def verified = nameOk && pauseOk && countsOk
+    // A pause the hub REFUSED is a failure even when the read-back happens to show the requested
+    // state (a redundant pause on an already-paused rule, say): the hub said no, and a clean
+    // success would hide that it did.
+    def pauseRefused = pauseResult?.success == false
+    def verified = nameOk && pauseOk && countsOk && !pauseRefused
     def out = [success: verified, appId: appId, format: format, created: created,
                name: after?.data?.name, rulePaused: after?.data?.rulePaused == true, verified: verified]
     if (format == "graph") {
@@ -1404,7 +1450,9 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
                 " Re-read with hub_get_visual_rule(appId=${appId}); re-saving the definition retries activation."
     }
     if (!verified) {
-        out.error = "Save POST was sent but the read-back did not confirm the new state (name ok: ${nameOk}, pause ok: ${pauseOk}, definition counts ok: ${countsOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
+        out.error = (pauseRefused && nameOk && pauseOk && countsOk) ?
+                "Pause/resume failed: the hub refused the pause request${pauseResult.error ? " (${pauseResult.error})" : ""}, although the read-back shows the requested state." :
+                "Save POST was sent but the read-back did not confirm the new state (name ok: ${nameOk}, pause ok: ${pauseOk}, definition counts ok: ${countsOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
         def hints = []
         if (pauseResult?.success == false) hints << "The pause endpoint reported failure${pauseResult.error ? " (${pauseResult.error})" : ""}."
         hints << "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."

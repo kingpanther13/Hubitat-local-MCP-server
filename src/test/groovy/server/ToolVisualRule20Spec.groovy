@@ -1222,6 +1222,110 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.note.contains('untouched')
     }
 
+    def "a rename WIPES a rule whose ruleJson is empty beside a populated graphDocument"() {
+        given:
+        enableWrite()
+        def graph = script._vrb2Compose(editorDefinition())
+        def state = [name: 'Doc first', ruleJson: '{"version":1,"nodes":[],"edges":[]}', graphDocument: graph]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state.name = b.name; state.ruleJson = b.ruleJson
+            state.graphDocument = new JsonSlurper().parseText(b.ruleJson)
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
+        }
+        hubGet.register('/app/ruleBuilder20Json/843') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson,
+                  graphDocument: state.graphDocument, validationErrors: []])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 843, name: 'Renamed', confirm: true])
+
+        then: 'the reviewer\'s red case, now green: the document the read showed is what went back'
+        graph.nodes.size() > 0
+        new JsonSlurper().parseText(new JsonSlurper().parseText(posts[0].body as String).ruleJson as String).nodes.size() == graph.nodes.size()
+        result.success == true
+        result.verified == true
+        !result.containsKey('definition')
+    }
+
+    def "a rename the hub refuses to pause is not a clean success, even when the read-back matches"() {
+        given: 'the pause endpoint refuses, and the rule already reads paused'
+        enableWrite()
+        def state = [name: 'Before', ruleJson: json(validGraph())]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.name = b.name; state.ruleJson = b.ruleJson; [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/870') { params -> json([name: state.name, rulePaused: true, ruleJson: state.ruleJson, validationErrors: []]) }
+        hubGet.register('/app/ruleBuilderPause/870/true') { params -> '{"success":false,"message":"already paused"}' }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 870, name: 'After', paused: true, confirm: true])
+
+        then:
+        result.success == false
+        result.error.startsWith('Rename failed:')
+        result.error.contains('already paused')
+    }
+
+    def "a rename to the rule's current name that fails its read-back says rename, not pause"() {
+        given: 'the name flips between the pre-write read and the read-back'
+        enableWrite()
+        def reads = 0
+        hubGet.register('/app/ruleBuilder20Json/871') { params ->
+            reads++
+            json([name: reads == 1 ? 'Same' : 'Other', rulePaused: false, ruleJson: json(validGraph()), validationErrors: []])
+        }
+        stubPostJson()
+
+        when:
+        def result = script.toolSetVisualRule([appId: 871, name: 'Same', confirm: true])
+
+        then:
+        posts.isEmpty()
+        result.success == false
+        result.error.startsWith('The rename request was sent')
+    }
+
+    def "a classic edit of a 2.0 rule keeps a newer CONDITION type the rule already uses, even though the translator files it as a trigger"() {
+        given: 'a stored rule the hub accepted with a condition type this build does not know'
+        enableWrite()
+        def stored = script._vrb2Compose([triggers: [[type: 'switch', config: [switches: [1], switchEvent: 'Turns on']]],
+                                          conditions: [[type: 'newFirmwareCondition', config: [switches: [1]]]],
+                                          thenActions: [[type: 'turnOn', config: [switches: [9]]]]])
+        def state = [ruleJson: json(stored)]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.ruleJson = b.ruleJson; [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/872') { params -> json([name: 'Live', rulePaused: false, ruleJson: state.ruleJson, validationErrors: []]) }
+
+        when: 'the same type arrives in a classic whenNode (which can only translate to a trigger)'
+        def result = script.toolSetVisualRule([appId: 872, confirm: true, definition: [
+            whenNodes: [[triggerType: 'switch', switches: [1], deviceIds: [1], switchEvent: 'Turns on', index: 0, type: 'when'],
+                        [triggerType: 'newFirmwareCondition', switches: [1], deviceIds: [1], index: 1, type: 'when']],
+            thenNodes: [[actionType: 'turnOn', switches: [9], deviceIds: [9], index: 0, type: 'then']], elseNodes: []]])
+
+        then: 'the rule uses the name, so the gate lets it through; the per-surface check still holds for graph input'
+        result.success == true
+        result.translatedFrom == 'classic'
+        posts.size() == 1
+    }
+
+    def "a classic body whose only when-row is a placeholder is refused WITH the sentence that explains why"() {
+        given: 'a 2.0 rule, so the classic body is translated (a 1.0 target stores it as-is)'
+        enableWrite()
+        def state = stubGraphChild(873)
+        state.name = 'Live'
+        state.ruleJson = json(validGraph())
+
+        when:
+        script.toolSetVisualRule([appId: 873, confirm: true, definition: [
+            whenNodes: [[triggerType: 'sampleTrigger', deviceIds: [], index: 0, type: 'when']],
+            thenNodes: [[actionType: 'turnOn', switches: [2], deviceIds: [2], index: 0, type: 'then']], elseNodes: []]])
+
+        then: 'the drop is named next to the consequence, and nothing was written'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Dropped 1')
+        e.message.toLowerCase().contains('trigger')
+        posts.isEmpty()
+    }
+
     def "a rename re-posts the ruleJson bytes the hub returned, ahead of its parsed graphDocument"() {
         given: 'ruleJson and graphDocument disagree (a stale parsed view)'
         enableWrite()
@@ -1302,6 +1406,18 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.success == true
         posts.size() == 1
         !new JsonSlurper().parseText(posts[0].body as String).containsKey('rawName')
+        !result.containsKey('preflightWarnings')
+
+        when: 'the fed-back envelope carries a different name and pause flag'
+        def edited = read + [name: 'Other', rulePaused: true]
+        def again = script.toolSetVisualRule([appId: 869, confirm: true, definition: edited])
+
+        then: 'both are ignored -- the top-level arguments govern -- and the response says so'
+        again.success == true
+        new JsonSlurper().parseText(posts[1].body as String).name == 'Hall'
+        new JsonSlurper().parseText(posts[1].body as String).rulePaused == false
+        again.preflightWarnings.any { it.contains("definition.name ('Other') was ignored") }
+        again.preflightWarnings.any { it.contains('definition.rulePaused (true) was ignored') }
     }
 
     // ==================== hub_get_visual_rule: editor + version ====================

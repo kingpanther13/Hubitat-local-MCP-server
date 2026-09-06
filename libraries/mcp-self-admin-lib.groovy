@@ -268,12 +268,12 @@ private Map _validateMcpDeviceScope(scopeValue) {
         // The same inventory as hub_list_devices scope='all' (_fetchAllHubDeviceRecords): the
         // /hub2/devicesList tree unioned with the /hub2/vrb/devices feed where the old
         // capabilities endpoint is gone. Only ids matter here, and capabilities being partial
-        // does not affect validation -- but the ID SET can be partial too: when the tree could not
-        // be read (or answered empty against a populated feed) the inventory is the feed alone,
-        // which may omit devices the picker filters out. That case is flagged idsComplete:false,
-        // and an id it does not contain is "could not validate", never "unknown" -- rejecting off a
-        // knowingly incomplete set would send the operator to hub_list_devices(scope='all'), which
-        // returns the same incomplete set.
+        // does not affect validation -- but the ID SET can be partial too: whenever the two
+        // sources disagree about it (the feed lists a device the tree lacks, the tree could not be
+        // read or answered empty) the inventory is flagged idsComplete:false, and an id it does not
+        // contain is "could not validate", never "unknown" -- rejecting off a knowingly incomplete
+        // set would send the operator to hub_list_devices(scope='all'), which returns the same
+        // incomplete set.
         // isError:true on the failure paths so handleToolsCall hoists them onto the JSON-RPC
         // envelope -- a failed validation that wrote nothing must reach the client AS an error,
         // not a quiet result.

@@ -1,5 +1,6 @@
 {
-  "hub_url": "http://192.168.1.XXX",
+  "_readme": "tests/e2e_test.py is CI-ONLY: it runs inside the Hub E2E (test hub) workflow against the sacrificial test hub and refuses to start anywhere else (Actions runner + cloud-relay base URL + the hub's _TEST_HUB_LEASED_BY variable, no override). Its cleanup sweep deletes every mcp-rm-backup-*.json rollback baseline and forces MCP settings. tests/sdk_conformance_test.py shares this config and may be run locally.",
+  "hub_url": "https://cloud.hubitat.com/api/YOUR_HUB_UUID",
   "app_id": "YOUR_APP_ID",
   "access_token": "YOUR_ACCESS_TOKEN"
 }

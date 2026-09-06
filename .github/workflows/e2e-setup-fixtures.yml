@@ -89,5 +89,20 @@ jobs:
             echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
           } >> "$GITHUB_ENV"
 
+      # The runner refuses any hub that has never been leased for e2e (it reads the
+      # _TEST_HUB_LEASED_BY hub variable the lease protocol writes), so a FRESH hub is leased here
+      # first -- that creates the variable -- and released after, exactly as hub-e2e.yml does.
+      - name: Acquire test hub lease
+        env:
+          MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/lease_acquire.sh "fixtures-${{ github.run_id }}"
+
       - name: Bootstrap permanent fixtures on the test hub
         run: python tests/e2e_test.py --setup-perm-fixtures
+
+      - name: Release test hub lease
+        if: always()
+        env:
+          MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+        run: bash .github/scripts/lease_release.sh "fixtures-${{ github.run_id }}"

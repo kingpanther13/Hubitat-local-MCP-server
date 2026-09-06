@@ -907,6 +907,43 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         !sharedAppStub.settingsStore.containsKey('selectedDevices')
     }
 
+    def "selectedDevices validation declines when the tree answers EMPTY and the feed does not answer at all"() {
+        given: 'correlated degradation: an empty tree, a dead feed, a hub full of real devices'
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> throw new RuntimeException("status code: 504") }
+        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: []]) }
+
+        when:
+        def result = setScope([11])
+
+        then: 'nothing was written and the real device was not called unknown'
+        result.success == false
+        result.isError == true
+        result.error.contains("Could not validate")
+        result.error.contains("cannot be told from a dead endpoint")
+        !sharedAppStub.settingsStore.containsKey('selectedDevices')
+    }
+
+    def "selectedDevices validation declines an unknown id once the feed has PROVED the tree short"() {
+        given: 'the feed lists a device the tree lacks, so the tree cannot vouch for the id set'
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]], [id: 12, label: "Twelve", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
+        }
+
+        when:
+        def result = setScope([13])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains("Could not validate")
+        result.error.contains("omitted 1 device(s)")
+    }
+
     def "selectedDevices validation still accepts an id the feed-alone inventory does carry"() {
         given:
         enableDevModeAndWrite()

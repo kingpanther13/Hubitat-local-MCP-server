@@ -460,9 +460,48 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         when:
         def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
 
-        then:
+        then: 'a shape error, not a fetch error'
         result.success == false
-        result.error?.contains("/hub2/devicesList")
+        result.error?.startsWith("Unexpected /hub2/devicesList response")
+        !result.error?.contains("Failed to fetch")
+    }
+
+    def "an EMPTY /hub2/devicesList with NO feed answer is reported as unvouched, never as an empty hub"() {
+        given: 'nothing alive to contradict the empty tree'
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> throw new RuntimeException("status code: 504") }
+        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: []]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.devices == []
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("cannot be told from a dead endpoint")
+    }
+
+    def "a feed-only device WITHOUT a capabilities list is counted into the note, not credited with capabilities"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 80, label: "Authorized Switch", capabilities: ["Switch"]],
+                               [id: 99, label: "Feed Only, no list"]])
+        }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.devices*.id == ["80", "99"]
+        result.devices.find { it.id == "99" }.capabilities == []
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("1 of them without a capabilities list")
     }
 
     def "scope='all' falls past a vrb feed whose entries carry no capabilities list"() {
@@ -477,9 +516,11 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         when:
         def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
 
-        then: 'a feed that cannot vouch for capabilities is not adopted as the capability source'
+        then: 'a feed that cannot vouch for capabilities is not adopted as the capability source, and did not "omit" anything'
         result.source == "/hub2/devicesList"
         result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("carried no capabilities lists")
+        !result.capabilitiesNote.contains("omitted")
     }
 
     def "scope='all' takes the vrb tier when the capabilities endpoint is gone"() {

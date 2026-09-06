@@ -1929,7 +1929,7 @@ The `tests/` directory contains:
 
 - **`tests/BAT-v2.md`** — Behavior Acceptance Tests (BAT): scripted scenarios for hand-run validation against a live hub. Includes the `wizard_probe` usage docs and the wizard-state regression appendix.
 - **`tests/sandbox_lint.py`** — fast structural lint of the Groovy sandbox patterns (forbidden calls, version-string consistency). Run via `uv run --python 3.12 tests/sandbox_lint.py`.
-- **`tests/e2e_test.py`** — end-to-end smoke test against a live hub. Requires `tests/e2e_config.json` (gitignored). Run via `uv run --python 3.12 --with requests tests/e2e_test.py`.
+- **`tests/e2e_test.py`** — the end-to-end suite. **CI-only**: it runs inside the `Hub E2E (test hub)` workflow against the sacrificial test hub and refuses to start anywhere else (it checks for the Actions runner, the cloud-relay base URL, and the hub's `_TEST_HUB_LEASED_BY` lease variable; there is no override). Never point it at a personal hub: its cleanup sweep deletes every `mcp-rm-backup-*.json` rollback baseline in File Manager and forces MCP settings. To exercise a PR on a personal hub use the MCP tools directly (the scenarios in `tests/BAT-v2.md`). `tests/e2e_config.json` (gitignored) is shared with `tests/sdk_conformance_test.py`, which may be run locally.
 - **`tests/wizard_probe.py`** — systematic Rule Machine wizard-state regression probe. Runs a 25-probe matrix that exercises suspected wizard-state-leak paths, and exposes a `quick_probe()` helper for one-off diagnostic investigation. See the wizard_probe appendix in `tests/BAT-v2.md` for full usage.
 - **Spock unit tests** under `src/test/groovy/` — run via the Gradle wrapper:
 

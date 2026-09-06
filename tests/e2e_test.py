@@ -8663,8 +8663,12 @@ class TestRunner:
                 f"createRoute must name the route that made the rule: {created}"
             if created.get("createRoute") != "createchild":
                 print(f"    hub_set_visual_rule create: made via the legacy route ({created.get('createRoute')})")
-            assert created.get("validationIssues") == [], \
-                f"a clean save answers an EMPTY validationIssues list, and it must survive as one: {created}"
+            # validationIssues is optional on the wire (a pre-2.0 firmware answers without it, and
+            # both emitters gate on presence); when it IS answered, a clean save's list is empty
+            # and must survive as one.
+            if "validationIssues" in created:
+                assert created["validationIssues"] == [], \
+                    f"a clean save answers an EMPTY validationIssues list, and it must survive as one: {created}"
             assert "preflightWarnings" not in created, \
                 f"every type in this definition is in the catalog, so no advisory may be raised: {created}"
 
@@ -12814,7 +12818,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         7. Throwaway bundle + library (mcptest namespace)
         8. Easy Dashboards (tracked + prefix sweep)
         9. File Manager files (prefix sweep, originals then their _backup_ spawn)
+
+        Guarded here as well as in main(): the sweep is the thing that deletes, so the
+        CI-only refusal travels with it no matter who calls it.
         """
+        refuse_unless_ci_test_hub(self.client.hub_url)
+        refuse_unless_leased_test_hub(self.client)
         print("\n--- Cleanup ---")
 
         # Layer 1: tracked artifacts
@@ -13504,30 +13513,58 @@ def _inject_device_id(obj: dict, dev_id: str) -> dict:
     return result
 
 
+TEST_HUB_LEASE_VARIABLE = "_TEST_HUB_LEASED_BY"
+
+
+def _refuse(reasons: list[str]) -> None:
+    print("REFUSED: tests/e2e_test.py runs ONLY in the GitHub Actions e2e job against the sacrificial test hub.")
+    for r in reasons:
+        print(f"  - {r}")
+    print("  Its cleanup sweep deletes every mcp-rm-backup-*.json rollback baseline and forces MCP settings;")
+    print("  on a personal hub that is data loss. Exercise a PR on a personal hub with the MCP tools directly")
+    print("  (the scenarios in tests/BAT-v2.md), never with this harness.")
+    sys.exit(2)
+
+
 def refuse_unless_ci_test_hub(hub_url: str) -> None:
-    """This harness runs in the GitHub Actions e2e job against the SACRIFICIAL test hub and
+    """This runner executes in the GitHub Actions e2e job against the SACRIFICIAL test hub and
     nowhere else. Every invocation -- a single --test, --cleanup-only, --setup-perm-fixtures --
     runs the cleanup sweep and the settings pins, which on any other hub means: every
     mcp-rm-backup-*.json rollback baseline in File Manager deleted, every mcptest-namespace
     throwaway code class deleted, bypassDeviceAllowlist forced ON, enableMandatoryBPS forced OFF,
     maxConcurrentWrites forced to 0, BAT_E2E_-prefixed devices/rules/rooms/dashboards swept.
-    That happened to a personal production hub on 2026-09-05. Two independent tells, both
-    required: the Actions runner's own GITHUB_ACTIONS marker, and the cloud-relay URL shape the
-    CI job always parses MCP_URL into (a LAN address is a personal hub by definition). There is
-    deliberately no override flag."""
+    That happened to a personal production hub on 2026-09-05.
+
+    Two transport tells, both required: the Actions runner's own GITHUB_ACTIONS marker, and the
+    cloud-relay URL shape the CI job parses MCP_URL into (a LAN address is a personal hub by
+    definition). Neither identifies the HUB -- every cloud-enabled hub has that URL shape -- so
+    refuse_unless_leased_test_hub() adds the one tell read from the hub itself. Called from
+    main() and again from TestRunner.cleanup() (so it travels with the thing that deletes); NOT
+    from load_config(), which tests/sdk_conformance_test.py shares and which never sweeps.
+    There is deliberately no override flag."""
     reasons = []
     if os.environ.get("GITHUB_ACTIONS") != "true":
         reasons.append("GITHUB_ACTIONS is not 'true' (not running inside the GitHub Actions e2e job)")
     if not re.match(r"^https://cloud\.hubitat\.com/api/[^/]+$", hub_url or ""):
         reasons.append(f"hub_url {hub_url!r} is not the CI cloud-relay base (https://cloud.hubitat.com/api/<uuid>)")
     if reasons:
-        print("REFUSED: tests/e2e_test.py runs ONLY in the GitHub Actions e2e job against the sacrificial test hub.")
-        for r in reasons:
-            print(f"  - {r}")
-        print("  Its cleanup sweep deletes every mcp-rm-backup-*.json rollback baseline and forces MCP settings;")
-        print("  on a personal hub that is data loss. Test a PR on a personal hub with the MCP tools directly (BAT),")
-        print("  never with this harness.")
-        sys.exit(2)
+        _refuse(reasons)
+
+
+def refuse_unless_leased_test_hub(client: HubitatMcpClient) -> None:
+    """The tell that identifies the hub rather than the transport: the CI lease protocol
+    (.github/scripts/lease_acquire.sh) writes the Hub Variable `_TEST_HUB_LEASED_BY` on the
+    sacrificial hub and nowhere else. A hub without it has never been leased for e2e and is
+    refused; so is a hub whose variable cannot be read (an unreadable hub proves nothing). One
+    read, before the first sweep."""
+    try:
+        got = client.call_tool("hub_manage_variables", {
+            "tool": "hub_get_variable", "args": {"name": TEST_HUB_LEASE_VARIABLE}})
+    except Exception as exc:  # McpToolError 'not found', transport errors: neither proves a leased hub
+        _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} could not be read ({type(exc).__name__}: {str(exc)[:160]}); "
+                 "only the sacrificial test hub carries the e2e lease variable"])
+    if not isinstance(got, dict) or (got.get("name") != TEST_HUB_LEASE_VARIABLE and "value" not in got):
+        _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} is not present on this hub; only the sacrificial test hub carries the e2e lease variable"])
 
 
 def load_config() -> dict:
@@ -13554,7 +13591,6 @@ def load_config() -> dict:
             print(f"  Config file not found: {config_path}")
             print("  Copy e2e_config.example.json to e2e_config.json and fill in values.")
         sys.exit(1)
-    refuse_unless_ci_test_hub(config["hub_url"])
 
     return config
 
@@ -13582,6 +13618,9 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config()
+    # Refused before anything is built: this runner (every mode, --cleanup-only included) sweeps
+    # and pins settings, and it does that on the sacrificial test hub only.
+    refuse_unless_ci_test_hub(config["hub_url"])
     masked_token = config["access_token"][:4] + "..." \
         if len(config["access_token"]) > 4 else "****"
 
@@ -13599,6 +13638,9 @@ def main() -> None:
         access_token=config["access_token"],
         verbose=args.verbose,
     )
+
+    # The hub-side tell, read before the first write of any mode.
+    refuse_unless_leased_test_hub(client)
 
     runner = TestRunner(client, verbose=args.verbose)
 

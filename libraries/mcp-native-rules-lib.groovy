@@ -5020,7 +5020,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
 // The body is intentionally minimal — the server only needs the
 // navigation marker to perform the transition. We don't need to mirror
 // every hidden button input on the source page.
-private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null) {
+private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null, Long reqT0 = null) {
     // For plain page navigation use hrefName="name" + hrefIndex=0. The
     // server treats the marker `_action_href_name|<page>|0` as a generic
     // navigation request.
@@ -5070,7 +5070,8 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         _rmCacheInvalidate(cache, appId)
         if (resp?.data) {
             try {
-                return new groovy.json.JsonSlurper().parseText(resp.data) as Map
+                def navResp = new groovy.json.JsonSlurper().parseText(resp.data) as Map
+                return _rmRecoverEmptyNavRender(appId, targetPage, hrefParams, navResp, reqT0)
             } catch (Exception parseExc) {
                 mcpLog("debug", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} response wasn't JSON (${parseExc.message}) -- caller will plain-fetch the schema")
             }
@@ -5079,6 +5080,41 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         mcpLog("warn", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} POST failed for app ${appId}: ${postExc.message} -- downstream 'X not in schema' errors likely point at this")
     }
     return null
+}
+
+// RM occasionally answers a navigate with an EMPTY render -- a target page carrying no inputs and
+// no hrefs -- that the very next render fills in (observed on a 2.5.1.174 hub: a doActPage with
+// nothing on it, no hub error logged, the same op green on every other run). Reported as-is it
+// reads as "wizard broke", and at the BEFORE site it makes the following navigate click the
+// default link. The nav POST itself is state-committing (it bakes the in-flight action) and is
+// not known to be idempotent, so it is never re-sent: the target page is re-READ once instead.
+// Three cases are reported as-is: a page reached with href params (its schema lives only in the
+// nav response, a GET cannot stand in), a spent time budget, and a re-read that is empty too.
+// A null or non-JSON POST never reaches here -- that is precisely the case where the first
+// request may have landed, and a retry would double-submit.
+private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefParams, Map navResp, Long reqT0) {
+    if (!(navResp?.configPage instanceof Map)) return navResp
+    if (hrefParams != null && !hrefParams.isEmpty()) return navResp
+    def schema = _rmCollectWalkSchema(navResp.configPage as Map, null)
+    if (!schema.inputs.isEmpty() || !schema.hrefs.isEmpty()) return navResp
+    if (_timeBudgetExceeded(reqT0)) {
+        mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; time budget spent, reporting it as-is")
+        return navResp
+    }
+    mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; re-reading it once")
+    pauseExecution(750)
+    try {
+        def reread = _rmFetchConfigJson(appId, targetPage)
+        if (reread?.configPage instanceof Map) {
+            def again = _rmCollectWalkSchema(reread.configPage as Map, null)
+            if (!again.inputs.isEmpty() || !again.hrefs.isEmpty()) {
+                return navResp + [configPage: reread.configPage, navRetried: true]
+            }
+        }
+    } catch (Exception rereadExc) {
+        mcpLog("debug", "rm-native", "navigate -> ${targetPage} re-read failed for app ${appId}: ${rereadExc.message}")
+    }
+    return navResp
 }
 
 // Submit a sub-page back to its parent via _action_previous=Done, carrying
@@ -8640,13 +8676,15 @@ Map _rmWalkStep(Integer appId, Map spec) {
     // fetch through _rmNavigateToPage so state.<paramKey> is set; that
     // call's response IS the page rendered with state in scope.
     def beforeCfg
+    boolean navRetriedBefore = false
     if (hrefContext) {
         def hcName = hrefContext.hrefName?.toString() ?: "name"
         def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
         def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
             (hcParams?.n != null ? (hcParams.n as Integer) : 0)
         def fromPage = hrefContext.fromPage?.toString() ?: page
-        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams)
+        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long)
+        if (navResp?.navRetried == true) navRetriedBefore = true
         beforeCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
     } else {
         beforeCfg = _rmFetchConfigJson(appId, page)
@@ -8661,6 +8699,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
     def beforeTriggerCount = _rmCollectTriggerIndices(appId).size()
 
     def opResult = [:]
+    if (navRetriedBefore) opResult.navRetried = true
     def writtenKey = null
     def writtenValue = null
 
@@ -8799,20 +8838,10 @@ Map _rmWalkStep(Integer appId, Map spec) {
         // schema rendered WITH the href params in scope. Stash it as
         // `navResponseConfigPage` so the AFTER block can use it instead
         // of doing a separate GET that would lose the param state.
-        def navResp = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams)
-        // RM occasionally answers a navigate with an EMPTY render -- a target page carrying no
-        // inputs and no hrefs -- that the very next render fills in (observed on a 2.5.1.174 hub:
-        // a doActPage with nothing on it, no hub error logged, the same op green on every other
-        // run). Reported as-is it reads as "wizard broke", so take one bounded retry after a short
-        // pause; a second empty page IS the answer and flows through unchanged (commitSignal).
-        def navSchema = _rmCollectWalkSchema(navResp?.configPage, null)
-        if (navSchema.inputs.isEmpty() && navSchema.hrefs.isEmpty()) {
-            mcpLog("warn", "rm-native", "walkStep navigate ${page} -> ${target} for app ${appId} rendered an empty page; retrying once")
-            pauseExecution(750)
-            def retry = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams)
-            if (retry?.configPage != null) navResp = retry
-            opResult.navRetried = true
-        }
+        // An empty render is recovered inside _rmNavigateToPage (one re-READ, never a second
+        // POST); navRetried is set only when that substitute render is what the caller sees.
+        def navResp = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams, null, spec?.__reqT0 as Long)
+        if (navResp?.navRetried == true) opResult.navRetried = true
         opResult.navResponseConfigPage = navResp?.configPage
         opResult.navigated = [from: page, to: target, hrefName: hrefName, hrefIndex: hrefIndex, hrefParams: hrefParams]
         // After navigation the schema lives at the target page, not the source.
@@ -8843,7 +8872,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
         def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
             (hcParams?.n != null ? (hcParams.n as Integer) : 0)
         def fromPage = hrefContext.fromPage?.toString() ?: page
-        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams)
+        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long)
+        if (navResp?.navRetried == true) opResult.navRetried = true
         afterCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
     } else {
         afterCfg = _rmFetchConfigJson(appId, page)
