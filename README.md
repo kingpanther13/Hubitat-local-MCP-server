@@ -365,7 +365,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 </details>
 
 <details>
-<summary><b>hub_read_diagnostics</b> (9) — Diagnostics, metrics, memory, radio details (read-only)</summary>
+<summary><b>hub_read_diagnostics</b> (8) — Diagnostics, metrics, memory, radio details (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -550,7 +550,7 @@ Whole-hub backup *creation* is the flat core tool `hub_create_backup`.
 </details>
 
 <details>
-<summary><b>hub_manage_logs</b> (6) — Logs, performance stats, and log configuration</summary>
+<summary><b>hub_manage_logs</b> (5) — Logs, performance stats, and log configuration</summary>
 
 | Tool | Description |
 |------|-------------|

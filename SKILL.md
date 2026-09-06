@@ -112,7 +112,7 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 |---------|-------|--------|
 | `hub_read_apps_code` | 11 | List apps/drivers/libraries/bundles, get source, backups (list/get), device-in-use-by lookup, app config inspection, page-name directory, HPM package state (read-only) |
 | `hub_read_devices` | 5 | List/get devices, device attributes, device events, compatible-device catalog search (read-only) |
-| `hub_read_diagnostics` | 9 | Logs, performance stats, hub jobs, debug logs, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
+| `hub_read_diagnostics` | 8 | Logs, performance stats, hub jobs, debug logs, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
 | `hub_read_files` | 2 | File Manager list + read (read-only) |
 | `hub_read_rooms` | 2 | Room list + get (read-only) |
 | `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, rule local variables, Visual Rules Builder rule list/read (read-only) |
@@ -129,7 +129,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_backup` | 4 | Backup management — list code + whole-hub DB backups, get code-backup source, restore (apps/drivers/rule snapshots), delete whole-hub DB backups (write) |
 | `hub_manage_code` | 10 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library) (write) |
 | `hub_manage_devices` | 9 | Device command/swap/replace/create/update (writes) + list/get devices, attributes, events (reads) |
-| `hub_manage_logs` | 6 | Logs, performance stats, hub jobs, debug tools (read + clear/set-level write) |
+| `hub_manage_logs` | 5 | Logs, performance stats, hub jobs, debug tools (read + clear/set-level write) |
 | `hub_manage_diagnostics` | 7 | Diagnostics, state capture/delete, radio details (zwave/zigbee), memory history, metrics, GC |
 | `hub_manage_files` | 4 | File Manager CRUD |
 | `hub_manage_radio` | 6 | Z-Wave/Zigbee/Matter radio admin — radio details, configure (`hub_set_zwave`/`hub_set_zigbee`), and radio ops incl. Z-Wave network repair (`hub_call_zwave`/`hub_call_zigbee`/`hub_call_matter`); destructive radio ops are in `hub_manage_destructive_ops` |

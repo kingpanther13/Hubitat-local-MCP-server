@@ -29,7 +29,7 @@ import support.ToolSpecBase
  *                           rather than returning null and NPE'ing when the
  *                           server calls app.updateSetting(...). cleanup()
  *                           clears the settingsStore between tests.
- *   - debug-log state    -> state.debugLogs is a plain Map, seeded in given:
+ *   - legacy debug logs  -> state.debugLogs fixtures exercise native-history migration
  *
  * Additional hub_get_logs coverage — this spec complements ToolGetHubLogsSpec
  * with level/source/limit/empty-response/deviceId/appId/truncation cases.
@@ -1739,7 +1739,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolClearDebugLogs --------
 
-    def "hub_delete_debug_logs empties state.debugLogs.entries and reports count"() {
+    def "hub_delete_debug_logs clears MCP history and reports count"() {
         given: 'logLevel=debug so the post-clear confirmation mcpLog write is retained'
         stateMap.debugLogs = [
             entries: [

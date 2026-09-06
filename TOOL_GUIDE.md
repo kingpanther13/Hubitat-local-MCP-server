@@ -12,9 +12,9 @@ As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used 
 
 Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every sub-tool read-only), **`hub_manage_*`** gateways contain at least one write. A read tool may appear in BOTH a `hub_read_*` gateway and a mixed `hub_manage_*` gateway (multi-membership).
 
-**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
+**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (8), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
-**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (5), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 All safety gates are preserved: the Read/Write master gate runs centrally in `executeTool()` and re-applies per sub-tool when a gateway routes back through it, and the destructive `confirm`+backup checks run in the handlers of the destructive write tools.
 

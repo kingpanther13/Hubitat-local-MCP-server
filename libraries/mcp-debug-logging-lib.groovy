@@ -59,9 +59,10 @@ def toolGetDebugLogs(args) {
 
 def toolClearDebugLogs(args) {
     initDebugLogs()
-    def count = clearDebugLogEntries()
-    mcpLog("info", "server", "Debug logs cleared (${count} entries removed)")
-    return [success: true, clearedCount: count]
+    def cleared = clearDebugLogEntries()
+    def detail = cleared.countIncomplete ? "previous entry count unavailable" : "${cleared.clearedCount} entries removed"
+    mcpLog("info", "server", "Debug logs cleared (${detail})")
+    return [success: true] + cleared
 }
 
 def toolSetLogLevel(args) {
@@ -119,7 +120,8 @@ def toolGenerateBugReport(args) {
     def windowMs = ((args.logWindowSeconds == null ? 120 : args.logWindowSeconds) as Integer) * 1000L
 
     initDebugLogs()
-    def allEntries = getDebugLogEntries().findAll { it.level == "error" || it.level == "warn" }
+    def history = getDebugLogReadResult()
+    def allEntries = (history.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
     def anchor = _bugReportResolveAnchor(args, allEntries)
     def scopedLogs = _bugReportScopedLogs(args, allEntries, anchor, windowMs)
     def env = _bugReportEnvironmentSummary(args, privacyMode)
@@ -133,7 +135,8 @@ def toolGenerateBugReport(args) {
         includeRawLogs: includeRawLogs,
         env: env,
         ruleInfo: ruleInfo,
-        scopedLogs: scopedLogs
+        scopedLogs: scopedLogs,
+        logReadError: history.error
     )
 
     def result = [
@@ -150,6 +153,11 @@ def toolGenerateBugReport(args) {
         ],
         instructions: "Click submitUrl — the GitHub issue title is pre-filled. In the issue form, type a short description of what you were doing in the 'What happened' field, then paste the 'report' content into the 'Agent report output' field. If you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, and filenames with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting — public mode is a best-effort assist, not a guarantee."
     ]
+    if (history.error) {
+        result.logs.error = history.error
+        result.logs.relevantCount = null
+        result.logs.otherRecentLogCount = null
+    }
     if (scopedLogs.scoped && !scopedLogs.includedUnrelated && scopedLogs.otherCount > 0) {
         result.logs.hint = "Pass includeUnrelatedRecentLogs=true to include the ${scopedLogs.otherCount} omitted recent log entr${scopedLogs.otherCount == 1 ? 'y' : 'ies'}."
     }
@@ -400,7 +408,9 @@ private String _bugReportBuildMarkdown(Map params) {
 """
     }
     def logSection
-    if (!includeRawLogs) {
+    if (params.logReadError) {
+        logSection = "## Recent Error/Warning Logs\n_MCP log history unavailable. Log counts and evidence could not be recovered; retry after native logging is available._"
+    } else if (!includeRawLogs) {
         def n = relevantLines.size()
         def stand = n > 0 ?
             "_${n} relevant entr${n == 1 ? 'y' : 'ies'} (raw text omitted in public mode — re-run with privacyMode='private' or pass includeRawLogs=true to see them)._" :

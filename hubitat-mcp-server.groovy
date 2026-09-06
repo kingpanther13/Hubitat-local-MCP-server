@@ -6631,8 +6631,17 @@ private List _debugLogSnapshot(Map buffer) {
     return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(buffer.entries.collect { it.entry }))
 }
 
+def getDebugLogReadResult() {
+    try {
+        return [entries: getDebugLogEntries()]
+    } catch (Exception e) {
+        // Diagnostic consumers can still report independent hub and rule information.
+        return [entries: null, error: "MCP log history unavailable: ${e.message ?: e.class.simpleName}".toString()]
+    }
+}
+
 def clearDebugLogEntries() {
-    getDebugLogEntries()
+    def history = getDebugLogReadResult()
     def buffer = initDebugLogs()
     synchronized (buffer) {
         int count = buffer.entries.size()
@@ -6641,7 +6650,12 @@ def clearDebugLogEntries() {
         buffer.generation = generation
         buffer.entries = []
         buffer.hydrated = true
-        return count
+        def result = [clearedCount: history.error ? null : count]
+        if (history.error) {
+            result.countIncomplete = true
+            result.logReadError = history.error
+        }
+        return result
     }
 }
 
