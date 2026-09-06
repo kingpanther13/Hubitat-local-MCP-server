@@ -127,6 +127,22 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.result.content[0].text.contains('response_too_large')
     }
 
+    def "an oversized failing result preserves isError in the too-large envelope"() {
+        given:
+        settingsMap.publishOutputSchemas = true
+        script.metaClass.toolGetHubInfo = { a -> [isError: true, error: 'x' * 130000] }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [:])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        !response.result.containsKey('structuredContent')
+        response.result.content[0].type == 'text'
+        mcpDriver.parseInner(response).response_too_large == true
+    }
+
     def "null tool result on a gateway-routed call blames the failing sub-tool, not the gateway"() {
         given: 'a leaf handler that returns null, reached through its gateway'
         settingsMap.useGateways = true
