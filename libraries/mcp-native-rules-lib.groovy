@@ -5439,6 +5439,121 @@ private Map _rmWithClock(Map spec, Long reqT0) {
     return spec + [__reqT0: reqT0]
 }
 
+// Extracted from _rmAddAction to keep that method under the hub's per-method bytecode budget
+// (ci/groovy24-parse enforces it): every check here refuses a bad spec BEFORE any wizard
+// write, so RM is genuinely untouched on a throw.
+private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleIds) {
+    // Pre-validate device IDs exist on the hub. RM 5.1 silently stores
+    // {<bogusId>: null} for unknown IDs in any device-bearing setting and
+    // the action renders as broken with no execution. Validate the top-
+    // level deviceIds list (used by switch / dimmer / lock / shade /
+    // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
+    _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
+    // Pre-validate a rule-targeting action's target rule id BEFORE any wizard write
+    // (including the selectActions page-init POST below), so a bogus target is
+    // refused with RM genuinely untouched. Capability-gated so only the rule-
+    // targeting subtypes pay the rule-list resolve; validRuleIds is threaded by
+    // bulk callers so a batch resolves the set once.
+    if (_rmSpecTargetsRule(actionSpec)) {
+        _rmValidateRuleTargetExists(cap, actionSpec.ruleIds ?: actionSpec.deviceIds, validRuleIds)
+    }
+    if (actionSpec.events instanceof List) {
+        (actionSpec.events as List).eachWithIndex { ev, evIdx ->
+            if (ev instanceof Map) {
+                _rmValidateDeviceIdsExist("addAction.events[${evIdx}].deviceIds", (ev as Map).deviceIds)
+            }
+        }
+    }
+    if (actionSpec.expression instanceof Map) {
+        def exprConds = (actionSpec.expression as Map).conditions
+        if (exprConds instanceof List) {
+            // Pre-pass: reject nested subExpression at the top level rather than
+            // recursing into a shape the doActPage walker does not yet support. The
+            // walker also rejects subExpression with a targeted message at the first
+            // condition site, but catching it here is cheaper and produces a clearer
+            // error before any wizard write hits the hub (the backup on disk is
+            // already taken by the outer dispatcher at this point; fail-fast here
+            // means RM's wizard state stays untouched). _rmAddRequiredExpression
+            // supports nested subExpression today; _rmAddAction's doActPage walker
+            // is flat-only.
+            exprConds.eachWithIndex { entry, idx ->
+                if (entry instanceof Map && (entry as Map).subExpression != null) {
+                    throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
+                }
+            }
+            // Normalize singular deviceId -> deviceIds before pre-validation **because**
+            // _rmBuildCondition's internal normalization runs too late to protect
+            // _rmValidateDeviceIdsExist; the validator below sees the raw deviceIds list
+            // and would silently skip a singular deviceId.
+            // Flat-only normalization; subExpression is rejected at the pre-pass above --
+            // if that gate is ever relaxed, restore a recursive walk-in here.
+            exprConds.each { entry ->
+                if (!(entry instanceof Map)) return
+                def em = entry as Map
+                if (em.deviceIds == null && em.deviceId != null) {
+                    em.deviceIds = [em.deviceId]
+                }
+            }
+            exprConds.eachWithIndex { c, cIdx ->
+                if (c instanceof Map) {
+                    _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
+                    // compareToDevice reference device: existence-validated up front, before
+                    // the walker opens the slot, so a nonexistent reference id fails loud.
+                    def cm = c as Map
+                    if (cm.compareToDevice instanceof Map && (cm.compareToDevice as Map).deviceId != null) {
+                        _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Extracted from _rmAddAction for the same bytecode budget. Returns the action index RM
+// actually allocated (its high-water mark), falling back to the caller's computed idx.
+private Integer _rmResolveAllocatedActionIdx(Integer appId, Integer idx, Long reqT0) {
+    // Re-read the index RM actually allocated. RM keeps a high-water mark
+    // (state.actNdx) — even after clearActions deletes all actions, the
+    // next "Create New Action" click allocates idx = high_water + 1,
+    // not idx = 1. Verified live: a rule that had actions
+    // 1/2/3 deleted then opens the wizard with actType.4 (not actType.1).
+    // Use the schema's freshly-exposed actType.<N> as ground truth.
+    def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
+    def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
+    def actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+    if (!actTypeField && doActPageCfg?.configPage?.error == null && !_timeBudgetExceeded(reqT0)) {
+        // RM occasionally renders doActPage EMPTY right after the "Create New Action" click
+        // (seen on the CI test hub under load: no actType.<N> in the schema, so every later
+        // write landed not_in_schema and the action came back partial). That is not an error
+        // page -- those carry configPage.error and are reported as they are -- so one re-read
+        // after a short pause; a second empty render flows into the schema-gated writes, which
+        // report it the way they always have.
+        mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
+        pauseExecution(_rmEmptyRenderPauseMs())
+        try {
+            // _rmFetchConfigJson THROWS on an empty body -- the very transient this block exists to
+            // survive -- so a failed re-read degrades to the original read (schema-gated writes then
+            // report it as they always have) instead of failing the add with "app N may not exist".
+            doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
+            doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
+            actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+        } catch (Exception rereadExc) {
+            mcpLog("debug", "rm-native", "addAction: doActPage re-read failed for app ${appId} (${rereadExc.message}); keeping the original read")
+        }
+    }
+    if (actTypeField) {
+        def m = (actTypeField.toString() =~ /^actType\.(\d+)$/)
+        if (m.matches()) {
+            def actualIdx = m[0][1] as Integer
+            if (actualIdx != idx) {
+                mcpLog("info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) -- using ${actualIdx}")
+                idx = actualIdx
+            }
+        }
+    }
+    return idx
+}
+
 Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     // Read the clock only AFTER the shape guard, and only when it is a positive Number: this key
@@ -5511,70 +5626,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
     }
 
-    // Pre-validate device IDs exist on the hub. RM 5.1 silently stores
-    // {<bogusId>: null} for unknown IDs in any device-bearing setting and
-    // the action renders as broken with no execution. Validate the top-
-    // level deviceIds list (used by switch / dimmer / lock / shade /
-    // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
-    _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
-    // Pre-validate a rule-targeting action's target rule id BEFORE any wizard write
-    // (including the selectActions page-init POST below), so a bogus target is
-    // refused with RM genuinely untouched. Capability-gated so only the rule-
-    // targeting subtypes pay the rule-list resolve; validRuleIds is threaded by
-    // bulk callers so a batch resolves the set once.
-    if (_rmSpecTargetsRule(actionSpec)) {
-        _rmValidateRuleTargetExists(cap, actionSpec.ruleIds ?: actionSpec.deviceIds, validRuleIds)
-    }
-    if (actionSpec.events instanceof List) {
-        (actionSpec.events as List).eachWithIndex { ev, evIdx ->
-            if (ev instanceof Map) {
-                _rmValidateDeviceIdsExist("addAction.events[${evIdx}].deviceIds", (ev as Map).deviceIds)
-            }
-        }
-    }
-    if (actionSpec.expression instanceof Map) {
-        def exprConds = (actionSpec.expression as Map).conditions
-        if (exprConds instanceof List) {
-            // Pre-pass: reject nested subExpression at the top level rather than
-            // recursing into a shape the doActPage walker does not yet support. The
-            // walker also rejects subExpression with a targeted message at the first
-            // condition site, but catching it here is cheaper and produces a clearer
-            // error before any wizard write hits the hub (the backup on disk is
-            // already taken by the outer dispatcher at this point; fail-fast here
-            // means RM's wizard state stays untouched). _rmAddRequiredExpression
-            // supports nested subExpression today; _rmAddAction's doActPage walker
-            // is flat-only.
-            exprConds.eachWithIndex { entry, idx ->
-                if (entry instanceof Map && (entry as Map).subExpression != null) {
-                    throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
-                }
-            }
-            // Normalize singular deviceId -> deviceIds before pre-validation **because**
-            // _rmBuildCondition's internal normalization runs too late to protect
-            // _rmValidateDeviceIdsExist; the validator below sees the raw deviceIds list
-            // and would silently skip a singular deviceId.
-            // Flat-only normalization; subExpression is rejected at the pre-pass above --
-            // if that gate is ever relaxed, restore a recursive walk-in here.
-            exprConds.each { entry ->
-                if (!(entry instanceof Map)) return
-                def em = entry as Map
-                if (em.deviceIds == null && em.deviceId != null) {
-                    em.deviceIds = [em.deviceId]
-                }
-            }
-            exprConds.eachWithIndex { c, cIdx ->
-                if (c instanceof Map) {
-                    _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
-                    // compareToDevice reference device: existence-validated up front, before
-                    // the walker opens the slot, so a nonexistent reference id fails loud.
-                    def cm = c as Map
-                    if (cm.compareToDevice instanceof Map && (cm.compareToDevice as Map).deviceId != null) {
-                        _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
-                    }
-                }
-            }
-        }
-    }
+    // Everything that must be refused with RM genuinely untouched, before any wizard write.
+    _rmPrevalidateActionSpec(actionSpec, cap, validRuleIds)
 
     // Initialize state.actNdx if this is the first action on the rule
     // — avoids the doActPage 'startsWith on null' error on empty rules.
@@ -6721,45 +6774,9 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // POSTing — so we mirror the post-concatenation form here.
     _rmClickAppButton(appId, "N", "doActN", "selectActions")
 
-    // Re-read the index RM actually allocated. RM keeps a high-water mark
-    // (state.actNdx) — even after clearActions deletes all actions, the
-    // next "Create New Action" click allocates idx = high_water + 1,
-    // not idx = 1. Verified live: a rule that had actions
-    // 1/2/3 deleted then opens the wizard with actType.4 (not actType.1).
-    // Use the schema's freshly-exposed actType.<N> as ground truth.
-    def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
-    def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
-    def actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
-    if (!actTypeField && doActPageCfg?.configPage?.error == null && !_timeBudgetExceeded(reqT0)) {
-        // RM occasionally renders doActPage EMPTY right after the "Create New Action" click
-        // (seen on the CI test hub under load: no actType.<N> in the schema, so every later
-        // write landed not_in_schema and the action came back partial). That is not an error
-        // page -- those carry configPage.error and are reported as they are -- so one re-read
-        // after a short pause; a second empty render flows into the schema-gated writes, which
-        // report it the way they always have.
-        mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
-        pauseExecution(_rmEmptyRenderPauseMs())
-        try {
-            // _rmFetchConfigJson THROWS on an empty body -- the very transient this block exists to
-            // survive -- so a failed re-read degrades to the original read (schema-gated writes then
-            // report it as they always have) instead of failing the add with "app N may not exist".
-            doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
-            doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
-            actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
-        } catch (Exception rereadExc) {
-            mcpLog("debug", "rm-native", "addAction: doActPage re-read failed for app ${appId} (${rereadExc.message}); keeping the original read")
-        }
-    }
-    if (actTypeField) {
-        def m = (actTypeField.toString() =~ /^actType\.(\d+)$/)
-        if (m.matches()) {
-            def actualIdx = m[0][1] as Integer
-            if (actualIdx != idx) {
-                mcpLog("info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) -- using ${actualIdx}")
-                idx = actualIdx
-            }
-        }
-    }
+    // RM allocates the action index off its own high-water mark, so the slot the wizard just
+    // opened is read back from doActPage rather than assumed.
+    idx = _rmResolveAllocatedActionIdx(appId, idx, reqT0)
 
     // Set actType + actSubType. Each write re-fetches the schema, so the
     // subsequent fields appear as the wizard expands.

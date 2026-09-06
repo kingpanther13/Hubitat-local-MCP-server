@@ -137,7 +137,11 @@ deploy_app_via_watchdog() {
     info=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')
     cur_app=$(printf '%s' "$info" | jq -r '.lastSelfDeploy.appId // empty' 2>/dev/null || true)
     cur_at=$(printf '%s' "$info" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
-    cur_ok=$(printf '%s' "$info" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
+    # Booleans need an explicit map: jq's `//` treats `false` like null, so `// empty` read a
+    # REJECTED deploy as "" and the cur_ok = "false" branch below could never fire -- the loop
+    # spun to its 420s timeout and reported "no fresh success" instead of the hub's verbatim
+    # error. Same bug test_self_deploy_recovery.sh pins for the Groovy-side extraction.
+    cur_ok=$(printf '%s' "$info" | jq -r '.lastSelfDeploy.success | if type=="boolean" then tostring else "" end' 2>/dev/null || true)
     cur_err=$(printf '%s' "$info" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
     if [ "$cur_app" = "$class_id" ] && [ "${cur_at:-0}" -gt "${pre_at:-0}" ] 2>/dev/null; then
       if [ "$cur_ok" = "false" ]; then
