@@ -2221,9 +2221,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         body.version ==~ /\d+\.\d+\.\d+.*/
     }
 
-    def "flat-mode tools/list catalog stays under the hub's 124,000-byte cap (outputSchema stripped)"() {
-        // PR1C strips outputSchema from the flat catalog precisely to keep this
-        // under the hub's 124,000-byte tools/list cap (over it, handleMcpRequest
+    def "flat-mode tools/list catalog stays under the hub's 124,000-byte cap"() {
+        // Keep the catalog under the hub's 124,000-byte tools/list cap (over it, handleMcpRequest
         // returns -32603 and useGateways=false clients see ZERO tools). Pin the
         // budget so a future verbose description / un-stripped field fails loudly
         // here instead of silently on a user's hub.
@@ -2241,48 +2240,16 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         then: 'the flat catalog fits under the cap'
         assert flatBytes < 124000 : "flat tools/list wire response is ${flatBytes} bytes, over the 124,000 cap"
 
-        and: 'the strip + [[FLAT_TRIM]] is load-bearing: the un-stripped defs are materially larger'
+        and: '[[FLAT_TRIM]] is load-bearing: the full definitions are materially larger'
         fullBytes > flatBytes
     }
 
-    def "outputSchema survives JSON serialization in gateway mode; gateway entries carry none"() {
-        // Mirrors the annotations-survive-serialization guard above: outputSchema is
-        // a nested Map of Maps, the kind of payload a JsonOutput/transform regression
-        // would silently drop. With publishOutputSchemas ON (issue #290), assert it lands
-        // on the wire for a base tool, and that gateway entries (which proxy many tools)
-        // carry no single outputSchema. (The default-OFF case is the companion test below.)
+    def "output schemas stay absent from definitions and tools/list with a saved publication toggle"() {
         given:
-        settingsMap.useGateways = true
+        settingsMap.useGateways = gatewayMode
         settingsMap.enableCustomRuleEngine = true
+        settingsMap.enableDeveloperMode = true
         settingsMap.publishOutputSchemas = true
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 71, method: 'tools/list', params: [:]])
-
-        when:
-        script.handleMcpRequest()
-        def response = mcpDriver.parseResponseJson()
-
-        then: 'a flat/base read tool carries its outputSchema through serialization'
-        def info = response.result.tools.find { it.name == 'hub_get_info' }
-        info.outputSchema instanceof Map
-        info.outputSchema.type == 'object'
-        info.outputSchema.properties instanceof Map
-
-        and: 'a gateway entry proxies multiple tools, so it has no single outputSchema'
-        def gw = response.result.tools.find { it.name == 'hub_manage_rooms' }
-        gw != null
-        gw.containsKey('outputSchema') == false
-    }
-
-    def "outputSchema is NOT emitted on tools/list by default (issue #290 regression guard)"() {
-        // Default (publishOutputSchemas OFF): strict clients (e.g. Claude Desktop via the
-        // MCP TypeScript SDK) throw JSON-RPC -32600 when a tool advertises outputSchema but
-        // the result carries no structuredContent. This server returns text only, so by
-        // default NO tools/list entry may carry outputSchema. This pins the #290 fix at the
-        // full handleMcpRequest wire layer (a real client's exact path).
-        given:
-        settingsMap.useGateways = true
-        settingsMap.enableCustomRuleEngine = true
-        // publishOutputSchemas unset => OFF (default)
         mcpDriver.pushBody([jsonrpc: '2.0', id: 72, method: 'tools/list', params: [:]])
 
         when:
@@ -2290,24 +2257,26 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         def response = mcpDriver.parseResponseJson()
 
         then: 'no tool entry advertises outputSchema'
+        def definitions = script.getAllToolDefinitions()
+        !definitions.isEmpty()
+        definitions.every { it.inputSchema && !it.containsKey('outputSchema') }
         response.result.tools.every { !it.containsKey('outputSchema') }
 
         and: 'hub_get_info is present, simply without an outputSchema key'
         def info = response.result.tools.find { it.name == 'hub_get_info' }
         info != null
         info.containsKey('outputSchema') == false
+
+        where:
+        gatewayMode << [true, false]
     }
 
     def "every gateway catalog disclosure stays under the 120,000-byte tools/call cap"() {
-        // The gateway catalog (handleGateway with no toolName) is the canonical home for
-        // the heavy outputSchemas WHEN publishOutputSchemas is on (issue #290), and it is
-        // bounded by the 120,000-byte tools/call cap. Over it, the caller gets a
+        // The gateway catalog is bounded by the 120,000-byte tools/call cap. Over it, the caller gets a
         // response_too_large envelope instead of the catalog and can no longer discover
-        // any tool in that gateway. The largest today (hub_manage_native_rules_and_apps)
-        // is ~76KB; pin all 19 with the toggle ON so the worst case stays guarded.
+        // any tool in that gateway.
         given:
         settingsMap.enableCustomRuleEngine = true
-        settingsMap.publishOutputSchemas = true
 
         when:
         def oversize = script.getGatewayConfig().keySet().findAll { gw ->

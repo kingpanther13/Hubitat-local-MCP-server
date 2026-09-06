@@ -1,6 +1,7 @@
 package server
 
 import support.ToolSpecBase
+import support.TestChildApp
 
 /**
  * Direct-call coverage for the BM25 hub_search_tools path after the PR2c perf change
@@ -14,6 +15,11 @@ import support.ToolSpecBase
  * memo, and the shedding of the legacy atomicState keys an older build left behind.
  */
 class ToolSearchToolsSpec extends ToolSpecBase {
+
+    def setupSpec() {
+        // updated() also sheds retired app settings before invalidating the search caches.
+        appExecutor.getApp() >> new TestChildApp(id: 1L, label: 'MCP')
+    }
 
     private void searchEnabled() {
         settingsMap.useGateways = true

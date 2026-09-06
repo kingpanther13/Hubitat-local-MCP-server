@@ -405,7 +405,7 @@ The two are complements, not duplicates: the schema leg covers shapes the SDK's 
 
 `McpWireSchemaConformanceSpec` drives `handleMcpRequest()` through the normal `mcpDriver` seam and validates what `render(...)` produced — the bytes a client receives — against the vendored schema:
 
-- **legacy (2025-06-18, draft-07):** `initialize` → `InitializeResult` + the `JSONRPCResponse` envelope; `tools/list` → `ListToolsResult` in **both** catalog shapes (gateway and flat) and again with `publishOutputSchemas` ON; `tools/call` → `CallToolResult` on both the success and `isError` paths; `ping` → `EmptyResult`.
+- **legacy (2025-06-18, draft-07):** `initialize` → `InitializeResult` + the `JSONRPCResponse` envelope; `tools/list` → `ListToolsResult` in **both** catalog shapes (gateway and flat); `tools/call` → `CallToolResult` on both the success and `isError` paths; `ping` → `EmptyResult`.
 - **2026-07-28 (2020-12):** modern `tools/list` (`ListToolsResult` *requires* `tools`, `resultType`, `ttlMs`, `cacheScope`) and `tools/call` (`CallToolResult` requires `content` + `resultType` — the `ttlMs`/`cacheScope` cache hints belong to *list* responses, not call results), `server/discover` → `DiscoverResult` (requires `supportedVersions`, `capabilities`, `resultType`, `ttlMs`, `cacheScope`), and the `-32022` / `-32020` / `-32601` rejections against `UnsupportedProtocolVersionError`, `HeaderMismatchError`, and `MethodNotFoundError` + `JSONRPCErrorResponse`.
 
 Two details worth knowing before you edit it:

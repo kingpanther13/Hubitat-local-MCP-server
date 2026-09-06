@@ -11,32 +11,6 @@ def _getAllToolDefinitions_partNativeRM() {
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    rules: [type: "array", description: "Rule Machine rules", items: [type: "object", properties: [
-                        id: [type: "integer", description: "Rule app ID"],
-                        label: [type: "string", description: "Rule label"],
-                        name: [type: "string", description: "Rule name"],
-                        type: [type: "string", description: "Rule type, or null"],
-                        rmVersion: [type: "string", description: "RM version, 4.x or 5.x"],
-                        status: [type: "string", enum: ["active", "paused", "stopped", "disabled", "unknown"], description: "Live status; 'unknown' when the app list was unreadable"],
-                        disabled: [type: "boolean", description: "Rule is disabled (red-X); omitted when status is 'unknown'"],
-                        paused: [type: "boolean", description: "Rule is paused; omitted when status is 'unknown'"],
-                        requiredExpressionFalse: [type: "boolean", description: "Present (true) only when the rule's required expression is currently false, so it won't trigger"]
-                    ]]],
-                    count: [type: "integer", description: "Rules returned"],
-                    total: [type: "integer", description: "Total rules; paginated mode only"],
-                    nextCursor: [type: "string", description: "Cursor; present when more remain"],
-                    ghostsFiltered: [type: "array", description: "RMUtils cache ghost IDs dropped", items: [type: "integer"]],
-                    ghostNote: [type: "string", description: "Present when ghosts were filtered"],
-                    statusNote: [type: "string", description: "Present when the app list was unreadable and rule status is 'unknown'"],
-                    note: [type: "string", description: "Present when RM not detected or informational"],
-                    warning: [type: "string", description: "Present on partial RMUtils failure"],
-                    success: [type: "boolean", description: "Present only on failure/partial paths"],
-                    error: [type: "string", description: "Present on hard failure"]
-                ]
             ]
         ],
         [
@@ -49,23 +23,6 @@ def _getAllToolDefinitions_partNativeRM() {
                     action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."],
                 ],
                 required: ["ruleId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the action succeeded (multi-rule: all succeeded)"],
-                    ruleId: [type: "integer", description: "Rule app ID acted on (present when exactly one)"],
-                    ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs REQUESTED (on a budget-paused batch, remainingRuleIds were not yet acted on). Present on every stop/start call and on all array-form calls."],
-                    rmAction: [type: "string", description: "RM action performed (runRule, runRuleAct, stopRule toggle, stopRule toggle x<N> for a multi-rule batch, noop)"],
-                    results: [type: "array", items: [type: "object"], description: "Per-rule results (multi-rule stop/start only)"],
-                    partial: [type: "boolean", description: "Multi-rule stop/start: some rules actioned, some failed or not yet reached"],
-                    failedRuleIds: [type: "array", items: [type: "integer"], description: "Multi-rule stop/start: ids whose toggle failed"],
-                    remainingRuleIds: [type: "array", items: [type: "integer"], description: "Multi-rule stop/start: ids not yet actioned when the response budget ran out -- re-issue with these"],
-                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
-                    note: [type: "string", description: "Present on no-op or informational"],
-                    error: [type: "string", description: "Present on failure"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -78,21 +35,6 @@ def _getAllToolDefinitions_partNativeRM() {
                     paused: [type: "boolean", description: "true = pause the rule(s); false = resume."]
                 ],
                 required: ["ruleId", "paused"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the pause/resume succeeded"],
-                    ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
-                    ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
-                    paused: [type: "boolean", description: "Applied pause state (true=paused, false=resumed)"],
-                    idsVerified: [type: "boolean", description: "multi-id batches: true = ids existence-checked pre-dispatch; false = check SKIPPED (rule list unverifiable). Absent on single-id calls."],
-                    rmAction: [type: "string", description: "pauseRule or resumeRule"],
-                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
-                    error: [type: "string", description: "Present on failure"],
-                    note: [type: "string", description: "Present on failure"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -105,20 +47,6 @@ def _getAllToolDefinitions_partNativeRM() {
                     value: [type: "boolean", description: "Target value for the rule's Private Boolean."]
                 ],
                 required: ["ruleId", "value"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the set succeeded"],
-                    ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
-                    ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
-                    rmAction: [type: "string", description: "setRuleBooleanTrue or setRuleBooleanFalse"],
-                    idsVerified: [type: "boolean", description: "multi-id batches: true = ids existence-checked pre-dispatch; false = check SKIPPED (rule list unverifiable). Absent on single-id calls."],
-                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
-                    error: [type: "string", description: "Present on failure"],
-                    note: [type: "string", description: "Present on failure"]
-                ],
-                required: ["success"]
             ]
         ],
         // Native classic-app CRUD (hub admin-layer, bypasses SmartApp parent-type check).
@@ -148,35 +76,6 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the create/edit succeeded"],
-                    appId: [type: "integer", description: "App ID created or edited"],
-                    ruleId: [type: ["integer", "null"], description: "on create: the same value as appId, surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null for a non-RM app type; absent on edit."],
-                    buttonRuleId: [type: "integer", description: "buttonRule: appId of the created Button Rule (author its actions via hub_set_rule)"],
-                    controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
-                    appType: [type: "string", description: "create: app type created"],
-                    name: [type: "string", description: "create: requested app label"],
-                    labelApplied: [type: "boolean", description: "create: true when the requested name verifiably became the display label (assumed for rule_machine, read back from the committed page for other appTypes; false when unverifiable -- see note)"],
-                    partialTriggers: [type: "array", description: "create: indices of bundled triggers that failed to fully bake (always empty for this generic tool -- no trigger sugar)", items: [type: "integer"]],
-                    partialActions: [type: "array", description: "create: indices of bundled actions that failed to fully bake (always empty for this generic tool -- no action sugar)", items: [type: "integer"]],
-                    parentAppId: [type: "integer", description: "create: parent app ID"],
-                    statusSummary: [type: "object", description: "create: eventSubscriptions and scheduledJobs counts"],
-                    backup: [type: "object", description: "edit: pre-write backup metadata (backupKey, type, fileName, ...)"],
-                    settingsApplied: [type: "array", description: "edit: settings applied", items: [type: "string"]],
-                    settingsSkipped: [type: "array", description: "edit: settings skipped", items: [type: "string"]],
-                    unknownSettingsWarning: [type: "string", description: "edit: present when unknown settings supplied"],
-                    buttonClicked: [type: "string", description: "edit: button clicked"],
-                    subPageNote: [type: "string", description: "edit: sub-page note"],
-                    health: [type: "object", description: "App health summary"],
-                    partial: [type: "boolean", description: "Partial-success flag"],
-                    repairHints: [type: "array", description: "Suggested fixes", items: [type: "string"]],
-                    note: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Present on failure"],
-                    orphanCleanup: [type: "string", description: "create: present when a failed create's half-built shell was cleaned up"]
-                ]
             ]
         ],
         [
@@ -277,99 +176,6 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
-                    appId: [type: "integer", description: "App ID updated"],
-                    ruleId: [type: ["integer", "null"], description: "create: the same value as appId (a hub_set_rule create is always a rule_machine rule), surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Absent on edit."],
-                    buttonRuleId: [type: "integer", description: "buttonRule: appId of the created Button Rule (author its actions via addAction on this id)"],
-                    controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
-                    backup: [type: "object", description: "Pre-update backup metadata (backupKey, type, fileName, ...)"],
-                    settingsApplied: [type: "array", description: "Settings applied (settings mode)", items: [type: "string"]],
-                    settingsSkipped: [type: "array", description: "Settings skipped ({key, reason} objects; reason codes in hub_get_tool_guide)", items: [type: "object"]],
-                    unknownSettingsWarning: [type: "string", description: "Present when unknown settings supplied"],
-                    subPageNote: [type: "string", description: "Sub-page note"],
-                    buttonClicked: [type: "string", description: "Button clicked (button mode)"],
-                    health: [type: "object", description: "Rule health summary"],
-                    subscriptionSettle: [type: "string", description: "Subscription settle note"],
-                    removedIndex: [type: "integer", description: "removeAction/removeTrigger result index"],
-                    reclicked: [type: "boolean", description: "removeAction/removeTrigger: true when the first delete click silently no-oped and the in-tool verified re-click landed the removal"],
-                    beforeIndices: [type: "array", description: "Indices before edit", items: [type: "integer"]],
-                    afterIndices: [type: "array", description: "Indices after edit", items: [type: "integer"]],
-                    index: [type: "integer", description: "moveAction index"],
-                    direction: [type: "string", description: "moveAction direction"],
-                    beforePosition: [type: "integer", description: "moveAction position before"],
-                    afterPosition: [type: "integer", description: "moveAction position after"],
-                    indicesAfter: [type: "array", description: "Indices after move", items: [type: "integer"]],
-                    partial: [type: "boolean", description: "Bulk add partial flag"],
-                    triggers: [type: "array", description: "Bulk addTriggers results", items: [type: "object"]],
-                    actions: [type: "array", description: "Bulk addActions results", items: [type: "object"]],
-                    updateRuleFailed: [type: "boolean", description: "Trailing updateRule click failed"],
-                    subscriptionsNotLive: [type: "boolean", description: "Subscriptions not live after update"],
-                    updateRuleError: [type: "string", description: "updateRule error detail"],
-                    repairHints: [type: "array", description: "Suggested fixes", items: [type: "string"]],
-                    note: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Present on failure"],
-                    restoreHint: [type: "string", description: "Present on failure"],
-                    wizardStuck: [type: "boolean", description: "Present when wizard is stuck"],
-                    wizardStuckHint: [type: "string", description: "Present when wizardStuck:true; carries the cancelCapab recovery command to close the half-open wizard before the next write"],
-                    removedIndices: [type: "array", description: "replace/clear-all: indices removed", items: [type: "integer"]],
-                    addedActions: [type: "array", description: "replace/clear-all: actions added", items: [type: "object"]],
-                    modifiedIndex: [type: "integer", description: "modifyTrigger/modifyAction: modified index"],
-                    verifiedState: [description: "modifyTrigger: post-edit verified state"],
-                    verificationFetchFailed: [type: "boolean", description: "modifyTrigger/modifyAction: post-edit verification fetch failed"],
-                    newActionIndex: [type: "integer", description: "modifyAction: the rebuilt action's new settings index"],
-                    movesUp: [type: "integer", description: "modifyAction: move-up clicks needed to restore the original position"],
-                    movesDone: [type: "integer", description: "modifyAction: move-up clicks actually applied"],
-                    budgetPaused: [type: "boolean", description: "modifyAction: response budget ran out mid-reposition -- finish with moveAction per the error text, do NOT re-issue modifyAction"],
-                    movesRemaining: [type: "integer", description: "modifyAction: moves still needed (present only when budgetPaused)"],
-                    moveSoftFail: [type: "boolean", description: "modifyAction: a reposition move could not be confirmed (asyncCommitLikely) -- verify order before retrying"],
-                    verifiedTargets: [type: ["array", "null"], items: [type: "string"], description: "modifyAction: post-rebuild readback of the target field"],
-                    idsVerified: [type: "boolean", description: "multi-id batches: true = every id existence-checked pre-dispatch; false = check SKIPPED (rule list unverifiable). Absent on single-id calls."],
-                    removeResult: [type: "object", description: "modifyAction: the delete leg's rich return ({removedIndex, beforeIndices, afterIndices, reclicked})"],
-                    addResult: [type: "object", description: "modifyAction: the re-add leg's full envelope (drill in for settingsSkipped/repairHints on a partial)"],
-                    moveResults: [type: "array", items: [type: "object"], description: "modifyAction: per-move rich returns (inner asyncCommitLikely rides here)"],
-                    spec: [type: "object", description: "modifyAction: the merged addAction spec that was re-added"],
-                    triggerIndex: [type: "integer", description: "addTrigger: new trigger index"],
-                    configPageError: [description: "Config-page read error, when present"],
-                    hubRenderError: [type: "string", description: "addTrigger: hub render error"],
-                    actionIndex: [type: "integer", description: "addAction: new action index"],
-                    capability: [type: "string", description: "addAction: capability"],
-                    action: [type: "string", description: "addAction: action verb"],
-                    actType: [type: "string", description: "addAction: action type"],
-                    actSubType: [type: "string", description: "addAction: action subtype"],
-                    patches: [type: "array", description: "patches: per-patch results", items: [type: "object"]],
-                    patchesNotLive: [type: "boolean", description: "patches: not live after update"],
-                    variable: [type: "object", description: "addLocalVariable: created variable {name, type, value}. removeLocalVariable: {name, deleted} -- no type/value because a deleted variable has neither (the sub-shape differs by operation; the key is shared)."],
-                    variableNotLive: [type: "boolean", description: "addLocalVariable/removeLocalVariable: not live after update (trailing updateRule rejected)"],
-                    conditionIndices: [type: "array", description: "addRequiredExpression/replaceRequiredExpression: condition indices", items: [type: "integer"]],
-                    expressionNotLive: [type: "boolean", description: "addRequiredExpression/replaceRequiredExpression: not live after update"],
-                    requiredExpressionAlreadyExists: [type: "boolean", description: "addRequiredExpression: the rule already has a Required Expression (success:false with actionable error); to change it use replaceRequiredExpression"],
-                    requiredExpressionReplaced: [type: "boolean", description: "replaceRequiredExpression: true = a new Required Expression was COMMITTED and finalized live. false when the rebuild failed OR the trailing updateRule was rejected -- a rejected updateRule auto-restores the pre-op backup (see requiredExpressionRestored), it does NOT leave a committed-but-not-live RE"],
-                    requiredExpressionMissing: [type: "boolean", description: "replaceRequiredExpression: no committed Required Expression to replace (success:false, RE intact); use addRequiredExpression to add one"],
-                    requiredExpressionRestored: [type: "boolean", description: "replaceRequiredExpression: post-delete rebuild failed; true = original Required Expression auto-restored in place from backup, false = NOT recovered in place (check requiredExpressionRestoredAs, else manual hub_restore_backup needed)"],
-                    requiredExpressionRestoredAs: [type: "integer", description: "replaceRequiredExpression: present when auto-restore could not reuse the original appId and recreated the rule under this NEW id -- the original appId is dead; use this id and delete the husk"],
-                    wizardDoneAutoRetry: [type: "boolean", description: "settings/button: wizard-done auto-retry fired"],
-                    warning: [type: "string", description: "Non-fatal warning"],
-                    asyncCommitLikely: [type: "boolean", description: "clearActions/replaceActions/moveAction: the operation could not be confirmed within the verify window -- verify before retrying (always paired with success:false)"],
-                    httpWriteStatus: [description: "clearActions: HTTP write status"],
-                    actionsRequestedForRemoval: [type: "integer", description: "clearActions: actions requested for removal"],
-                    actionsStillPresent: [type: "integer", description: "clearActions: actions still present after"],
-                    possibleStateEditAct: [description: "clearActions: possible state-edit action"],
-                    verifyHint: [type: "string", description: "clearActions/replaceActions/moveAction/modifyAction: human-readable verify-before-retry guidance for an unconfirmed async commit"],
-                    safeRecovery: [type: "object", description: "clearActions: safe-recovery guidance"],
-                    partialTriggers: [type: "array", description: "create: indices of bundled triggers that failed to fully bake", items: [type: "integer"]],
-                    partialActions: [type: "array", description: "create: indices of bundled actions that failed to fully bake", items: [type: "integer"]],
-                    requiredExpression: [type: "object", description: "create: outcome of a bundled addRequiredExpression (success/partial/error + conditionIndices/settingsSkipped); present only when addRequiredExpression was passed on CREATE"],
-                    appType: [type: "string", description: "create: app type created (rule_machine)"],
-                    name: [type: "string", description: "create: rule label"],
-                    labelApplied: [type: "boolean", description: "create: true when the requested name verifiably became the display label (assumed for rule_machine, read back for other appTypes)"],
-                    parentAppId: [type: "integer", description: "create: parent (Rule Machine) app ID"],
-                    statusSummary: [type: "object", description: "create: eventSubscriptions and scheduledJobs counts"],
-                    orphanCleanup: [type: "string", description: "create: present when a failed create's half-built shell was cleaned up"]
-                ]
             ]
         ],
         [
@@ -382,32 +188,6 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     source: [type: "string", enum: ["auto", "ruleBuilderJson", "configPage"], description: "Which source(s) to read; default auto."]
                 ],
                 required: ["appId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    ok: [type: "boolean", description: "True when no issues found. False covers TWO states: checked-and-broken (unreadable=false) and couldn't-check (unreadable=true)."],
-                    unreadable: [type: "boolean", description: "True when NEITHER source could be read (transient fetch failure, or the app does not exist) -- a couldn't-check verdict with no evidence either way, never proof of breakage. Always present."],
-                    checkErrors: [type: "array", items: [type: "string"], description: "Half-checked marker: read failures of ONE source while the other read clean (e.g. 'configPage read failed: ...'). Diagnostics only -- ok reflects what WAS read; re-run hub_get_rule_health for a full verdict. Always present (empty when both sources read)."],
-                    broken: [type: "boolean", description: "Authoritative compiled-state broken verdict (RM `broken`, or graph VRB validationErrors non-empty); null when no boolean applies. Disambiguate via ruleFormat: null+ruleFormat='vrb-classic'/'basic-rule'/'button-controller'/'classic-app' is a healthy rule with no compiled boolean; null+ruleFormat=null means undetermined (source unavailable / read failed)."],
-                    source: [type: "string", description: "Which source(s) contributed: 'ruleBuilderJson', 'ruleBuilder20Json', 'configPage', a '+'-join, or 'none'"],
-                    ruleFormat: [type: "string", description: "What was inspected: 'rm', 'vrb-graph', 'vrb-classic', 'basic-rule', 'button-controller', 'classic-app' (other classic apps via configPage), or null when unrecognized"],
-                    label: [type: "string", description: "Rule label (RM); null when the JSON-only path answered (HTML scan skipped)"],
-                    configPageError: [type: "string", description: "Config page error; null when none"],
-                    brokenMarkers: [type: "array", description: "Broken Trigger/Action/Condition markers from the HTML render; always present, empty when none", items: [type: "string"]],
-                    brokenMarkerCounts: [type: "object", description: "Per-marker occurrence count in the current render -- key is the marker string (e.g. **Broken Condition**), value is how many times it appears. The replace restore gate uses a count increase to detect a genuinely-new broken instance when the same marker already existed in the baseline."],
-                    multipleFlagPoison: [type: "array", description: "Poisoned setting names; always present, empty when none", items: [type: "string"]],
-                    structuralIssues: [type: "array", description: "Structural issues; always present, empty when none", items: [type: "string"]],
-                    validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
-                    predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
-                    paused: [type: ["boolean", "null"], description: "Rule is paused (the label's (Paused) decoration); null when the label was unreadable."],
-                    disabled: [type: ["boolean", "null"], description: "Rule is disabled (red-X); null when the app config was unreadable."],
-                    stopped: [type: ["boolean", "null"], description: "True when the rule is runtime-STOPPED (hub_call_rule action='stop'). The AUTHORITATIVE stopped check -- hub_list_rules' cheap sources cannot see this state. Null only when BOTH sources are unreadable: the label carries no stop markup AND the runtime status could not be read."],
-                    eventSubscriptionCount: [type: ["integer", "null"], description: "Live event subscription count from statusJson; 0 when the rule has none live (schedule-only and STOPPED rules read 0), null only when the runtime status could not be read."],
-                    scheduledJobCount: [type: ["integer", "null"], description: "Live scheduled job count from statusJson; 0 when none live, null only when the runtime status could not be read."],
-                    issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
-                ],
-                required: ["ok"]
             ]
         ],
         [
@@ -419,19 +199,6 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     appId: [type: "integer", description: "The Rule Machine rule's installed-app id (the rule whose local variables to list)."]
                 ],
                 required: ["appId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "The rule id queried"],
-                    localVariables: [type: "array", description: "The rule's local variables; empty when the rule has none", items: [type: "object", properties: [
-                        name: [type: "string", description: "Local variable name (use as %name% in actions/expressions)"],
-                        type: [type: "string", description: "Internal type token as RM stores it (integer/bigdecimal/string/boolean/datetime)"],
-                        value: [description: "Current value"]
-                    ]]],
-                    total: [type: "integer", description: "Number of local variables"]
-                ],
-                required: ["appId", "localVariables", "total"]
             ]
         ],
         [
@@ -449,19 +216,6 @@ Requires Write master + confirm=true + recent hub backup.""",
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["appId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the delete succeeded"],
-                    appId: [type: "integer", description: "App ID"],
-                    mode: [type: "string", description: "delete or forcedelete"],
-                    backup: [type: "object", description: "Pre-delete backup metadata"],
-                    hubMessage: [type: "string", description: "Present when hub refused soft delete"],
-                    note: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Present on exception"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -474,18 +228,6 @@ Requires Write master + confirm=true + recent hub backup.""",
                     disabled: [type: "boolean", description: "true = disable the app (stop it running), false = enable it."]
                 ],
                 required: ["appId", "disabled"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the disabled flag now matches the requested value (read-back verified)"],
-                    appId: [type: "integer", description: "App ID"],
-                    disabled: [type: "boolean", description: "The app's disabled flag after the call"],
-                    message: [type: "string", description: "Human-readable result on success"],
-                    error: [type: "string", description: "Present on failure"],
-                    note: [type: "string", description: "Recovery guidance on failure"]
-                ],
-                required: ["success"]
             ]
         ],
     ]
@@ -4781,9 +4523,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
                     : (!fieldMismatches.isEmpty() && verifiedTargets != null && verifiedTargets.sort(false) == expectedTargets
                         ? "modifyAction: the target list landed but the rebuilt action's field(s) did not: ${fieldMismatches.join('; ')}. Restore the pre-write snapshot (backup on the outer envelope) or repair via removeAction + addAction."
                         : "modifyAction: the rebuilt action's ${entry.listField}.${newIdx} reads ${verifiedTargets?.inspect() ?: 'absent'} instead of ${expectedTargets.inspect()}${fieldMismatches ? ' (also: ' + fieldMismatches.join('; ') + ')' : ''} -- the target did not land. Restore the pre-write snapshot (backup on the outer envelope) or re-issue addAction with the echoed spec.")))]
-    // A success shape carries no error/verifyHint/movesRemaining keys at all --
-    // null values against non-nullable outputSchema declarations are the
-    // issue-#342 rejection class when publishOutputSchemas is on.
+    // A success shape carries no error/verifyHint/movesRemaining keys at all.
     return out.findAll { k, v -> v != null }
 }
 
@@ -10225,7 +9965,7 @@ def _createNativeAppShell(args) {
         // hub_set_rule_paused, hub_set_rule_private_boolean) take ruleId, so surface it explicitly under
         // that name too so an agent can chain a create straight into them without re-deriving it. Only
         // rule_machine apps get the real id; a non-RM classic app has none, so it is surfaced as an
-        // explicit null to keep the field present for strict output-schema validators.
+        // explicit null to preserve the same response shape across app types.
         if (appType == "rule_machine") {
             result.ruleId = newId
         } else {
@@ -10251,10 +9991,7 @@ def _createNativeAppShell(args) {
         if (actionSpecs) result.actions = actionResults
         if (reSpec != null) {
             result.requiredExpression = reResult
-            // Lift the RE outcome fields top-level. The outputSchema declares
-            // requiredExpressionAlreadyExists / expressionNotLive / updateRuleFailed /
-            // updateRuleError at the top level and the _applyNativeAppEdit edit arm
-            // surfaces them there, so don't bury them under requiredExpression on create.
+            // Match the edit arm's top-level RE outcome fields on create.
             if (reResult?.requiredExpressionAlreadyExists) result.requiredExpressionAlreadyExists = true
             if (reResult?.expressionNotLive) result.expressionNotLive = true
             if (reResult?.updateRuleFailed) result.updateRuleFailed = true
@@ -13876,9 +13613,7 @@ def _applyNativeAppEdit(args) {
                 ? "Action ${modifyActionSpec.index} rebuilt (remove + re-add + reposition); updateRule fired once; new target verified by readback. The action's settings index changed to ${maResult?.newActionIndex}; its position in the rule is unchanged."
                 : "modifyAction did NOT complete cleanly -- see error/repairHints. The original action ${modifyActionSpec.index} was removed; the rebuilt action is index ${maResult?.newActionIndex}."
         ]
-        // Null-valued keys are omitted, not shipped: with publishOutputSchemas on,
-        // a null against a non-nullable declaration is the issue-#342 rejection
-        // class (error/restoreHint/verifyHint/updateRuleError on the success shape).
+        // Omit error/restoreHint/verifyHint/updateRuleError on the success shape.
         return maOut.findAll { k, v -> v != null }
     }
 

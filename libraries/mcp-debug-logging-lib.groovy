@@ -262,11 +262,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         // Tool-surface shape the client sees on tools/list: gateway (hub_manage_*/hub_read_*
         // consolidation, the default) vs flat (every tool advertised individually). A client's
         // failure mode can differ by mode, so a bug report must carry it.
-        // outputSchemasPublished reports whether schemas are ACTUALLY advertised, not just
-        // the toggle: flat mode never emits outputSchema, so toggle-ON + flat is still
-        // "not advertised" (schema advertising is a known client-visible failure class).
         toolMode: (settings.useGateways == false) ? "flat" : "gateway",
-        outputSchemasPublished: (settings.publishOutputSchemas == true && settings.useGateways != false),
         customMcpRuleCount: getChildApps()?.size() ?: 0,
         nativeRm: _bugReportNativeRmStatus(),
         deviceCount: selectedDevices?.size() ?: 0,
@@ -435,7 +431,7 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Hub firmware:** ${env.hubFirmware}
 - **Time zone:** ${env.timeZone}
 - **MCP log level:** ${env.logLevel}
-- **Tool mode:** ${env.toolMode}${env.outputSchemasPublished ? ' (outputSchemas advertised on tools/list)' : ''}
+- **Tool mode:** ${env.toolMode}
 - **Rules in legacy custom rule engine:** ${env.customMcpRuleCount}
 - ${env.nativeRm.installed == false ? "**Native Rule Machine:** not installed (Rule Machine not detected on this hub)" : "**Native Rule Machine rules:** ${env.nativeRm.count}${env.nativeRm.error ? ' (RMUtils partial failure — count may be inaccurate)' : ''}"}
 - **Devices exposed to MCP:** ${env.deviceCount}
@@ -479,47 +475,12 @@ def _getAllToolDefinitions_partDebugLogging() {
                     ruleId: [type: "string", description: "logs mode: filter by specific rule ID"],
                     cursor: [type: "string", description: "logs mode: opt-in pagination cursor.[[FLAT_TRIM]] Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    entries: [type: "array", description: "logs mode: stored log entries", items: [type: "object", properties: [
-                        timestamp: [type: "integer", description: "Epoch millis"],
-                        time: [type: "string", description: "Formatted timestamp"],
-                        level: [type: "string", description: "Log level"],
-                        component: [type: "string", description: "Source component"],
-                        message: [type: "string", description: "Log message"],
-                        ruleId: [type: "string", description: "Associated rule ID, when present"],
-                        ruleName: [type: "string", description: "Associated rule name, when present"]
-                    ]]],
-                    count: [type: "integer", description: "logs mode: entries on this page"],
-                    totalStored: [type: "integer", description: "logs mode: total entries stored"],
-                    maxEntries: [type: "integer", description: "Buffer capacity"],
-                    currentLogLevel: [type: "string", description: "Current minimum log level"],
-                    total: [type: "integer", description: "logs mode: filtered total; present in cursor mode"],
-                    nextCursor: [type: "string", description: "logs mode: present when more results remain"],
-                    version: [type: "string", description: "status mode: app version"],
-                    availableLevels: [type: "array", description: "status mode: valid log levels", items: [type: "string"]],
-                    totalEntries: [type: "integer", description: "status mode: total entries stored"],
-                    entriesByLevel: [type: "object", description: "status mode: per-severity counts"],
-                    oldestEntry: [type: "string", description: "status mode: oldest entry timestamp"],
-                    newestEntry: [type: "string", description: "status mode: newest entry timestamp"],
-                    updateAvailable: [type: "string", description: "Newer version, when one exists"]
-                ]
             ]
         ],
         [
             name: "hub_delete_debug_logs",
             description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs).[[FLAT_TRIM]] Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
-            inputSchema: [type: "object", properties: [:]],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the clear succeeded"],
-                    clearedCount: [type: "integer", description: "Number of entries removed"]
-                ],
-                required: ["success", "clearedCount"]
-            ]
+            inputSchema: [type: "object", properties: [:]]
         ],
         [
             name: "hub_set_log_level",
@@ -530,15 +491,6 @@ def _getAllToolDefinitions_partDebugLogging() {
                     level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
                 ],
                 required: ["level"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the level was set"],
-                    previousLevel: [type: "string", description: "Log level before the change"],
-                    newLevel: [type: "string", description: "Log level after the change"]
-                ],
-                required: ["success", "previousLevel", "newLevel"]
             ]
         ],
         [
@@ -562,26 +514,6 @@ def _getAllToolDefinitions_partDebugLogging() {
                     logWindowSeconds: [type: "integer", description: "Default 120."]
                 ],
                 required: ["title", "expected", "actual"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the report was generated"],
-                    issueType: [type: "string", description: "Normalized issue type (bug/enhancement/agent_behavior)"],
-                    privacyMode: [type: "string", description: "Resolved privacy mode (private/public)"],
-                    suggestedTitle: [type: "string", description: "Pre-filled GitHub issue title"],
-                    submitUrl: [type: "string", description: "Prefilled GitHub issue link to open"],
-                    report: [type: "string", description: "Markdown issue report body to paste into the form"],
-                    logs: [type: "object", description: "Scoped log summary", properties: [
-                        scoped: [type: "boolean", description: "Whether logs were narrowed to a context anchor"],
-                        relevantCount: [type: "integer", description: "Count of context-relevant log entries"],
-                        otherRecentLogCount: [type: "integer", description: "Count of omitted unrelated recent entries"],
-                        hint: [type: "string", description: "Guidance to include omitted entries, when applicable"]
-                    ]],
-                    instructions: [type: "string", description: "How to submit the report"],
-                    updateAvailable: [type: "string", description: "Latest available version, present when an update exists"]
-                ],
-                required: ["success", "submitUrl", "report"]
             ]
         ],
     ]

@@ -1896,6 +1896,8 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
+        assert all("outputSchema" not in t for t in tools), \
+            "tools/list advertises a removed outputSchema"
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
@@ -5030,7 +5032,7 @@ class TestRunner:
                 assert res.get("success") is False, \
                     f"a failed row must make the envelope unsuccessful: {res}"
                 # partial means SOME actioned and some not -- an all-failed batch is a
-                # failure, not a partial one, matching the leaf and the outputSchema.
+                # failure, not a partial one, matching the leaf result.
                 assert res.get("partial") is (len(failed) < len(results)), \
                     f"partial must mean some-actioned-some-not, not merely any-failure: {res}"
                 assert sorted(str(x) for x in (res.get("failedRuleIds") or [])) == \
@@ -12379,15 +12381,16 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                      if not isinstance(t.get("name"), str) or not isinstance(t.get("inputSchema"), dict)]
         assert not malformed, \
             f"legacy catalog entries missing the spec-required name/inputSchema pair: {malformed}"
-        # publishOutputSchemas is OFF for the run, so nothing advertises an outputSchema --
-        # and an advertised one would OBLIGE the server to return structuredContent on every
-        # result of that tool, which spec-validating legacy clients enforce (issue #342).
+        # Output-schema publication has been removed in both protocol eras.
         with_schema = [t.get("name") for t in tools if "outputSchema" in t]
         assert not with_schema, f"legacy catalog advertises outputSchema on: {with_schema}"
         # One catalog, both eras. Pinned against the live modern list rather than a count so
         # a tool added, renamed, or hidden cannot drift the two surfaces apart unnoticed.
         legacy_names = {t.get("name") for t in tools}
-        modern_names = {t.get("name") for t in self.client.list_tools().get("tools", [])}
+        modern_tools = self.client.list_tools().get("tools", [])
+        assert all("outputSchema" not in t for t in modern_tools), \
+            "modern catalog advertises a removed outputSchema"
+        modern_names = {t.get("name") for t in modern_tools}
         assert legacy_names == modern_names, \
             ("the legacy and modern catalogs disagree: "
              f"legacy-only={sorted(legacy_names - modern_names)}, "

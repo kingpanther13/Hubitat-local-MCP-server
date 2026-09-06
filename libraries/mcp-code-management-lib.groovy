@@ -2658,31 +2658,6 @@ def _getAllToolDefinitions_partCodeManagement() {
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    apps: [type: "array", description: "App entries (shape depends on scope)", items: [type: "object", properties: [
-                        id: [description: "App ID"],
-                        name: [type: "string", description: "App name"],
-                        type: [type: "string", description: "App type (scope='instances'); 'MCP Rule' on the fallback path"],
-                        disabled: [type: "boolean", description: "scope='instances': app is paused/disabled"],
-                        user: [type: "boolean", description: "scope='instances': true=user Groovy app, false=built-in"],
-                        hidden: [type: "boolean", description: "scope='instances': app is hidden"],
-                        parentId: [description: "scope='instances': parent app ID, null at top level"],
-                        hasChildren: [type: "boolean", description: "scope='instances': app has child apps"],
-                        childCount: [type: "integer", description: "scope='instances': number of child apps"]
-                    ]]],
-                    count: [type: "integer", description: "Apps returned"],
-                    filter: [type: "string", description: "scope='instances': filter applied"],
-                    totalOnHub: [type: "integer", description: "scope='instances': total apps before filtering"],
-                    source: [type: "string", description: "scope='types': hub_api / hub_api_raw / mcp_only"],
-                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
-                    rawResponse: [type: "string", description: "scope='types': raw body when response was not JSON"],
-                    total: [type: "integer", description: "Total matched (present when paginating)"],
-                    nextCursor: [type: "string", description: "Present when more results remain"]
-                ],
-                required: ["apps"]
             ]
         ],
         [
@@ -2694,20 +2669,6 @@ def _getAllToolDefinitions_partCodeManagement() {
                     include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    drivers: [type: "array", description: "Driver entries. For include='user', the raw hub entries; for include='all', {id, name, namespace, bucket} per driver type.", items: [type: "object"]],
-                    count: [type: "integer", description: "Drivers returned"],
-                    include: [type: "string", description: "Scope applied: user | all"],
-                    source: [type: "string", description: "hub_api / hub_api_raw / unavailable"],
-                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
-                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
-                    total: [type: "integer", description: "Total matched (present when paginating)"],
-                    nextCursor: [type: "string", description: "Present when more results remain"]
-                ],
-                required: ["drivers"]
             ]
         ],
         [
@@ -2718,19 +2679,6 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    libraries: [type: "array", description: "Installed library summaries (id, name, namespace, version)", items: [type: "object"]],
-                    count: [type: "integer", description: "Libraries returned"],
-                    source: [type: "string", description: "hub_api / hub_api_raw / unavailable"],
-                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
-                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
-                    total: [type: "integer", description: "Total matched (present when paginating)"],
-                    nextCursor: [type: "string", description: "Present when more results remain"]
-                ],
-                required: ["libraries"]
             ]
         ],
         // Hub Admin App/Driver Source Read Tools
@@ -2746,31 +2694,6 @@ def _getAllToolDefinitions_partCodeManagement() {
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
                 required: ["type", "id"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the source was read"],
-                    appId: [description: "App ID (type='app')"],
-                    driverId: [description: "Driver ID (type='driver')"],
-                    libraryId: [description: "Library ID (type='library')"],
-                    source: [type: "string", description: "Source chunk for the requested offset/length"],
-                    version: [description: "Item version"],
-                    status: [type: "string", description: "Hub status field (app/driver)"],
-                    name: [type: "string", description: "Library name (type='library')"],
-                    namespace: [type: "string", description: "Library namespace (type='library')"],
-                    totalLength: [type: "integer", description: "Total source length in chars"],
-                    offset: [type: "integer", description: "Start offset of this chunk"],
-                    chunkLength: [type: "integer", description: "Chars returned in this chunk"],
-                    hasMore: [type: "boolean", description: "More chunks remain"],
-                    nextOffset: [type: "integer", description: "Offset for next chunk; present when hasMore"],
-                    remainingChars: [type: "integer", description: "Chars left; present when hasMore"],
-                    hint: [type: "string", description: "Next-chunk guidance; present when hasMore"],
-                    sourceFile: [type: "string", description: "File Manager filename full source was auto-saved to (large sources)"],
-                    sourceFileHint: [type: "string", description: "Guidance for using sourceFile mode; present with sourceFile"],
-                    sourceFileError: [type: "string", description: "Present (library) when auto-save to File Manager failed"]
-                ],
-                required: ["success"]
             ]
         ],
         // Hub Admin App/Driver Management Write Tools
@@ -2799,28 +2722,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the install/instantiation succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    appId: [description: "New app code ID (code-install mode)"],
-                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl"],
-                    sourceLength: [type: "integer", description: "Chars of source installed"],
-                    verified: [type: "boolean", description: "Whether post-install compile verification passed"],
-                    verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
-                    codeAppId: [description: "installAsUserApp mode: source code app ID"],
-                    instanceAppId: [description: "installAsUserApp mode: new running instance ID"],
-                    committed: [type: "boolean", description: "installAsUserApp mode: whether the install was committed (Done submitted AND the instance reads app.installed=true). false means an inert shell was left behind -- delete it and retry"],
-                    installedConfirmed: [type: "boolean", description: "installAsUserApp mode: the committed instance's app.installed flag was independently re-read as true (false here with committed=true means the confirmation read failed -- see note)"],
-                    scheduledJobCount: [type: "integer", description: "installAsUserApp mode: scheduled jobs registered by initialize() (evidence the install committed)"],
-                    eventSubscriptionCount: [type: "integer", description: "installAsUserApp mode: event subscriptions registered by initialize()"],
-                    mode: [type: "string", description: "installAsUserApp mode marker"],
-                    note: [type: "string", description: "Recovery/source-mode guidance"],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -2855,31 +2756,6 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the install (or all bulk installs) succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    driverId: [description: "New driver code ID (single-driver mode)"],
-                    sourceMode: [type: "string", description: "Source mode used (single-driver mode)"],
-                    sourceLength: [type: "integer", description: "Chars installed (single-driver mode)"],
-                    verified: [type: "boolean", description: "Post-install verification passed (single-driver mode)"],
-                    verifyError: [type: "string", description: "Verification fetch error (single-driver mode)"],
-                    note: [type: "string", description: "Recovery/source-mode guidance"],
-                    installs: [type: "array", description: "Per-driver results (bulk mode)", items: [type: "object", properties: [
-                        driverId: [description: "Driver code ID, null if it failed"],
-                        success: [type: "boolean", description: "Whether this driver installed"],
-                        sourceMode: [type: "string", description: "Source mode used"],
-                        sourceLength: [type: "integer", description: "Chars installed"],
-                        verified: [type: "boolean", description: "Verification passed"],
-                        verifyError: [type: "string", description: "Verification fetch error"],
-                        error: [type: "string", description: "Failure reason; present when success=false"],
-                        note: [type: "string", description: "Per-item guidance"]
-                    ]]],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -2909,28 +2785,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["appId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the update succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    appId: [description: "App ID updated"],
-                    previousVersion: [description: "Version prior to the update"],
-                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl / resave"],
-                    sourceLength: [type: "integer", description: "Chars written"],
-                    note: [type: "string", description: "Source-mode / recovery guidance"],
-                    triggerUpdated: [description: "Instance appId updated() was fired on; present when requested"],
-                    updatedFired: [type: "boolean", description: "Whether updated() fired on the instance"],
-                    partial: [type: "boolean", description: "Code saved but a follow-on leg failed -- the OAuth update, or the opt-in lifecycle refresh"],
-                    repairHints: [type: "array", description: "Recovery steps; present on partial/lifecycle failure", items: [type: "string"]],
-                    expectedVersion: [type: "integer", description: "Optimistic-lock expected version; present on conflict"],
-                    currentVersion: [type: "integer", description: "Hub's actual version; present on conflict"],
-                    conflict: [type: "boolean", description: "True when an optimistic-lock conflict aborted the update"],
-                    oauth: [type: "object", description: "OAuth update result; present when the oauth arg was supplied. {success, enabled, clientId, clientSecret}. clientId/clientSecret are the resulting (possibly hub-generated) credentials."],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -2972,34 +2826,6 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the update (or all bulk updates) succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    driverId: [description: "Driver ID updated (single-driver mode)"],
-                    previousVersion: [description: "Version prior to the update (single-driver mode)"],
-                    sourceMode: [type: "string", description: "Source mode used (single-driver mode)"],
-                    sourceLength: [type: "integer", description: "Chars written (single-driver mode)"],
-                    note: [type: "string", description: "Source-mode / recovery guidance"],
-                    conflict: [type: "boolean", description: "Optimistic-lock conflict aborted the update (single-driver mode)"],
-                    expectedVersion: [type: "integer", description: "Expected version on conflict (single-driver mode)"],
-                    currentVersion: [type: "integer", description: "Hub's actual version on conflict (single-driver mode)"],
-                    updates: [type: "array", description: "Per-driver results (bulk mode)", items: [type: "object", properties: [
-                        driverId: [type: "string", description: "Driver ID"],
-                        success: [type: "boolean", description: "Whether this driver updated"],
-                        sourceMode: [type: "string", description: "Source mode used"],
-                        sourceLength: [type: "integer", description: "Chars written"],
-                        error: [type: "string", description: "Failure reason; present when success=false"],
-                        note: [type: "string", description: "Per-item guidance"],
-                        conflict: [type: "boolean", description: "Optimistic-lock conflict for this item"],
-                        expectedVersion: [type: "integer", description: "Expected version on conflict"],
-                        currentVersion: [type: "integer", description: "Hub's actual version on conflict"]
-                    ]]],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -3023,21 +2849,6 @@ For type=driver, MCP 2026-07-28 clients automatically continue this slow write a
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["type", "item_id", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the deletion succeeded"],
-                    message: [type: "string", description: "Human-readable result, including backup status"],
-                    appId: [description: "Deleted app ID (type='app')"],
-                    driverId: [description: "Deleted driver ID (type='driver')"],
-                    libraryId: [description: "Deleted library ID (type='library')"],
-                    backupFile: [type: "string", description: "Pre-delete backup filename"],
-                    restoreHint: [type: "string", description: "How to recover the deleted item"],
-                    backupWarning: [type: "string", description: "Present when the pre-delete backup could not be created"],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         // Hub Admin Library Management Tools
@@ -3061,22 +2872,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the library installed"],
-                    message: [type: "string", description: "Human-readable result"],
-                    libraryId: [description: "New library ID"],
-                    version: [description: "Library version"],
-                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl"],
-                    sourceLength: [type: "integer", description: "Chars installed"],
-                    verified: [type: "boolean", description: "Post-install verification passed"],
-                    verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
-                    note: [type: "string", description: "Recovery guidance"],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -3101,21 +2896,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["libraryId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the update succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    libraryId: [description: "Library ID updated"],
-                    previousVersion: [description: "Version prior to the update"],
-                    newVersion: [description: "Version after the update"],
-                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl / resave"],
-                    sourceLength: [type: "integer", description: "Chars written"],
-                    note: [type: "string", description: "Source-mode / recovery guidance"],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
@@ -3135,57 +2915,6 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the config was read"],
-                    id: [description: "summary=true: app ID"],
-                    name: [type: "string", description: "summary=true: app name/label"],
-                    type: [type: "string", description: "summary=true: app type name"],
-                    disabled: [type: "boolean", description: "summary=true: app is disabled"],
-                    user: [type: "boolean", description: "summary=true: user-installed app (false=built-in)"],
-                    app: [type: "object", description: "App identity (full mode; summary mode passes the thin record through at top level)", properties: [
-                        id: [description: "App ID"],
-                        label: [type: "string", description: "User-visible label"],
-                        name: [type: "string", description: "App type name"],
-                        appType: [type: "object", description: "App-type metadata (name, namespace, author, etc.)"],
-                        disabled: [type: "boolean", description: "App is disabled"],
-                        parentAppId: [description: "Parent app ID, when a child"],
-                        installed: [type: "boolean", description: "App is installed"]
-                    ]],
-                    page: [type: "object", description: "The config page (full mode only)", properties: [
-                        name: [type: "string", description: "Page name"],
-                        title: [type: "string", description: "Page title"],
-                        install: [type: "boolean", description: "Page is the install page"],
-                        refreshInterval: [description: "Auto-refresh interval"],
-                        sections: [type: "array", description: "Page sections", items: [type: "object", properties: [
-                            title: [type: "string", description: "Section title"],
-                            inputs: [type: "array", description: "Input fields", items: [type: "object", properties: [
-                                name: [type: "string", description: "Setting name"],
-                                type: [type: "string", description: "Input type"],
-                                title: [type: "string", description: "Input title"],
-                                multiple: [type: "boolean", description: "Accepts multiple values"],
-                                required: [type: "boolean", description: "Input is required"],
-                                description: [type: "string", description: "Input description"],
-                                options: [description: "Allowed values, when an enum/capability picker"],
-                                value: [description: "Current configured value"]
-                            ]]],
-                            paragraphs: [type: "array", description: "Informational text blocks", items: [type: "string"]],
-                            embeddedActions: [type: "array", description: "Clickable wizard affordances embedded in HTML", items: [type: "object"]]
-                        ]]]
-                    ]],
-                    childApps: [type: "array", description: "Child apps", items: [type: "object", properties: [
-                        id: [description: "Child app ID"],
-                        label: [type: "string", description: "Child label"],
-                        name: [type: "string", description: "Child type name"]
-                    ]]],
-                    endpoint: [type: "string", description: "Internal API endpoint used"],
-                    settingsKeyCount: [type: "integer", description: "Number of raw settings keys"],
-                    settings: [type: "object", description: "Raw app-internal settings; present when includeSettings=true"],
-                    settingsNote: [type: "string", description: "Note when raw settings were omitted"]
-                ],
-                required: ["success"]
             ]
         ],
         // Hub Admin App Pages Directory
@@ -3200,30 +2929,6 @@ Use before hub_get_app_config on multi-page apps to avoid guessing page names. R
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
                 ],
                 required: ["appId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the page list was built"],
-                    app: [type: "object", description: "App identity", properties: [
-                        id: [description: "App ID"],
-                        label: [type: "string", description: "User-visible label"],
-                        name: [type: "string", description: "App type name"],
-                        appTypeName: [type: "string", description: "App-type display name"]
-                    ]],
-                    primaryPage: [type: "object", description: "Live-introspected primary page", properties: [
-                        name: [type: "string", description: "Page name"],
-                        title: [type: "string", description: "Page title"],
-                        role: [type: "string", description: "Page role"]
-                    ]],
-                    pages: [type: "array", description: "Known page directory", items: [type: "object", properties: [
-                        name: [type: "string", description: "Page name"],
-                        title: [type: "string", description: "Page title"],
-                        role: [type: "string", description: "Page role"]
-                    ]]],
-                    note: [type: "string", description: "Guidance for uncurated or single-page app types"]
-                ],
-                required: ["success", "pages"]
             ]
         ],
         // Installed Apps Integration (built-in + user app visibility)
@@ -3237,26 +2942,6 @@ Use before hub_get_app_config on multi-page apps to avoid guessing page names. R
                     cursor: [type: "string", description: "Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ],
                 required: ["deviceId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: "string", description: "Device queried"],
-                    deviceName: [type: "string", description: "Device display name"],
-                    appsUsing: [type: "array", description: "Apps referencing this device", items: [type: "object", properties: [
-                        id: [description: "App ID"],
-                        name: [type: "string", description: "App type name (e.g. Room Lights, Rule-5.1)"],
-                        label: [type: "string", description: "User-visible label (may contain HTML)"],
-                        trueLabel: [type: "string", description: "Label stripped of HTML"],
-                        disabled: [type: "boolean", description: "App is disabled"]
-                    ]]],
-                    count: [type: "integer", description: "Number of apps using the device"],
-                    parentApp: [description: "Parent app reference, when present"],
-                    countMismatch: [type: "string", description: "Present when firmware count disagrees with the array length"],
-                    total: [type: "integer", description: "Total matched (present when paginating)"],
-                    nextCursor: [type: "string", description: "Present when more results remain"]
-                ],
-                required: ["deviceId", "appsUsing", "count"]
             ]
         ],
     ]

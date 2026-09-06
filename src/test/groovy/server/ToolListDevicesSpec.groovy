@@ -1728,7 +1728,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         result.devices*.id == ['2']
         result.unfilteredTotal == 3
 
-        and: 'the epoch input echoes as canonical ISO -- the string the outputSchema declares'
+        and: 'the epoch input echoes as a canonical ISO string'
         result.changedSince == new Date(3000000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
     }
 

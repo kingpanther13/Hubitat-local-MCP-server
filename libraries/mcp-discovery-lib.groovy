@@ -362,16 +362,6 @@ def _getAllToolDefinitions_partDiscovery() {
                 properties: [
                     section: [type: "string", description: "REQUIRED for efficiency: pass one section key (see enum). Omit only to fetch the full guide / discover the available keys.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the guide was returned"],
-                    section: [type: "string", description: "Section key returned, or 'full' for the whole guide"],
-                    content: [type: "string", description: "Requested guide content (section or full)"],
-                    availableSections: [type: "array", description: "All section keys, present in full-guide mode", items: [type: "string"]]
-                ],
-                required: ["success"]
             ]
         ],
         // Tool Search (BM25)
@@ -385,24 +375,6 @@ def _getAllToolDefinitions_partDiscovery() {
                     maxResults: [type: "integer", description: "Max results to return. Default: 5.", default: 5]
                 ],
                 required: ["query"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    query: [type: "string", description: "Echoed search query"],
-                    resultsCount: [type: "integer", description: "Number of ranked results returned"],
-                    totalToolsSearched: [type: "integer", description: "Number of distinct visible tools searched (a tool in multiple gateways is counted once)"],
-                    results: [type: "array", description: "Ranked matching tools", items: [type: "object", properties: [
-                        tool: [type: "string", description: "Tool name"],
-                        title: [type: "string", description: "Friendly tool name (absent when served from a pre-title cached corpus)"],
-                        description: [type: "string", description: "Tool description"],
-                        relevance: [type: "number", description: "BM25 relevance score"],
-                        gateway: [type: "string", description: "Owning gateway, present for proxied tools"],
-                        callAs: [type: "string", description: "How to invoke the tool"]
-                    ]]],
-                    message: [type: "string", description: "Note when the query yields no searchable terms"]
-                ],
-                required: ["results"]
             ]
         ],
     ]

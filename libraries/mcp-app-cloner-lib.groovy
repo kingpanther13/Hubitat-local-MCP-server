@@ -914,23 +914,6 @@ def _getAllToolDefinitions_partAppCloner() {
                 // input_schema validator rejects top-level anyOf/oneOf/allOf); enforced
                 // at runtime in toolCloneNativeApp. sourceAppId's description documents the OR.
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "True when a new child app was created AND (if stageDisabled was requested) staging fully landed. success:false can still carry a committed newAppId when staging failed -- do NOT retry the call (that would duplicate the app); disable the apps named in stageFailures instead."],
-                    sourceAppId: [type: "integer", description: "Source app ID"],
-                    clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
-                    newAppId: [type: "integer", description: "New cloned app ID, or null on soft failure"],
-                    stagedDisabled: [type: "array", description: "stageDisabled: app ids disabled (the new app + every descendant reached)", items: [type: "integer"]],
-                    stageFailures: [type: "array", description: "stageDisabled: per-app failures ({appId, kind: childEnumeration|disable, error}) -- kind distinguishes an undiscoverable subtree from a failed disable", items: [type: "object"]],
-                    stageRemaining: [type: "array", description: "stageDisabled: app ids NOT yet attempted when the response budget ran out -- disable them via hub_set_app_disabled", items: [type: "integer"]],
-                    partial: [type: "boolean", description: "Present (true) when staging was requested but incomplete"],
-                    isError: [type: "boolean", description: "Present (true) on soft failure"],
-                    error: [type: "string", description: "Present on soft failure"],
-                    note: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -943,22 +926,6 @@ def _getAllToolDefinitions_partAppCloner() {
                     appId: [type: "integer", description: "Alias for sourceAppId."],
                     saveAs: [type: "string", description: "Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."],
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether export succeeded"],
-                    sourceAppId: [type: "integer", description: "Source app ID"],
-                    sourceLabel: [type: "string", description: "Source app label"],
-                    clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
-                    contentLength: [type: "integer", description: "Exported JSON length"],
-                    jsonContent: [type: "string", description: "Exported rule JSON"],
-                    savedAs: [type: "string", description: "File Manager filename; present with saveAs"],
-                    savedUrl: [type: "string", description: "File URL; present when hub IP known"],
-                    saveError: [type: "string", description: "Present if File Manager save failed"],
-                    note: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -983,25 +950,6 @@ def _getAllToolDefinitions_partAppCloner() {
                 // forward). Tool + property descriptions document the OR for
                 // LLM tool-selection.
                 required: ["parentHintAppId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "True when a new child app was created AND (if stageDisabled was requested) staging fully landed. success:false can still carry a committed newAppId when staging failed -- do NOT retry the call (that would duplicate the app); disable the apps named in stageFailures instead."],
-                    clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
-                    newAppId: [type: "integer", description: "New imported app ID, or null on soft failure"],
-                    originalSourceId: [type: "integer", description: "Original source app ID from the export"],
-                    originalLabel: [type: "string", description: "Original app label, or null"],
-                    contentLength: [type: "integer", description: "Imported JSON length"],
-                    stagedDisabled: [type: "array", description: "stageDisabled: app ids disabled (the new app + every descendant reached)", items: [type: "integer"]],
-                    stageFailures: [type: "array", description: "stageDisabled: per-app failures ({appId, kind: childEnumeration|disable, error}) -- kind distinguishes an undiscoverable subtree from a failed disable", items: [type: "object"]],
-                    stageRemaining: [type: "array", description: "stageDisabled: app ids NOT yet attempted when the response budget ran out -- disable them via hub_set_app_disabled", items: [type: "integer"]],
-                    partial: [type: "boolean", description: "Present (true) when staging was requested but incomplete"],
-                    isError: [type: "boolean", description: "Present (true) on soft failure"],
-                    error: [type: "string", description: "Present on soft failure"],
-                    note: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
             ]
         ],
     ]
