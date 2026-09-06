@@ -475,6 +475,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 **hub_list_devices:**
 - Use `detailed=false` for initial discovery
+- **Inventory counts:** `count` is the number returned on this page; `total` is the matching count before pagination; `unfilteredTotal`, when present, is the count in the requested device scope before filters or pagination (not necessarily the whole hub).
 - Summary response always includes: id, name (driver type), label, room, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId` + `currentStates` dict. Detailed mode replaces `currentStates` with `capabilities`, `attributes`, `commands`. To count children of a parent device, group on `parentDeviceId` client-side
 - **Server-side filters** (all applied before pagination, composable with each other):
   - `filter` — `'enabled'` / `'disabled'` / `'stale:<hours>'` (boolean and time-relative queries)

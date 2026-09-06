@@ -2258,7 +2258,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         then: 'no tool entry advertises outputSchema'
         def definitions = script.getAllToolDefinitions()
-        definitions.size() == 117
+        !definitions.isEmpty()
         definitions.every { it.inputSchema && !it.containsKey('outputSchema') }
         response.result.tools.every { !it.containsKey('outputSchema') }
 

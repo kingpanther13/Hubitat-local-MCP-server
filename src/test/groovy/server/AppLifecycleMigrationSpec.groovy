@@ -88,10 +88,6 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         return mcpLogCalls
     }
 
-    // -----------------------------------------------------------------------
-    // 1. Golden path: migration fires and forces enableCustomRuleEngine OFF
-    // -----------------------------------------------------------------------
-
     def "updated() sheds retired output-schema settings and state on repeated upgrades"() {
         given:
         stubUpdatedDeps()
@@ -110,6 +106,10 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         sharedAppStub.settingsStore.enableRead == [type: 'bool', value: false]
         atomicStateMap.unrelatedState == 'keep'
     }
+
+    // -----------------------------------------------------------------------
+    // 1. Golden path: migration fires and forces enableCustomRuleEngine OFF
+    // -----------------------------------------------------------------------
 
     def "updated() forces enableCustomRuleEngine OFF when legacy enableRuleEngine is present and new setting was never set"() {
         given: 'pre-rename install: legacy setting present, new setting absent (null -- never touched by user or firmware)'

@@ -569,6 +569,9 @@ def installed() {
 
 def updated() {
     log.info "MCP Rule Server updated"
+    // Shed the retired publication toggle and its migration marker on upgraded hubs.
+    app.removeSetting("publishOutputSchemas")
+    atomicState.remove("publishOutputSchemasForcedOff")
     atomicState.remove("toolSearchCorpus")        // Invalidate BM25 corpus cache on app update
     atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
     atomicState.remove("toolSearchCorpusVersion")  // ...and the retired version stamp, so an upgraded hub sheds it
@@ -4753,6 +4756,8 @@ def getToolDefinitions() {
     // if a future author adds one to a base-tool description.
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
     return transformed.collect { tool ->
+        // Gateways already carry complete annotations from above. Check readOnlyHint,
+        // not just the map: a leaf with only a title still needs its canonical hints.
         if (tool.annotations?.containsKey('readOnlyHint')) return tool
         tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
@@ -8885,6 +8890,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **hub_list_devices:**
 - Use detailed=false for initial discovery
+- Inventory counts: count is the number returned on this page; total is the matching count before pagination; unfilteredTotal, when present, is the count in the requested device scope before filters or pagination (not necessarily the whole hub).
 - With detailed=true, paginate: 20-30 devices per request
 - Make tool calls sequentially, not in parallel
 - Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side

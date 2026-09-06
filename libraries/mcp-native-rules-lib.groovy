@@ -9965,7 +9965,7 @@ def _createNativeAppShell(args) {
         // hub_set_rule_paused, hub_set_rule_private_boolean) take ruleId, so surface it explicitly under
         // that name too so an agent can chain a create straight into them without re-deriving it. Only
         // rule_machine apps get the real id; a non-RM classic app has none, so it is surfaced as an
-        // explicit null to distinguish it from an RM rule id.
+        // explicit null to preserve the same response shape across app types.
         if (appType == "rule_machine") {
             result.ruleId = newId
         } else {
