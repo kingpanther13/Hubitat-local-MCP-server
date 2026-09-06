@@ -1639,7 +1639,8 @@ IS_CI = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "t
 
 def check_tool_guide_pointers(src_override: str | None = None,
                               tg_override: str | None = None,
-                              anchors_override: dict | None = None) -> list[dict]:
+                              anchors_override: dict | None = None,
+                              lib_pointer_override: list | None = None) -> list[dict]:
     """Verify every get_tool_guide(section='X') pointer in the .groovy schemas
     references a section key that actually exists in getToolGuideSections().
 
@@ -1763,24 +1764,41 @@ def check_tool_guide_pointers(src_override: str | None = None,
             continue
         section_bodies[key] = method_body.group(1)
 
-    # 2. Extract every get_tool_guide(section='X') reference from the .groovy.
+    # 2. Extract every get_tool_guide(section='X') reference from the .groovy -- the app file AND
+    #    every library. A domain's guide body now travels with its domain (section 1b), so a
+    #    pointer written beside it in libraries/*.groovy is exactly as breakable as one in the app
+    #    and was previously unchecked: hub_get_tool_guide answers an unknown section with
+    #    success:false, and only this lint stands between that and a user.
     #    Tolerate both single and double quotes; whitespace around the `=`.
     pointer_re = re.compile(r"get_tool_guide\(section\s*=\s*['\"]([a-z_][a-z0-9_]*)['\"]\)")
-    for line_no, line in enumerate(src.splitlines(), start=1):
-        for ptr in pointer_re.findall(line):
-            if ptr not in section_keys:
-                findings.append({
-                    "file": str(server.relative_to(REPO_ROOT)),
-                    "line": line_no,
-                    "severity": "error",
-                    "rule": "tool-guide-broken-pointer",
-                    "message": (
-                        f"get_tool_guide(section='{ptr}') points at a section that is NOT a key "
-                        f"in getToolGuideSections(). Either add the section to the dispatcher or "
-                        f"fix the pointer. Known sections: {sorted(section_keys)}."
-                    ),
-                    "source": line.strip()[:200],
-                })
+    pointer_sources = [(str(server.relative_to(REPO_ROOT)), src)]
+    if lib_pointer_override is not None:
+        pointer_sources.extend(lib_pointer_override)
+    elif src_override is not None:
+        # Synthetic-corpus path: the real libraries point at real sections the synthetic
+        # one-section corpus does not have, so scanning them here would fire on every
+        # fixture. A self-test that wants library pointers passes them explicitly.
+        pass
+    elif lib_dir.is_dir():
+        for lib in sorted(lib_dir.glob("*.groovy")):
+            pointer_sources.append((f"libraries/{lib.name}",
+                                    lib.read_text(encoding="utf-8", errors="replace")))
+    for rel, text in pointer_sources:
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            for ptr in pointer_re.findall(line):
+                if ptr not in section_keys:
+                    findings.append({
+                        "file": rel,
+                        "line": line_no,
+                        "severity": "error",
+                        "rule": "tool-guide-broken-pointer",
+                        "message": (
+                            f"get_tool_guide(section='{ptr}') points at a section that is NOT a key "
+                            f"in getToolGuideSections(). Either add the section to the dispatcher or "
+                            f"fix the pointer. Known sections: {sorted(section_keys)}."
+                        ),
+                        "source": line.strip()[:200],
+                    })
 
     # 3. Drift check: every section key should have a matching heading anchor in TOOL_GUIDE.md.
     #    Translate snake_case key -> the heading text the engineer wrote it from.
@@ -3642,6 +3660,44 @@ def _build_synthetic_groovy_corpus(section_key: str, body: str) -> str:
     )
 
 
+def _run_tool_guide_library_pointer_self_test() -> int:
+    """A get_tool_guide pointer written in a LIBRARY is checked, and named by its own file.
+
+    Guide bodies moved into their domain libraries, so a broken pointer beside one is as
+    reachable as a broken pointer in the app and was previously unscanned.
+    """
+    failures = 0
+    src = _build_synthetic_groovy_corpus("selftest_lib_ptr", "body text")
+    tg = "selftest_lib_ptr\nbody text\n"
+    anchors = {"selftest_lib_ptr": ["body text"]}
+    irrelevant = {"tool-guide-no-heading-hint"}
+
+    bad = [("libraries/mcp-selftest-lib.groovy",
+            "// see get_tool_guide(section='no_such_section_here')\n")]
+    findings = [f for f in check_tool_guide_pointers(
+        src_override=src, tg_override=tg, anchors_override=anchors,
+        lib_pointer_override=bad) if f.get("rule") not in irrelevant]
+    broken = [f for f in findings if f.get("rule") == "tool-guide-broken-pointer"]
+    if not broken:
+        failures += 1
+        print("SELF-TEST FAIL [tool-guide-library-pointer]: a broken pointer in a library was not flagged")
+    elif broken[0].get("file") != "libraries/mcp-selftest-lib.groovy" or broken[0].get("line") != 1:
+        failures += 1
+        print(f"SELF-TEST FAIL [tool-guide-library-pointer]: finding names {broken[0].get('file')}:{broken[0].get('line')}, not the library line that carries it")
+
+    good = [("libraries/mcp-selftest-lib.groovy",
+             "// see get_tool_guide(section='selftest_lib_ptr')\n")]
+    fp = [f for f in check_tool_guide_pointers(
+        src_override=src, tg_override=tg, anchors_override=anchors,
+        lib_pointer_override=good) if f.get("rule") == "tool-guide-broken-pointer"]
+    if fp:
+        failures += 1
+        print(f"SELF-TEST FAIL [tool-guide-library-pointer]: false positive on a valid library pointer ({fp})")
+    if not failures:
+        print("tool-guide library-pointer self-test: PASS (2 fixtures)")
+    return failures
+
+
 def _run_tool_guide_anchor_self_test() -> int:
     """Drive check_tool_guide_pointers with synthetic corpora and verify both:
     (a) the right rule codes fire (dispatch correctness), AND
@@ -3854,6 +3910,7 @@ def run_self_test() -> int:
     failures += read_write_split_failures
 
     # BP20 library file-scope block-comment guard: must-catch / must-not-catch fixtures.
+    failures += _run_tool_guide_library_pointer_self_test()
     failures += _run_library_block_comment_self_test()
 
     # Vendored MCP schema provenance guard: must-catch / must-not-catch fixtures.

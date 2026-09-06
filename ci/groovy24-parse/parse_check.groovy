@@ -214,7 +214,10 @@ def largestMethods = { String fileName, String src ->
 def measureQuietly = { String fileName, String src ->
     try { return largestMethods(fileName, src) }
     catch (Throwable e) {
-        if (e.class.name.contains('CompilationFailedException')) throw e
+        // By TYPE, not by name: MultipleCompilationErrorsException extends
+        // CompilationFailedException but its own name does not contain it, so a name test would
+        // downgrade a real CLASS_GENERATION failure to a warning and pass the lane.
+        if (e instanceof org.codehaus.groovy.control.CompilationFailedException) throw e
         System.err.println "::warning::bytecode-budget MEASUREMENT failed for ${fileName} (${e.class.simpleName}: ${e.message}) -- the budget was not checked"
         return null
     }

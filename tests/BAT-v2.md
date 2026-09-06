@@ -4584,7 +4584,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 ```json
 {
-  "setup_prompt": "The Read and Write masters are enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Via hub_manage_virtual_device create a virtual motion sensor named 'BAT VRB2 Life Motion' and a virtual switch named 'BAT VRB2 Life Lamp'. Then set up a Visual Rules Builder automation named 'BAT VRB2 Lifecycle' that turns that lamp on whenever that motion sensor detects motion, and confirm it reads back as active.",
+  "setup_prompt": "The Read and Write masters are enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Via hub_manage_virtual_device create a virtual motion sensor named 'BAT VRB2 Life Motion' and a virtual switch named 'BAT VRB2 Life Lamp'. Then set up a Visual Rules Builder 2.0 automation -- the newer graph builder, not the classic 1.0 one -- named 'BAT VRB2 Lifecycle' that turns that lamp on whenever that motion sensor detects motion, and confirm it reads back as active.",
   "test_prompt": "Rename the automation 'BAT VRB2 Lifecycle' to 'BAT VRB2 Renamed' without changing anything else about it. Then read it back and tell me whether it still has the same trigger and the same action, and whether it is still running. After that, pause it and tell me exactly what came back about whether it runs and why. Finally start it again and tell me whether it is running.",
   "teardown_prompt": "Delete the Visual Rule 'BAT VRB2 Renamed' with hub_delete_visual_rule (confirm=true). Delete the virtual devices 'BAT VRB2 Life Motion' and 'BAT VRB2 Life Lamp'."
 }
