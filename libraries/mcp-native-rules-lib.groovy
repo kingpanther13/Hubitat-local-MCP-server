@@ -4691,7 +4691,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     // builder string-matches it into a "nothing needs to be restored" hint,
     // which would be a lie on every post-delete path.
     def addResult
-    try { addResult = _rmAddAction(appId, spec, false, null, reqT0) }
+    try { addResult = _rmAddAction(appId, _rmWithClock(spec, reqT0)) }
     catch (Exception addExc) { throw new IllegalStateException(_rmModifyPostDeleteMsg(actionIdx, "re-add", addExc)) }
     if (addResult?.success == false) {
         // partial:true -- the rule IS half-mutated (delete committed, add did not),
@@ -5667,10 +5667,17 @@ private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, 
 //
 // Returns: [success, actionIndex, capability, action, settingsApplied,
 // configPageError]
-Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null, Long reqT0 = null) {
-    // The request clock arrives as a parameter: the gateway stamps __reqT0 on the top-level
-    // argument map only, and every caller hands this function a child action-spec map.
-    if (reqT0 == null && actionSpec?.__reqT0 != null) reqT0 = actionSpec.__reqT0 as Long
+// The gateway stamps __reqT0 on the TOP-LEVEL argument map only, and every _rmAddAction caller
+// hands it a child action-spec map; this carries the request clock down on that map (a copy --
+// the caller's spec is not mutated) so the add's own budget checks see the real clock. The
+// signature of _rmAddAction stays as it is: the specs stub it by arity.
+private Map _rmWithClock(Map spec, Long reqT0) {
+    if (reqT0 == null || spec == null || spec.__reqT0 != null) return spec
+    return spec + [__reqT0: reqT0]
+}
+
+Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
+    Long reqT0 = actionSpec?.__reqT0 != null ? (actionSpec.__reqT0 as Long) : null
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
@@ -10215,7 +10222,7 @@ def _createNativeAppShell(args) {
                     return
                 }
                 try {
-                    actionResults << _rmAddAction(newId, spec as Map, true, actionsValidRuleIds, args?.__reqT0 as Long)
+                    actionResults << _rmAddAction(newId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, actionsValidRuleIds)
                 } catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                     mcpLog("warn", "rm-native", "hub_set_rule: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -13626,7 +13633,7 @@ def _applyNativeAppEdit(args) {
         return _rmAddTrigger(0, args.addTrigger as Map)
     }
     if (args?.addAction instanceof Map && args.addAction.discover == true) {
-        return _rmAddAction(0, args.addAction as Map, false, null, args?.__reqT0 as Long)
+        return _rmAddAction(0, _rmWithClock(args.addAction as Map, args?.__reqT0 as Long))
     }
     // Guide short-circuit: {guide: true} returns the hub_set_rule capability
     // reference inline (same content as hub_get_tool_guide), with no hub interaction
@@ -14091,7 +14098,7 @@ def _applyNativeAppEdit(args) {
                         addedResults << [success: false, error: "replaceActions[${i}] is not a Map", spec: spec]
                         return
                     }
-                    try { addedResults << _rmAddAction(appId, spec as Map, true, replaceValidRuleIds, args?.__reqT0 as Long) }
+                    try { addedResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, replaceValidRuleIds) }
                     catch (Exception ae) {
                         addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                         mcpLog("warn", "rm-native", "hub_set_rule: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -14488,7 +14495,7 @@ def _applyNativeAppEdit(args) {
         // click is issued or required for action bake.
         def actResult
         try {
-            actResult = _rmAddAction(appId, addActionSpec, false, null, args?.__reqT0 as Long)
+            actResult = _rmAddAction(appId, _rmWithClock(addActionSpec, args?.__reqT0 as Long))
         } catch (Exception e) {
             mcpLogError("rm-native", "addAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
@@ -14638,7 +14645,7 @@ def _applyNativeAppEdit(args) {
                             return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                         }
                     } else if (pm.containsKey("addAction")) {
-                        patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map, true, patchValidRuleIds, args?.__reqT0 as Long))
+                        patchResults << ([op: "addAction"] + _rmAddAction(appId, _rmWithClock(pm.addAction as Map, args?.__reqT0 as Long), true, patchValidRuleIds))
                     } else if (pm.containsKey("addActions")) {
                         // Same mid-op relay-budget checkpoint as the addTriggers inner loop above.
                         def innerList = (pm.addActions as List)
@@ -14651,7 +14658,7 @@ def _applyNativeAppEdit(args) {
                                 innerPaused = true
                                 break
                             }
-                            try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds, args?.__reqT0 as Long) }
+                            try { innerResults << _rmAddAction(appId, _rmWithClock(aspec as Map, args?.__reqT0 as Long), true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
@@ -14813,7 +14820,7 @@ def _applyNativeAppEdit(args) {
                         }
                         def innerResults = []
                         (pm.replaceActions as List).each { aspec ->
-                            try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds, args?.__reqT0 as Long) }
+                            try { innerResults << _rmAddAction(appId, _rmWithClock(aspec as Map, args?.__reqT0 as Long), true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
@@ -15150,7 +15157,7 @@ def _applyNativeAppEdit(args) {
                     actionResults << [success: false, error: "addActions[${ai}] is not a Map", spec: spec]
                     continue
                 }
-                try { actionResults << _rmAddAction(appId, spec as Map, true, addActionsValidRuleIds, args?.__reqT0 as Long) }
+                try { actionResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, addActionsValidRuleIds) }
                 catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                     mcpLog("warn", "rm-native", "hub_set_rule: addActions[${ai}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
