@@ -751,69 +751,6 @@ def _getAllToolDefinitions_partCustomRules() {
                     detailed: [type: "boolean", description: "Requires ruleId; returns diagnostics instead of plain rule data. Rejected if set without a ruleId.", default: false],
                     cursor: [type: "string", description: "List mode only (ruleId omitted): pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    rules: [type: "array", description: "List mode (ruleId omitted): rule summaries", items: [type: "object", properties: [
-                        id: [type: "string", description: "Rule ID"],
-                        name: [type: "string", description: "Rule name"],
-                        description: [type: "string", description: "Rule description"],
-                        enabled: [type: "boolean", description: "Whether the rule is enabled"],
-                        triggerCount: [type: "integer", description: "Number of triggers"],
-                        conditionCount: [type: "integer", description: "Number of conditions"],
-                        actionCount: [type: "integer", description: "Number of actions"],
-                        lastTriggered: [description: "Last trigger timestamp"],
-                        executionCount: [type: "integer", description: "Times executed"],
-                        source: [type: "string", description: "Always 'mcp_custom_engine'"]
-                    ]]],
-                    count: [type: "integer", description: "List mode: rules in this page"],
-                    total: [type: "integer", description: "List mode (paginated): total rule count"],
-                    nextCursor: [type: "string", description: "List mode: present when more results remain"],
-                    id: [type: "string", description: "Single-rule mode: rule ID"],
-                    name: [type: "string", description: "Single-rule mode: rule name"],
-                    description: [type: "string", description: "Single-rule mode: rule description"],
-                    enabled: [type: "boolean", description: "Single-rule mode: enabled state"],
-                    testRule: [type: "boolean", description: "Single-rule mode: skips backup on deletion"],
-                    triggers: [type: "array", description: "Single-rule mode: trigger definitions"],
-                    conditions: [type: "array", description: "Single-rule mode: condition definitions"],
-                    conditionLogic: [type: "string", description: "Single-rule mode: 'all' or 'any'"],
-                    actions: [type: "array", description: "Single-rule mode: action definitions"],
-                    localVariables: [type: "object", description: "Single-rule mode: local variables"],
-                    createdAt: [description: "Single-rule mode: creation timestamp"],
-                    updatedAt: [description: "Single-rule mode: last update timestamp"],
-                    lastTriggered: [description: "Single-rule mode: last trigger timestamp"],
-                    executionCount: [type: "integer", description: "Single-rule mode: times executed"],
-                    source: [type: "string", description: "Single/detailed mode: always 'mcp_custom_engine'"],
-                    rule: [type: "object", description: "Detailed mode (detailed=true): rule identity", properties: [
-                        id: [type: "string", description: "Rule ID"],
-                        name: [type: "string", description: "Rule name"],
-                        description: [type: "string", description: "Rule description"],
-                        enabled: [type: "boolean", description: "Enabled state"],
-                        createdAt: [type: "string", description: "Creation timestamp"],
-                        updatedAt: [type: "string", description: "Last update timestamp"]
-                    ]],
-                    execution: [type: "object", description: "Detailed mode: execution stats", properties: [
-                        count: [type: "integer", description: "Times executed"],
-                        lastTriggered: [type: "string", description: "Last trigger timestamp"]
-                    ]],
-                    structure: [type: "object", description: "Detailed mode: trigger/condition/action structure", properties: [
-                        triggerCount: [type: "integer", description: "Number of triggers"],
-                        conditionCount: [type: "integer", description: "Number of conditions"],
-                        actionCount: [type: "integer", description: "Number of actions"],
-                        triggers: [type: "array", description: "Trigger definitions"],
-                        conditions: [type: "array", description: "Condition definitions"],
-                        actions: [type: "array", description: "Action definitions"],
-                        conditionLogic: [type: "string", description: "'all' or 'any'"]
-                    ]],
-                    state: [type: "object", description: "Detailed mode: rule state (localVariables)"],
-                    logs: [type: "object", description: "Detailed mode: recent logs and errors", properties: [
-                        recentCount: [type: "integer", description: "Recent log entries returned"],
-                        errorCount: [type: "integer", description: "Total error log entries"],
-                        recent: [type: "array", description: "Recent log entries"],
-                        errors: [type: "array", description: "Recent error log entries"]
-                    ]]
-                ]
             ]
         ],
         [
@@ -836,20 +773,6 @@ Verify rule after creation.""",
                     actions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_command", "toggle_device", "activate_scene", "set_variable", "set_local_variable", "set_mode", "set_hsm", "delay", "if_then_else", "cancel_delayed", "repeat", "stop", "log", "set_level", "set_color", "set_color_temperature", "lock", "unlock", "capture_state", "restore_state", "send_notification", "set_thermostat", "http_request", "speak", "comment", "set_valve", "set_fan_speed", "set_shade", "variable_math"]]]], description: "Action objects to run when triggered (at least one required), each {type, ...}."]
                 ],
                 required: ["name", "triggers", "actions"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the rule was created"],
-                    ruleId: [type: "string", description: "ID of the new rule"],
-                    message: [type: "string", description: "Human-readable result"],
-                    diagnostics: [type: "object", description: "Persistence verification", properties: [
-                        storedTriggers: [type: "integer", description: "Triggers persisted"],
-                        storedActions: [type: "integer", description: "Actions persisted"],
-                        durationMs: [type: "integer", description: "Creation duration in ms"]
-                    ]]
-                ],
-                required: ["success", "ruleId"]
             ]
         ],
         [
@@ -869,15 +792,6 @@ Verify rule after creation.""",
                     actions: [type: "array", description: "Replacement action objects (overwrites ALL actions)"]
                 ],
                 required: ["ruleId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the update succeeded"],
-                    ruleId: [type: "string", description: "ID of the updated rule"],
-                    message: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success", "ruleId"]
             ]
         ],
         [
@@ -891,15 +805,6 @@ Verify rule after creation.""",
                     skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules."]
                 ],
                 required: ["ruleId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the rule was deleted"],
-                    message: [type: "string", description: "Human-readable result"],
-                    backupFile: [type: "string", description: "File Manager backup filename (present when a backup was written)"]
-                ],
-                required: ["success"]
             ]
         ],
         // enable_rule and disable_rule merged into hub_update_custom_rule (use enabled=true/false)
@@ -912,18 +817,6 @@ Verify rule after creation.""",
                     ruleId: [type: "string", description: "ID of the custom rule to dry-run (from hub_get_custom_rule)"]
                 ],
                 required: ["ruleId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID tested"],
-                    ruleName: [type: "string", description: "Rule name"],
-                    conditionsMet: [type: "boolean", description: "Whether all conditions evaluated true"],
-                    wouldExecute: [type: "boolean", description: "Whether the rule would fire its actions"],
-                    conditionResults: [type: "array", description: "Per-condition evaluation results"],
-                    actions: [type: "array", description: "Actions that would run (none executed)"]
-                ],
-                required: ["ruleId", "wouldExecute"]
             ]
         ],
         // Rule Export/Import/Clone Tools
@@ -937,32 +830,6 @@ Verify rule after creation.""",
                     saveAs: [type: "string", description: "File Manager filename to write the export JSON to (\".json\" appended if missing). Omit to use a generated name based on the rule."]
                 ],
                 required: ["ruleId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    exportVersion: [type: "string", description: "Export format version"],
-                    exportedAt: [type: "string", description: "Export timestamp"],
-                    serverVersion: [type: "string", description: "MCP server version at export"],
-                    rule: [type: "object", description: "Exported rule definition", properties: [
-                        name: [type: "string", description: "Rule name"],
-                        description: [type: "string", description: "Rule description"],
-                        enabled: [type: "boolean", description: "Enabled state"],
-                        conditionLogic: [type: "string", description: "'all' or 'any'"],
-                        triggers: [type: "array", description: "Trigger definitions"],
-                        conditions: [type: "array", description: "Condition definitions"],
-                        actions: [type: "array", description: "Action definitions"],
-                        localVariables: [type: "object", description: "Local variables"]
-                    ]],
-                    deviceManifest: [type: "array", description: "Referenced devices", items: [type: "object", properties: [
-                        deviceId: [type: "string", description: "Device ID"],
-                        usedIn: [type: "array", description: "Sections referencing the device", items: [type: "string"]],
-                        label: [type: "string", description: "Device label or fallback"],
-                        capabilities: [type: "array", description: "Device capabilities", items: [type: "string"]]
-                    ]]],
-                    savedToFile: [type: "string", description: "File Manager filename the export was written to"]
-                ],
-                required: ["exportVersion", "rule", "deviceManifest", "savedToFile"]
             ]
         ],
         [
@@ -976,23 +843,6 @@ Verify rule after creation.""",
                     deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
                 ],
                 required: ["exportData"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the rule was imported"],
-                    ruleId: [type: "string", description: "ID of the newly created rule"],
-                    message: [type: "string", description: "Human-readable result"],
-                    diagnostics: [type: "object", description: "Persistence verification", properties: [
-                        storedTriggers: [type: "integer", description: "Triggers persisted"],
-                        storedActions: [type: "integer", description: "Actions persisted"],
-                        durationMs: [type: "integer", description: "Creation duration in ms"]
-                    ]],
-                    imported: [type: "boolean", description: "Always true on success"],
-                    sourceExportVersion: [type: "string", description: "Export format version of the source"],
-                    devicesMapped: [type: "integer", description: "Device IDs remapped (present when deviceMapping supplied)"]
-                ],
-                required: ["success", "ruleId"]
             ]
         ],
         [
@@ -1005,23 +855,6 @@ Verify rule after creation.""",
                     name: [type: "string", description: "Name for the clone (defaults to 'Copy of <original>')"]
                 ],
                 required: ["ruleId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the clone was created"],
-                    ruleId: [type: "string", description: "ID of the new cloned rule"],
-                    message: [type: "string", description: "Human-readable result"],
-                    clonedFrom: [type: "string", description: "Source rule ID"],
-                    diagnostics: [type: "object", description: "Persistence verification", properties: [
-                        storedTriggers: [type: "integer", description: "Triggers persisted"],
-                        storedActions: [type: "integer", description: "Actions persisted"],
-                        durationMs: [type: "integer", description: "Creation duration in ms"]
-                    ]],
-                    imported: [type: "boolean", description: "Always true on success (clone routes through import)"],
-                    sourceExportVersion: [type: "string", description: "Export format version of the source"]
-                ],
-                required: ["success", "ruleId", "clonedFrom"]
             ]
         ],
     ]

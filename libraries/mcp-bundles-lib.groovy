@@ -391,19 +391,6 @@ def _getAllToolDefinitions_partBundles() {
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."],
                 ],
                 required: ["importUrl", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the bundle installed"],
-                    message: [type: "string", description: "Human-readable result"],
-                    endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
-                    installer: [type: "boolean", description: "Whether the bundle was marked as installer"],
-                    error: [type: "string", description: "Failure detail; present on failure"],
-                    rawResponse: [type: "string", description: "Raw hub response (truncated); present on a no-success result"],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -414,19 +401,6 @@ def _getAllToolDefinitions_partBundles() {
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    bundles: [type: "array", description: "Installed bundle summaries (id, name, namespace, private, and a parsed 'contains' map or raw 'content' string)", items: [type: "object"]],
-                    count: [type: "integer", description: "Bundles returned"],
-                    source: [type: "string", description: "hub_api / hub_api_raw / unavailable"],
-                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
-                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
-                    total: [type: "integer", description: "Total matched (present when paginating)"],
-                    nextCursor: [type: "string", description: "Present when more results remain"]
-                ],
-                required: ["bundles"]
             ]
         ],
         [
@@ -439,20 +413,6 @@ def _getAllToolDefinitions_partBundles() {
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved deleting this bundle."]
                 ],
                 required: ["bundleId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the bundle was deleted"],
-                    message: [type: "string", description: "Human-readable result"],
-                    bundleId: [type: "string", description: "The targeted bundle id"],
-                    bundleName: [type: "string", description: "The deleted bundle's name (when it was resolvable)"],
-                    verified: [type: "boolean", description: "Whether the id was confirmed absent from a post-delete re-list"],
-                    error: [type: "string", description: "Failure detail; present on failure"],
-                    status: [type: "integer", description: "Hub HTTP status of the delete request; present on a not-verified result"],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -465,20 +425,6 @@ def _getAllToolDefinitions_partBundles() {
                     saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"],
                 ],
                 required: ["bundleId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the bundle zip was saved"],
-                    message: [type: "string", description: "Human-readable result"],
-                    bundleId: [type: "string", description: "The exported bundle id"],
-                    fileName: [type: "string", description: "File Manager filename the zip was saved as"],
-                    bytes: [type: "integer", description: "Size of the saved zip in bytes"],
-                    directDownload: [type: "string", description: "Local download path (/local/<fileName>)"],
-                    status: [type: "integer", description: "Hub HTTP status of the export request; present on a non-2xx failure"],
-                    error: [type: "string", description: "Failure detail; present on failure"]
-                ],
-                required: ["success"]
             ]
         ]
     ]

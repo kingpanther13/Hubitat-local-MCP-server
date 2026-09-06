@@ -949,21 +949,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_list_rules outputSchema declares the status fields"() {
-        when:
-        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_list_rules' }
-        def itemProps = def_.outputSchema.properties.rules.items.properties
-
-        then: 'the per-rule status fields are declared, with a status enum covering all five states'
-        itemProps.status.enum == ['active', 'paused', 'stopped', 'disabled', 'unknown']
-        itemProps.disabled.type == 'boolean'
-        itemProps.paused.type == 'boolean'
-        itemProps.containsKey('requiredExpressionFalse')
-
-        and: 'the result-level statusNote is declared'
-        def_.outputSchema.properties.containsKey('statusNote')
-    }
-
     def "gateway dispatch via handleGateway routes to hub_list_rules"() {
         given:
         rmUtils.stubRuleList5 = [[10: 'Test Rule']]

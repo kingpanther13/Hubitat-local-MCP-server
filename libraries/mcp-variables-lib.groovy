@@ -883,30 +883,6 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    hubVariables: [type: "array", description: "Hub variables (page when paginated)", items: [type: "object", properties: [
-                        name: [type: "string", description: "Variable name"],
-                        value: [description: "Current value"],
-                        type: [type: "string", description: "Number/Decimal/String/Boolean/DateTime"],
-                        deviceId: [type: "string", description: "Connector device id when present"],
-                        attribute: [type: "string", description: "Connector attribute when present"],
-                        source: [type: "string", description: "Always 'hub'"]
-                    ]]],
-                    ruleVariables: [type: "array", description: "Rule-engine variables", items: [type: "object", properties: [
-                        name: [type: "string", description: "Variable name"],
-                        value: [description: "Current value"],
-                        source: [type: "string", description: "Always 'rule_engine'"]
-                    ]]],
-                    totalHubVariables: [type: "integer", description: "Total hub variables"],
-                    totalRuleVariables: [type: "integer", description: "Total rule-engine variables"],
-                    total: [type: "integer", description: "Combined total"],
-                    hubVariablesError: [type: "string", description: "Present when the hub variable API failed"],
-                    nextCursor: [type: "string", description: "Present when more hub variables remain"]
-                ],
-                required: ["hubVariables", "ruleVariables", "total"]
             ]
         ],
         [
@@ -918,18 +894,6 @@ def _getAllToolDefinitions_partVariables() {
                     name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."]
                 ],
                 required: ["name"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Variable name"],
-                    value: [description: "Current value"],
-                    type: [type: "string", description: "Variable type as Hubitat reports it (hub variables only); its naming/casing may differ from the hub_create_variable type enum (Number/Decimal/String/Boolean/DateTime)."],
-                    deviceId: [type: "string", description: "Connector device id (hub variables with connector only)"],
-                    attribute: [type: "string", description: "Connector attribute (hub variables with connector only)"],
-                    source: [type: "string", description: "'hub' or 'rule_engine'"]
-                ],
-                required: ["name", "value", "source"]
             ]
         ],
         [
@@ -942,16 +906,6 @@ def _getAllToolDefinitions_partVariables() {
                     value: [type: "string", description: "Variable value (string, number, or boolean as string)"]
                 ],
                 required: ["name", "value"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the set succeeded"],
-                    name: [type: "string", description: "Variable name"],
-                    value: [description: "Value that was set"],
-                    source: [type: "string", description: "'hub' or 'rule_engine'"]
-                ],
-                required: ["success", "name", "value", "source"]
             ]
         ],
         [
@@ -975,27 +929,6 @@ def _getAllToolDefinitions_partVariables() {
                     confirm: [type: "boolean", description: "REQUIRED: must be true to perform the creation"]
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Single form: whether creation succeeded. Bulk form: true only when every item was created."],
-                    name: [type: "string", description: "Single form: variable name"],
-                    type: [type: "string", description: "Single form: variable type"],
-                    value: [description: "Single form: initial value after creation"],
-                    source: [type: "string", description: "Single form: always 'hub'"],
-                    message: [type: "string", description: "Single form: human-readable result"],
-                    results: [type: "array", description: "Bulk form: per-item result, one entry per requested variable", items: [type: "object", properties: [
-                        name: [type: "string", description: "Variable name"],
-                        success: [type: "boolean", description: "Whether this item was created"],
-                        type: [type: "string", description: "Variable type (created items)"],
-                        value: [description: "Initial value after creation (created items)"],
-                        error: [type: "string", description: "Failure reason (failed items)"]
-                    ]]],
-                    createdCount: [type: "integer", description: "Bulk form: number of items created"],
-                    failedCount: [type: "integer", description: "Bulk form: number of items that failed"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1009,23 +942,6 @@ def _getAllToolDefinitions_partVariables() {
                     force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."],
                 ],
                 required: ["name", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether deletion succeeded"],
-                    name: [type: "string", description: "Variable name"],
-                    deleted: [type: "boolean", description: "True when the variable was removed"],
-                    source: [type: "string", description: "'hub' or 'rule_engine'"],
-                    type: [type: "string", description: "Variable type (hub variables only)"],
-                    previousValue: [description: "Value before deletion"],
-                    connectorDeleted: [type: "boolean", description: "True when a connector device was also deleted (hub only)"],
-                    brokenConsumers: [type: "array", description: "Rules referencing this variable (populated when force=true), else null", items: [type: "object", properties: [
-                        id: [type: "string", description: "Rule app id"],
-                        label: [type: "string", description: "Rule label"]
-                    ]]]
-                ],
-                required: ["success", "name", "deleted", "source"]
             ]
         ],
         [
@@ -1039,19 +955,6 @@ def _getAllToolDefinitions_partVariables() {
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the connector exists/was created"],
-                    name: [type: "string", description: "Variable name"],
-                    deviceId: [type: "string", description: "Connector device id"],
-                    attribute: [type: "string", description: "Connector attribute"],
-                    connectorType: [type: "string", description: "Connector type chosen (newly created connectors)"],
-                    alreadyExists: [type: "boolean", description: "True when a connector already existed (no-op)"],
-                    message: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success", "name", "deviceId"]
             ]
         ],
         [
@@ -1064,19 +967,6 @@ def _getAllToolDefinitions_partVariables() {
                     confirm: [type: "boolean", description: "REQUIRED: must be true to perform the deletion"]
                 ],
                 required: ["name", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the removal succeeded"],
-                    name: [type: "string", description: "Variable name"],
-                    deviceId: [type: "string", description: "Removed connector device id (when one existed)"],
-                    deviceDeleted: [type: "boolean", description: "True when a connector device was deleted"],
-                    alreadyRemoved: [type: "boolean", description: "True when there was no connector to remove (no-op)"],
-                    message: [type: "string", description: "Human-readable result"],
-                    note: [type: "string", description: "Advisory about the known Hubitat StackOverflowError log noise"]
-                ],
-                required: ["success", "name"]
             ]
         ],
         [
@@ -1089,21 +979,6 @@ def _getAllToolDefinitions_partVariables() {
                     sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"],
                     limit: [type: "integer", description: "Optional: max entries to return (default 50)"]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    entries: [type: "array", description: "Recent variable changes, most-recent first", items: [type: "object", properties: [
-                        name: [type: "string", description: "Variable name"],
-                        value: [description: "New value at change time"],
-                        timestamp: [type: "integer", description: "Change time (epoch millis)"],
-                        descriptionText: [type: "string", description: "Event description text"]
-                    ]]],
-                    total: [type: "integer", description: "Entries returned"],
-                    bufferSize: [type: "integer", description: "Total changes currently buffered"],
-                    bufferCap: [type: "integer", description: "Max buffer capacity (200)"]
-                ],
-                required: ["entries", "total", "bufferSize", "bufferCap"]
             ]
         ],
     ]

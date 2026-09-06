@@ -83,25 +83,6 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         'flat'    | false
     }
 
-    def "a legacy tools/list catalog still conforms with publishOutputSchemas ON"() {
-        // Issues #290/#342: with the advanced toggle on, base-tool entries carry the WIRE
-        // form of their outputSchema (required arrays stripped by _wireOutputSchema). The
-        // legacy Tool schema constrains outputSchema too -- `type` is required and const
-        // "object" -- so the emitted wire form has to satisfy it, not just the definition.
-        given:
-        settingsMap.useGateways = true
-        settingsMap.publishOutputSchemas = true
-
-        when:
-        def response = dispatch([jsonrpc: '2.0', id: 3, method: 'tools/list', params: [:]])
-
-        then: 'at least one entry really did carry an outputSchema -- otherwise this proves nothing'
-        response.result.tools.any { it.outputSchema != null }
-
-        and:
-        McpSchemaValidator.legacyErrors('ListToolsResult', response.result) == []
-    }
-
     def "a legacy tools/call result conforms to CallToolResult"() {
         given:
         script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }

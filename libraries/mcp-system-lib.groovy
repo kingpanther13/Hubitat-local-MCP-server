@@ -911,79 +911,12 @@ def _getAllToolDefinitions_partSystem() {
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.", default: false]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    temperatureScale: [type: "string", description: "Hub temperature scale (F/C)"],
-                    model: [type: "string", description: "Hardware ID/model"],
-                    firmwareVersion: [type: "string", description: "Firmware version string"],
-                    zigbeeChannel: [type: "string", description: "Zigbee radio channel"],
-                    zwaveVersion: [type: "string", description: "Z-Wave firmware version"],
-                    zigbeeId: [type: "string", description: "Zigbee ID"],
-                    type: [type: "string", description: "Hub type"],
-                    uptimeSeconds: [description: "Uptime in seconds (or 'unavailable' if the SDK lookup failed)"],
-                    uptimeFormatted: [type: "string", description: "Human-readable uptime"],
-                    freeMemoryKB: [type: "string", description: "Free OS memory in KB"],
-                    memoryWarning: [type: "string", description: "Present when memory is low"],
-                    memoryNote: [type: "string", description: "Present when memory is moderate"],
-                    internalTempCelsius: [type: "string", description: "Internal temperature in Celsius"],
-                    temperatureWarning: [type: "string", description: "Present when temperature is high"],
-                    temperatureNote: [type: "string", description: "Present when temperature is warm"],
-                    databaseSizeKB: [type: "string", description: "Database size in KB"],
-                    databaseWarning: [type: "string", description: "Present when database is large"],
-                    mcpServerVersion: [type: "string", description: "Installed MCP server version"],
-                    lastBackupEpoch: [type: "integer", description: "Epoch millis of the newest hub backup this app knows of (its own hub_create_backup stamp, or the hub's local backup list once a gated tool consulted it); null if never. The destructive-confirm 24h gate reads the same record and falls back to the hub's own backup list when it is stale."],
-                    mcpDeviceCount: [type: "integer", description: "Selected device count"],
-                    mcpRuleCount: [type: "integer", description: "MCP rule child-app count"],
-                    mcpLogEntries: [type: "integer", description: "Buffered MCP log entry count"],
-                    mcpCapturedStates: [type: "integer", description: "Captured device state count"],
-                    hubSecurityConfigured: [type: "boolean", description: "Whether hub security is configured"],
-                    readEnabled: [type: "boolean", description: "Read master toggle state (default ON)"],
-                    writeEnabled: [type: "boolean", description: "Write master toggle state (default ON)"],
-                    customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
-                    developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
-                    lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms), ageMs (ms since `at`, computed at read). PERSISTS in atomicState across app reloads -- it is NOT cleared on update, so a read can return a STALE record from an earlier deploy; check ageMs (or baseline `at` across your own deploy) for freshness before trusting it. Absent until the first self-update."],
-                    headerValidation: [type: "object", description: "Transport header readability, recorded on the first MCP request served. Keys: requestHeadersReadable (bool), originValidation, modernEraDetection, and originAllowlist when the hub LAN IP could not be read. When requestHeadersReadable is false the firmware does not expose request.headers, which INACTIVATES Origin validation (the DNS-rebinding check) and makes every request be served as legacy-era regardless of its MCP-Protocol-Version header. Absent until the first request."],
-                    name: [type: "string", description: "Hub name (Read master only)"],
-                    localIP: [type: "string", description: "Hub local IP (Read master only)"],
-                    timeZone: [type: "string", description: "Time zone ID (Read master only)"],
-                    latitude: [type: "number", description: "Latitude (Read master only)"],
-                    longitude: [type: "number", description: "Longitude (Read master only)"],
-                    zipCode: [type: "string", description: "Zip code (Read master only)"],
-                    hubData: [type: "object", description: "Hub data map (Read master only)"],
-                    readDisabledNote: [type: "string", description: "Present when the Read master is disabled; PII excluded"],
-                    identifyHubTriggered: [type: "boolean", description: "Present when identifyHub requested; LED blink result"],
-                    identifyHubError: [type: "string", description: "Present when identifyHub blink failed"],
-                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from the appUpdate MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why. Install a pending update with hub_update_firmware."],
-                    appUpdate: [type: "object", description: "MCP Rule Server APP version check; present only when includeAppUpdate=true. {installedVersion, latestVersion ('unknown (check in progress)' while the async GitHub check is pending), updateAvailable, lastChecked}. Separate from platformUpdate (the hub's own firmware)."],
-                    safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
-                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."]
-                ]
             ]
         ],
         [
             name: "hub_list_modes",
             description: "List the hub's location modes (with the active one) + Mode Manager state.[[FLAT_TRIM]] Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.[[/FLAT_TRIM]]",
-            inputSchema: [type: "object", properties: [:]],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    currentMode: [type: "string", description: "Current location mode name"],
-                    modes: [type: "array", description: "Available modes", items: [type: "object", properties: [
-                        id: [type: "string", description: "Mode ID"],
-                        name: [type: "string", description: "Mode name"],
-                        icon: [type: "string", description: "Mode icon name (when available)"]
-                    ]]],
-                    modeManager: [type: "object", description: "Mode Manager state (when readable)", properties: [
-                        selected: [type: "string", description: "Active manager: builtIn | legacy | app (a 3rd-party mode-manager app)"],
-                        appId: [type: "string", description: "Mode Manager app id"],
-                        easyModeManagerAppId: [type: "string", description: "Integrated Mode Manager app id"],
-                        easyConditions: [type: "object", description: "The Integrated Mode Manager's per-mode automation conditions, keyed by mode id ({} when none set)"]
-                    ]]
-                ],
-                required: ["currentMode", "modes"]
-            ]
+            inputSchema: [type: "object", properties: [:]]
         ],
         [
             name: "hub_manage_mode",
@@ -998,20 +931,6 @@ def _getAllToolDefinitions_partSystem() {
                     confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup). Confirms a backup <24h + that breaking mode references is intended."]
                 ],
                 required: ["action"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the action succeeded"],
-                    action: [type: "string", description: "The action performed"],
-                    modes: [type: "array", description: "Resulting mode list (create/rename/delete)", items: [type: "object"]],
-                    previousMode: [type: "string", description: "Mode before activate"],
-                    newMode: [type: "string", description: "Mode after activate"],
-                    deletedModeId: [type: "string", description: "The deleted mode id"],
-                    error: [type: "string", description: "Failure reason (success=false)"],
-                    note: [type: "string", description: "Guidance / recovery"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1023,37 +942,12 @@ def _getAllToolDefinitions_partSystem() {
                     manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
                     conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write')."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the change succeeded"],
-                    manager: [type: "string", description: "The manager that was selected"],
-                    conditionsUpdated: [type: "boolean", description: "True if conditions were applied"],
-                    error: [type: "string", description: "Manager-selection failure reason"],
-                    conditionsError: [type: "string", description: "Conditions-update failure reason"],
-                    note: [type: "string", description: "Guidance"]
-                ],
-                required: ["success"]
             ]
         ],
         [
             name: "hub_get_hsm_status",
             description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. See hub_get_tool_guide(section='hub_admin_write').",
-            inputSchema: [type: "object", properties: [:]],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    // status/alert are genuinely null on hubs where HSM is disabled or has
-                    // never reported -- the schema must say so, or a spec-validating client
-                    // (issue #342) rejects a real success result against it.
-                    status: [type: ["string", "null"], description: "Current HSM status (disarmed/armedAway/armedHome/armedNight); null if HSM is disabled or hasn't reported yet"],
-                    statusText: [type: "string", description: "Human-readable status; interprets a null/empty status"],
-                    alert: [type: ["string", "null"], description: "Current HSM alert, if any"],
-                    armCommands: [type: "array", description: "Valid arm commands for hub_set_hsm (NOT hub Day/Night/Away location modes)", items: [type: "string"]]
-                ],
-                required: ["statusText", "armCommands"]
-            ]
+            inputSchema: [type: "object", properties: [:]]
         ],
         [
             name: "hub_set_hsm",
@@ -1064,15 +958,6 @@ def _getAllToolDefinitions_partSystem() {
                     armCommand: [type: "string", enum: ["armAway", "armHome", "armNight", "disarm"], description: "HSM arm command."]
                 ],
                 required: ["armCommand"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the HSM arm event was sent"],
-                    previousStatus: [type: "string", description: "HSM status before the change"],
-                    newMode: [type: "string", description: "Requested HSM mode"]
-                ],
-                required: ["success", "previousStatus", "newMode"]
             ]
         ],
         [
@@ -1101,16 +986,6 @@ def _getAllToolDefinitions_partSystem() {
                     ]],
                     confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the settings were applied"],
-                    applied: [type: "array", description: "The fields that were changed; may include darkMode and the network legs (network.staticIp / network.dhcp / network.ethernetAutoneg / network.wifi)", items: [type: "string"]],
-                    error: [type: "string", description: "Failure reason (success=false)"],
-                    note: [type: "string", description: "Guidance / recovery; how to read back values"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1124,17 +999,6 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the reboot was initiated"],
-                    message: [type: "string", description: "Human-readable result"],
-                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
-                    warning: [type: "string", description: "Downtime warning"],
-                    response: [type: "string", description: "Truncated hub response body"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1148,17 +1012,6 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automaticall
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the shutdown was initiated"],
-                    message: [type: "string", description: "Human-readable result"],
-                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
-                    warning: [type: "string", description: "Power-off warning; hub will not auto-restart"],
-                    response: [type: "string", description: "Truncated hub response body"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1172,22 +1025,6 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
                     statusOnly: [type: "boolean", description: "Poll the hub's update status only and return without applying anything. No confirm/backup needed. Default false."],
                     confirm: [type: "boolean", description: "REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the install was initiated (or the status poll ran)"],
-                    statusOnly: [type: "boolean", description: "True when this was a status poll (no install)"],
-                    status: [description: "The /hub/cloud/checkUpdateStatus payload; present for statusOnly. Usually a parsed object (e.g. {status:'IDLE'}) but can be a plain string if the hub returns a non-JSON body (e.g. during the reboot)."],
-                    message: [type: "string", description: "Human-readable result; present on apply"],
-                    available: [type: "object", description: "The /hub/cloud/checkForUpdate payload, returned verbatim; present on apply. Fields: version (the available firmware version), upgrade (bool, whether one is pending), status (e.g. 'UPDATE_AVAILABLE'), releaseNotesUrl, beta (bool), hubCount, and accountEmails (the hub owner's own account email)."],
-                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
-                    warning: [type: "string", description: "Downtime/reboot warning"],
-                    response: [type: "string", description: "Truncated hub response body"],
-                    error: [type: "string", description: "Present on failure"],
-                    note: [type: "string", description: "Actionable recovery guidance on failure"]
-                ],
-                required: ["success"]
             ]
         ],
     ]

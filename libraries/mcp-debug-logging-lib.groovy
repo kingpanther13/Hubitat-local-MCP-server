@@ -260,11 +260,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         // Tool-surface shape the client sees on tools/list: gateway (hub_manage_*/hub_read_*
         // consolidation, the default) vs flat (every tool advertised individually). A client's
         // failure mode can differ by mode, so a bug report must carry it.
-        // outputSchemasPublished reports whether schemas are ACTUALLY advertised, not just
-        // the toggle: flat mode never emits outputSchema, so toggle-ON + flat is still
-        // "not advertised" (schema advertising is a known client-visible failure class).
         toolMode: (settings.useGateways == false) ? "flat" : "gateway",
-        outputSchemasPublished: (settings.publishOutputSchemas == true && settings.useGateways != false),
         customMcpRuleCount: getChildApps()?.size() ?: 0,
         nativeRm: _bugReportNativeRmStatus(),
         deviceCount: selectedDevices?.size() ?: 0,
@@ -433,7 +429,7 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Hub firmware:** ${env.hubFirmware}
 - **Time zone:** ${env.timeZone}
 - **MCP log level:** ${env.logLevel}
-- **Tool mode:** ${env.toolMode}${env.outputSchemasPublished ? ' (outputSchemas advertised on tools/list)' : ''}
+- **Tool mode:** ${env.toolMode}
 - **Rules in legacy custom rule engine:** ${env.customMcpRuleCount}
 - ${env.nativeRm.installed == false ? "**Native Rule Machine:** not installed (Rule Machine not detected on this hub)" : "**Native Rule Machine rules:** ${env.nativeRm.count}${env.nativeRm.error ? ' (RMUtils partial failure — count may be inaccurate)' : ''}"}
 - **Devices exposed to MCP:** ${env.deviceCount}
@@ -467,15 +463,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         [
             name: "hub_delete_debug_logs",
             description: "Clear the structured MCP history view read by hub_get_logs(mode='mcp').[[FLAT_TRIM]] A durable clear marker keeps old native entries from reappearing after reload. Use before reproducing an issue. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
-            inputSchema: [type: "object", properties: [:]],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the clear succeeded"],
-                    clearedCount: [type: "integer", description: "Number of entries removed"]
-                ],
-                required: ["success", "clearedCount"]
-            ]
+            inputSchema: [type: "object", properties: [:]]
         ],
         [
             name: "hub_set_log_level",
@@ -486,15 +474,6 @@ def _getAllToolDefinitions_partDebugLogging() {
                     level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
                 ],
                 required: ["level"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the level was set"],
-                    previousLevel: [type: "string", description: "Log level before the change"],
-                    newLevel: [type: "string", description: "Log level after the change"]
-                ],
-                required: ["success", "previousLevel", "newLevel"]
             ]
         ],
         [
@@ -518,26 +497,6 @@ def _getAllToolDefinitions_partDebugLogging() {
                     logWindowSeconds: [type: "integer", description: "Default 120."]
                 ],
                 required: ["title", "expected", "actual"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the report was generated"],
-                    issueType: [type: "string", description: "Normalized issue type (bug/enhancement/agent_behavior)"],
-                    privacyMode: [type: "string", description: "Resolved privacy mode (private/public)"],
-                    suggestedTitle: [type: "string", description: "Pre-filled GitHub issue title"],
-                    submitUrl: [type: "string", description: "Prefilled GitHub issue link to open"],
-                    report: [type: "string", description: "Markdown issue report body to paste into the form"],
-                    logs: [type: "object", description: "Scoped log summary", properties: [
-                        scoped: [type: "boolean", description: "Whether logs were narrowed to a context anchor"],
-                        relevantCount: [type: "integer", description: "Count of context-relevant log entries"],
-                        otherRecentLogCount: [type: "integer", description: "Count of omitted unrelated recent entries"],
-                        hint: [type: "string", description: "Guidance to include omitted entries, when applicable"]
-                    ]],
-                    instructions: [type: "string", description: "How to submit the report"],
-                    updateAvailable: [type: "string", description: "Latest available version, present when an update exists"]
-                ],
-                required: ["success", "submitUrl", "report"]
             ]
         ],
     ]

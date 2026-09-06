@@ -278,22 +278,6 @@ def _getAllToolDefinitions_partRooms() {
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    rooms: [type: "array", description: "Rooms on the hub", items: [type: "object", properties: [
-                        id: [type: "string", description: "Room ID"],
-                        name: [type: "string", description: "Room name"],
-                        deviceCount: [type: "integer", description: "Devices assigned"],
-                        deviceIds: [type: "array", description: "Assigned device IDs", items: [type: "string"]]
-                    ]]],
-                    count: [type: "integer", description: "Rooms returned this page"],
-                    total: [type: "integer", description: "Total rooms; present only in paginated mode"],
-                    nextCursor: [type: "string", description: "Pagination cursor; present when more results remain"],
-                    message: [type: "string", description: "Present when no rooms configured"]
-                ],
-                required: ["rooms", "count"]
             ]
         ],
         [
@@ -305,22 +289,6 @@ def _getAllToolDefinitions_partRooms() {
                     room: [type: "string", description: "Room name (case-insensitive) or room ID, e.g. \"Living Room\" or \"5\""]
                 ],
                 required: ["room"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    id: [type: "string", description: "Room ID"],
-                    name: [type: "string", description: "Room name"],
-                    deviceCount: [type: "integer", description: "Devices in room"],
-                    devices: [type: "array", description: "Assigned devices", items: [type: "object", properties: [
-                        id: [type: "string", description: "Device ID"],
-                        label: [type: "string", description: "Device label"],
-                        name: [type: "string", description: "Device name"],
-                        currentStates: [type: "object", description: "Current attribute values; present when accessible"],
-                        accessible: [type: "boolean", description: "False when device not reachable via MCP"]
-                    ]]]
-                ],
-                required: ["id", "name", "deviceCount", "devices"]
             ]
         ],
         [
@@ -334,19 +302,6 @@ def _getAllToolDefinitions_partRooms() {
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
                 ],
                 required: ["name", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether creation succeeded"],
-                    room: [type: "object", description: "Created room", properties: [
-                        id: [type: "string", description: "New room ID"],
-                        name: [type: "string", description: "Room name"],
-                        deviceCount: [type: "integer", description: "Devices assigned"]
-                    ]],
-                    message: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -361,19 +316,6 @@ PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to us
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
                 ],
                 required: ["room", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether deletion succeeded"],
-                    deletedRoom: [type: "object", description: "Deleted room", properties: [
-                        id: [type: "string", description: "Room ID"],
-                        name: [type: "string", description: "Room name"]
-                    ]],
-                    devicesUnassigned: [type: "integer", description: "Devices now unassigned"],
-                    message: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -387,19 +329,6 @@ PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to us
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["room", "newName", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether rename succeeded"],
-                    room: [type: "object", description: "Renamed room", properties: [
-                        id: [type: "string", description: "Room ID"],
-                        name: [type: "string", description: "New room name"],
-                        previousName: [type: "string", description: "Prior room name"]
-                    ]],
-                    message: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
             ]
         ]
     ]

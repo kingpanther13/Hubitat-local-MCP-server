@@ -4019,99 +4019,6 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
     return findings
 
 
-OUTPUT_SCHEMA_FROZEN_COUNT = 116
-# Per-file declaration counts and a digest of the declarations' text: the total alone cannot see an
-# edit to an existing declaration, or one removed here and added there. Recompute both with
-# `python tests/sandbox_lint.py --output-schema-baseline` ONLY when a declaration is deliberately
-# removed with its tool; an edit to an existing one is what the freeze forbids.
-OUTPUT_SCHEMA_FROZEN_PER_FILE = {'libraries/mcp-app-cloner-lib.groovy': 3, 'libraries/mcp-bundles-lib.groovy': 4, 'libraries/mcp-code-management-lib.groovy': 14, 'libraries/mcp-custom-rules-lib.groovy': 8, 'libraries/mcp-dashboards-lib.groovy': 6, 'libraries/mcp-debug-logging-lib.groovy': 3, 'libraries/mcp-devices-lib.groovy': 11, 'libraries/mcp-diagnostics-lib.groovy': 16, 'libraries/mcp-discovery-lib.groovy': 2, 'libraries/mcp-files-lib.groovy': 4, 'libraries/mcp-hpm-lib.groovy': 1, 'libraries/mcp-item-backups-lib.groovy': 5, 'libraries/mcp-native-rules-lib.groovy': 10, 'libraries/mcp-rooms-lib.groovy': 5, 'libraries/mcp-self-admin-lib.groovy': 2, 'libraries/mcp-system-lib.groovy': 10, 'libraries/mcp-variables-lib.groovy': 8, 'libraries/mcp-virtual-devices-lib.groovy': 1, 'libraries/mcp-visual-rules-lib.groovy': 3}
-OUTPUT_SCHEMA_FROZEN_DIGEST = "d6ba8dc7d65b29aa"
-
-
-_OUTPUT_SCHEMA_MARKER = re.compile(r"\boutputSchema\s*:\s*\[")
-
-
-def _output_schema_declarations(text: str) -> list[str]:
-    """Every `outputSchema: [ ... ]` block in a Groovy source -- any whitespace around the map-entry
-    colon, since Groovy accepts `outputSchema:[` and `outputSchema : [` too -- bracket-matched with
-    string literals skipped so a bracket inside a description cannot unbalance the walk. The text
-    returned starts at the canonical `outputSchema: [`, so the digest does not move with the spacing."""
-    out: list[str] = []
-    m = _OUTPUT_SCHEMA_MARKER.search(text)
-    while m:
-        j = m.end() - 1              # the opening bracket
-        depth = 0
-        k = j
-        n = len(text)
-        while k < n:
-            c = text[k]
-            if c in ("'", '"'):
-                q = c
-                k += 1
-                while k < n and text[k] != q:
-                    k += 2 if text[k] == "\\" else 1
-            elif c == "[":
-                depth += 1
-            elif c == "]":
-                depth -= 1
-                if depth == 0:
-                    break
-            k += 1
-        out.append("outputSchema: " + re.sub(r"\s+", " ", text[j:k + 1]).strip())
-        m = _OUTPUT_SCHEMA_MARKER.search(text, k + 1)
-    return out
-
-
-def _output_schema_inventory() -> tuple[dict, str]:
-    import glob as _glob
-    # Rooted at REPO_ROOT, not the current directory: pytest imports this module and calls the
-    # inventory from wherever it was started, and a cwd-relative glob would find no libraries
-    # there and report every declaration as removed.
-    libs = sorted(os.path.relpath(path, str(REPO_ROOT))
-                  for path in _glob.glob(os.path.join(str(REPO_ROOT), "libraries", "*.groovy")))
-    files = ["hubitat-mcp-server.groovy", "e2e-deadman-watchdog-v2.groovy", *libs]
-    per_file: dict = {}
-    digest = hashlib.sha256()
-    for rel in files:
-        path = os.path.join(REPO_ROOT, rel)
-        if not os.path.isfile(path):
-            continue
-        rel = rel.replace(os.sep, "/")      # one spelling on every platform, or the pin drifts by OS
-        with open(path, encoding="utf-8") as fh:
-            decls = _output_schema_declarations(fh.read())
-        if decls:
-            per_file[rel] = len(decls)
-        for d in decls:
-            digest.update(rel.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(d.encode("utf-8"))
-            digest.update(b"\0")
-    return per_file, digest.hexdigest()[:16]
-
-
-def check_output_schema_freeze() -> list[dict]:
-    """outputSchema is legacy and frozen (AGENTS.md § Schema design): the declarations that exist stay
-    as they are, a new tool declares none. Pin the count per file and a digest of the declarations
-    across the app sources so a new one, a moved one, or an edited one fails here with the policy,
-    the way the tool-count guard pins the catalog."""
-    per_file, digest = _output_schema_inventory()
-    total = sum(per_file.values())
-    if total == OUTPUT_SCHEMA_FROZEN_COUNT and per_file == OUTPUT_SCHEMA_FROZEN_PER_FILE and digest == OUTPUT_SCHEMA_FROZEN_DIGEST:
-        return []
-    if total != OUTPUT_SCHEMA_FROZEN_COUNT or per_file != OUTPUT_SCHEMA_FROZEN_PER_FILE:
-        direction = "added" if total > OUTPUT_SCHEMA_FROZEN_COUNT else ("removed" if total < OUTPUT_SCHEMA_FROZEN_COUNT else "moved between files")
-        message = (f"outputSchema is frozen (AGENTS.md § Schema design): {total} declarations found, the frozen set "
-                   f"has {OUTPUT_SCHEMA_FROZEN_COUNT} ({direction}). A new tool must not declare one; if a tool was "
-                   f"deleted with its declaration, re-pin with `python tests/sandbox_lint.py --output-schema-baseline`. "
-                   f"Per file now: {per_file}")
-    else:
-        message = ("outputSchema is frozen (AGENTS.md § Schema design): the count is unchanged but an existing "
-                   f"declaration's text changed (digest {digest}, frozen {OUTPUT_SCHEMA_FROZEN_DIGEST}). Revert the "
-                   "edit; the frozen declarations are not maintained.")
-    return [{"file": "AGENTS.md", "line": 0, "severity": "error", "rule": "output-schema-frozen",
-             "message": message, "source": ""}]
-
-
 def check_bm25_key_subscripts() -> list[dict]:
     """hub_search_tools sandbox fix guard. The platform's SandboxSubscriptGuard rejects a COMPUTED
     map key that collides with a reflection-ish property name, and one real corpus token
@@ -4510,8 +4417,6 @@ def main() -> int:
     # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
     all_findings.extend(check_bm25_key_subscripts())
 
-    # outputSchema is frozen: no new declarations (AGENTS.md § Schema design).
-    all_findings.extend(check_output_schema_freeze())
 
     # /logs/json grows with hub size: its only fetch is the worker-run one behind the JVM
     # snapshot, and every tool reading the snapshot continues via requestState.
@@ -4543,13 +4448,6 @@ def main() -> int:
 
     return 1 if errors else 0
 
-
-if __name__ == "__main__" and "--output-schema-baseline" in sys.argv:
-    _pf, _dg = _output_schema_inventory()
-    print(f"OUTPUT_SCHEMA_FROZEN_COUNT = {sum(_pf.values())}")
-    print(f"OUTPUT_SCHEMA_FROZEN_PER_FILE = {_pf!r}")
-    print(f'OUTPUT_SCHEMA_FROZEN_DIGEST = "{_dg}"')
-    sys.exit(0)
 
 if __name__ == "__main__":
     sys.exit(main())

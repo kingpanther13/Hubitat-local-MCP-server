@@ -552,38 +552,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         classifiedAsWrite == expectedWrites
     }
 
-    def "every outputSchema that a leaf tool declares is well-formed"() {
-        // outputSchema is legacy and frozen (AGENTS.md § Schema design): the declarations that
-        // exist are kept for the opt-in emission (settings.publishOutputSchemas, default OFF),
-        // a new tool does not add one, and no schema is extended. So this guards only the
-        // shape of what IS declared (object + non-empty properties map): a stubbed or
-        // malformed schema would break a spec-validating client the moment the toggle is on.
-        when:
-        def declared = script.getAllToolDefinitions().findAll { it.containsKey('outputSchema') }
-
-        then:
-        !declared.isEmpty()  // defend against a vacuous every {}
-        declared.every {
-            it.outputSchema instanceof Map &&
-            it.outputSchema.type == 'object' &&
-            it.outputSchema.properties instanceof Map &&
-            !it.outputSchema.properties.isEmpty()
-        }
-    }
-
-    def "eliminated opToken protocol leaves no stale output-schema fields"() {
-        when:
-        def defs = script.getAllToolDefinitions()
-        def stale = defs.findAll { tool ->
-            def properties = tool.outputSchema?.properties
-            properties instanceof Map && (properties.containsKey('opToken') ||
-                properties.containsKey('recentOps') || properties.containsKey('recentOpsTotal'))
-        }*.name
-
-        then:
-        stale == []
-    }
-
     def "getAllToolDefinitions() concatenates its chunk methods with no dropped or duplicated tools"() {
         // getAllToolDefinitions() concatenates one per-domain chunk method
         // (_getAllToolDefinitions_part<Name>(), each contributed by its #include
@@ -658,89 +626,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         where:
         mode << ['gateway', 'flat']
-    }
-
-    def "outputSchema emission is gated by publishOutputSchemas in gateway mode; flat mode never emits it"() {
-        // Issue #290: outputSchema emission is OPT-IN. The legacy tools carry a DEFINITION
-        // (see the 'every outputSchema that a leaf tool declares is well-formed' spec above), but
-        // it reaches the wire only in gateway mode AND only when publishOutputSchemas is on
-        // -- OFF by default so strict clients (e.g. Claude Desktop) that reject an
-        // outputSchema returned without structuredContent work. The flat tools/list never
-        // emits it regardless of the toggle (size-constrained 124,000-byte surface).
-        // hub_get_info is a base/flat read tool present in both modes -- the clean probe.
-        given:
-        settingsMap.enableCustomRuleEngine = true
-
-        when: 'gateway mode, publishOutputSchemas OFF (default)'
-        settingsMap.remove('useGateways')
-        settingsMap.remove('publishOutputSchemas')
-        def gwOff = script.getToolDefinitions().find { it.name == 'hub_get_info' }
-
-        and: 'gateway mode, publishOutputSchemas ON'
-        settingsMap.publishOutputSchemas = true
-        def gwOn = script.getToolDefinitions().find { it.name == 'hub_get_info' }
-
-        and: 'flat mode, publishOutputSchemas ON (must STILL strip)'
-        settingsMap.useGateways = false
-        def flatOn = script.getToolDefinitions().find { it.name == 'hub_get_info' }
-
-        and: 'flat mode, publishOutputSchemas OFF'
-        settingsMap.remove('publishOutputSchemas')
-        def flatOff = script.getToolDefinitions().find { it.name == 'hub_get_info' }
-
-        then: 'gateway mode emits outputSchema only when the toggle is on'
-        gwOff != null
-        gwOff.containsKey('outputSchema') == false
-        gwOn?.outputSchema instanceof Map
-        gwOn.outputSchema.type == 'object'
-
-        and: 'the emitted schema is the WIRE form: no required arrays anywhere (issue #342 — spec-validating clients must accept error-shaped results too)'
-        !gwOn.outputSchema.containsKey('required')
-        gwOn.outputSchema.properties.values().every { !(it instanceof Map) || !(it.required instanceof List) }
-
-        and: 'flat mode never emits outputSchema, regardless of the toggle'
-        flatOn != null
-        flatOn.containsKey('outputSchema') == false
-        flatOff != null
-        flatOff.containsKey('outputSchema') == false
-    }
-
-    def "_advertisesOutputSchema agrees with the actual gateway-mode emitted surface for every tool (issue #342)"() {
-        // _advertisesOutputSchema re-derives the emission logic (base tool + declared
-        // schema) by hand for the structuredContent attach; this exhaustive cross-check
-        // keeps the two from drifting: for EVERY entry the gateway-mode toggle-ON
-        // tools/list emits, the helper must equal "carries outputSchema on the wire"
-        // (gateways false/absent, schema-declaring base tools true/present).
-        given:
-        settingsMap.useGateways = true
-        settingsMap.publishOutputSchemas = true
-        settingsMap.enableCustomRuleEngine = true
-
-        when:
-        def emitted = script.getToolDefinitions()
-
-        then: 'helper verdict == wire presence, for every emitted entry'
-        emitted.every { t -> script._advertisesOutputSchema(t.name) == t.containsKey('outputSchema') }
-
-        and: 'non-vacuity: the surface has both kinds'
-        emitted.any { it.containsKey('outputSchema') }
-        emitted.any { !it.containsKey('outputSchema') }
-    }
-
-    def "hub_get_hsm_status outputSchema declares nullable status/alert and requires neither (issue #342)"() {
-        // On hubs where HSM is disabled or has never reported, toolGetHsmStatus returns
-        // status:null (and alert is routinely null) -- a spec-validating client checks the
-        // ADVERTISED schema against real results, so these fields must be declared
-        // nullable and status must not be required (a real success failed validation
-        // against the old non-null string declaration).
-        given:
-        def d = script.getAllToolDefinitions().find { it.name == 'hub_get_hsm_status' }
-
-        expect:
-        d.outputSchema.properties.status.type == ['string', 'null']
-        d.outputSchema.properties.alert.type == ['string', 'null']
-        !d.outputSchema.required.contains('status')
-        d.outputSchema.required.containsAll(['statusText', 'armCommands'])
     }
 
     def "getAllToolDefinitions() returns a FRESH list each call -- mutating one return must not leak to the next"() {
