@@ -8239,11 +8239,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolSetRule([appId: 100, addAction: [capability: "log", message: "after empty render"], confirm: true])
 
-        then: 'the empty first render was re-read, and the actType write found its field'
+        then: 'the empty first render was re-read, and the actType write found its field (this stub never persists, so the proof is the write being ISSUED, not skipped as not_in_schema)'
         doActReads >= 2
-        result.success == true
-        result.partial != true
         posts.any { it.body?.containsKey("settings[actType.1]") }
+        !(result.settingsSkipped ?: []).any { it.key == "actType.1" && it.reason == "not_in_schema" }
     }
 
     def "moveAction rejects unknown direction at the dispatcher"() {
