@@ -1011,7 +1011,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_read_diagnostics` → `hub_get_device_health` (also in `hub_manage_diagnostics` via multi-membership).
 
-### T51 — Discover hub_get_debug_logs (hub_manage_logs)
+### T51 — Discover hub_get_logs(mode='mcp') (hub_manage_logs)
 
 ```json
 {
@@ -1019,7 +1019,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_get_debug_logs`.
+**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_get_logs(mode='mcp')`.
 
 ### T52 — Discover hub_report_issue (core)
 
@@ -1052,7 +1052,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_set_log_level` and → `hub_get_debug_logs` (mode='status').
+**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_set_log_level` and → `hub_get_logs` (mode='status').
 
 ### T55 — Discover hub_list_captured_states (hub_read_diagnostics)
 
@@ -1104,7 +1104,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_delete_debug_logs`, then → `hub_get_debug_logs`.
+**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_delete_debug_logs`, then → `hub_get_logs(mode='mcp')`.
 
 ---
 
@@ -1305,7 +1305,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `hub_get_logs` (system logs), not `hub_get_debug_logs` (MCP-specific).
+**Expected**: Routes to `hub_get_logs` (system logs), not `hub_get_logs(mode='mcp')` (MCP-specific).
 
 ---
 
@@ -1359,7 +1359,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: All four are reads available from `hub_read_diagnostics` (hub_get_metrics, hub_get_device_health, hub_get_logs, hub_get_debug_logs) — a read-only client gets the whole report from the pure-read gateway; the write-bearing `hub_manage_diagnostics` / `hub_manage_logs` also expose them.
+**Expected**: These reads are available from `hub_read_diagnostics`: `hub_get_metrics`, `hub_get_device_health`, and `hub_get_logs` in hub and MCP modes. A read-only client gets the whole report from the pure-read gateway; the write-bearing `hub_manage_diagnostics` / `hub_manage_logs` also expose them.
 
 ### T84 — Cross-gateway workflow
 
@@ -2377,7 +2377,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_get_debug_logs`.
+**Expected**: `hub_get_logs(mode='mcp')`.
 **Equivalent to**: T51
 
 #### T280 — Clean up diagnostic logs
@@ -2389,7 +2389,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_delete_debug_logs`, then `hub_get_debug_logs` to verify.
+**Expected**: `hub_delete_debug_logs`, then `hub_get_logs(mode='mcp')` to verify.
 **Equivalent to**: T59
 
 #### T281 — Troubleshoot a broken automation
@@ -2414,7 +2414,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_set_log_level` (to 'warn' or 'error'), then `hub_get_debug_logs` (mode='status').
+**Expected**: `hub_set_log_level` (to 'warn' or 'error'), then `hub_get_logs` (mode='status').
 **Equivalent to**: T54
 
 #### T283 — Generate a bug report
@@ -2527,7 +2527,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_get_metrics` + `hub_get_device_health` + `hub_get_logs` + `hub_get_debug_logs`.
+**Expected**: `hub_get_metrics` + `hub_get_device_health` + `hub_get_logs` + `hub_get_logs(mode='mcp')`.
 **Equivalent to**: T83
 
 #### T299 — Complete smart home inventory

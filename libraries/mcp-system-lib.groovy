@@ -129,7 +129,7 @@ def toolGetHubInfo(args = null) {
     info.mcpServerVersion = currentVersion()
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
-    info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
+    info.mcpLogEntries = getDebugLogEntries().size()
     info.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
     // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
     // actually needed (the destructive-confirm gate's 24h window reads this same state key) --

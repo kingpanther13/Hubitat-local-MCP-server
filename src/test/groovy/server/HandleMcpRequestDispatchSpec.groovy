@@ -375,7 +375,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         script.handleMcpRequest()
 
         then:
-        def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('response too large') }
+        def warn = script.getDebugLogEntries().find { it.message?.contains('response too large') }
         warn != null
         warn.level == 'warn'
         warn.details.tool == 'hub_list_rooms'
@@ -416,8 +416,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         inner.tool == 'hub_get_app_config'
         inner.suggestion.contains('includeSettings')
 
-        and: 'debug-log details surface the gateway/sub-tool split for an operator running hub_get_debug_logs'
-        def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('response too large') }
+        and: 'debug-log details surface the gateway/sub-tool split in hub_get_logs MCP mode'
+        def warn = script.getDebugLogEntries().find { it.message?.contains('response too large') }
         warn.details.tool == 'hub_get_app_config'
         warn.details.gateway == 'hub_read_apps_code'
     }
@@ -442,7 +442,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         then: 'the -32602 fires and the debug-log entry names the sub-tool with the gateway as context'
         def response = mcpDriver.parseResponseJson()
         response.error.code == -32602
-        def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.startsWith('Validation error in') }
+        def warn = script.getDebugLogEntries().find { it.message?.startsWith('Validation error in') }
         warn != null
         warn.message.contains('hub_get_room')
         warn.details.tool == 'hub_get_room'
@@ -467,7 +467,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         then: 'the isError envelope fires and the error-level entry names the sub-tool with the gateway as context'
         def response = mcpDriver.parseResponseJson()
         response.result.isError == true
-        def err = (stateMap.debugLogs?.entries ?: []).find { it.message?.startsWith('Tool execution error in') }
+        def err = script.getDebugLogEntries().find { it.message?.startsWith('Tool execution error in') }
         err != null
         err.message.contains('hub_get_room')
         err.details.tool == 'hub_get_room'
@@ -1968,7 +1968,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         mcpDriver.lastRenderArgs.status == null
         // Match the MISMATCH line specifically. 'Origin' alone also matches the header-readability
         // entry, which is how this originally picked up an info-level record and failed.
-        def entry = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('Origin MISMATCH') }
+        def entry = script.getDebugLogEntries().find { it.message?.contains('Origin MISMATCH') }
         entry != null
         entry.level == 'error'
         entry.message.contains('evil.example')

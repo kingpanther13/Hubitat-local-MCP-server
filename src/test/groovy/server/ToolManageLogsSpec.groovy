@@ -14,10 +14,10 @@ import support.ToolSpecBase
  * - toolGetDeviceHistory   -> hub_list_device_events (core tool; windowed/app/location branches)
  * - toolGetPerformanceStats-> hub_get_performance_stats
  * - toolGetHubJobs         -> hub_get_jobs
- * - toolGetDebugLogs       -> hub_get_debug_logs
+ * - toolGetDebugLogs       -> hub_get_logs
  * - toolClearDebugLogs     -> hub_delete_debug_logs
  * - toolSetLogLevel        -> hub_set_log_level
- * - toolGetLoggingStatus   -> hub_get_debug_logs(mode:'status')
+ * - toolGetLoggingStatus   -> hub_get_logs(mode:'status')
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet     -> HarnessSpec's hubGet.register(path) closures
@@ -1583,7 +1583,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetDebugLogs --------
 
-    def "hub_get_debug_logs returns recent entries with metadata"() {
+    def "hub_get_logs returns recent entries with metadata"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -1606,7 +1606,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_debug_logs via dispatch returns recent entries with metadata (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch returns recent entries with metadata (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.debugLogs = [
@@ -1618,7 +1618,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('hub_get_debug_logs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [mode: 'mcp'])
 
         then:
         response.error == null
@@ -1632,7 +1632,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_get_debug_logs filters by level"() {
+    def "hub_get_logs filters by level"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -1651,7 +1651,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.entries[0].message == 'e1'
     }
 
-    def "hub_get_debug_logs filters by ruleId"() {
+    def "hub_get_logs filters by ruleId"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -1670,7 +1670,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.entries*.message == ['r42a', 'r42b']
     }
 
-    def "hub_get_debug_logs filters by component substring"() {
+    def "hub_get_logs filters by component substring"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -1689,7 +1689,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.entries*.message == ['r1', 'r2']
     }
 
-    def "hub_get_debug_logs caps at limit argument (most recent)"() {
+    def "hub_get_logs caps at limit argument (most recent)"() {
         given:
         stateMap.debugLogs = [
             entries: (1..10).collect { i ->
@@ -1718,7 +1718,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         script.mcpLog('error', 'server', 'x' * 2000, null, [stackTrace: 'z' * 5000])
 
         then: 'the stored entry is bounded at store time'
-        def stored = stateMap.debugLogs.entries[-1]
+        def stored = script.getDebugLogEntries()[-1]
         stored.message.length() == 500
         stored.stackTrace.length() == 1000
     }
@@ -1732,7 +1732,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         script.mcpLog('error', 'server', 'short message')
 
         then:
-        def stored = stateMap.debugLogs.entries[-1]
+        def stored = script.getDebugLogEntries()[-1]
         stored.message == 'short message'
         !stored.containsKey('stackTrace')
     }
@@ -1757,10 +1757,10 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.clearedCount == 2
 
         and: 'the tool logs a confirmation entry AFTER clearing — `entries` now holds only that line, not the 2 pre-clear entries'
-        stateMap.debugLogs.entries.size() == 1
-        stateMap.debugLogs.entries[0].level == 'info'
-        stateMap.debugLogs.entries[0].message.contains('cleared')
-        stateMap.debugLogs.entries[0].message.contains('(2 entries removed)')
+        script.getDebugLogEntries().size() == 1
+        script.getDebugLogEntries()[0].level == 'info'
+        script.getDebugLogEntries()[0].message.contains('cleared')
+        script.getDebugLogEntries()[0].message.contains('(2 entries removed)')
     }
 
     @spock.lang.Unroll
@@ -1799,7 +1799,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.clearedCount == 0
-        stateMap.debugLogs.entries == []
+        script.getDebugLogEntries() == []
     }
 
     // -------- toolSetLogLevel --------
@@ -1869,7 +1869,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetLoggingStatus --------
 
-    def "hub_get_debug_logs(mode:status) reports counts by level + current config"() {
+    def "hub_get_logs(mode:status) reports counts by level + current config"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -1898,7 +1898,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_debug_logs(mode:status) via dispatch reports counts by level + current config (useGateways=#useGateways)"() {
+    def "hub_get_logs(mode:status) via dispatch reports counts by level + current config (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.debugLogs = [
@@ -1913,7 +1913,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('hub_get_debug_logs', [mode: 'status'])
+        def response = mcpDriver.callTool('hub_get_logs', [mode: 'status'])
 
         then:
         response.error == null
@@ -1928,7 +1928,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_get_debug_logs(mode:status) handles empty buffer"() {
+    def "hub_get_logs(mode:status) handles empty buffer"() {
         when:
         def result = script.toolGetLoggingStatus([:])
 

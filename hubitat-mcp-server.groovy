@@ -36,6 +36,8 @@
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
 // fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
+// Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
+@groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
 // freshly scheduled worker execution can read an atomicState snapshot that predates
@@ -804,6 +806,9 @@ def handleMcpRequest() {
     // request handling; the guard inside makes this a fast no-op after it runs.
     try { _forcePublishSchemasOffOnce() }
     catch (Exception e) { mcpLog("warn", "schema-migration", "one-time publishOutputSchemas reset skipped: ${e.message}") }
+
+    // A code-only update need not fire updated(); migrate the old log payload on first use.
+    initDebugLogs()
 
     def requestBody
     try {
@@ -3867,20 +3872,18 @@ def getGatewayConfig() {
         // Option B: manage_logs_diagnostics split into logs + diagnostics
         hub_manage_logs: [
             description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/app/location event history: use the core hub_list_device_events tool.)",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_delete_debug_logs", "hub_set_log_level"],
+            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_delete_debug_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (trace/debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
+                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
-                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs', default) or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_delete_debug_logs: "Clear all MCP debug log entries",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
-                hub_get_logs: "errors warnings messages trace syslog output print recent latest newest device app scope regex pattern filter time window since until last hour minute",
+                hub_get_logs: "mcp internal debug logging status buffer capacity errors warnings trace syslog recent device app regex time window since until",
                 hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity how many level",
                 hub_delete_debug_logs: "wipe reset mcp internal",
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
@@ -3945,12 +3948,11 @@ def getGatewayConfig() {
         ],
         hub_read_diagnostics: [
             description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
+            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level, source, pattern/patterns, since/until, deviceId|appId, limit",
+                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
-                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
@@ -3961,7 +3963,6 @@ def getGatewayConfig() {
                 hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
                 hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity level",
                 hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history health alerts safe mode radio offline backup failed weak mesh",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate",
@@ -5131,8 +5132,6 @@ def executeTool(toolName, args) {
         case "hub_delete_captured_state": return toolDeleteCapturedState(args)
 
         // Debug Logging Tools
-        case "hub_get_debug_logs":
-            return (args.mode == "status") ? toolGetLoggingStatus(args) : toolGetDebugLogs(args)
         case "hub_delete_debug_logs": return toolClearDebugLogs(args)
         case "hub_set_log_level": return toolSetLogLevel(args)
         case "hub_report_issue": return toolGenerateBugReport(args)
@@ -6639,14 +6638,138 @@ def logDebug(msg) {
  * Initialize the debug logging state structure
  */
 def initDebugLogs() {
-    if (!state.debugLogs) {
-        state.debugLogs = [
-            entries: [],
-            config: [logLevel: "error", maxEntries: 100]
-        ]
+    String appId = app?.id?.toString() ?: "0"
+    synchronized (DEBUG_LOG_BUFFERS) {
+        if (DEBUG_LOG_BUFFERS.containsKey(appId)) return DEBUG_LOG_BUFFERS[appId]
+        def legacy = state.debugLogs instanceof Map ? state.debugLogs : [:]
+        def config = [logLevel: legacy.config?.logLevel ?: "error", maxEntries: 100]
+        String generation = atomicState.debugLogGeneration
+        boolean fresh = !generation
+        if (fresh) {
+            generation = java.util.UUID.randomUUID().toString()
+            atomicState.debugLogGeneration = generation
+        }
+        def buffer = [appId: appId, generation: generation, config: config,
+                      entries: [], hydrated: fresh]
+        if (legacy.entries instanceof List) {
+            def entries = legacy.entries
+            entries.drop(Math.max(0, entries.size() - 100)).eachWithIndex { entry, index ->
+                if (entry instanceof Map) {
+                    def record = _debugLogRecord(entry, "legacy-${index}-${entry.timestamp}".toString())
+                    _emitNativeDebugLog(buffer, record)
+                    _appendDebugLogRecord(buffer, record)
+                }
+            }
+            buffer.hydrated = fresh
+        }
+        // Remove the old payload only after every migrated line reached native logging.
+        state.debugLogs = [config: config]
+        DEBUG_LOG_BUFFERS[appId] = buffer
+        return buffer
     }
-    if (!state.debugLogs.entries) state.debugLogs.entries = []
-    if (!state.debugLogs.config) state.debugLogs.config = [logLevel: "error", maxEntries: 100]
+}
+
+private Map _debugLogRecord(Map raw, String id) {
+    def entry = [timestamp: raw.timestamp instanceof Number ? raw.timestamp.longValue() : now(),
+                 level: raw.level, component: raw.component, message: raw.message?.toString()?.take(500)]
+    if (raw.ruleId) entry.ruleId = raw.ruleId
+    if (raw.ruleName) entry.ruleName = raw.ruleName
+    if (raw.duration) entry.duration = raw.duration
+    if (raw.stackTrace) entry.stackTrace = raw.stackTrace.toString().take(1000)
+    if (raw.details) entry.details = raw.details
+    // Detach nested caller data once per line; never serialize the whole ring on append.
+    def detached = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(entry))
+    return [id: id, entry: detached]
+}
+
+private void _appendDebugLogRecord(Map buffer, Map record) {
+    buffer.entries << record
+    while (buffer.entries.size() > 100) {
+        buffer.entries.remove((int)0)
+    }
+}
+
+private void _emitNativeDebugLog(Map buffer, Map record, String fullMessage = null) {
+    def nativeEntry = fullMessage == null ? record.entry : record.entry + [message: fullMessage]
+    String line = "[MCP1] " + groovy.json.JsonOutput.toJson(
+        [appId: buffer.appId, generation: buffer.generation, id: record.id, entry: nativeEntry])
+    switch (record.entry.level) {
+        case "debug": log.debug line; break
+        case "info": log.info line; break
+        case "warn": log.warn line; break
+        case "error": log.error line; break
+        default: log.warn "(unknown level '${record.entry.level}') ${line}"; break
+    }
+}
+
+def getDebugLogEntries() {
+    def buffer = initDebugLogs()
+    String generation
+    synchronized (buffer) {
+        if (buffer.hydrated) return _debugLogSnapshot(buffer)
+        generation = buffer.generation
+    }
+    // Recovery is a reader cost. Logging continues while the scoped hub read runs.
+    def text = hubInternalGet("/logs/past/json", [type: "app", id: buffer.appId], 30)
+    def rows = text ? new groovy.json.JsonSlurper().parseText(text) : null
+    if (!(rows instanceof List)) throw new IllegalStateException("Unexpected native log history response")
+    def recovered = [:]
+    rows.each { row ->
+        def parsed = _parseHubLogLine(row?.toString())
+        if (parsed?.sourceId != null && (parsed.type != "app" || parsed.sourceId != buffer.appId)) return
+        String message = parsed?.message ?: ""
+        int marker = message.indexOf("[MCP1] ")
+        if (marker >= 0) {
+            def envelope
+            try {
+                envelope = new groovy.json.JsonSlurper().parseText(message.substring(marker + 7))
+            } catch (Exception ignored) {
+                // A native line may have been truncated by the hub's own log retention.
+                envelope = null
+            }
+            if (envelope instanceof Map && envelope.appId == buffer.appId &&
+                envelope.generation == generation && envelope.id && envelope.entry instanceof Map) {
+                recovered[envelope.id] = _debugLogRecord(envelope.entry, envelope.id.toString())
+            }
+        }
+    }
+    synchronized (buffer) {
+        // A clear during the HTTP read establishes a new generation; old rows stay excluded.
+        if (buffer.generation == generation) {
+            buffer.entries.each { recovered[it.id] = it }
+            buffer.entries = []
+            recovered.values().each { _appendDebugLogRecord(buffer, it) }
+            buffer.hydrated = true
+        }
+        return _debugLogSnapshot(buffer)
+    }
+}
+
+private List _debugLogSnapshot(Map buffer) {
+    return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(buffer.entries.collect { it.entry }))
+}
+
+def clearDebugLogEntries() {
+    getDebugLogEntries()
+    def buffer = initDebugLogs()
+    synchronized (buffer) {
+        int count = buffer.entries.size()
+        String generation = java.util.UUID.randomUUID().toString()
+        atomicState.debugLogGeneration = generation
+        buffer.generation = generation
+        buffer.entries = []
+        buffer.hydrated = true
+        return count
+    }
+}
+
+def setDebugLogLevel(String level) {
+    def buffer = initDebugLogs()
+    synchronized (buffer) {
+        def config = [logLevel: level, maxEntries: 100]
+        state.debugLogs = [config: config]
+        buffer.config = config
+    }
 }
 
 /**
@@ -6664,7 +6787,8 @@ def getConfiguredLogLevel() {
     // Settings take priority (can be set via UI)
     if (settings.mcpLogLevel) return settings.mcpLogLevel
     // Fall back to state (can be set via MCP hub_set_log_level tool)
-    return state.debugLogs?.config?.logLevel ?: "error"
+    def buffer = initDebugLogs()
+    synchronized (buffer) { return buffer.config.logLevel }
 }
 
 /**
@@ -6684,50 +6808,14 @@ def shouldLog(level) {
  * Add a log entry to the MCP-accessible debug buffer
  */
 def mcpLog(String level, String component, String message, String ruleId = null, Map extraData = null) {
+    def buffer = initDebugLogs()
     if (!shouldLog(level)) return
-
-    initDebugLogs()
-
-    def entry = [
-        timestamp: now(),
-        level: level,
-        component: component,
-        // Cap stored payload so each buffer entry stays bounded -- the
-        // `state.debugLogs = state.debugLogs` writeback below re-serializes the
-        // whole buffer on every log line, so an uncapped caller message/trace
-        // would inflate every subsequent write. Mirrors the 500-char response
-        // cap idiom in handleMcpRequest. details stays a structured Map (every
-        // caller passes a small bounded Map, not unbounded text).
-        message: message?.take(500)
-    ]
-
-    if (ruleId) entry.ruleId = ruleId
-    if (extraData?.duration) entry.duration = extraData.duration
-    if (extraData?.ruleName) entry.ruleName = extraData.ruleName
-    if (extraData?.details) entry.details = extraData.details
-    if (extraData?.stackTrace) entry.stackTrace = extraData.stackTrace?.toString()?.take(1000)
-
-    state.debugLogs.entries << entry
-
-    // Enforce max entries limit (circular buffer)
-    def maxEntries = state.debugLogs.config?.maxEntries ?: 100
-    while (state.debugLogs.entries.size() > maxEntries) {
-        state.debugLogs.entries.remove((int)0)
-    }
-
-    // Force top-level state reassignment to ensure nested mutations are persisted
-    state.debugLogs = state.debugLogs
-
-    // Also log to Hubitat logs. Append the structured stackTrace (class + message,
-    // set by mcpLogError) to the warn/error native lines so the exception detail
-    // stays visible on the Hubitat Logs page, not only in the MCP debug buffer.
-    def traceSuffix = extraData?.stackTrace ? " -- ${extraData.stackTrace.toString().take(1000)}" : ""
-    switch (level) {
-        case "debug": log.debug "[${component}] ${message}"; break
-        case "info": log.info "[${component}] ${message}"; break
-        case "warn": log.warn "[${component}] ${message}${traceSuffix}"; break
-        case "error": log.error "[${component}] ${message}${traceSuffix}"; break
-        default: log.warn "[${component}] (unknown level '${level}') ${message}${traceSuffix}"; break
+    def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
+    ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
+    def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
+    synchronized (buffer) {
+        _emitNativeDebugLog(buffer, record, message)
+        _appendDebugLogRecord(buffer, record)
     }
 }
 
@@ -9022,7 +9110,11 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
 - Use the attribute filter to reduce data volume
 
-### hub_get_logs (filter pipeline, regex, and time-window reference)
+### hub_get_logs (history, logging status, and filters)
+
+Use mode='hub' (default) for native app/device logs, mode='mcp' for structured MCP entries, or mode='status' for MCP log level, counts, and capacity. MCP mode keeps level/component/ruleId/limit/cursor filters and the existing diagnostic fields used by hub_report_issue. Debug and info are retained alongside warnings and errors when admitted by the configured threshold. After reload, MCP history recovers from this app's native Past Logs; retention shares Hubitat's approximately 1 MB rolling history with other apps and devices. The memory view keeps up to 100 entries without storing the ring in app state.
+
+The following filter pipeline applies to hub mode. Current three-column native timestamps use the hub's timezone; timezone-free since/until arguments still mean UTC.
 
 - Filter pipeline order: scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.
 - `pattern` / `patterns`: the regex matches the log message field ONLY (use `source` for app/device-name substring matching); it is compiled once and throws on invalid regex syntax. A pathological regex like `(.*)*` may hang the matcher -- prefer simple alternation (`error|fail`) or anchored prefixes.
@@ -9079,7 +9171,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 ### hub_delete_debug_logs
 
-Clears ONLY the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs). It does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state). Use it to reset that buffer before reproducing an issue, or to free space.
+Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable clear marker, so old native entries do not return after reload. Hubitat system logs (hub_get_logs) and captured device states (hub_delete_captured_state) are unchanged. Use it before reproducing an issue.
 
 ### hub_report_issue
 

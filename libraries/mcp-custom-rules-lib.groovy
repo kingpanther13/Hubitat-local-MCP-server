@@ -699,7 +699,7 @@ def toolGetRuleDiagnostics(args) {
 
     // Get recent logs for this rule
     initDebugLogs()
-    def ruleLogs = (state.debugLogs.entries ?: []).findAll { it.ruleId == ruleId }
+    def ruleLogs = getDebugLogEntries().findAll { it.ruleId == ruleId }
     def recentLogs = ruleLogs.drop(Math.max(0, ruleLogs.size() - 10))
     def errorLogs = ruleLogs.findAll { it.level == "error" }
 

@@ -1,4 +1,4 @@
-library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_debug_logs/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_logs MCP modes/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolGetDebugLogs(args) {
     initDebugLogs()
@@ -8,7 +8,8 @@ def toolGetDebugLogs(args) {
     def component = args.component
     def ruleId = args.ruleId
 
-    def logs = state.debugLogs.entries ?: []
+    def stored = getDebugLogEntries()
+    def logs = stored
 
     // Apply filters
     if (level && level != "all") {
@@ -41,12 +42,12 @@ def toolGetDebugLogs(args) {
         return e
     }
     def cursor = args?.cursor
-    def paged = _paginateList(materialized, cursor, 100, "hub_get_debug_logs")
+    def paged = _paginateList(materialized, cursor, 100, "hub_get_logs")
     def result = [
         entries: paged.page,
         count: paged.page.size(),
-        totalStored: state.debugLogs.entries?.size() ?: 0,
-        maxEntries: state.debugLogs.config?.maxEntries ?: 100,
+        totalStored: stored.size(),
+        maxEntries: 100,
         currentLogLevel: getConfiguredLogLevel()
     ]
     if (cursor != null) {
@@ -58,8 +59,7 @@ def toolGetDebugLogs(args) {
 
 def toolClearDebugLogs(args) {
     initDebugLogs()
-    def count = state.debugLogs.entries?.size() ?: 0
-    state.debugLogs.entries = []
+    def count = clearDebugLogEntries()
     mcpLog("info", "server", "Debug logs cleared (${count} entries removed)")
     return [success: true, clearedCount: count]
 }
@@ -75,10 +75,7 @@ def toolSetLogLevel(args) {
     initDebugLogs()
     // Log BEFORE changing level so confirmation isn't suppressed when raising threshold
     mcpLog("info", "server", "Log level changed from ${previousLevel} to: ${level}")
-    // Use read-modify-write for state persistence (nested mutations don't persist in Hubitat)
-    def config = state.debugLogs.config ?: [:]
-    config.logLevel = level
-    state.debugLogs = [entries: state.debugLogs.entries ?: [], config: config]
+    setDebugLogLevel(level)
     // Update the setting so UI stays in sync (use [type, value] map for enum settings)
     app.updateSetting("mcpLogLevel", [type: "enum", value: level])
 
@@ -91,14 +88,15 @@ def toolSetLogLevel(args) {
 
 def toolGetLoggingStatus(args) {
     initDebugLogs()
-    def entries = state.debugLogs.entries ?: []
+    def entries = getDebugLogEntries()
 
     def result = [
         version: currentVersion(),
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
-        maxEntries: state.debugLogs.config?.maxEntries ?: 100,
+        maxEntries: 100,
+        storage: "hub_native_logs",
         entriesByLevel: [
             debug: entries.count { it.level == "debug" },
             info: entries.count { it.level == "info" },
@@ -121,7 +119,7 @@ def toolGenerateBugReport(args) {
     def windowMs = ((args.logWindowSeconds == null ? 120 : args.logWindowSeconds) as Integer) * 1000L
 
     initDebugLogs()
-    def allEntries = (state.debugLogs.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
+    def allEntries = getDebugLogEntries().findAll { it.level == "error" || it.level == "warn" }
     def anchor = _bugReportResolveAnchor(args, allEntries)
     def scopedLogs = _bugReportScopedLogs(args, allEntries, anchor, windowMs)
     def env = _bugReportEnvironmentSummary(args, privacyMode)
@@ -467,50 +465,8 @@ def _getAllToolDefinitions_partDebugLogging() {
     return [
         // Debug Logging Tools
         [
-            name: "hub_get_debug_logs",
-            description: "Read the MCP debug-log system (stored in app state). mode='logs' (default) returns stored entries; mode='status' returns logging-system status.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    mode: [type: "string", enum: ["logs", "status"], description: "logs = stored entries (default); status = current log level + counts + capacity.", default: "logs"],
-                    limit: [type: "integer", description: "logs mode: max entries to return (default: 50, max: 200)"],
-                    level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "logs mode: filter by log level (default: all)"],
-                    component: [type: "string", description: "logs mode: filter by component (e.g., 'server', 'rule')"],
-                    ruleId: [type: "string", description: "logs mode: filter by specific rule ID"],
-                    cursor: [type: "string", description: "logs mode: opt-in pagination cursor.[[FLAT_TRIM]] Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
-                ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    entries: [type: "array", description: "logs mode: stored log entries", items: [type: "object", properties: [
-                        timestamp: [type: "integer", description: "Epoch millis"],
-                        time: [type: "string", description: "Formatted timestamp"],
-                        level: [type: "string", description: "Log level"],
-                        component: [type: "string", description: "Source component"],
-                        message: [type: "string", description: "Log message"],
-                        ruleId: [type: "string", description: "Associated rule ID, when present"],
-                        ruleName: [type: "string", description: "Associated rule name, when present"]
-                    ]]],
-                    count: [type: "integer", description: "logs mode: entries on this page"],
-                    totalStored: [type: "integer", description: "logs mode: total entries stored"],
-                    maxEntries: [type: "integer", description: "Buffer capacity"],
-                    currentLogLevel: [type: "string", description: "Current minimum log level"],
-                    total: [type: "integer", description: "logs mode: filtered total; present in cursor mode"],
-                    nextCursor: [type: "string", description: "logs mode: present when more results remain"],
-                    version: [type: "string", description: "status mode: app version"],
-                    availableLevels: [type: "array", description: "status mode: valid log levels", items: [type: "string"]],
-                    totalEntries: [type: "integer", description: "status mode: total entries stored"],
-                    entriesByLevel: [type: "object", description: "status mode: per-severity counts"],
-                    oldestEntry: [type: "string", description: "status mode: oldest entry timestamp"],
-                    newestEntry: [type: "string", description: "status mode: newest entry timestamp"],
-                    updateAvailable: [type: "string", description: "Newer version, when one exists"]
-                ]
-            ]
-        ],
-        [
             name: "hub_delete_debug_logs",
-            description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs).[[FLAT_TRIM]] Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
+            description: "Clear the structured MCP history view read by hub_get_logs(mode='mcp').[[FLAT_TRIM]] A durable clear marker keeps old native entries from reappearing after reload. Use before reproducing an issue. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -593,7 +549,7 @@ def _readOnlyToolNames_partDebugLogging() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Diagnostics + logs (read)
-        "hub_get_debug_logs", "hub_report_issue"
+        "hub_report_issue"
     ]
 }
 
@@ -611,7 +567,6 @@ def _toolDisplayMeta_partDebugLogging() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         hub_report_issue: [title: "Generate Diagnostic Report", summary: "Generate a comprehensive diagnostic report for bug reports."],
-        hub_get_debug_logs: [title: "Get MCP Debug Logs", summary: "MCP debug log entries, or logging-system status."],
         hub_delete_debug_logs: [title: "Clear MCP Debug Logs", summary: "Clear all MCP debug log entries."],
         hub_set_log_level: [title: "Set MCP Log Level", summary: "Set the MCP log level (debug, info, warn, error)."]
     ]

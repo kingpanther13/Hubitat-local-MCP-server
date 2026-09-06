@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 117 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 116 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -82,7 +82,6 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `hub_list_device_dependents` | 100 | Pages `appsUsing`. |
 | `hub_get_logs` | 100 | Filters + `limit` apply first; cursor pages within the filtered result. |
 | `hub_get_memory_history` | 100 | `limit=0` + cursor pages the full hub ring buffer (the only way to retrieve every entry without losing data). |
-| `hub_get_debug_logs` | 100 | Filters apply first; cursor pages within. |
 | `hub_get_jobs` | 100 | Pages `scheduledJobs`; `runningJobs` and `hubActions` stay in full. Served from a 30 s cached `/logs/json` snapshot shared with `hub_get_performance_stats`, so a traversal is best-effort past that TTL. When the transport carries a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on LAN) the fetch runs in the background and the call continues via `requestState`; legacy clients repeat the identical call on `status: "in_progress"`. |
 
 Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hub_get_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `hub_list_files`/`hub_read_file` round-trip) plus the universal size guard as the backstop.
@@ -527,6 +526,14 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - `patterns` (array of strings): multiple regexes; `patternMode='any'` (default) = OR, `patternMode='all'` = AND; compatible with `pattern` (both apply)
 - `since` / `until`: ISO-8601 timestamp (e.g. `'2024-01-15T10:30:00Z'`) or relative offset (`'30m'`, `'2h'`, `'1d'`, `'7d'`); relative offset subtracted from now; max 30d (throws if exceeded -- use ISO-8601 for longer ranges); entries with unparseable time fields pass through rather than being excluded. ISO-8601 timestamps without an explicit TZ marker (e.g., `'2024-01-15T10:30:00'` or `'2024-01-15 10:30:00.000'`) are parsed as UTC.
 - For single-device or single-app logs, pass `deviceId` or `appId` -- this is a server-side scope filter (mutually exclusive) and is much cheaper than post-filtering the full buffer
+- Current three-column hub log rows are decoded as timestamp, level, and source/message; their timestamps use the hub's configured time zone. Older five-column rows retain their UTC interpretation. Explicit time-zone offsets in `since`/`until` are honored.
+
+**hub_get_logs (mode='mcp' or 'status'):**
+- Reads structured MCP history; `mode='status'` returns the configured threshold, capacity, and entry counts. Use `hub_get_logs` for the broader native history of apps and devices.
+- Debug, info, warn, and error entries admitted by the configured log level are written through Hubitat's native logger. A bounded memory cache serves recent MCP history; after a reload it recovers entries from native Past Logs scoped to this app. Logging does not write a second file or persist the full ring in app state.
+- The MCP view holds at most 100 entries. Structured messages retain the existing 500-character limit and exception text the existing 1,000-character limit; diagnostic details are preserved. Native logs retain the full message. Hubitat also prunes its shared Past Logs by size (approximately 1 MB across the hub), so native history may contain fewer MCP entries after a reload. Explicitly purging Hubitat logs removes that recovery source.
+- `hub_delete_debug_logs` clears the MCP view using a durable generation marker. Older native log lines remain visible through Hubitat's Logs page and `hub_get_logs`; they do not reappear in the MCP view after a reload.
+- Existing stored MCP entries migrate into native logging with their original timestamps and structured fields before their old state copy is removed. Rule filters and bug-report context continue to use the structured entries.
 
 **hub_list_device_events (windowed mode):**
 - Windowed mode activates when `hoursBack` OR `since` is supplied: up to 7 days of history

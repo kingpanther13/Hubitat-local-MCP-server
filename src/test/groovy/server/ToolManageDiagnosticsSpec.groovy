@@ -1529,9 +1529,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.mcpLog('warning', 'server', 'typo')
 
         then: 'unknown level is not silently dropped -- it fails open and is retained'
-        stateMap.debugLogs.entries.size() == 1
-        stateMap.debugLogs.entries[-1].level == 'warning'
-        stateMap.debugLogs.entries[-1].message == 'typo'
+        script.getDebugLogEntries().size() == 1
+        script.getDebugLogEntries()[-1].level == 'warning'
+        script.getDebugLogEntries()[-1].message == 'typo'
     }
 
     // -------- mcpLogError structured stackTrace capture (log-mcplogerror-low-adoption) --------
@@ -1549,7 +1549,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.error?.contains('boom-perf')
 
         and: 'the newest debug-log entry carries a class-qualified stackTrace from mcpLogError'
-        def entry = stateMap.debugLogs.entries[-1]
+        def entry = script.getDebugLogEntries()[-1]
         entry.level == 'error'
         entry.component == 'monitoring'
         entry.stackTrace == 'java.lang.IllegalStateException: boom-perf'
@@ -1566,7 +1566,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
         then:
         result.error?.contains('boom-jobs')
-        def entry = stateMap.debugLogs.entries[-1]
+        def entry = script.getDebugLogEntries()[-1]
         entry.component == 'monitoring'
         entry.stackTrace == 'java.lang.RuntimeException: boom-jobs'
     }

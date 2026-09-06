@@ -307,11 +307,44 @@ def toolGetZigbeeDetails(args) {
     return result
 }
 
+private Map _parseHubLogLine(String line) {
+    if (!line?.trim()) return null
+    def parts = line.split("\t", -1)
+    if (parts.size() < 2) return null
+    if (parts.size() >= 3 && (parts[0] ==~ /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?/)) {
+        String message = parts[2..-1].join("\t").trim()
+        def source = message.split("\\|", 4)
+        boolean identified = source.size() == 4 && (source[0] in ["app", "dev"])
+        return [name: identified ? source[2] : "", level: parts[1].trim(), message: message,
+                time: parts[0].trim(), type: identified ? source[0] : "",
+                sourceId: identified ? source[1] : null, hubLocalTime: true]
+    }
+    def entry = [name: parts[0].trim(), level: parts[1].trim(),
+                 message: parts.size() > 2 ? parts[2].trim() : "",
+                 time: parts.size() > 3 ? parts[3].trim() : "",
+                 type: parts.size() > 4 ? parts[4].trim() : ""]
+    if (parts.size() > 5) {
+        entry.message = parts[2..(parts.size() - 3)].join("\t")
+        entry.time = parts[-2].trim()
+        entry.type = parts[-1].trim()
+    }
+    return entry
+}
+
 def toolGetHubLogs(args) {
+    String mode = args.mode == null ? "hub" : args.mode.toString().toLowerCase()
+    if (!(mode in ["hub", "mcp", "status"])) throw new IllegalArgumentException("Invalid log mode: ${args.mode}. Valid modes: hub, mcp, status")
+    def incompatible = mode == "hub" ? ["component", "ruleId"] :
+        mode == "mcp" ? ["source", "appId", "deviceId", "pattern", "patterns", "patternMode", "since", "until"] :
+        ["component", "ruleId", "source", "appId", "deviceId", "pattern", "patterns", "patternMode", "since", "until", "level", "limit", "cursor"]
+    def supplied = incompatible.findAll { args[it] != null }
+    if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${mode}'")
+    if (mode == "mcp") return toolGetDebugLogs(args)
+    if (mode == "status") return toolGetLoggingStatus(args)
 
     def maxLimit = 500
     def limit = Math.min(args.limit ?: 100, maxLimit)
-    def levelFilter = args.level
+    def levelFilter = args.level?.toString()?.toLowerCase() == "all" ? null : args.level
     def sourceFilter = args.source
     def deviceIdFilter = args.deviceId?.toString()?.trim()
     def appIdFilter = args.appId?.toString()?.trim()
@@ -534,8 +567,7 @@ def toolGetHubLogs(args) {
         return [logs: [], message: "No log data returned from hub", count: 0]
     }
 
-    // The /logs/past/json endpoint returns a JSON array of tab-delimited strings:
-    // ["name\tlevel\tmessage\ttime\ttype", ...]
+    // Firmware supplies either legacy five-column or current three-column rows.
     def logs = []
     def logArray = []
     try {
@@ -580,6 +612,12 @@ def toolGetHubLogs(args) {
     // firmware; keeping them in the fallback list would silently no-op the time-window filter
     // on non-UTC hubs if a future firmware ever did emit them.
     def hubLogIsoFmts = logTimeFmts.findAll { it.contains("Z") && !it.contains("'Z'") }
+    def hubLogLocalSdfs = hubLogSdfs.collect { utcParser ->
+        def parser = new java.text.SimpleDateFormat(utcParser.toPattern())
+        parser.setTimeZone(location?.timeZone ?: TimeZone.getTimeZone("UTC"))
+        parser.setLenient(false)
+        return parser
+    }
 
     // Counter for entries that passed through the time-window filter due to unparseable timestamps.
     // Populated only when since or until is active; surfaced in the response as timeFilterUnparseable.
@@ -591,29 +629,10 @@ def toolGetHubLogs(args) {
     def filterExcluded = 0
 
     for (logEntry in logArray) {
-        def line = logEntry?.toString()
-        if (!line?.trim()) continue
-        def parts = line.split("\t", -1)
-        if (parts.size() < 2) continue
-
-        def entry = [
-            name: parts[0]?.trim(),
-            level: parts.size() > 1 ? parts[1]?.trim() : "",
-            message: parts.size() > 2 ? parts[2]?.trim() : "",
-            time: parts.size() > 3 ? parts[3]?.trim() : "",
-            type: parts.size() > 4 ? parts[4]?.trim() : ""
-        ]
-
-        // If message field contains tabs (extra fields), rejoin the middle parts
-        if (parts.size() > 5) {
-            try {
-                entry.message = parts[2..(parts.size() - 3)].join("\t")
-                entry.time = parts[-2]?.trim()
-                entry.type = parts[-1]?.trim()
-            } catch (Exception e) {
-                // Fall back to simple parsing
-            }
-        }
+        def entry = _parseHubLogLine(logEntry?.toString())
+        if (entry == null) continue
+        boolean hubLocalTime = entry.remove("hubLocalTime") == true
+        entry.remove("sourceId")
 
         // Apply filters in pipeline order:
         // scope (hub-side, done above) -> level -> source -> pattern -> patterns -> time window -> limit
@@ -640,8 +659,7 @@ def toolGetHubLogs(args) {
             }
         }
 
-        // Time-window filter: parse entry.time lazily; if empty (firmware 2.5.0.126+ puts the
-        // timestamp in parts[0]/entry.name), fall back to entry.name before giving up.
+        // Current three-column rows use hub-local time; legacy rows retain UTC semantics.
         // Entries with unparseable timestamps are kept (not excluded) and counted separately
         // so callers know they exist in the result alongside filtered entries.
         if (sinceDate != null || untilDate != null) {
@@ -649,7 +667,7 @@ def toolGetHubLogs(args) {
             def timeStr = entry.time?.trim() ?: entry.name?.trim()
             if (timeStr) {
                 // Try UTC-anchored parsers first (hub format has no TZ marker but is UTC).
-                for (sdf in hubLogSdfs) {
+                for (sdf in (hubLocalTime ? hubLogLocalSdfs : hubLogSdfs)) {
                     try {
                         entryTime = sdf.parse(timeStr)
                         break
@@ -1488,7 +1506,7 @@ def toolDeviceHealthCheck(args) {
             }
         } catch (Exception e) {
             // Skip device entirely if we can't even get basic info. Log so the failure
-            // shows up in hub_get_debug_logs / hub_report_issue; surface errorClass on the
+            // shows up in hub_get_logs MCP mode / hub_report_issue; surface errorClass on the
             // entry so an LLM triaging the result can distinguish transient (NPE) from
             // systemic (MissingMethodException) without re-running.
             mcpLog("warn", "monitoring", "hub_get_device_health failed to inspect device ${device?.id}: ${e.class.simpleName}: ${e.message}")
@@ -2214,20 +2232,23 @@ def _getAllToolDefinitions_partDiagnostics() {
     return [
         [
             name: "hub_get_logs",
-            description: """Get Hubitat system logs, most recent first. Requires Read master.""",
+            description: """Read log history and MCP logging status. mode='hub' (default) returns native hub logs; mode='mcp' returns structured MCP entries with component/rule filters; mode='status' returns MCP log level, counts, and capacity. MCP history recovers from native Past Logs after reload; retention follows the hub's shared log limit. Requires Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    level: [type: "string", description: "Filter by log level. Default: all levels.", enum: ["trace", "debug", "info", "warn", "error"]],
-                    source: [type: "string", description: "Filter by source/app name (case-insensitive substring match against the log entry)"],
-                    deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
-                    appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
-                    limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100],
-                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"],
-                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns; combine via patternMode. Same matching rules and caveats as `pattern`."],
-                    patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR; 'all' = AND.", enum: ["any", "all"]],
-                    since: [type: "string", description: "Return only entries at or after this time; ISO-8601 or relative offset like '2h'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative '30m'/'2h'/'1d'/'7d'; max relative offset 30d.[[/FLAT_TRIM]][[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
-                    until: [type: "string", description: "Return only entries at or before this time. Same format as since. Default: now (no upper bound)."],
+                    mode: [type: "string", enum: ["hub", "mcp", "status"], default: "hub", description: "hub = native app/device logs; mcp = structured MCP history; status = MCP logging configuration and counts."],
+                    component: [type: "string", description: "MCP mode: component substring filter (for example server or rule)."],
+                    ruleId: [type: "string", description: "MCP mode: filter by custom rule ID."],
+                    level: [type: "string", description: "Filter by log level. Default: all levels.", enum: ["trace", "debug", "info", "warn", "error", "all"]],
+                    source: [type: "string", description: "Hub mode: Filter by source/app name (case-insensitive substring match against the log entry)"],
+                    deviceId: [type: "string", description: "Hub mode: Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
+                    appId: [type: "string", description: "Hub mode: Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
+                    limit: [type: "integer", description: "Max entries: hub default 100/max 500; MCP default 50/max 100."],
+                    pattern: [type: "string", description: "Hub mode: Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"],
+                    patterns: [type: "array", items: [type: "string"], description: "Hub mode: Multiple regex patterns; combine via patternMode. Same matching rules and caveats as `pattern`."],
+                    patternMode: [type: "string", description: "Hub mode: How patterns array is combined: 'any' (default) = OR; 'all' = AND.", enum: ["any", "all"]],
+                    since: [type: "string", description: "Hub mode: Return only entries at or after this time; ISO-8601 or relative offset like '2h'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative '30m'/'2h'/'1d'/'7d'; max relative offset 30d.[[/FLAT_TRIM]][[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
+                    until: [type: "string", description: "Hub mode: Return only entries at or before this time. Same format as since. Default: now (no upper bound)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],
@@ -2803,7 +2824,7 @@ def _toolDisplayMeta_partDiagnostics() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         // Diagnostics + logs
-        hub_get_logs: [title: "Get Hub Logs", summary: "Hub log entries with level, source, regex, and time-window filters."],
+        hub_get_logs: [title: "Get Logs", summary: "Hub log history, structured MCP history, or MCP logging status."],
         hub_get_performance_stats: [title: "Get Performance Stats", summary: "Device and app performance statistics."],
         hub_get_jobs: [title: "Get Scheduled Jobs", summary: "Scheduled jobs, running jobs, and hub actions."],
         hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],

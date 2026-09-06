@@ -90,20 +90,77 @@ class DebugLogRingSpec extends ToolSpecBase {
         script.getDebugLogEntries() == []
     }
 
-    def "all fields and nested details have serialized byte bounds"() {
+    def "structured fields preserve existing character limits and complete nested metadata"() {
         given:
         settingsMap.mcpLogLevel = 'debug'
-        def huge = '\u754c' * 20000
-        def details = [tool: 'hub_set_rule', nested: [payload: huge, list: (1..50).collect { [huge: huge] }]]
+        def message = '\u754c' * 700
+        def trace = '\u754c' * 1200
+        def component = 'component' * 20
+        def ruleId = '42' * 80
+        def ruleName = 'name' * 100
+        def details = (1..12).collectEntries { ["key${it}".toString(), "value${it}".toString()] }
+        details.nested = [one: [two: [three: [list: (1..15).collect { [payload: 'x' * 1500] }]]]]
 
         when:
-        (1..25).each { script.mcpLog('error', huge, huge, huge,
-            [ruleName: huge, stackTrace: huge, duration: huge, details: details]) }
+        script.mcpLog('error', component, message, ruleId,
+            [ruleName: ruleName, stackTrace: trace, duration: 123.5, details: details])
 
         then:
-        script.getDebugLogEntries().every { JsonOutput.toJson(it).getBytes('UTF-8').length <= 4096 }
-        JsonOutput.toJson(script.getDebugLogEntries()).getBytes('UTF-8').length <= 65536
-        script.getDebugLogEntries().every { it.details instanceof Map }
+        def entry = script.getDebugLogEntries()[0]
+        entry.message == '\u754c' * 500
+        entry.stackTrace == '\u754c' * 1000
+        entry.component == component
+        entry.ruleId == ruleId
+        entry.ruleName == ruleName
+        entry.duration == 123.5
+        entry.details == details
+
+        when:
+        def rows = nativeRows()
+        hubGet.register('/logs/past/json') { params -> JsonOutput.toJson(rows) }
+        reload()
+
+        then:
+        script.getDebugLogEntries()[0] == entry
+    }
+
+    def "ring retains one hundred entries even when their combined payload exceeds sixty four KiB"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+
+        when:
+        (1..100).each { n -> script.mcpLog('info', 'server', "line ${n}", null, [details: [payload: 'x' * 1500]]) }
+
+        then:
+        def entries = script.getDebugLogEntries()
+        entries.size() == 100
+        entries.first().message == 'line 1'
+        entries.last().message == 'line 100'
+        JsonOutput.toJson(entries).getBytes('UTF-8').length > 65536
+
+        when:
+        script.mcpLog('info', 'server', 'line 101')
+
+        then:
+        script.getDebugLogEntries().size() == 100
+        script.getDebugLogEntries().first().message == 'line 2'
+    }
+
+    def "native envelope keeps the complete original message on a single line"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+        def message = ('full message ' * 200) + '\nlast\tline'
+
+        when:
+        script.mcpLog('info', 'server', message)
+
+        then:
+        String line = script.log.messages.last()
+        def envelope = new groovy.json.JsonSlurper().parseText(line.substring(line.indexOf('[MCP1] ') + 7))
+        envelope.entry.message == message
+        !line.contains('\n')
+        !line.contains('\t')
+        script.getDebugLogEntries()[0].message == message.take(500)
     }
 
     def "app instances cannot see or clear another app's ring"() {
@@ -168,5 +225,24 @@ class DebugLogRingSpec extends ToolSpecBase {
 
         then:
         script.getDebugLogEntries()*.message == ['before reload', 'after reload']
+    }
+
+    def "cold native recovery deduplicates migrated rows and rejects other app envelopes"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+        script.mcpLog('debug', 'server', 'retained', '42', [duration: 17, details: [tool: 'hub_get_info']])
+        def rows = nativeRows()
+        def foreign = rows[0].replace('"appId":"402"', '"appId":"999"')
+        hubGet.register('/logs/past/json') { params -> JsonOutput.toJson(rows + rows + [foreign]) }
+
+        when:
+        reload()
+        def result = script.toolGetDebugLogs([ruleId: '42'])
+
+        then:
+        result.count == 1
+        result.entries[0].message == 'retained'
+        result.entries[0].durationMs == 17
+        result.entries[0].details.tool == 'hub_get_info'
     }
 }

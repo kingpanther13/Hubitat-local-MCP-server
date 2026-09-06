@@ -4019,13 +4019,13 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
     return findings
 
 
-OUTPUT_SCHEMA_FROZEN_COUNT = 117
+OUTPUT_SCHEMA_FROZEN_COUNT = 116
 # Per-file declaration counts and a digest of the declarations' text: the total alone cannot see an
 # edit to an existing declaration, or one removed here and added there. Recompute both with
 # `python tests/sandbox_lint.py --output-schema-baseline` ONLY when a declaration is deliberately
 # removed with its tool; an edit to an existing one is what the freeze forbids.
-OUTPUT_SCHEMA_FROZEN_PER_FILE = {'libraries/mcp-app-cloner-lib.groovy': 3, 'libraries/mcp-bundles-lib.groovy': 4, 'libraries/mcp-code-management-lib.groovy': 14, 'libraries/mcp-custom-rules-lib.groovy': 8, 'libraries/mcp-dashboards-lib.groovy': 6, 'libraries/mcp-debug-logging-lib.groovy': 4, 'libraries/mcp-devices-lib.groovy': 11, 'libraries/mcp-diagnostics-lib.groovy': 16, 'libraries/mcp-discovery-lib.groovy': 2, 'libraries/mcp-files-lib.groovy': 4, 'libraries/mcp-hpm-lib.groovy': 1, 'libraries/mcp-item-backups-lib.groovy': 5, 'libraries/mcp-native-rules-lib.groovy': 10, 'libraries/mcp-rooms-lib.groovy': 5, 'libraries/mcp-self-admin-lib.groovy': 2, 'libraries/mcp-system-lib.groovy': 10, 'libraries/mcp-variables-lib.groovy': 8, 'libraries/mcp-virtual-devices-lib.groovy': 1, 'libraries/mcp-visual-rules-lib.groovy': 3}
-OUTPUT_SCHEMA_FROZEN_DIGEST = "60ebd94ff3ff93dd"
+OUTPUT_SCHEMA_FROZEN_PER_FILE = {'libraries/mcp-app-cloner-lib.groovy': 3, 'libraries/mcp-bundles-lib.groovy': 4, 'libraries/mcp-code-management-lib.groovy': 14, 'libraries/mcp-custom-rules-lib.groovy': 8, 'libraries/mcp-dashboards-lib.groovy': 6, 'libraries/mcp-debug-logging-lib.groovy': 3, 'libraries/mcp-devices-lib.groovy': 11, 'libraries/mcp-diagnostics-lib.groovy': 16, 'libraries/mcp-discovery-lib.groovy': 2, 'libraries/mcp-files-lib.groovy': 4, 'libraries/mcp-hpm-lib.groovy': 1, 'libraries/mcp-item-backups-lib.groovy': 5, 'libraries/mcp-native-rules-lib.groovy': 10, 'libraries/mcp-rooms-lib.groovy': 5, 'libraries/mcp-self-admin-lib.groovy': 2, 'libraries/mcp-system-lib.groovy': 10, 'libraries/mcp-variables-lib.groovy': 8, 'libraries/mcp-virtual-devices-lib.groovy': 1, 'libraries/mcp-visual-rules-lib.groovy': 3}
+OUTPUT_SCHEMA_FROZEN_DIGEST = "d6ba8dc7d65b29aa"
 
 
 _OUTPUT_SCHEMA_MARKER = re.compile(r"\boutputSchema\s*:\s*\[")
