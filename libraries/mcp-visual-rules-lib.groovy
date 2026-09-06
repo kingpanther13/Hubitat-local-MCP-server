@@ -199,6 +199,16 @@ private Map _vrbCreateChild(String version) {
             mcpLog("info", "vrb", "Created Visual Rule Builder ${version} child under parent ${parent.data.id} -> new app id ${newId}")
             return [appId: newId, format: wantedFormat, version: version, route: "createchild"]
         }
+        // A redirect to a BUILDER page (/app/ruleBuilder/<id> or /app/ruleBuilder20/<id>, relative or
+        // absolute) is the hub sending us to the child it just made: the id is on the wire, so it
+        // is adopted -- never a second create -- and the page says which builder it opened.
+        def builder = (resp?.location?.toString() ?: "") =~ /\/app\/ruleBuilder(20)?\/(\d+)/
+        if (builder.find()) {
+            def newId = builder.group(2).toInteger()
+            def fmt = builder.group(1) ? "graph" : "classic"
+            mcpLog("info", "vrb", "Versioned create of a Visual Rule Builder ${version} child redirected to its ${fmt} builder page -> adopted app id ${newId}")
+            return [appId: newId, format: fmt, version: fmt == "graph" ? "2.0" : "1.0", route: "createchild"]
+        }
         // Only a DEFINITIVE answer -- a non-2xx status with a body -- proves the parent has no such
         // child type and nothing was created; that is the one case the legacy route may follow.
         // A 2xx with no usable Location (the auto-followed absolute redirect), a null or an

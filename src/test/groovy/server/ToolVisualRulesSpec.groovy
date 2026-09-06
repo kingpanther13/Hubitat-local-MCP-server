@@ -425,8 +425,8 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.note.contains('INACTIVE DRAFT')
     }
 
-    def "create falls back to the legacy builder-page route, following its absolute redirect, when the versioned child type is missing"() {
-        given: 'no versioned child type: createchild answers the same 302 the builder page does'
+    def "create adopts the child a builder-page redirect names, without a second create"() {
+        given: 'createchild answers the same 302 the builder page does: the id is on the wire'
         enableWrite()
         registerAppsList([])
         def paths = rawPaths
@@ -443,11 +443,11 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         when:
         def result = script.toolSetVisualRule([name: 'Redirected', definition: classicDefinition(), confirm: true])
 
-        then: 'the versioned route was tried first, then the legacy one, whose redirect was followed'
-        rawPaths == [CREATE_1_0, '/app/createVisualRuleBuilderRule']
-        hubGet.calls*.path.contains('/app/ruleBuilder/1234')
+        then: 'the versioned route alone: the redirect named the child, so no second create was issued'
+        rawPaths == [CREATE_1_0]
         result.success == true
         result.appId == 1234
+        result.createRoute == 'createchild'
     }
 
     def "a graph definition on a hub that can only create 1.0 children is refused and the orphan shell force-deleted"() {
