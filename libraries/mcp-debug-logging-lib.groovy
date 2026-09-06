@@ -8,7 +8,10 @@ def toolGetDebugLogs(args) {
     def component = args.component
     def ruleId = args.ruleId
 
-    def stored = getDebugLogEntries()
+    def history = getDebugLogReadResult(args)
+    if (history.status == "in_progress") return history + [tool: "hub_get_logs"]
+    if (history.error) throw new IllegalStateException(history.error)
+    def stored = history.entries
     def logs = stored
 
     // Apply filters
@@ -59,7 +62,8 @@ def toolGetDebugLogs(args) {
 
 def toolClearDebugLogs(args) {
     initDebugLogs()
-    def cleared = clearDebugLogEntries()
+    def cleared = clearDebugLogEntries(args)
+    if (cleared.status == "in_progress") return cleared + [tool: "hub_delete_debug_logs"]
     def detail = cleared.countIncomplete ? "previous entry count unavailable" : "${cleared.clearedCount} entries removed"
     mcpLog("info", "server", "Debug logs cleared (${detail})")
     return [success: true] + cleared
@@ -89,7 +93,10 @@ def toolSetLogLevel(args) {
 
 def toolGetLoggingStatus(args) {
     initDebugLogs()
-    def entries = getDebugLogEntries()
+    def history = getDebugLogReadResult(args)
+    if (history.status == "in_progress") return history + [tool: "hub_get_logs"]
+    if (history.error) throw new IllegalStateException(history.error)
+    def entries = history.entries
 
     def result = [
         version: currentVersion(),
@@ -120,7 +127,8 @@ def toolGenerateBugReport(args) {
     def windowMs = ((args.logWindowSeconds == null ? 120 : args.logWindowSeconds) as Integer) * 1000L
 
     initDebugLogs()
-    def history = getDebugLogReadResult()
+    def history = getDebugLogReadResult(args)
+    if (history.status == "in_progress") return history + [tool: "hub_report_issue"]
     def allEntries = (history.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
     def anchor = _bugReportResolveAnchor(args, allEntries)
     def scopedLogs = _bugReportScopedLogs(args, allEntries, anchor, windowMs)
@@ -155,6 +163,7 @@ def toolGenerateBugReport(args) {
     ]
     if (history.error) {
         result.logs.error = history.error
+        result.logs.retryable = history.retryable
         result.logs.relevantCount = null
         result.logs.otherRecentLogCount = null
     }

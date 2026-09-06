@@ -250,6 +250,7 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
+        (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()
         (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.
@@ -306,6 +307,20 @@ abstract class HarnessSpec extends Specification {
         def f = script.getClass().getDeclaredField(fieldName)
         f.accessible = true
         return f.get(null)
+    }
+
+    protected void seedDebugLogHistory(Map history) {
+        def config = [logLevel: history.config?.logLevel ?: 'error', maxEntries: 100]
+        stateMap.debugLogs = [config: config]
+        def buffer = script.initDebugLogs()
+        synchronized (buffer) {
+            buffer.config = config
+            buffer.entries = []
+            (history.entries ?: []).eachWithIndex { entry, index ->
+                script._appendDebugLogRecord(buffer, script._debugLogRecord(entry, "fixture-${index}".toString()))
+            }
+            buffer.hydrated = true
+        }
     }
 
     /**

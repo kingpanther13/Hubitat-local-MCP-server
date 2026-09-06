@@ -1000,14 +1000,14 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         childAppsList << rule
 
         and: 'some recent + error debug logs for this rule'
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1L, level: 'info',  component: 'rules', message: 'ran', ruleId: '42'],
                 [timestamp: 2L, level: 'error', component: 'rules', message: 'boom', ruleId: '42', stackTrace: 't1'],
                 [timestamp: 3L, level: 'info',  component: 'rules', message: 'other', ruleId: '99']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def result = script.toolGetRuleDiagnostics([ruleId: '42'])
@@ -1044,13 +1044,13 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
             localVariables: [counter: 3]
         ]
         childAppsList << rule
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1L, level: 'info',  component: 'rules', message: 'ran', ruleId: '42'],
                 [timestamp: 2L, level: 'error', component: 'rules', message: 'boom', ruleId: '42', stackTrace: 't1']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def response = mcpDriver.callTool('hub_get_custom_rule', [ruleId: '42', detailed: true])
@@ -1523,7 +1523,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "mcpLog fails open on an unknown level and retains the entry instead of silently dropping it"() {
         given: 'threshold error (default) and an empty buffer'
         settingsMap.mcpLogLevel = 'error'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'error', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
 
         when: 'a typo level is logged (would normally be below the error threshold)'
         script.mcpLog('warning', 'server', 'typo')
@@ -1539,7 +1539,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "converted perf-stats error site captures a structured stackTrace via mcpLogError"() {
         given: 'logLevel=debug so the error entry is retained, and the hub fetch throws'
         settingsMap.mcpLogLevel = 'debug'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
         script.metaClass._logsJsonFetchAndPublish = { -> throw new IllegalStateException('boom-perf') }
 
         when:
@@ -1558,7 +1558,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "converted hub-jobs error site captures a structured stackTrace via mcpLogError"() {
         given:
         settingsMap.mcpLogLevel = 'debug'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
         script.metaClass._logsJsonFetchAndPublish = { -> throw new RuntimeException('boom-jobs') }
 
         when:

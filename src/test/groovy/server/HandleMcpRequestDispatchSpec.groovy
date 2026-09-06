@@ -362,10 +362,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
     def "size-guard mcpLog entry carries the warn level + structured details map a debug-log consumer can read"() {
         given: 'oversize result so the guard fires + debug-log scaffolding wired (mcpLog otherwise no-ops at default log level)'
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [],
-            config: [logLevel: 'debug', maxEntries: 1000]
-        ]
+            config: [logLevel: 'debug', maxEntries: 100]
+        ])
         settingsMap.mcpLogLevel = 'debug'
         def padding = 'x' * 80
         script.metaClass.getRooms = { -> (0..<2000).collect { i -> [id: i as Long, name: "Room-${i}-${padding}"] } }
@@ -394,10 +394,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // wrapped + escaped + envelope-encoded.
         def bigSettings = (0..<3000).collectEntries { i -> ["k${i}".toString(), ("v" * 50)] }
         script.metaClass.toolGetAppConfig = { Map args -> [success: true, app: [id: 99, label: 'X'], settings: bigSettings] }
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [],
-            config: [logLevel: 'debug', maxEntries: 1000]
-        ]
+            config: [logLevel: 'debug', maxEntries: 100]
+        ])
         settingsMap.mcpLogLevel = 'debug'
         // Gateway-routed call: name=hub_read_apps_code, args carries tool+args.
         mcpDriver.pushBody([
@@ -426,7 +426,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         given: 'hub_get_room reaches its handler (room supplied) then throws IAE (no rooms), via its gateway'
         settingsMap.enableRead = true
         settingsMap.useGateways = true
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 1000]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
         settingsMap.mcpLogLevel = 'debug'
         // getRooms is a dynamic SDK method (metaClass-stubbable); [] makes toolGetRoom
         // throw its own "No rooms configured" IAE -> the validation branch.
@@ -453,7 +453,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         given: 'hub_get_room reaches its handler then a non-IAE bubbles up (generic execution error), via its gateway'
         settingsMap.enableRead = true
         settingsMap.useGateways = true
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 1000]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
         settingsMap.mcpLogLevel = 'debug'
         script.metaClass.getRooms = { -> throw new RuntimeException('boom-exec') }
         mcpDriver.pushBody([
@@ -1956,7 +1956,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // origin, the allowed set, and the fact that enforcement is off.
         given:
         settingsMap.enforceOriginValidation = false
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 1000]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
         settingsMap.mcpLogLevel = 'debug'
         mcpDriver.pushHeaders(['Origin': 'http://evil.example'])
         mcpDriver.pushBody([jsonrpc: '2.0', id: 421, method: 'ping', params: [:]])

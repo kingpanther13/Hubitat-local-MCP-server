@@ -695,11 +695,9 @@ def toolGetRuleDiagnostics(args) {
         throw new IllegalArgumentException("Rule not found: ${ruleId}")
     }
 
+    def logHistory = getDebugLogReadResult(args)
+    if (logHistory.status == "in_progress") return logHistory + [tool: "hub_get_custom_rule"]
     def ruleData = childApp.getRuleData()
-
-    // Get recent logs for this rule
-    initDebugLogs()
-    def logHistory = getDebugLogReadResult()
     def ruleLogs = (logHistory.entries ?: []).findAll { it.ruleId == ruleId }
     def recentLogs = ruleLogs.drop(Math.max(0, ruleLogs.size() - 10))
     def errorLogs = ruleLogs.findAll { it.level == "error" }
@@ -737,7 +735,10 @@ def toolGetRuleDiagnostics(args) {
             errors: errorLogs.drop(Math.max(0, errorLogs.size() - 5)).collect { [time: formatTimestamp(it.timestamp), message: it.message, stackTrace: it.stackTrace] }
         ]
     ]
-    if (logHistory.error) result.logReadError = logHistory.error
+    if (logHistory.error) {
+        result.logReadError = logHistory.error
+        result.logReadRetryable = logHistory.retryable
+    }
     return result
 }
 

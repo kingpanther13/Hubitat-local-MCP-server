@@ -29,7 +29,7 @@ class DebugLogRingSpec extends ToolSpecBase {
         }
     }
 
-    def "first suppressed log migrates every legacy level and preserves structured history after reload"() {
+    def "first suppressed log discards legacy history but preserves configuration and later native history"() {
         given:
         stateMap.debugLogs = [config: [logLevel: 'warn', maxEntries: 100], entries: [
             [timestamp: 1L, level: 'info', component: 'server', message: 'history'],
@@ -42,9 +42,11 @@ class DebugLogRingSpec extends ToolSpecBase {
         then:
         !stateMap.debugLogs.containsKey('entries')
         script.getConfiguredLogLevel() == 'warn'
-        script.getDebugLogEntries()*.message == ['history', 'failure']
+        script.getDebugLogEntries() == []
+        nativeRows() == []
 
         when:
+        script.mcpLog('warn', 'server', 'new native history', null, [details: [tool: 'hub_get_info']])
         def rows = nativeRows()
         hubGet.register('/logs/past/json') { params ->
             assert params == [type: 'app', id: '402']
@@ -53,8 +55,8 @@ class DebugLogRingSpec extends ToolSpecBase {
         reload()
 
         then:
-        script.getDebugLogEntries()*.message == ['history', 'failure']
-        script.getDebugLogEntries()[1].details.tool == 'hub_get_info'
+        script.getDebugLogEntries()*.message == ['new native history']
+        script.getDebugLogEntries()[0].details.tool == 'hub_get_info'
     }
 
     def "warm debug and info writes use native logs without reading or writing app state or files"() {

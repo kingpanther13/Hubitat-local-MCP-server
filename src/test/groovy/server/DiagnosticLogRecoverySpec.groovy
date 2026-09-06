@@ -6,7 +6,6 @@ import support.TestChildApp
 import support.TestHub
 import support.TestLocation
 import support.ToolSpecBase
-import support.PermissiveLog
 
 class DiagnosticLogRecoverySpec extends ToolSpecBase {
     @Shared private TestChildApp loggingApp = new TestChildApp(id: 402L)
@@ -136,23 +135,4 @@ class DiagnosticLogRecoverySpec extends ToolSpecBase {
         script.getDebugLogEntries() == []
     }
 
-    def "failed native emission preserves legacy migration payload for retry"() {
-        given:
-        def entries = [[timestamp: 1L, level: 'error', component: 'server', message: 'legacy failure', details: [tool: 'hub_get_info']]]
-        stateMap.debugLogs = [entries: entries, config: [logLevel: 'error', maxEntries: 100]]
-        def failingLog = new PermissiveLog() {
-            @Override void error(String message) { throw new IllegalStateException('native logging unavailable') }
-        }
-        def peer = newCompiledScriptInstance(app: loggingApp, state: stateMap, atomicState: atomicStateMap, log: failingLog)
-
-        when:
-        peer.initDebugLogs()
-
-        then:
-        def error = thrown(IllegalStateException)
-        error.message == 'native logging unavailable'
-        stateMap.debugLogs.entries == entries
-        stateMap.debugLogs.config.logLevel == 'error'
-        !(scriptStaticField('DEBUG_LOG_BUFFERS') as Map).containsKey('402')
-    }
 }

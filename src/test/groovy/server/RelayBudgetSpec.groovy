@@ -902,7 +902,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.relayBudgetMs = budget
         settingsMap.mcpLogLevel = 'debug'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
 
         when:
         script._hubRtLog('GET', '/hub/wifi/join?psk=hunter2', elapsed as long, outcome)

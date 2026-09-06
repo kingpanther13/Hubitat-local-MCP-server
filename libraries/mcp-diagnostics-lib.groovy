@@ -332,6 +332,79 @@ private Map _parseHubLogLine(String line) {
     return entry
 }
 
+// Scoped snapshots live only long enough for a continuation or terminal replay. Bound
+// simultaneous snapshots, never their content; a busy caller waits for an available slot.
+def _nativeLogSnapshot(Map query, Map args) {
+    if (!_mrtrReadContinuationActive()) {
+        return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
+    }
+    String owner = app?.id?.toString() ?: "0"
+    String key = "${owner}:${query?.type ?: 'all'}:${query?.id ?: ''}".toString()
+    Map job = null
+    synchronized (NATIVE_LOG_SNAPSHOTS) {
+        NATIVE_LOG_SNAPSHOTS.entrySet().findAll { entry ->
+            Map value = entry.value as Map
+            long ttl = value.pending == true ? 90000L : 30000L
+            now() - (value.at as Long) >= ttl
+        }.collect { it.key }.each { NATIVE_LOG_SNAPSHOTS.remove(it) }
+        if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
+            String fetchId = java.util.UUID.randomUUID().toString()
+            NATIVE_LOG_SNAPSHOTS[key] = [at: now(), pending: true, fetchId: fetchId]
+            job = [key: key, owner: owner, fetchId: fetchId, query: query]
+        }
+    }
+    if (job != null) {
+        try {
+            runInMillis(200, "runNativeLogFetch", [overwrite: false, data: job])
+        } catch (Exception scheduleError) {
+            synchronized (NATIVE_LOG_SNAPSHOTS) {
+                if (NATIVE_LOG_SNAPSHOTS[key]?.fetchId == job.fetchId) NATIVE_LOG_SNAPSHOTS.remove(key)
+            }
+            throw scheduleError
+        }
+    }
+    long t0 = args?.__reqT0 instanceof Number ? args.__reqT0 as Long : now()
+    long deadline = t0 + _logsJsonObserveWaitMs()
+    long remainingBudget = Math.max(0L, deadline - now())
+    while (true) {
+        synchronized (NATIVE_LOG_SNAPSHOTS) {
+            def snapshot = NATIVE_LOG_SNAPSHOTS[key]
+            if (snapshot instanceof Map && snapshot.pending != true) {
+                if (snapshot.error) {
+                    NATIVE_LOG_SNAPSHOTS.remove(key)
+                    throw new IllegalStateException(snapshot.error.toString())
+                }
+                return [state: "ready", text: snapshot.text, fetchedAt: snapshot.at]
+            }
+        }
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        if (remaining <= 0L) return [state: "pending"]
+        long waitMs = Math.min(250L, remaining)
+        pauseExecution(waitMs)
+        remainingBudget -= waitMs
+    }
+}
+
+def runNativeLogFetch(Map job = [:]) {
+    if (job.owner != (app?.id?.toString() ?: "0")) return
+    synchronized (NATIVE_LOG_SNAPSHOTS) {
+        def current = NATIVE_LOG_SNAPSHOTS[job.key]
+        if (!(current instanceof Map) || current.fetchId != job.fetchId || current.pending != true || current.started == true) return
+        current.started = true
+    }
+    Map result
+    try {
+        result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
+    } catch (Exception fetchError) {
+        result = [error: fetchError.message ?: fetchError.toString()]
+    }
+    synchronized (NATIVE_LOG_SNAPSHOTS) {
+        if (NATIVE_LOG_SNAPSHOTS[job.key]?.fetchId == job.fetchId) {
+            NATIVE_LOG_SNAPSHOTS[job.key] = result + [at: now(), fetchId: job.fetchId, pending: false]
+        }
+    }
+}
+
 def toolGetHubLogs(args) {
     String mode = args.mode == null ? "hub" : args.mode.toString().toLowerCase()
     if (!(mode in ["hub", "mcp", "status"])) throw new IllegalArgumentException("Invalid log mode: ${args.mode}. Valid modes: hub, mcp, status")
@@ -557,15 +630,23 @@ def toolGetHubLogs(args) {
     mcpLog("info", "monitoring", "Fetching hub logs (level=${levelFilter}, source=${sourceFilter}, deviceId=${deviceIdFilter}, appId=${appIdFilter}, limit=${limit})")
 
     def responseText = null
+    def fetchedAt = null
     try {
-        responseText = hubInternalGet("/logs/past/json", query, 30)
+        def snapshot = _nativeLogSnapshot(query, args)
+        if (snapshot.state == "pending") {
+            return [status: "in_progress", tool: "hub_get_logs", retryable: true,
+                    note: "Native log history is still loading. Continue with requestState, or repeat the same call on a legacy client."]
+        }
+        responseText = snapshot.text
+        fetchedAt = snapshot.fetchedAt
     } catch (Exception e) {
         mcpLogError("monitoring", "Failed to fetch hub logs", e)
         throw new IllegalStateException("Failed to fetch hub logs: ${e.message}")
     }
 
     if (!responseText) {
-        return [logs: [], message: "No log data returned from hub", count: 0]
+        return [logs: [], message: "No log data returned from hub", count: 0] +
+            (fetchedAt == null ? [:] : [snapshot: [fetchedAt: fetchedAt]])
     }
 
     // Firmware supplies either legacy five-column or current three-column rows.
@@ -711,6 +792,7 @@ def toolGetHubLogs(args) {
     // user-specified ceiling. Default limit is 100; max 500. Pair with limit=500
     // for the largest practical full-buffer page.
     def result = [logs: paged.page, count: paged.page.size(), totalParsed: totalParsed, appliedLimit: limit]
+    if (fetchedAt != null) result.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
     if (cursor != null) {
         result.total = fullLogs.size()
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor

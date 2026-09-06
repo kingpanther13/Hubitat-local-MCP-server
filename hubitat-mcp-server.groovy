@@ -36,6 +36,7 @@
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
 // fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
+@groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
 // Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
@@ -469,7 +470,7 @@ def advancedOverridesPage() {
                   required: false
         }
         section("Slow-operation time budgets") {
-            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes and the two Logs-page reads that grow with hub size (hub_get_jobs, hub_get_performance_stats) automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
+            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes, Logs-page reads, and native log history recovery automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
@@ -756,9 +757,6 @@ def handleMcpRequest() {
                 jsonRpcError(null, -32600, "Forbidden: the Origin header does not name a known identity for this MCP endpoint.")))
         }
     }
-
-    // A code-only update need not fire updated(); migrate the old log payload on first use.
-    initDebugLogs()
 
     def requestBody
     try {
@@ -1787,7 +1785,8 @@ def _maxConcurrentWrites() {
 def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
-            "hub_get_jobs", "hub_get_performance_stats"] as Set
+            "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
+            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -1795,7 +1794,8 @@ def _budgetAwareTools() {
 def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
-            "hub_create_driver", "hub_update_driver", "hub_delete_item"] as Set
+            "hub_create_driver", "hub_update_driver", "hub_delete_item",
+            "hub_delete_debug_logs"] as Set
 }
 
 // Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
@@ -1804,7 +1804,8 @@ def _mrtrWriteTools() {
 // the read from its cached snapshot). The leaf itself answers status: "in_progress" while its
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
-    return ["hub_get_jobs", "hub_get_performance_stats"] as Set
+    return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
+            "hub_report_issue", "hub_get_custom_rule"] as Set
 }
 
 // A read only continues when the request's transport carries a time budget; without one the
@@ -2629,7 +2630,8 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             else nextLeaf.patches = result.patchesRemaining
             kind = "patches"
         }
-    } else if (_mrtrReadTools().contains(leafTool) && result.status == "in_progress") {
+    } else if ((_mrtrReadTools().contains(leafTool) || leafTool == "hub_delete_debug_logs")
+            && result.status == "in_progress") {
         // The background fetch is still running; the next leg re-runs the identical read.
         kind = "slow_read"
     }
@@ -2695,7 +2697,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 def readCapped = [
                     success: false, isError: true, status: "slow_read_timeout", tool: leaf,
                     error: "The hub's Logs-page fetch did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
-                    note: "No hub state was changed. The fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, check hub_get_logs for a slow or failing /logs/json.",
+                    note: "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
                 ]
                 _mrtrStoreTerminal(stateId, rec, claim, readCapped, true)
@@ -6533,18 +6535,7 @@ def initDebugLogs() {
         }
         def buffer = [appId: appId, generation: generation, config: config,
                       entries: [], hydrated: fresh]
-        if (legacy.entries instanceof List) {
-            def entries = legacy.entries
-            entries.drop(Math.max(0, entries.size() - 100)).eachWithIndex { entry, index ->
-                if (entry instanceof Map) {
-                    def record = _debugLogRecord(entry, "legacy-${index}-${entry.timestamp}".toString())
-                    _emitNativeDebugLog(buffer, record)
-                    _appendDebugLogRecord(buffer, record)
-                }
-            }
-            buffer.hydrated = fresh
-        }
-        // Remove the old payload only after every migrated line reached native logging.
+        // The old state-backed history is discarded once; subsequent reloads use native logs.
         state.debugLogs = [config: config]
         DEBUG_LOG_BUFFERS[appId] = buffer
         return buffer
@@ -6584,13 +6575,83 @@ private void _emitNativeDebugLog(Map buffer, Map record, String fullMessage = nu
     }
 }
 
-def getDebugLogEntries() {
+private Map _getDebugLogHistoryResult(Map args = [:]) {
     def buffer = initDebugLogs()
     String generation
     synchronized (buffer) {
-        if (buffer.hydrated) return _debugLogSnapshot(buffer)
+        if (buffer.hydrated) return [entries: _debugLogSnapshot(buffer)]
         generation = buffer.generation
     }
+    if (!_logsJsonUsesBackgroundFetch()) return [entries: _fetchDebugLogHistory(buffer, generation)]
+    long t0 = args?.__reqT0 instanceof Number ? args.__reqT0 as Long : now()
+    _scheduleDebugLogHistory(buffer)
+    long deadline = t0 + _logsJsonObserveWaitMs()
+    long remainingBudget = Math.max(0L, deadline - now())
+    while (true) {
+        synchronized (buffer) {
+            if (buffer.hydrated) return [entries: _debugLogSnapshot(buffer)]
+            if (buffer.fetchError) throw new IllegalStateException("Native log recovery failed; retry this request: ${buffer.fetchError}")
+        }
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        if (remaining <= 0L) return [status: "in_progress", retryable: true,
+            note: "Native log history is loading. Continue with requestState when supplied, otherwise repeat the same call."]
+        long waitMs = Math.min(250L, remaining)
+        pauseExecution(waitMs)
+        remainingBudget -= waitMs
+    }
+}
+
+def getDebugLogEntries(Map args = [:]) {
+    def history = getDebugLogReadResult(args)
+    if (history.entries != null) return history.entries
+    throw new IllegalStateException(history.error ?: history.note)
+}
+
+private void _scheduleDebugLogHistory(Map buffer) {
+    String fetchId
+    String generation
+    synchronized (buffer) {
+        if (buffer.hydrated) return
+        // Allow a full HTTP timeout plus authentication retry before replacing a worker.
+        if (buffer.fetchStartedAt instanceof Number && now() - (buffer.fetchStartedAt as Long) < 90000L) return
+        fetchId = java.util.UUID.randomUUID().toString()
+        generation = buffer.generation
+        buffer.fetchId = fetchId
+        buffer.fetchStartedAt = now()
+    }
+    try {
+        runInMillis(200, "runDebugLogHistoryFetch", [overwrite: false,
+            data: [appId: buffer.appId, generation: generation, fetchId: fetchId]])
+    } catch (Exception e) {
+        synchronized (buffer) {
+            if (buffer.fetchId == fetchId) buffer.remove("fetchStartedAt")
+        }
+        throw e
+    }
+}
+
+def runDebugLogHistoryFetch(Map job = [:]) {
+    def buffer = initDebugLogs()
+    synchronized (buffer) {
+        if (job.appId != buffer.appId || job.generation != buffer.generation ||
+            !job.fetchId || job.fetchId != buffer.fetchId || buffer.hydrated) return
+    }
+    try {
+        _fetchDebugLogHistory(buffer, job.generation.toString(), job.fetchId.toString())
+    } catch (Exception e) {
+        synchronized (buffer) {
+            if (buffer.generation == job.generation && buffer.fetchId == job.fetchId) {
+                buffer.fetchError = e.message ?: e.class.simpleName
+            }
+        }
+    } finally {
+        synchronized (buffer) {
+            if (buffer.generation == job.generation && buffer.fetchId == job.fetchId) buffer.remove("fetchStartedAt")
+        }
+    }
+}
+
+private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId = null) {
     // Recovery is a reader cost. Logging continues while the scoped hub read runs.
     def text = hubInternalGet("/logs/past/json", [type: "app", id: buffer.appId], 30)
     def rows = text ? new groovy.json.JsonSlurper().parseText(text) : null
@@ -6617,11 +6678,12 @@ def getDebugLogEntries() {
     }
     synchronized (buffer) {
         // A clear during the HTTP read establishes a new generation; old rows stay excluded.
-        if (buffer.generation == generation) {
+        if (buffer.generation == generation && (fetchId == null || buffer.fetchId == fetchId)) {
             buffer.entries.each { recovered[it.id] = it }
             buffer.entries = []
             recovered.values().each { _appendDebugLogRecord(buffer, it) }
             buffer.hydrated = true
+            buffer.remove("fetchError")
         }
         return _debugLogSnapshot(buffer)
     }
@@ -6631,17 +6693,18 @@ private List _debugLogSnapshot(Map buffer) {
     return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(buffer.entries.collect { it.entry }))
 }
 
-def getDebugLogReadResult() {
+def getDebugLogReadResult(Map args = [:]) {
     try {
-        return [entries: getDebugLogEntries()]
+        return _getDebugLogHistoryResult(args)
     } catch (Exception e) {
         // Diagnostic consumers can still report independent hub and rule information.
-        return [entries: null, error: "MCP log history unavailable: ${e.message ?: e.class.simpleName}".toString()]
+        return [entries: null, retryable: true, error: "MCP log history unavailable: ${e.message ?: e.class.simpleName}".toString()]
     }
 }
 
-def clearDebugLogEntries() {
-    def history = getDebugLogReadResult()
+def clearDebugLogEntries(Map args = [:]) {
+    def history = getDebugLogReadResult(args)
+    if (history.status == "in_progress") return history
     def buffer = initDebugLogs()
     synchronized (buffer) {
         int count = buffer.entries.size()
@@ -6650,6 +6713,9 @@ def clearDebugLogEntries() {
         buffer.generation = generation
         buffer.entries = []
         buffer.hydrated = true
+        buffer.remove("fetchId")
+        buffer.remove("fetchStartedAt")
+        buffer.remove("fetchError")
         def result = [clearedCount: history.error ? null : count]
         if (history.error) {
             result.countIncomplete = true
@@ -9869,7 +9935,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and, only when the request's transport carries a time budget, the two Logs-page reads described below.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`. When the transport carries a time budget, log and diagnostic reads also continue as described below.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
@@ -9882,6 +9948,8 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 ### Older clients
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
+
+Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 

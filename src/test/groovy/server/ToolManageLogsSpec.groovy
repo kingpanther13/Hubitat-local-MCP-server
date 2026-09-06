@@ -29,7 +29,7 @@ import support.ToolSpecBase
  *                           rather than returning null and NPE'ing when the
  *                           server calls app.updateSetting(...). cleanup()
  *                           clears the settingsStore between tests.
- *   - legacy debug logs  -> state.debugLogs fixtures exercise native-history migration
+ *   - MCP debug logs     -> seedDebugLogHistory populates the in-memory history
  *
  * Additional hub_get_logs coverage — this spec complements ToolGetHubLogsSpec
  * with level/source/limit/empty-response/deviceId/appId/truncation cases.
@@ -1585,13 +1585,13 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs returns recent entries with metadata"() {
         given:
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1234567880000L, level: 'info',  component: 'server', message: 'old'],
                 [timestamp: 1234567890000L, level: 'error', component: 'rules',  message: 'boom', ruleId: '5', stackTrace: 'trace']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def result = script.toolGetDebugLogs([:])
@@ -1609,13 +1609,13 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_get_logs via dispatch returns recent entries with metadata (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1234567880000L, level: 'info',  component: 'server', message: 'old'],
                 [timestamp: 1234567890000L, level: 'error', component: 'rules',  message: 'boom', ruleId: '5', stackTrace: 'trace']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def response = mcpDriver.callTool('hub_get_logs', [mode: 'mcp'])
@@ -1634,14 +1634,14 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs filters by level"() {
         given:
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1L, level: 'debug', component: 'c', message: 'd1'],
                 [timestamp: 2L, level: 'info',  component: 'c', message: 'i1'],
                 [timestamp: 3L, level: 'error', component: 'c', message: 'e1']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def result = script.toolGetDebugLogs([level: 'error'])
@@ -1653,14 +1653,14 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs filters by ruleId"() {
         given:
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1L, level: 'info', component: 'rules', message: 'r42a', ruleId: '42'],
                 [timestamp: 2L, level: 'info', component: 'rules', message: 'r99',  ruleId: '99'],
                 [timestamp: 3L, level: 'info', component: 'rules', message: 'r42b', ruleId: '42']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def result = script.toolGetDebugLogs([ruleId: '42'])
@@ -1672,14 +1672,14 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs filters by component substring"() {
         given:
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1L, level: 'info', component: 'server',      message: 's1'],
                 [timestamp: 2L, level: 'info', component: 'rules',       message: 'r1'],
                 [timestamp: 3L, level: 'info', component: 'rules-eval',  message: 'r2']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def result = script.toolGetDebugLogs([component: 'rules'])
@@ -1691,12 +1691,12 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs caps at limit argument (most recent)"() {
         given:
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: (1..10).collect { i ->
                 [timestamp: i as Long, level: 'info', component: 'c', message: "m${i}".toString()]
             },
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def result = script.toolGetDebugLogs([limit: 3])
@@ -1712,7 +1712,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "mcpLog caps stored message at 500 chars and stackTrace at 1000"() {
         given: 'logLevel=debug so an error entry is retained, and an oversized payload'
         settingsMap.mcpLogLevel = 'debug'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
 
         when:
         script.mcpLog('error', 'server', 'x' * 2000, null, [stackTrace: 'z' * 5000])
@@ -1726,7 +1726,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "mcpLog leaves a short message and absent stackTrace untouched"() {
         given:
         settingsMap.mcpLogLevel = 'debug'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
 
         when:
         script.mcpLog('error', 'server', 'short message')
@@ -1741,13 +1741,13 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_delete_debug_logs clears MCP history and reports count"() {
         given: 'logLevel=debug so the post-clear confirmation mcpLog write is retained'
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1L, level: 'info', component: 'c', message: 'a'],
                 [timestamp: 2L, level: 'info', component: 'c', message: 'b']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def result = script.toolClearDebugLogs([:])
@@ -1767,13 +1767,13 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_delete_debug_logs via dispatch empties entries and reports count (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 1L, level: 'info', component: 'c', message: 'a'],
                 [timestamp: 2L, level: 'info', component: 'c', message: 'b']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def response = mcpDriver.callTool('hub_delete_debug_logs', [:])
@@ -1791,7 +1791,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_delete_debug_logs succeeds when there are no entries"() {
         given: 'explicit logLevel=error so the post-clear info log is below threshold — pinned against initDebugLogs default drift'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'error', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
 
         when:
         def result = script.toolClearDebugLogs([:])
@@ -1832,7 +1832,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_set_log_level updates state + setting and returns previous level"() {
         given: 'prior log level is info and app.updateSetting routes through the shared TestChildApp stub'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'info', maxEntries: 100]])
 
         when:
         def result = script.toolSetLogLevel([level: 'warn'])
@@ -1849,7 +1849,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_set_log_level via dispatch updates state + setting (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'info', maxEntries: 100]])
 
         when:
         def response = mcpDriver.callTool('hub_set_log_level', [level: 'warn'])
@@ -1871,7 +1871,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs(mode:status) reports counts by level + current config"() {
         given:
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 100L, level: 'debug', component: 'c', message: 'd'],
                 [timestamp: 200L, level: 'info',  component: 'c', message: 'i'],
@@ -1880,7 +1880,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
                 [timestamp: 500L, level: 'error', component: 'c', message: 'e']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def result = script.toolGetLoggingStatus([:])
@@ -1901,7 +1901,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_get_logs(mode:status) via dispatch reports counts by level + current config (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        stateMap.debugLogs = [
+        seedDebugLogHistory([
             entries: [
                 [timestamp: 100L, level: 'debug', component: 'c', message: 'd'],
                 [timestamp: 200L, level: 'info',  component: 'c', message: 'i'],
@@ -1910,7 +1910,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
                 [timestamp: 500L, level: 'error', component: 'c', message: 'e']
             ],
             config: [logLevel: 'debug', maxEntries: 100]
-        ]
+        ])
 
         when:
         def response = mcpDriver.callTool('hub_get_logs', [mode: 'status'])
