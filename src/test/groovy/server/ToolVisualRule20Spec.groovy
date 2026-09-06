@@ -1376,6 +1376,23 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         script.toolGetVisualRule([appId: 879]).activated == false   // paused: a document, no errors, no runtime key -- not running
     }
 
+    def "a save the hub activated, followed by a pause that landed, reports activated:false"() {
+        given: 'the save answers activatedSuccessfully:true, then the pause endpoint accepts and the read-back is paused'
+        enableWrite()
+        def state = [name: 'P', ruleJson: json(validGraph()), rulePaused: false]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.name = b.name; state.ruleJson = b.ruleJson; [name: b.name, ruleJson: b.ruleJson, validationErrors: [], activatedSuccessfully: true] }
+        hubGet.register('/app/ruleBuilderPause/880/true') { params -> state.rulePaused = true; '{"success":true}' }
+        hubGet.register('/app/ruleBuilder20Json/880') { params -> json([name: state.name, rulePaused: state.rulePaused, ruleJson: state.ruleJson, validationErrors: [], runtimeGraph: [triggerNodeIds: ['t1']]]) }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 880, confirm: true, paused: true, definition: validGraph()])
+
+        then:
+        result.success == true
+        result.rulePaused == true
+        result.activated == false
+    }
+
     def "a versioned create whose answer is lost and whose child never appears refuses to create again"() {
         given: 'createchild answers 200 with no Location; the parent shows no new child on either read'
         enableWrite()

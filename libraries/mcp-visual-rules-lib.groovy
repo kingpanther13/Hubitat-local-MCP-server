@@ -1137,8 +1137,8 @@ def toolGetVisualRule(args) {
             // runtimeGraph is the hub's verdict when the wire carries it. Without it (older
             // firmware) activation is inferred, and only for a rule that HAS a document: a
             // never-saved shell is not running anything.
-            out.activated = out.containsKey("runtimeActive") ? (out.runtimeActive == true) :
-                    (!(out.validationErrors) && out.definition instanceof Map && out.rulePaused != true)
+            out.activated = (out.containsKey("runtimeActive") ? (out.runtimeActive == true) :
+                    (!(out.validationErrors) && out.definition instanceof Map)) && out.rulePaused != true
             out.remove("runtimeActive")
             if (out.definition instanceof Map) {
                 // The editor form is the shape to modify and send back. A stored graph the
@@ -1481,8 +1481,11 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         out.activated = savedMeta?.containsKey("activatedSuccessfully") ?
                 (savedMeta.activatedSuccessfully == true) :
                 (after != null && validationErrors.isEmpty() &&
-                        (after.data.containsKey("runtimeActive") ? after.data.runtimeActive == true :
-                                (after.data.definition instanceof Map && after.data.rulePaused != true)))
+                        (after.data.containsKey("runtimeActive") ? after.data.runtimeActive == true : after.data.definition instanceof Map))
+        // `activated` means "actually runs". The save happens BEFORE the pause call, so a save the
+        // hub activated and a pause that then landed must not read as running: the read-back's
+        // pause state is the last word (same rule as the read tool).
+        if (after?.data?.rulePaused == true) out.activated = false
         if (savedMeta?.containsKey("storedSuccessfully")) out.storedSuccessfully = savedMeta.storedSuccessfully
         if (savedMeta?.activationError != null) out.activationError = savedMeta.activationError
         if (savedMeta?.storageError != null) out.storageError = savedMeta.storageError

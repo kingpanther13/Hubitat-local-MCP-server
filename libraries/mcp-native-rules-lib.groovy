@@ -9883,6 +9883,9 @@ def toolSetRule(args) {
             }
         }
         def createArgs = [appType: "rule_machine", name: args?.name, confirm: args?.confirm] as LinkedHashMap
+        // The gateway stamps the request clock on the TOP-LEVEL args only; the bundled
+        // triggers/actions below budget-check against it, so it rides along.
+        if (args?.__reqT0 != null) createArgs.__reqT0 = args.__reqT0
         def trigs = []
         if (args?.addTriggers instanceof List) trigs.addAll(args.addTriggers)
         if (args?.addTrigger instanceof Map) trigs << args.addTrigger
