@@ -192,8 +192,9 @@ private Map _vrbCreateChild(String version) {
         before = ((parent.children ?: []).collect { it?.data?.id?.toString() }.findAll { it }) as Set
         def path = "/installedapp/createchild/hubitat/Visual Rule Builder ${version}/parent/${parent.data.id}".toString()
         def resp = hubInternalGetRaw(path)
-        def m = resp?.location ? (resp.location.toString() =~ /\/installedapp\/configure\/(\d+)/) : null
-        if (m && m.find()) {
+        // A Groovy Matcher coerces to boolean by calling find(), so test it exactly once.
+        def m = (resp?.location?.toString() ?: "") =~ /\/installedapp\/configure\/(\d+)/
+        if (m.find()) {
             def newId = m.group(1).toInteger()
             mcpLog("info", "vrb", "Created Visual Rule Builder ${version} child under parent ${parent.data.id} -> new app id ${newId}")
             return [appId: newId, format: wantedFormat, version: version, route: "createchild"]
