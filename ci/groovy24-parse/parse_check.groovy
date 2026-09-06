@@ -108,21 +108,17 @@ def collectBlocked = { String fileName, String src ->
     return findings
 }
 
-// Gate 3: per-method BYTECODE BUDGET (issue: a hub deploy 500 with no compile error).
+// Gate 3: per-method BYTECODE BUDGET.
 //
-// The JVM caps one method's Code attribute at 65,535 bytes. Hubitat compiles the app WITH its own
-// sandbox AST transform, which emits more bytecode than stock Groovy, so a method that is merely
-// CLOSE to the cap here is over it on the hub -- and the hub reports that as a bare HTTP 500 from
-// /app/ajax/update with no message and nothing in its logs.
+// The JVM caps one method's Code attribute at 65,535 bytes and Hubitat compiles the app WITH its
+// own sandbox AST transform, which emits more bytecode than stock Groovy -- so a method that is
+// merely CLOSE to the cap here has less headroom than it looks. CONVERSION and CANONICALIZATION
+// run before any bytecode exists, so only a CLASS_GENERATION compile can measure this at all.
 //
-// Measured on the e2e hub against stock 2.4.21 bytecode for _rmAddAction:
-//   58,941 deployed   59,623 deployed   59,643 deployed   59,928 REFUSED (three runs)
-// So the transform's headroom runs out between 59,643 and 59,928. The budget sits at the largest
-// size with a live-proven deploy AND a margin, not at the observed failure.
-//
-// CLASS_GENERATION is required: CONVERSION and CANONICALIZATION run before any bytecode exists,
-// which is why this class of failure reached e2e three times. Stock 2.4 compiles the oversized
-// method fine, so the budget -- not a compile error -- is what catches it.
+// This is a conservative engineering budget, NOT a discovered Hubitat limit, and it is NOT the
+// explanation for any deploy failure observed so far: _rmAddAction was 59,643 bytes on a build the
+// hub accepted and 58,390 on a build the hub refused. Keep it as headroom against the hard cap;
+// do not read a failure here as a diagnosis of a hub 500.
 final int METHOD_BYTECODE_BUDGET = 58941
 
 // Throws CompileFailure on a genuine class-generation error; returns null when only the classfile
@@ -252,8 +248,8 @@ for (String path : args) {
             sizes.findAll { it.bytes > METHOD_BYTECODE_BUDGET }.each {
                 System.err.println "  ${it.cls}.${it.method}: ${it.bytes} > ${METHOD_BYTECODE_BUDGET} budget (JVM hard cap 65535)"
             }
-            System.err.println "  Hubitat's sandbox transform adds bytecode on top of these numbers, so the hub REFUSES the"
-            System.err.println "  save with a bare HTTP 500 and no compile error. Split the method -- extracting a cohesive"
+            System.err.println "  Hubitat's sandbox transform adds bytecode on top of these numbers, so this budget keeps"
+            System.err.println "  headroom against the JVM 65,535 hard cap. Split the method -- extracting a cohesive"
             System.err.println "  block into a private helper is enough; #include is a textual paste, so moving code between"
             System.err.println "  the app file and a library does NOT change any method's size."
             rc = 1

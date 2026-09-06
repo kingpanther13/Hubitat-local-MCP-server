@@ -3855,6 +3855,7 @@ def run_self_test() -> int:
 
     # BP20 library file-scope block-comment guard: must-catch / must-not-catch fixtures.
     failures += _run_library_block_comment_self_test()
+    failures += _run_zero_arg_closure_self_test()
 
     # Vendored MCP schema provenance guard: must-catch / must-not-catch fixtures.
     failures += _run_vendored_schema_hash_self_test()
@@ -3883,32 +3884,27 @@ def run_self_test() -> int:
     return 0
 
 
-# hubitat-mcp-server.groovy is a size BUDGET -- the evidence is in check_app_file_size's docstring.
+# hubitat-mcp-server.groovy is a MAINTAINABILITY budget, not a hub ceiling -- see
+# check_app_file_size's docstring for the measurements that disproved the ceiling.
 APP_FILE_SIZE_ERROR = 695_000
 APP_FILE_SIZE_WARN = 675_000
 
 
 def check_app_file_size(size_override: int | None = None) -> list[dict]:
-    """Fail when hubitat-mcp-server.groovy outgrows the hub's app-source save ceiling.
+    """Keep hubitat-mcp-server.groovy inside its maintainability budget.
 
-    The hub REFUSES to save an app source above a ceiling it does not publish. Largest size
-    PROVEN TO DEPLOY: 698,521 bytes, which the e2e test hub took on four separate runs. PROVEN
-    TO FAIL: 700,403 bytes -- HTTP 500 from /app/ajax/update, twice, with no fresh
-    lastSelfDeploy. A sibling PR's 682,927-byte file deployed on the same hub minutes later.
-    Hubitat's only published figure is a 2018 staff statement of a 500,000-character cap
-    (community.hubitat.com/t/app-line-length-limit/3421), since raised to a value it has not
-    published -- so the real ceiling sits somewhere between 698,521 and 700,403, and this guard
-    sits below the largest size proven to deploy rather than at the observed failure.
+    This is a BUDGET, not a hub ceiling. The size theory it was first written for is disproven:
+    the branch deployed at 698,521 bytes and later FAILED at 664,504, and every other dimension
+    moved the same way -- URL-encoded POST body 833,253 (deployed) vs 792,273 (refused), app plus
+    all 19 libraries 3,168,098 vs 2,997,767, stock-2.4 constant pool 51,996 vs 50,058, generated
+    class bytes 2,460,742 vs 2,344,916. A save the hub refuses can be smaller in every dimension
+    than one it accepts, so no size number here predicts a deploy.
 
-    The growth that reached it was ordinary accretion, not one bad merge: the app file went
-    686,273 -> 698,707 bytes across a single feature branch's own commits, and the merge from
-    main added the last 1,696. That merge cut about 167 KB of Groovy overall, but every byte of
-    it came out of the LIBRARIES, which do not count against this budget -- which is the point.
-    Code with a domain owner belongs in that owner's library, where its size is free.
-
-    Nothing else catches an over-budget app file: it parses, lints and unit-tests clean, and only
-    the live install rejects it -- as a bare HTTP 500, on the e2e hub, after the run has already
-    armed the dead-man. size_override drives the self-test without a 700KB fixture.
+    What the budget is still for: #include is a textual paste, so moving code out of this file
+    does not shrink anything the hub compiles -- but code with a domain owner is far easier to
+    find, review and test in that owner's library than in an 8,000-line monolith. The numbers
+    sit where the file has actually lived. size_override drives the self-test without a 700KB
+    fixture.
     """
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
@@ -4261,6 +4257,76 @@ def check_logs_json_snapshot_guard() -> list[dict]:
                                      "message": f"`{tool}` ({fn}) reads the /logs/json snapshot but is missing from {' and '.join(missing)}() in hubitat-mcp-server.groovy -- without both, a relay-bound call of it cannot continue and 502s on a large hub."})
     return findings
 
+def _scan_zero_arg_closure_literals(name: str, text: str) -> list[dict]:
+    """Flag `{ -> ... }` closure literals in code the hub compiles.
+
+    In Groovy 2.4.21 (the hub runtime) `{ -> ... }` is the ONE closure form whose
+    ClosureExpression carries getParameters() == null; every other form -- `{ it }`,
+    `{ x -> }` -- carries an array. Measured under 2.4.21:
+
+        { x -> x }   -> [1 param]
+        { it }       -> [0 params]
+        { -> 42 }    -> NULL
+
+    Stock groovyc handles the null fine, so the Spock lanes and the Groovy 2.4 parse lane
+    both pass it. The hub compiles the same source through its own AST transform, which is
+    the only compiler in the pipeline that walks those parameters -- and a save it cannot
+    compile comes back as a bare HTTP 500 with no compile error and nothing in the hub log.
+    The codebase has never used this form; write a private method instead.
+    """
+    findings: list[dict] = []
+    for i, line in enumerate(text.splitlines(), start=1):
+        code = line.split("//", 1)[0]
+        if re.search(r"\{\s*->", code):
+            findings.append({
+                "file": name, "line": i, "severity": "error",
+                "rule": "zero-arg-closure-literal", "source": line.strip()[:100],
+                "message": (
+                    "`{ -> ... }` closure literal in hub-compiled Groovy. It is the only closure "
+                    "form whose AST parameters are null instead of an array (measured under Groovy "
+                    "2.4.21, the hub runtime), stock groovyc accepts it, and the hub's own transform "
+                    "is the only compiler that sees it -- a save it cannot handle returns a bare "
+                    "HTTP 500 with no compile error. Extract a private method instead."
+                ),
+            })
+    return findings
+
+
+def check_no_zero_arg_closure_literals() -> list[dict]:
+    """No `{ -> ... }` closure literals in the app, the child app, or any #include library."""
+    findings: list[dict] = []
+    targets = [REPO_ROOT / "hubitat-mcp-server.groovy", REPO_ROOT / "hubitat-mcp-rule.groovy"]
+    lib_dir = REPO_ROOT / "libraries"
+    if lib_dir.is_dir():
+        targets.extend(sorted(lib_dir.glob("*.groovy")))
+    for f in targets:
+        if not f.is_file():
+            continue
+        rel = f.name if f.parent == REPO_ROOT else "libraries/" + f.name
+        findings.extend(_scan_zero_arg_closure_literals(rel, f.read_text(encoding="utf-8", errors="replace")))
+    return findings
+
+
+def _run_zero_arg_closure_self_test() -> int:
+    """Must-catch / must-not-catch fixtures for check_no_zero_arg_closure_literals."""
+    failures = 0
+    for bad in ("def f = { -> 1 }", "def f = {->1}", "run({  ->  x() })"):
+        if not _scan_zero_arg_closure_literals("<self-test>", bad + "\n"):
+            failures += 1
+            print("SELF-TEST FAIL [zero-arg-closure]: not flagged: " + bad)
+    ok = (
+        "def f = { it }\n"
+        "def g = { a, b -> a + b }\n"
+        "list.each { x -> x }\n"
+        "// a { -> } inside a comment is not code\n"
+    )
+    fp = _scan_zero_arg_closure_literals("<self-test>", ok)
+    if fp:
+        failures += 1
+        print("SELF-TEST FAIL [zero-arg-closure]: false positive(s) at " + str([f["line"] for f in fp]))
+    return failures
+
+
 def check_library_no_file_scope_block_comments() -> list[dict]:
     """BP20 library hygiene: no file-scope /* */ or /** */ block comments in any
     libraries/*.groovy (see _scan_library_block_comments for the rationale)."""
@@ -4508,6 +4574,9 @@ def main() -> int:
 
     # BP20: no file-scope block comments in #include libraries (hub-parser hazard).
     all_findings.extend(check_library_no_file_scope_block_comments())
+
+    # `{ -> }` closure literals: the one AST shape only the hub's own transform ever sees.
+    all_findings.extend(check_no_zero_arg_closure_literals())
 
     # The hub refuses to save an oversized app source, so the monolith is a budget: new code
     # lands in its domain library, not in hubitat-mcp-server.groovy.

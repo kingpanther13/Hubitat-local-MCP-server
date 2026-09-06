@@ -170,6 +170,13 @@ private List _vrbListRules() {
     }
 }
 
+// The children the parent gained since `before`. A method, not a `{ -> ... }` closure literal:
+// that form is the only one whose AST carries NULL parameters instead of an array, and the hub's
+// own compile-time transform is the only compiler in the pipeline that ever sees it.
+private List _vrbNewChildIds(Collection before) {
+    return (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) }
+}
+
 private Map _vrbCreateChild(String version) {
     // The VRB parent offers a per-VERSION child-create route, so the DEFINITION picks which
     // builder the new rule runs instead of the firmware picking for us:
@@ -256,17 +263,16 @@ private Map _vrbCreateChild(String version) {
         // parentSeen is necessarily true here -- the !parentSeen case took the fallback above.
         // ONE expression for the delta, read twice: two copies that drifted apart is exactly what
         // would turn "no child appeared" into a duplicate rule.
-        def newChildren = { -> (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) } }
         def appeared = []
         def reconciled = false
         try {
-            appeared = newChildren()
+            appeared = _vrbNewChildIds(before)
             reconciled = true
             if (appeared.isEmpty()) {
                 // An empty one-shot delta does not prove the write failed: the list can lag the
                 // create. One more look after a short pause before concluding anything.
                 pauseExecution(1500)
-                appeared = newChildren()
+                appeared = _vrbNewChildIds(before)
             }
         } catch (Exception readError) {
             reconciled = false
