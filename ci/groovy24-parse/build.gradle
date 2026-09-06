@@ -31,11 +31,24 @@ def productionFiles = [
     // No #include, so the resolver passes them through unchanged.
     new File(repoRoot, 'e2e-deadman-watchdog.groovy'),
     new File(repoRoot, 'e2e-deadman-watchdog-v2.groovy'),
+    new File(repoRoot, 'tests/fixtures/deadman-test-target.groovy'),
+    new File(repoRoot, 'tests/fixtures/e2e-throwaway-lib.groovy'),
+    new File(repoRoot, 'tests/fixtures/app-code-update.groovy'),
+    new File(repoRoot, 'tests/fixtures/app-trigger-updated.groovy'),
+    new File(repoRoot, 'tests/fixtures/driver-code-update.groovy'),
 ]
 
+tasks.register('parse24Fixtures', JavaExec) {
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+    classpath = configurations.groovy24
+    mainClass = 'groovy.ui.GroovyMain'
+    args = [new File(projectDir, 'parse_check.groovy').absolutePath, '--self-test', repoRoot.absolutePath]
+}
+
 tasks.register('parse24', JavaExec) {
+    dependsOn 'parse24Fixtures'
     group = 'verification'
-    description = 'Parse the production Groovy files under Groovy 2.4.21 (catches 3.0-only syntax) AND compile to CANONICALIZATION to flag references to sandbox-blocked classes (java.io / reflection / threads / GroovyShell / sockets) the hub rejects at parse time.'
+    description = 'Check deployed Groovy for 2.4 syntax, null closure parameters, sandbox-blocked classes, and method bytecode budgets.'
     javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
     classpath = configurations.groovy24
     mainClass = 'groovy.ui.GroovyMain'

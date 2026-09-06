@@ -144,7 +144,7 @@ RULES = [
     {
         "id": "SANDBOX-012",
         "pattern": r"\bnew\s+(?:java\s*\.\s*util\s*\.\s*)?ArrayDeque\s*\(",
-        "message": "ArrayDeque instantiation blocked in Hubitat sandbox at parse time -- use Groovy list literal `[]` (LinkedList-backed; supports addLast/removeLast for LIFO semantics)",
+        "message": "ArrayDeque instantiation blocked in Hubitat sandbox at parse time -- use Groovy list literal `[]` (ArrayList-backed; use add(value)/remove(size() - 1) for LIFO semantics)",
         "severity": "error",
     },
     {
@@ -3855,7 +3855,6 @@ def run_self_test() -> int:
 
     # BP20 library file-scope block-comment guard: must-catch / must-not-catch fixtures.
     failures += _run_library_block_comment_self_test()
-    failures += _run_zero_arg_closure_self_test()
 
     # Vendored MCP schema provenance guard: must-catch / must-not-catch fixtures.
     failures += _run_vendored_schema_hash_self_test()
@@ -4257,76 +4256,6 @@ def check_logs_json_snapshot_guard() -> list[dict]:
                                      "message": f"`{tool}` ({fn}) reads the /logs/json snapshot but is missing from {' and '.join(missing)}() in hubitat-mcp-server.groovy -- without both, a relay-bound call of it cannot continue and 502s on a large hub."})
     return findings
 
-def _scan_zero_arg_closure_literals(name: str, text: str) -> list[dict]:
-    """Flag `{ -> ... }` closure literals in code the hub compiles.
-
-    In Groovy 2.4.21 (the hub runtime) `{ -> ... }` is the ONE closure form whose
-    ClosureExpression carries getParameters() == null; every other form -- `{ it }`,
-    `{ x -> }` -- carries an array. Measured under 2.4.21:
-
-        { x -> x }   -> [1 param]
-        { it }       -> [0 params]
-        { -> 42 }    -> NULL
-
-    Stock groovyc handles the null fine, so the Spock lanes and the Groovy 2.4 parse lane
-    both pass it. The hub compiles the same source through its own AST transform, which is
-    the only compiler in the pipeline that walks those parameters -- and a save it cannot
-    compile comes back as a bare HTTP 500 with no compile error and nothing in the hub log.
-    The codebase has never used this form; write a private method instead.
-    """
-    findings: list[dict] = []
-    for i, line in enumerate(text.splitlines(), start=1):
-        code = line.split("//", 1)[0]
-        if re.search(r"\{\s*->", code):
-            findings.append({
-                "file": name, "line": i, "severity": "error",
-                "rule": "zero-arg-closure-literal", "source": line.strip()[:100],
-                "message": (
-                    "`{ -> ... }` closure literal in hub-compiled Groovy. It is the only closure "
-                    "form whose AST parameters are null instead of an array (measured under Groovy "
-                    "2.4.21, the hub runtime), stock groovyc accepts it, and the hub's own transform "
-                    "is the only compiler that sees it -- a save it cannot handle returns a bare "
-                    "HTTP 500 with no compile error. Extract a private method instead."
-                ),
-            })
-    return findings
-
-
-def check_no_zero_arg_closure_literals() -> list[dict]:
-    """No `{ -> ... }` closure literals in the app, the child app, or any #include library."""
-    findings: list[dict] = []
-    targets = [REPO_ROOT / "hubitat-mcp-server.groovy", REPO_ROOT / "hubitat-mcp-rule.groovy"]
-    lib_dir = REPO_ROOT / "libraries"
-    if lib_dir.is_dir():
-        targets.extend(sorted(lib_dir.glob("*.groovy")))
-    for f in targets:
-        if not f.is_file():
-            continue
-        rel = f.name if f.parent == REPO_ROOT else "libraries/" + f.name
-        findings.extend(_scan_zero_arg_closure_literals(rel, f.read_text(encoding="utf-8", errors="replace")))
-    return findings
-
-
-def _run_zero_arg_closure_self_test() -> int:
-    """Must-catch / must-not-catch fixtures for check_no_zero_arg_closure_literals."""
-    failures = 0
-    for bad in ("def f = { -> 1 }", "def f = {->1}", "run({  ->  x() })"):
-        if not _scan_zero_arg_closure_literals("<self-test>", bad + "\n"):
-            failures += 1
-            print("SELF-TEST FAIL [zero-arg-closure]: not flagged: " + bad)
-    ok = (
-        "def f = { it }\n"
-        "def g = { a, b -> a + b }\n"
-        "list.each { x -> x }\n"
-        "// a { -> } inside a comment is not code\n"
-    )
-    fp = _scan_zero_arg_closure_literals("<self-test>", ok)
-    if fp:
-        failures += 1
-        print("SELF-TEST FAIL [zero-arg-closure]: false positive(s) at " + str([f["line"] for f in fp]))
-    return failures
-
-
 def check_library_no_file_scope_block_comments() -> list[dict]:
     """BP20 library hygiene: no file-scope /* */ or /** */ block comments in any
     libraries/*.groovy (see _scan_library_block_comments for the rationale)."""
@@ -4575,8 +4504,8 @@ def main() -> int:
     # BP20: no file-scope block comments in #include libraries (hub-parser hazard).
     all_findings.extend(check_library_no_file_scope_block_comments())
 
-    # `{ -> }` closure literals: the one AST shape only the hub's own transform ever sees.
-    all_findings.extend(check_no_zero_arg_closure_literals())
+    # Groovy strings and GString expressions require the AST, not a raw-source regex.
+    print("Closure-parameter guard: run the authoritative ci/groovy24-parse parse24 lane (not checked by this lint).")
 
     # The hub refuses to save an oversized app source, so the monolith is a budget: new code
     # lands in its domain library, not in hubitat-mcp-server.groovy.

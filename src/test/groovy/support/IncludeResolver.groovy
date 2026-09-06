@@ -7,7 +7,7 @@ package support
  * On the hub, {@code #include mcp.McpRoomsLib} pastes the referenced library's body -- with
  * its {@code library(...)} declaration call stripped -- into the app before Groovy compiles it.
  * The {@code #include} line itself is NOT valid Groovy, so a raw parse of the app source fails;
- * this resolver removes each {@code #include} line and appends the matching library's stripped
+ * this resolver replaces each {@code #include} line with the matching library's stripped
  * body, producing source that compiles in plain Groovy exactly as it does on the hub.
  *
  * Libraries are matched by (namespace, name) parsed from each file's {@code library(...)} call in
@@ -32,25 +32,37 @@ class IncludeResolver {
 
     /**
      * Returns {@code source} with every {@code #include} line removed and each referenced
-     * library's stripped body appended. Source with no {@code #include} is returned unchanged.
+     * library's stripped body inlined. Source with no {@code #include} is returned unchanged.
      * Throws if an {@code #include} has no matching library (fail loud -- a silent miss would
      * compile a half-resolved app).
      */
     static String resolve(String source, File librariesDir) {
-        if (source == null) return source
+        return resolveWithOrigins(source, librariesDir, null).source
+    }
+
+    /** Resolved source plus offset spans pointing back to the original app or library. */
+    static Map resolveWithOrigins(String source, File librariesDir, File sourceFile) {
+        List origins = []
+        def original = [file: sourceFile, text: source]
+        if (source == null) return [source: null, origins: []]
         if (!INCLUDE_LINE.matcher(source).find()) {
-            return source
+            return [source: source, origins: [[start: 0, end: source.length(), offset: 0, original: original]]]
         }
-        Map index = indexLibraries(librariesDir)
+        Map index = indexLibraries(librariesDir, true)
         Set seen = new LinkedHashSet()
         StringBuilder out = new StringBuilder()
+        def append = { String text, Map origin, int offset ->
+            origins << [start: out.length(), end: out.length() + text.length(), offset: offset, original: origin]
+            out.append(text)
+        }
+        int sourceOffset = 0
         source.eachLine { String line ->
             def m = INCLUDE_LINE.matcher(line)
             if (m.matches()) {
                 String key = m.group(1) + '.' + m.group(2)
                 if (seen.add(key)) {
-                    String body = (String) index[key]
-                    if (body == null) {
+                    def entry = index[key]
+                    if (entry == null) {
                         throw new IllegalStateException(
                             "include directive " + key + " has no matching library in " + librariesDir +
                             " (matched libraries: " + index.keySet() + ")")
@@ -59,18 +71,22 @@ class IncludeResolver {
                     // sensitive constructs compile identically -- not appended at end-of-file. The
                     // banner carries no directive-looking token (tests assert its absence).
                     out.append('// --- inlined library ' + key + ' (CI/test parity with the hub paste) ---\n')
-                    out.append(body).append('\n')
+                    entry.parts.each { part -> append(part.text, entry.original, part.offset) }
+                    out.append('\n')
                 }
                 // duplicate directive: drop (the body is already inlined once)
             } else {
-                out.append(line).append('\n')
+                append(line, original, sourceOffset)
+                out.append('\n')
             }
+            int newline = source.indexOf('\n', sourceOffset)
+            sourceOffset = newline < 0 ? source.length() : newline + 1
         }
-        return out.toString()
+        return [source: out.toString(), origins: origins]
     }
 
     /** namespace.name -> library body (declaration stripped), for every *.groovy in the dir. */
-    static Map indexLibraries(File librariesDir) {
+    static Map indexLibraries(File librariesDir, boolean withOrigins = false) {
         Map index = [:]
         if (librariesDir == null || !librariesDir.isDirectory()) {
             return index
@@ -88,10 +104,41 @@ class IncludeResolver {
             String ns = firstGroup(args, ~/\bnamespace\s*:\s*["']([^"']+)["']/)
             String name = firstGroup(args, ~/\bname\s*:\s*["']([^"']+)["']/)
             if (ns != null && name != null) {
-                index[ns + '.' + name] = stripLibraryDeclaration(text)
+                if (!withOrigins) {
+                    index[ns + '.' + name] = stripLibraryDeclaration(text)
+                } else {
+                    int[] span = libraryParenSpan(text)
+                    String untrimmed = text.substring(0, span[0]) + text.substring(span[2] + 1)
+                    String body = untrimmed.trim()
+                    int start = untrimmed.indexOf(body)
+                    int end = start + body.length()
+                    List parts = []
+                    if (start < span[0]) {
+                        int stop = Math.min(end, span[0])
+                        parts << [text: untrimmed.substring(start, stop), offset: start]
+                    }
+                    if (end > span[0]) {
+                        int begin = Math.max(start, span[0])
+                        parts << [text: untrimmed.substring(begin, end), offset: begin + span[2] + 1 - span[0]]
+                    }
+                    index[ns + '.' + name] = [parts: parts, original: [file: f, text: text]]
+                }
             }
         }
         return index
+    }
+
+    static String sourceLocation(Map resolved, int line, int column) {
+        int offset = 0
+        for (int i = 1; i < line; i++) offset = resolved.source.indexOf('\n', offset) + 1
+        offset += Math.max(column - 1, 0)
+        def span = resolved.origins.find { offset >= it.start && offset < it.end }
+        if (span == null) return "resolved source:${line}:${column}"
+        int originalOffset = span.offset + offset - span.start
+        String prefix = span.original.text.substring(0, originalOffset)
+        int originalLine = prefix.count('\n') + 1
+        int originalColumn = originalOffset - prefix.lastIndexOf('\n')
+        return "${span.original.file}:${originalLine}:${originalColumn}"
     }
 
     private static String firstGroup(String text, java.util.regex.Pattern p) {

@@ -12,8 +12,15 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 Two standalone lanes complement the primary Groovy 3.0 lane without touching it — Hubitat's hub
 runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
 
-- **Groovy 2.4 Parse Check** (`ci/groovy24-parse/`) — parses the two production `.groovy` files under
-  stock Groovy 2.4.21 (antlr2), catching 3.0-only syntax that would fail to load on the hub (issue #227).
+- **Groovy 2.4 Parse Check** (`ci/groovy24-parse/`) — checks the apps, included libraries, watchdogs,
+  and deployed e2e fixtures under stock Groovy 2.4.21. After CONVERSION, its AST visitor rejects
+  closures with null parameters (`{ -> ... }`), including nested expressions and GString interpolation;
+  empty parameter arrays (implicit `it`) remain allowed. Findings retain original library locations.
+  This is the authoritative closure guard; `sandbox_lint.py` only points to this lane. Stock Groovy
+  processes the same AST successfully; a hub-specific transform is not exercised locally, and null
+  parameters have not been proven to cause the observed hub failure. The lane also checks syntax,
+  sandbox-blocked classes, and bytecode budgets. `parse24` runs its positive/negative fixtures first;
+  they can also run directly via `parse_check.groovy --self-test <absolute-repo-root>`.
 - **Groovy 2.5 Spock** (`ci/groovy2x-spock/`) — runs this same spec corpus against a Groovy 2.5
   runtime via [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) (the biocomp-API fork
   the harness used before the eighty20results migration; Apache 2.0), catching 2.x-vs-3.0 **runtime**

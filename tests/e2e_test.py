@@ -8967,34 +8967,8 @@ class TestRunner:
         # Throwaway Apps Code class (code only, never installed as an instance). The name
         # deliberately starts with "Deadman Test Target" (namespace mcptest) so the cleanup
         # Layer 5 startswith sweep reclaims a stranded copy if a crash skips the finally below.
-        source_v1 = '''\
-definition(
-    name: "Deadman Test Target Update",
-    namespace: "mcptest",
-    author: "ci",
-    description: "Throwaway e2e app-code update-leg target",
-    category: "Utility",
-    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    oauth: true
-)
-
-preferences {
-    page(name: "p", title: "Update Leg Target", install: true, uninstall: true) {
-        section { paragraph "Throwaway update-leg target. Marker: ${updateLegMarker()}" }
-    }
-}
-
-mappings {
-    path("/ping") { action: [GET: "ping"] }
-}
-
-def installed() {}
-def updated() {}
-def ping() { render contentType: "text/plain", data: "ok" }
-
-def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
-'''
+        source_v1 = (Path(__file__).resolve().parent / "fixtures"
+                     / "app-code-update.groovy").read_text(encoding="utf-8")
         code_app_id = None
         try:
             created = self.client.call_tool("hub_manage_code", {
@@ -9166,38 +9140,8 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
         Needs a running INSTANCE (not just a code class), so it creates and cleans up both.
         Named "Deadman Test Target ..." in namespace mcptest so the Layer 5 sweep reclaims a
         stranded copy -- instance included -- if a crash skips the finally."""
-        source_v1 = '''\
-definition(
-    name: "Deadman Test Target Trigger",
-    namespace: "mcptest",
-    author: "ci",
-    description: "Throwaway e2e triggerUpdated target",
-    category: "Utility",
-    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
-)
-
-preferences {
-    page(name: "p", title: "Trigger Leg Target", install: true, uninstall: true) {
-        section {
-            input name: "refreshProbe", type: "bool", title: "Round-trip probe", defaultValue: false
-            input name: "probeSwitches", type: "capability.switch", title: "Round-trip devices", multiple: true, required: false
-            input name: "lifecycleStamp", type: "text", title: "Lifecycle stamp", required: false
-            paragraph "Throwaway triggerUpdated target. Marker: ${triggerLegMarker()}"
-        }
-    }
-}
-
-def installed() { updateStamp("installed") }
-def updated() { updateStamp("updated") }
-
-// The stamp goes into a SETTING, not state: hub_get_app_config(includeSettings) can read a
-// setting, which is what lets the test prove updated() actually RAN. updatedFired only proves
-// the hub accepted the Done POST.
-def updateStamp(String which) { app.updateSetting("lifecycleStamp", [type: "text", value: which]) }
-
-def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
-'''
+        source_v1 = (Path(__file__).resolve().parent / "fixtures"
+                     / "app-trigger-updated.groovy").read_text(encoding="utf-8")
 
         def probe_value(cfg: dict) -> str:
             """refreshProbe as read back. The hub may render a bool setting as a real boolean
@@ -9340,20 +9284,8 @@ def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
         # name deliberately starts with "Deadman Test Target" (namespace mcptest) so
         # the cleanup Layer 5 startswith sweep reclaims a stranded copy if a crash
         # skips the finally below.
-        source_v1 = '''\
-metadata {
-    definition(name: "Deadman Test Target Driver", namespace: "mcptest", author: "ci") {
-        capability "Switch"
-    }
-}
-
-def installed() {}
-def updated() {}
-def on() { sendEvent(name: "switch", value: "on") }
-def off() { sendEvent(name: "switch", value: "off") }
-
-def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
-'''
+        source_v1 = (Path(__file__).resolve().parent / "fixtures"
+                     / "driver-code-update.groovy").read_text(encoding="utf-8")
         driver_id = None
         try:
             created = self._write_once(

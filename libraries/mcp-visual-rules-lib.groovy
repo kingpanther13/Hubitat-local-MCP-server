@@ -170,9 +170,8 @@ private List _vrbListRules() {
     }
 }
 
-// The children the parent gained since `before`. A method, not a `{ -> ... }` closure literal:
-// that form is the only one whose AST carries NULL parameters instead of an array, and the hub's
-// own compile-time transform is the only compiler in the pipeline that ever sees it.
+// A named helper avoids null closure parameters. Stock Groovy handles that AST shape;
+// its behavior under the hub-specific transform remains unproven.
 private List _vrbNewChildIds(Collection before) {
     return (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) }
 }
