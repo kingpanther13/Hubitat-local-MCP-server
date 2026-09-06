@@ -1,12 +1,20 @@
 package server
 
 import groovy.json.JsonOutput
+import spock.lang.Shared
 import support.TestChildApp
 import support.ToolSpecBase
 
 class DebugLogRingSpec extends ToolSpecBase {
+    @Shared private TestChildApp loggingApp = new TestChildApp(id: 402L)
+
+    def setupSpec() {
+        appExecutor.getApp() >> loggingApp
+    }
+
     def setup() {
-        script.metaClass.getApp = { -> new TestChildApp(id: 402L) }
+        assert (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).isEmpty()
+        assert script.app.id == 402L
         script.log.messages.clear()
     }
 
@@ -53,10 +61,9 @@ class DebugLogRingSpec extends ToolSpecBase {
         given:
         settingsMap.mcpLogLevel = 'debug'
         script.initDebugLogs()
-        def peer = newCompiledScriptInstance()
-        peer.metaClass.getApp = { -> new TestChildApp(id: 402L) }
-        peer.metaClass.getState = { -> throw new AssertionError('warm state access') }
-        peer.metaClass.getAtomicState = { -> throw new AssertionError('warm atomicState access') }
+        def peer = newCompiledScriptInstance(app: loggingApp,
+            state: { -> throw new AssertionError('warm state access') },
+            atomicState: { -> throw new AssertionError('warm atomicState access') })
         peer.metaClass.uploadHubFile = { String name, byte[] data -> throw new AssertionError('file write') }
 
         when:
@@ -166,18 +173,12 @@ class DebugLogRingSpec extends ToolSpecBase {
     def "app instances cannot see or clear another app's ring"() {
         given:
         settingsMap.mcpLogLevel = 'debug'
-        def first = newCompiledScriptInstance()
-        def second = newCompiledScriptInstance()
-        first.metaClass.getApp = { -> new TestChildApp(id: 401L) }
-        second.metaClass.getApp = { -> new TestChildApp(id: 402L) }
         def firstState = [:]
         def secondState = [:]
         def firstAtomic = [:]
         def secondAtomic = [:]
-        first.metaClass.getState = { -> firstState }
-        second.metaClass.getState = { -> secondState }
-        first.metaClass.getAtomicState = { -> firstAtomic }
-        second.metaClass.getAtomicState = { -> secondAtomic }
+        def first = newCompiledScriptInstance(app: new TestChildApp(id: 401L), state: firstState, atomicState: firstAtomic)
+        def second = newCompiledScriptInstance(app: loggingApp, state: secondState, atomicState: secondAtomic)
 
         when:
         first.mcpLog('error', 'server', 'first app')

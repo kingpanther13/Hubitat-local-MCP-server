@@ -1,6 +1,7 @@
 package server
 
 import groovy.json.JsonOutput
+import spock.lang.Shared
 import support.TestChildApp
 import support.TestHub
 import support.TestLocation
@@ -8,9 +9,15 @@ import support.ToolSpecBase
 import support.PermissiveLog
 
 class DiagnosticLogRecoverySpec extends ToolSpecBase {
+    @Shared private TestChildApp loggingApp = new TestChildApp(id: 402L)
+    @Shared private TestLocation loggingLocation = new TestLocation(hub: new TestHub())
+
+    def setupSpec() {
+        appExecutor.getApp() >> loggingApp
+        appExecutor.getLocation() >> loggingLocation
+    }
+
     def setup() {
-        script.metaClass.getApp = { -> new TestChildApp(id: 402L) }
-        script.metaClass.getLocation = { -> new TestLocation(hub: new TestHub()) }
         settingsMap.mcpLogLevel = 'error'
     }
 
@@ -136,10 +143,10 @@ class DiagnosticLogRecoverySpec extends ToolSpecBase {
         def failingLog = new PermissiveLog() {
             @Override void error(String message) { throw new IllegalStateException('native logging unavailable') }
         }
-        script.metaClass.getLog = { -> failingLog }
+        def peer = newCompiledScriptInstance(app: loggingApp, state: stateMap, atomicState: atomicStateMap, log: failingLog)
 
         when:
-        script.initDebugLogs()
+        peer.initDebugLogs()
 
         then:
         def error = thrown(IllegalStateException)

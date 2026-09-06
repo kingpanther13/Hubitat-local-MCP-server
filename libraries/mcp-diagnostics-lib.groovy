@@ -311,7 +311,8 @@ private Map _parseHubLogLine(String line) {
     if (!line?.trim()) return null
     def parts = line.split("\t", -1)
     if (parts.size() < 2) return null
-    if (parts.size() >= 3 && (parts[0] ==~ /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?/)) {
+    if (parts.size() >= 3 && (parts.size() == 3 || parts[2].startsWith('app|') || parts[2].startsWith('dev|')) &&
+        (parts[0] ==~ /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?/)) {
         String message = parts[2..-1].join("\t").trim()
         def source = message.split("\\|", 4)
         boolean identified = source.size() == 4 && (source[0] in ["app", "dev"])

@@ -428,6 +428,22 @@ abstract class HarnessSpec extends Specification {
         return peer
     }
 
+    protected Object newCompiledScriptInstance(Map context) {
+        def peer = newCompiledScriptInstance()
+        def inheritedApi = appExecutor
+        def peerApi = Mock(AppExecutor) {
+            _ * getApp() >> context.app
+            _ * getState() >> { context.state instanceof Closure ? context.state.call() : context.state }
+            _ * getAtomicState() >> { context.atomicState instanceof Closure ? context.atomicState.call() : context.atomicState }
+            _ * getSettings() >> { inheritedApi.getSettings() }
+            _ * now() >> { inheritedApi.now() }
+            _ * getLog() >> { context.containsKey('log') ? context.log : inheritedApi.getLog() }
+        }
+        // These accessors are delegated concrete methods; EMC overrides are unreliable.
+        API_FIELD.set(peer, peerApi)
+        return peer
+    }
+
     /**
      * Strict-mode invariant check: after both metaClass wipes, before any
      * harness re-installs, the script's metaClass should have no per-

@@ -2,18 +2,23 @@ package server
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import spock.lang.Shared
 import support.TestChildApp
 import support.ToolSpecBase
 
 class DebugLogConcurrencySpec extends ToolSpecBase {
+    @Shared private TestChildApp loggingApp = new TestChildApp(id: 402L)
+
+    def setupSpec() {
+        appExecutor.getApp() >> loggingApp
+    }
+
     def "concurrent executions retain every admitted entry within the ring capacity"() {
         given:
         settingsMap.mcpLogLevel = 'debug'
-        script.metaClass.getApp = { -> new TestChildApp(id: 402L) }
         script.initDebugLogs()
         def first = newCompiledScriptInstance()
         def second = newCompiledScriptInstance()
-        [first, second].each { peer -> peer.metaClass.getApp = { -> new TestChildApp(id: 402L) } }
         def start = new CountDownLatch(1)
         def done = new CountDownLatch(2)
         def failures = Collections.synchronizedList([])

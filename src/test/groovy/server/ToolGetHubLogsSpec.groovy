@@ -3,6 +3,7 @@ package server
 import groovy.json.JsonOutput
 import support.ToolSpecBase
 import support.TestLocation
+import spock.lang.Shared
 
 /**
  * Spec for toolGetHubLogs.
@@ -29,10 +30,19 @@ import support.TestLocation
  * against multi-entry buffers.
  */
 class ToolGetHubLogsSpec extends ToolSpecBase {
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
+    def setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
+    }
+
+    def setup() {
+        sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
+    }
 
     def "current three-column native rows expose source and timestamp while preserving message filters"() {
         given:
-        script.metaClass.getLocation = { -> new TestLocation(timeZone: TimeZone.getTimeZone('America/New_York')) }
+        sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
         registerLogs(['2026-09-06 12:00:00.000\tWARN\tapp|194|MCP Rule Server|[monitoring] slow request'])
 
         when:
