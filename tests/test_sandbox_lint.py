@@ -778,49 +778,111 @@ def test_extract_canonical_counts_dev_only_name_with_digits(monkeypatch, tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# outputSchema freeze: declaration extraction
+# /logs/json snapshot guard
 # ---------------------------------------------------------------------------
 
-_OS_SPACED = 'name: "a", outputSchema: [type: "object", properties: [x: [type: "string", description: "a ] in text"]]], other: 1'
-_OS_TIGHT = 'name: "b", outputSchema:[type: "object"], other: 1'
-_OS_LOOSE = 'name: "c", outputSchema : [type: "object", properties: [y: [type: "number"]]], other: 1'
+_SNAP_SERVER_OK = """
+def _budgetAwareTools() {
+    return ["hub_set_rule", "hub_get_jobs", "hub_get_performance_stats"] as Set
+}
+def _mrtrReadTools() {
+    return ["hub_get_jobs", "hub_get_performance_stats"] as Set
+}
+def executeTool(name, args) {
+    switch (name) {
+        case "hub_get_jobs": return toolGetHubJobs(args)
+        case "hub_get_performance_stats": return toolGetPerformanceStats(args)
+    }
+}
+"""
+
+_SNAP_LIB_OK = """
+def _logsJsonFetchAndPublish(Long fetchId = null) {
+    def responseText = hubInternalGet("/logs/json", null, 30)
+    return responseText
+}
+def _logsJsonSnapshot(Map args) { return [state: "ready"] }
+def toolGetHubJobs(args) {
+    def snap = _logsJsonSnapshot(args)
+    return snap
+}
+def toolGetPerformanceStats(args) {
+    def snap = _logsJsonSnapshot(args)
+    return snap
+}
+"""
 
 
-def test_output_schema_declarations_match_every_colon_spacing():
-    """Groovy accepts any whitespace around the map-entry colon, so a declaration written as
-    `outputSchema:[` or `outputSchema : [` must count and digest like the spaced form; a marker that
-    matched only the literal `outputSchema: [` let those slip past the freeze."""
-    decls = sl._output_schema_declarations("\n".join([_OS_SPACED, _OS_TIGHT, _OS_LOOSE]))
-    assert len(decls) == 3
-    assert all(d.startswith("outputSchema: [") for d in decls)
+def _write_snapshot_repo(tmp_path, monkeypatch, *, server=_SNAP_SERVER_OK, lib=_SNAP_LIB_OK):
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(server)
+    (tmp_path / "libraries").mkdir()
+    (tmp_path / "libraries" / "mcp-diagnostics-lib.groovy").write_text(lib)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
 
 
-def test_output_schema_declarations_bracket_matching_skips_string_literals():
-    decls = sl._output_schema_declarations(_OS_SPACED)
-    assert decls == ['outputSchema: [type: "object", properties: [x: [type: "string", description: "a ] in text"]]]']
+def test_logs_json_guard_passes_a_valid_snapshot_consumer(tmp_path, monkeypatch):
+    _write_snapshot_repo(tmp_path, monkeypatch)
+    assert sl.check_logs_json_snapshot_guard() == []
 
 
-def test_output_schema_declaration_text_is_independent_of_colon_spacing():
-    """The digest is over the returned text, so re-spacing the colon alone must not move it."""
-    spaced = sl._output_schema_declarations('outputSchema: [type: "object"]')
-    tight = sl._output_schema_declarations('outputSchema:[type: "object"]')
-    loose = sl._output_schema_declarations('outputSchema : [type: "object"]')
-    assert spaced == tight == loose == ['outputSchema: [type: "object"]']
+@pytest.mark.parametrize("call", ['hubInternalGet("/logs/json", null, 30)', "hubInternalGet('/logs/json')",
+                                  'hubInternalGetRaw("/logs/json")'])
+def test_logs_json_guard_flags_a_direct_fetch_outside_the_publisher(tmp_path, monkeypatch, call):
+    """Either quote style, and the Raw variant, must be caught: a blocking fetch anywhere but the
+    publisher is exactly the shape that 502'd on a large hub."""
+    lib = _SNAP_LIB_OK + f"\ndef toolSomethingElse(args) {{\n    def txt = {call}\n    return txt\n}}\n"
+    _write_snapshot_repo(tmp_path, monkeypatch, lib=lib)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert len(findings) == 1
+    assert "toolSomethingElse" in findings[0]["message"]
+    assert "_logsJsonSnapshot(args)" in findings[0]["message"]
 
 
-def test_output_schema_inventory_matches_the_pinned_baseline():
-    """The pinned constants describe the checked-in sources; a drift here is the freeze firing."""
-    per_file, digest = sl._output_schema_inventory()
-    assert sum(per_file.values()) == sl.OUTPUT_SCHEMA_FROZEN_COUNT
-    assert per_file == sl.OUTPUT_SCHEMA_FROZEN_PER_FILE
-    assert digest == sl.OUTPUT_SCHEMA_FROZEN_DIGEST
+def test_logs_json_guard_flags_a_reader_missing_from_mrtr_read_tools(tmp_path, monkeypatch):
+    server = _SNAP_SERVER_OK.replace('return ["hub_get_jobs", "hub_get_performance_stats"] as Set\n}\ndef executeTool',
+                                     'return ["hub_get_performance_stats"] as Set\n}\ndef executeTool')
+    _write_snapshot_repo(tmp_path, monkeypatch, server=server)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert [f["message"] for f in findings if "hub_get_jobs" in f["message"] and "_mrtrReadTools" in f["message"]]
 
 
-def test_output_schema_inventory_is_cwd_independent(monkeypatch, tmp_path):
-    """The inventory is rooted at REPO_ROOT: started from another directory (as pytest may be),
-    it must still see every library, or the freeze reports false drift."""
-    monkeypatch.chdir(tmp_path)
-    per_file, digest = sl._output_schema_inventory()
-    assert per_file == sl.OUTPUT_SCHEMA_FROZEN_PER_FILE
-    assert digest == sl.OUTPUT_SCHEMA_FROZEN_DIGEST
+def test_logs_json_guard_flags_a_reader_missing_from_budget_aware_tools(tmp_path, monkeypatch):
+    server = _SNAP_SERVER_OK.replace('return ["hub_set_rule", "hub_get_jobs", "hub_get_performance_stats"] as Set',
+                                     'return ["hub_set_rule", "hub_get_jobs"] as Set')
+    _write_snapshot_repo(tmp_path, monkeypatch, server=server)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert [f for f in findings if "hub_get_performance_stats" in f["message"] and "_budgetAwareTools" in f["message"]]
+    assert not [f for f in findings if "hub_get_jobs" in f["message"]]
 
+
+def test_logs_json_guard_flags_an_undispatched_snapshot_reader(tmp_path, monkeypatch):
+    lib = _SNAP_LIB_OK + "\ndef toolOrphan(args) {\n    def snap = _logsJsonSnapshot(args)\n    return snap\n}\n"
+    _write_snapshot_repo(tmp_path, monkeypatch, lib=lib)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert len(findings) == 1
+    assert "toolOrphan" in findings[0]["message"] and "no executeTool case" in findings[0]["message"]
+
+
+def test_logs_json_guard_reports_unparseable_set_literals(tmp_path, monkeypatch):
+    _write_snapshot_repo(tmp_path, monkeypatch, server=_SNAP_SERVER_OK.replace("_mrtrReadTools", "_somethingElse"))
+    findings = sl.check_logs_json_snapshot_guard()
+    assert len(findings) == 1 and "Could not parse" in findings[0]["message"]
+
+
+def test_logs_json_guard_is_green_on_the_checked_in_sources():
+    assert sl.check_logs_json_snapshot_guard() == []
+
+
+def test_logs_json_guard_findings_format_without_error(tmp_path, monkeypatch):
+    """main() prints every finding through format_finding, which reads f["source"]; a finding
+    without it would turn the guard's first real catch into a KeyError."""
+    lib = _SNAP_LIB_OK + "\ndef toolOrphan(args) {\n    def snap = _logsJsonSnapshot(args)\n    return snap\n}\n" \
+        + "\ndef toolDirect(args) {\n    def txt = hubInternalGet('/logs/json')\n    return txt\n}\n"
+    server = _SNAP_SERVER_OK.replace('return ["hub_set_rule", "hub_get_jobs", "hub_get_performance_stats"] as Set',
+                                     'return ["hub_set_rule"] as Set')
+    _write_snapshot_repo(tmp_path, monkeypatch, server=server, lib=lib)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert len(findings) >= 4
+    for f in findings:
+        assert "source" in f
+        assert sl.format_finding(f).startswith("ERROR: ")

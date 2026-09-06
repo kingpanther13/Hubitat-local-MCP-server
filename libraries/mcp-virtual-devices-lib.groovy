@@ -321,30 +321,6 @@ action="delete": provide the target deviceNetworkId.
                 // action-discriminated tool and a top-level oneOf would also reject valid delete
                 // calls (which carry neither field). Consistent with every other manage_* tool,
                 // which enforce action-conditional args at runtime.
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the operation succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    device: [type: "object", description: "create only: the new virtual device", properties: [
-                        id: [type: "string", description: "New device ID"],
-                        name: [type: "string", description: "Driver type / device name"],
-                        label: [type: "string", description: "Display label"],
-                        deviceNetworkId: [type: "string", description: "Device network ID"],
-                        driverNamespace: [type: "string", description: "Driver namespace"],
-                        driverType: [type: "string", description: "Driver type name"],
-                        typeName: [type: "string", description: "Deprecated alias for driverType"],
-                        capabilities: [type: "array", description: "Capability names", items: [type: "string"]],
-                        commands: [type: "array", description: "Command names", items: [type: "string"]],
-                        attributes: [type: "array", description: "Attribute name/value pairs", items: [type: "object"]]
-                    ]],
-                    tips: [type: "array", description: "create only: usage tips", items: [type: "string"]],
-                    deviceId: [type: "string", description: "delete only: deleted device ID"],
-                    deviceNetworkId: [type: "string", description: "delete only: deleted device DNI"],
-                    deviceLabel: [type: "string", description: "delete only: deleted device label"]
-                ],
-                required: ["success", "message"]
             ]
         ],
     ]

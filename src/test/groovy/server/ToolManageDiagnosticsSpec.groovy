@@ -1540,7 +1540,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given: 'logLevel=debug so the error entry is retained, and the hub fetch throws'
         settingsMap.mcpLogLevel = 'debug'
         stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
-        script.metaClass.fetchLogsJson = { -> throw new IllegalStateException('boom-perf') }
+        script.metaClass._logsJsonFetchAndPublish = { -> throw new IllegalStateException('boom-perf') }
 
         when:
         def result = script.toolGetPerformanceStats([:])
@@ -1559,7 +1559,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         settingsMap.mcpLogLevel = 'debug'
         stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
-        script.metaClass.fetchLogsJson = { -> throw new RuntimeException('boom-jobs') }
+        script.metaClass._logsJsonFetchAndPublish = { -> throw new RuntimeException('boom-jobs') }
 
         when:
         def result = script.toolGetHubJobs([:])

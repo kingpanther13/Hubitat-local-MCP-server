@@ -958,6 +958,17 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected**: Calls `hub_manage_logs` -> `hub_get_logs` with `since='1h'` and `pattern='error|failed'` (or equivalent `patterns` array). Demonstrates pattern filter + time-window together.
 
+
+### T47d — hub_get_jobs and hub_get_performance_stats on a large hub (budget-safe, paged)
+
+```json
+{
+  "test_prompt": "List the hub's scheduled jobs a page at a time, then tell me the three busiest devices. Do this over the cloud connector."
+}
+```
+
+**Expected**: Discovers `hub_manage_logs` (or `hub_read_diagnostics`) → `hub_get_jobs` with `cursor=''` and follows `nextCursor`; `runningJobs` and `hubActions` are present on every page. Then `hub_get_performance_stats` with a small `limit`. On a large hub a modern client continues the first call automatically through `requestState`; a legacy client receives `status: "in_progress"` and repeats the identical call. Either way the agent ends with data, never a 502. When the second read lands within the 30 s cache TTL it is served from the same snapshot and is fast. Read-only — makes no changes.
+
 ### T47c — hub_get_logs patterns + patternMode all (AND-mode)
 
 ```json
@@ -4476,7 +4487,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: one terminal envelope, never a `status: "in_progress"` pause. A completed batch carries no residual `remainingRuleIds`; the separate `continuation_limit` terminal DOES carry it on purpose, naming the rules it never reached, so judge that field against the status rather than treating its presence as a defect. `results[]` holds exactly one row per requested rule, every row naming its `ruleId`, with none appearing twice, and `ruleIds` echoes the requested set once each — a rule re-queued for retry across slices must be reported by its FINAL attempt, not once per attempt, and a tail slice that narrows to a single rule must still contribute that rule's row rather than reporting it only at top level. `success`, `partial` and `failedRuleIds` agree with those collapsed rows: an all-success batch reports `success: true` with `partial` falsy and no `failedRuleIds` (a mid-batch budget pause is not a partial RESULT); any failed row makes the envelope `success: false` with `failedRuleIds` matching exactly the failing rows; and `partial` is true only when SOME rules were actioned and some were not — an all-failed batch is a failure, not a partial one, matching the leaf and the tool's `outputSchema`. Both rules then read `stopped: true` from `hub_get_rule_health`.
+**Expected**: one terminal envelope, never a `status: "in_progress"` pause. A completed batch carries no residual `remainingRuleIds`; the separate `continuation_limit` terminal DOES carry it on purpose, naming the rules it never reached, so judge that field against the status rather than treating its presence as a defect. `results[]` holds exactly one row per requested rule, every row naming its `ruleId`, with none appearing twice, and `ruleIds` echoes the requested set once each — a rule re-queued for retry across slices must be reported by its FINAL attempt, not once per attempt, and a tail slice that narrows to a single rule must still contribute that rule's row rather than reporting it only at top level. `success`, `partial` and `failedRuleIds` agree with those collapsed rows: an all-success batch reports `success: true` with `partial` falsy and no `failedRuleIds` (a mid-batch budget pause is not a partial RESULT); any failed row makes the envelope `success: false` with `failedRuleIds` matching exactly the failing rows; and `partial` is true only when SOME rules were actioned and some were not — an all-failed batch is a failure, not a partial one, matching the leaf result. Both rules then read `stopped: true` from `hub_get_rule_health`.
 
 **Failure modes**: a rule appearing twice in `results[]`; a result row with no `ruleId`, or a rule missing from `results[]` entirely because the tail slice reported it top-level; a rule that failed early and succeeded on retry still counted in `failedRuleIds`; `partial: true` on a batch where every rule succeeded, or on one where every rule failed; `success: false` with an empty `failedRuleIds` (a failure naming no culprit); `remainingRuleIds` surviving into a COMPLETED terminal envelope (it is expected on a `continuation_limit` one); the envelope reporting success while a rule is not actually stopped; or teardown touching a rule this run did not create.
 

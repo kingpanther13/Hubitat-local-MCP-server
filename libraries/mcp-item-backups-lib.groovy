@@ -848,21 +848,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     ]],
                     scheduleOnly: [type: "boolean", description: "With schedule: set schedule only, no backup now."],
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the operation succeeded"],
-                    confirmed: [type: "boolean", description: "Whether backup completion was confirmed via the hub's backup status or a new entry in its backup list (false = best-effort trigger)"],
-                    mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
-                    scheduleUpdated: [type: "boolean", description: "true when the automatic-backup schedule was set this call"],
-                    message: [type: "string", description: "Human-readable result"],
-                    backupTimestamp: [type: "string", description: "Formatted backup time"],
-                    backupTimestampEpoch: [type: "integer", description: "Backup time in epoch millis"],
-                    note: [type: "string", description: "Guidance / where to download the backup"],
-                    error: [type: "string", description: "Failure detail"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -877,17 +862,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the delete."]
                 ],
                 required: ["location", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the delete succeeded"],
-                    location: [type: "string", description: "local or cloud"],
-                    message: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Failure detail"],
-                    note: [type: "string", description: "Actionable guidance"]
-                ],
-                required: ["success"]
             ]
         ],
         // ==================== Source-code item backup tools ====================
@@ -901,48 +875,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     cursor: [type: "string", description: "Opt-in pagination cursor (source only); pass \"\" for the first page, iterate nextCursor."]
                 ],
                 required: []
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    backups: [type: "array", description: "Backup entries, newest first", items: [type: "object", properties: [
-                        backupKey: [type: "string", description: "Restore key (e.g. app_123)"],
-                        type: [type: "string", description: "app / driver / library / rm-rule"],
-                        id: [type: "string", description: "Item ID"],
-                        fileName: [type: "string", description: "Backup file in File Manager"],
-                        timestampEpoch: [type: "integer", description: "Backup time (epoch ms)"],
-                        timestamp: [type: "string", description: "Formatted backup time"],
-                        age: [type: "string", description: "Human-readable age"],
-                        sourceLength: [type: "integer", description: "Backed-up source length in chars"],
-                        directDownload: [type: "string", description: "Local download URL"],
-                        version: [description: "Item version (app/driver/library entries)"],
-                        ruleId: [description: "Rule ID (rm-rule entries)"],
-                        appLabel: [type: "string", description: "Rule label (rm-rule entries)"],
-                        reason: [type: "string", description: "Snapshot reason (rm-rule entries)"]
-                    ]]],
-                    count: [type: "integer", description: "Backups returned"],
-                    total: [type: "integer", description: "Total backups tracked"],
-                    maxBackups: [type: "integer", description: "Max backups retained"],
-                    storage: [type: "string", description: "Where backups are stored"],
-                    howToRestore: [type: "string", description: "Restore guidance"],
-                    manualRestore: [type: "string", description: "Manual restore guidance"],
-                    message: [type: "string", description: "Present when no backups exist yet"],
-                    nextCursor: [type: "string", description: "Present when more results remain"],
-                    scope: [type: "string", description: "Echo of the requested scope (present for hub/all scopes)"],
-                    hubLocalBackups: [type: "array", description: "Whole-hub local DB backups (scope hub_local/hub/all)", items: [type: "object", properties: [
-                        name: [type: "string", description: "Backup file name — pass as fileName to hub_restore_backup/hub_delete_backup"],
-                        createTime: [type: "string", description: "Creation time"],
-                        size: [description: "Backup size in bytes"]
-                    ]]],
-                    hubCloudBackups: [type: "array", description: "Whole-hub cloud DB backups (scope hub_cloud/hub/all)", items: [type: "object", properties: [
-                        path: [type: "string", description: "Cloud backup path — pass as path to hub_delete_backup"],
-                        createTime: [type: "string", description: "Creation time"],
-                        hubVersion: [type: "string", description: "Firmware version the backup was taken on"],
-                        hubName: [type: "string", description: "Hub name the backup was taken from"]
-                    ]]],
-                    hubBackupErrors: [type: "array", description: "Per-source fetch errors, if any", items: [type: "string"]]
-                ],
-                required: []
             ]
         ],
         [
@@ -954,25 +886,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     backupKey: [type: "string", description: "The backup key from hub_list_backups (e.g., 'app_123', 'driver_456', or 'library_42')"]
                 ],
                 required: ["backupKey"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    backupKey: [type: "string", description: "Backup key read"],
-                    type: [type: "string", description: "app / driver / library"],
-                    id: [type: "string", description: "Item ID"],
-                    fileName: [type: "string", description: "Backup file in File Manager"],
-                    version: [description: "Item version"],
-                    timestamp: [type: "string", description: "Formatted backup time"],
-                    age: [type: "string", description: "Human-readable age"],
-                    sourceLength: [type: "integer", description: "Source length in chars"],
-                    directDownload: [type: "string", description: "Local download URL"],
-                    source: [type: "string", description: "Backed-up source; present when small enough to inline"],
-                    sourceTooLargeForResponse: [type: "boolean", description: "True when source omitted for size"],
-                    manualDownload: [type: "string", description: "Download guidance; present when source omitted"],
-                    howToRestore: [type: "string", description: "Restore guidance for this item type"],
-                    message: [type: "string", description: "Note when source omitted for size"]
-                ]
             ]
         ],
         [
@@ -992,30 +905,6 @@ A transport drop can lose the response while the hub still commits this write; v
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the restore succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    type: [type: "string", description: "Item type restored (app/driver/rm-rule/visual-rule)"],
-                    id: [description: "Item ID restored (code items)"],
-                    restoredVersion: [description: "Version restored to (code items)"],
-                    preRestoreBackup: [type: "string", description: "Backup key of the pre-restore snapshot (undo path)"],
-                    preRestoreFile: [type: "string", description: "Pre-restore snapshot filename"],
-                    undoHint: [type: "string", description: "How to undo this restore"],
-                    backupKey: [type: "string", description: "Backup key (echoed on failure)"],
-                    directDownload: [type: "string", description: "Local download URL (present on failure paths)"],
-                    ruleId: [description: "Rule restores: the restored rule's app id (differs from the original when recreated)"],
-                    originalRuleId: [description: "Rule restores: the rule id the snapshot was taken from"],
-                    recreated: [type: "boolean", description: "Rule restores: true when the rule no longer existed and was recreated"],
-                    verified: [type: "boolean", description: "visual-rule restores: whether a read-back confirmed the replayed definition"],
-                    format: [type: "string", description: "visual-rule restores: 'classic' or 'graph'"],
-                    settingsApplied: [type: "array", description: "rm-rule restores: settings replayed"],
-                    error: [type: "string", description: "Failure detail"],
-                    note: [type: "string", description: "Actionable guidance"]
-                ],
-                required: ["success"]
             ]
         ],
     ]

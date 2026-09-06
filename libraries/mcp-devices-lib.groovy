@@ -214,7 +214,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         if (onlyOn == true) r.onlyOn = true
         if (changedSinceDate != null) {
             // Epoch-ms input echoes as canonical ISO (same policy as _resolveSinceWindow) so
-            // the echo always satisfies the string-typed outputSchema field.
+            // the echo always uses a canonical timestamp string.
             r.changedSince = (changedSince instanceof Number || changedSince.toString().trim().isLong()) ?
                 changedSinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : changedSince.toString().trim()
         }
@@ -738,7 +738,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
 
     // Only process actual Map elements; a null/non-object element from a firmware contract drift
     // would otherwise NPE/ClassCast past the structured-error envelope. id is emitted as a String
-    // to match the outputSchema and the scope='authorized' path.
+    // to match the scope='authorized' path.
     def devices = raw.findAll { it instanceof Map }.collect { d ->
         def idStr = d.id?.toString()
         def caps = (d.capabilities instanceof List) ? _capabilityNames(d.capabilities)
@@ -1109,7 +1109,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
 
     // Normalize parameters once (when present) so both paths see the typed values. A blank
     // String means "no parameters" -- null it so the reported parameters stay inside the
-    // outputSchema's array-or-null contract (a non-blank String always normalizes to a List).
+    // array-or-null response contract (a non-blank String always normalizes to a List).
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         parameters = normalizeCommandParams(parameters)
@@ -4333,52 +4333,6 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
                     scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = only devices granted to this MCP app (full detail/currentStates). 'all' = EVERY device on the hub, each tagged mcpAuthorized true/false."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    devices: [type: "array", description: "Device objects (summary/detailed modes). Per-field projection applies", items: [type: "object", properties: [
-                        id: [type: "string", description: "Device ID (always present)"],
-                        name: [type: "string", description: "Driver type / device name"],
-                        label: [type: "string", description: "User-assigned label"],
-                        room: [type: "string", description: "Assigned room name"],
-                        disabled: [type: "boolean", description: "Device disabled"],
-                        deviceNetworkId: [type: "string", description: "Device network ID"],
-                        lastActivity: [type: ["string", "null"], description: "Last-activity ISO timestamp, or null"],
-                        parentDeviceId: [type: ["string", "null"], description: "Parent device ID, or null"],
-                        mcpManaged: [type: "boolean", description: "Present and true for this app's virtual devices"],
-                        mcpAuthorized: [type: "boolean", description: "scope='all' mode: whether the device is in this MCP app's authorized device list (false = exists on hub but not controllable until added)"],
-                        currentStates: [type: "object", description: "Summary mode: common attribute values"],
-                        capabilities: [type: "array", description: "Detailed mode: capability names", items: [type: "string"]],
-                        attributes: [type: "array", description: "Detailed mode: attribute name/value pairs", items: [type: "object"]],
-                        commands: [type: "array", description: "Detailed mode: command names", items: [type: "string"]]
-                    ]]],
-                    deviceIds: [type: "array", description: "format='ids' mode: flat array of integer device IDs", items: [type: "integer"]],
-                    mode: [type: ["string", "null"], description: "format='context' mode: current location mode"],
-                    summary: [type: "string", description: "format='context' mode: the plain-text house snapshot (header + one line per device)"],
-                    hsmStatus: [type: "string", description: "format='context' mode: HSM status; present when the hub exposes one"],
-                    count: [type: "integer", description: "Devices in this response"],
-                    total: [type: "integer", description: "Total devices after filtering"],
-                    unfilteredTotal: [type: "integer", description: "Total before filters; present when a filter is active"],
-                    filter: [type: "string", description: "Echoed filter; present when non-default"],
-                    labelFilter: [type: "string", description: "Echoed labelFilter; present when set"],
-                    capabilityFilter: [type: "string", description: "Echoed capabilityFilter; present when set"],
-                    roomFilter: [type: "string", description: "Echoed roomFilter; present when set"],
-                    onlyOn: [type: "boolean", description: "Echoed onlyOn; present when true"],
-                    changedSince: [type: "string", description: "Echoed changedSince (epoch-ms input echoes as canonical ISO); present when set"],
-                    capabilityFilterMatchedKnownCapability: [type: "boolean", description: "When capabilityFilter yields 0: whether the capability exists on any device"],
-                    roomFilterMatchedKnownRoom: [type: "boolean", description: "When the filtered total is 0 with roomFilter set: whether any MCP-visible device is assigned to that room (a hub room with no MCP-authorized device reads false)"],
-                    attributeNamesMatchedNoAttributes: [type: "boolean", description: "format='context' with explicit attributeNames: present and true when the projection matched no attribute on any returned line (likely a mistyped attribute name)"],
-                    scope: [type: "string", description: "Echoed 'all' when scope='all' was requested"],
-                    mcpAuthorizedCount: [type: "integer", description: "scope='all': count over the full filtered (pre-pagination) set that ARE in the MCP authorized list; sums with unauthorizedCount to total, not to the returned page"],
-                    unauthorizedCount: [type: "integer", description: "scope='all': count over the full filtered (pre-pagination) set NOT in the MCP authorized list"],
-                    offset: [type: "integer", description: "Page start index; present when paginated"],
-                    limit: [type: "integer", description: "Page size; present when paginated"],
-                    hasMore: [type: "boolean", description: "More pages remain; present when paginated"],
-                    nextOffset: [type: "integer", description: "Next page offset; present when more remain"],
-                    nextCursor: [type: "string", description: "Opaque cursor; present in cursor mode when more remain"],
-                    message: [type: "string", description: "Present when no devices or offset out of range"]
-                ]
             ]
         ],
         [
@@ -4390,26 +4344,6 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     deviceId: [type: "string", description: "Device ID from hub_list_devices, e.g. \"42\""]
                 ],
                 required: ["deviceId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    id: [type: "string", description: "Device ID"],
-                    name: [type: "string", description: "Driver type / device name"],
-                    label: [type: "string", description: "User-assigned label"],
-                    room: [type: "string", description: "Assigned room name"],
-                    capabilities: [type: "array", description: "Capability names", items: [type: "string"]],
-                    attributes: [type: "array", description: "Attributes with current values", items: [type: "object", properties: [
-                        name: [type: "string", description: "Attribute name"],
-                        dataType: [type: "string", description: "Attribute data type"],
-                        value: [description: "Current value"]
-                    ]]],
-                    commands: [type: "array", description: "Supported commands", items: [type: "object", properties: [
-                        name: [type: "string", description: "Command name"],
-                        arguments: [type: "array", description: "Argument name/type pairs, or null. Each `type` is Hubitat's raw declared arg type (e.g. NUMBER, STRING, ENUM, DATE) or 'unknown' when the driver doesn't declare one.", items: [type: "object"]]
-                    ]]]
-                ],
-                required: ["id", "name", "label", "capabilities", "attributes", "commands"]
             ]
         ],
         [
@@ -4435,36 +4369,6 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
                     pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
                 ],
                 required: ["attribute"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    device: [type: "string", description: "One-shot mode: device label"],
-                    attribute: [type: "string", description: "One-shot mode: attribute name"],
-                    value: [description: "One-shot mode: current attribute value"],
-                    success: [type: "boolean", description: "Poll mode: true if the condition converged (single-device match, or the mode predicate in multi-device mode)"],
-                    finalValue: [description: "Poll mode, SINGLE-device only: last value read -- the live event-store value (a String, since it comes from the device's current state list). In multi-device mode it is per-device under devices[] (each device converges independently, so there is no single aggregate finalValue)."],
-                    mode: [type: "string", description: "Poll mode, MULTI-device only (deviceIds): the aggregate mode that was applied (any/all)."],
-                    devices: [type: "array", description: "Poll mode, MULTI-device only: per-device result, one entry per deviceIds element (compact -- never full device objects).", items: [type: "object", properties: [
-                        deviceId: [type: "string", description: "The device ID from deviceIds"],
-                        device: [type: "string", description: "Device label"],
-                        finalValue: [description: "Last value read for this device (live event-store value)"],
-                        matched: [type: "boolean", description: "Whether this device's condition was satisfied on the final poll"],
-                        readError: [type: "boolean", description: "Present and true (success OR timeout) if reading this device threw on any poll (e.g. it was removed mid-poll); its value was treated as unread for that tick and the poll continued for the other devices"],
-                        neverReported: [type: "boolean", description: "TIMEOUT only: present and true if this device never reported the attribute in the window"],
-                        nonNumericAttribute: [type: "boolean", description: "TIMEOUT only: present and true if a numeric comparator was used on this device and it reported a non-numeric value the whole window (can never match)"]
-                    ]]],
-                    convergedCount: [type: "integer", description: "Poll mode, MULTI-device only: how many devices currently match the condition."],
-                    elapsedMs: [type: "integer", description: "Poll mode: elapsed time in milliseconds"],
-                    polledCount: [type: "integer", description: "Poll mode: number of poll iterations performed (one iteration reads every device in multi-device mode)"],
-                    timedOut: [type: "boolean", description: "Poll mode: true if the timeout elapsed without convergence"],
-                    readError: [type: "boolean", description: "Poll mode, SINGLE-device only: present and true (success OR timeout) if reading the device threw on any poll (e.g. it was removed mid-poll); that tick's value was treated as unread. Multi-device reports this per-device under devices[]."],
-                    neverReported: [type: "boolean", description: "Poll mode, SINGLE-device only: present and true if the attribute never reported a value in the window (multi-device reports this per-device under devices[])"],
-                    nonNumericAttribute: [type: "boolean", description: "Poll mode, SINGLE-device, TIMEOUT only: present and true when a numeric comparator (gt/gte/lt/lte/between) was used on an attribute that reported a non-numeric value the whole window, so the comparator can never match it (e.g. gt on switch=\"on\"). Distinct from neverReported. Multi-device reports this per-device under devices[]. Use eq/ne for a string attribute."],
-                    note: [type: "string", description: "Poll mode, TIMEOUT only: human-readable recovery guidance. Single-device: present with nonNumericAttribute. Multi-device: present when at least one device is a can-never-match non-numeric (names the comparator/attribute, suggests eq/ne for a string attribute)."],
-                    interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload). In multi-device mode the result still carries the per-device devices[] array (finalValue is per-device) plus convergedCount, and timedOut is omitted."],
-                    transitioning: [type: "boolean", description: "Poll mode, TIMEOUT only: true if a value was still changing across polls (>=2 distinct non-null values seen) -- likely still settling -- vs false for a stable non-target (a real mismatch). In multi-device mode this is the aggregate (any device still changing). Best-effort: only reliable when the timeout spans a reporting jump."]
-                ]
             ]
         ],
         [
@@ -4513,65 +4417,6 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 // No `required` array: the two forms require different arguments (deviceId+command,
                 // or commands), which JSON Schema cannot express here without oneOf. Enforced at
                 // runtime instead, with a message naming the conflict.
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the command was sent. In the commands form, true only when EVERY entry was attempted AND sent - check results[] (and stoppedEarly) when false."],
-                    device: [type: "string", description: "Device label (single-device form)"],
-                    command: [type: "string", description: "Command sent (single-device form)"],
-                    parameters: [type: ["array", "null"], description: "Normalized parameters passed to the command; null for a parameterless command"],
-                    count: [type: "integer", description: "commands form: number of entries attempted"],
-                    sentCount: [type: "integer", description: "commands form: number of entries sent successfully"],
-                    failedCount: [type: "integer", description: "commands form: number of attempted entries that failed (0 when all were sent)"],
-                    failedDeviceIds: [type: "array", description: "commands form: the deviceIds of the failed entries, in request order -- the retry candidates. Check each entry's error/note before re-sending: an unconfirmed outcome may still have actuated.", items: [type: "string"]],
-                    stoppedEarly: [type: "boolean", description: "commands form: present and true when the batch stopped early because the request was nearing the relay time budget; the entries in remainingCommands were NOT sent."],
-                    remainingCommands: [type: "array", description: "commands form: present with stoppedEarly -- the untried tail of the request, verbatim, to re-send in a new call.", items: [type: "object"]],
-                    results: [
-                        type: "array",
-                        description: "commands form: per-entry outcome, in request order. Entries carry no state snapshot -- confirm outcomes with hub_get_device_attribute's deviceIds form. A successful entry carries success, deviceId, device, command and parameters. A failed entry carries success:false, deviceId, command, error, and sometimes note.",
-                        items: [
-                            type: "object",
-                            properties: [
-                                success: [type: "boolean", description: "Whether this entry's command was sent"],
-                                deviceId: [type: "string", description: "Device ID this entry targeted"],
-                                device: [type: "string", description: "Device label (successful entries only)"],
-                                command: [type: "string", description: "Command sent"],
-                                parameters: [type: ["array", "null"], description: "Normalized parameters passed to the command; null for a parameterless command"],
-                                error: [type: "string", description: "Present only on a FAILED entry: the error class and message, e.g. an unknown deviceId or an unsupported command. The other ATTEMPTED entries were still sent; entries a relay-budget stop left untried are in remainingCommands."],
-                                note: [type: "string", description: "Present on a failed entry that carries recovery guidance"]
-                            ],
-                            required: ["success", "deviceId", "command"]
-                        ]
-                    ],
-                    state: [type: "object", description: "Attribute snapshot keyed by attribute name; each entry is {value, timestamp}. Read AS OF the command: without waitFor this is the immediate (PRE-effect) value because the hub commits the change after this request returns; with waitFor it reflects the converged value. Includes the attributes that have a current state; timestamp is that attribute's last-event time (null if the attribute has never reported).", additionalProperties: [type: "object", properties: [
-                        value: [type: ["string", "number", "boolean", "object", "null"], description: "Current attribute value (mixed-type across capabilities)"],
-                        timestamp: [type: ["string", "null"], description: "Last-event timestamp for this attribute (yyyy-MM-dd HH:mm:ss), or null if the attribute has never reported"]
-                    ]]],
-                    stateError: [type: "string", description: "Present only when the post-command state read-back threw; state is then {} (an empty state with NO stateError means the device legitimately has no readable attributes). Carries the error class and message."],
-                    partial: [type: "boolean", description: "Single-device form: present and true when the command fired but a confirmation step degraded -- the state read-back failed (see stateError) and/or the waitFor poll threw (see waitFor.error). commands form: present and true when some entries were sent and some failed (see failedDeviceIds). Absent on a fully clean result."],
-                    waitFor: [type: "object", description: "Present only when the waitFor arg was supplied: the result of block-polling the attribute to its expected value.", properties: [
-                        attribute  : [type: "string", description: "Attribute that was polled"],
-                        expected   : [type: ["string", "array"], description: "The expectedValue string or expectedValues list that was awaited"],
-                        converged  : [type: "boolean", description: "True if the attribute reached an expected value; false on timeout OR a hub-reload interrupt OR a poll error (see timedOut/interrupted/error)"],
-                        finalValue : [type: ["string", "number", "boolean", "object", "null"], description: "Last value read (the converged value when converged=true, else the last non-matching read; null on a poll error)"],
-                        elapsedMs  : [type: "integer", description: "Time spent polling, in milliseconds (absent on a poll error)"],
-                        timedOut   : [type: "boolean", description: "Present and true if the poll timed out without a match"],
-                        interrupted: [type: "boolean", description: "Present and true if the poll was interrupted (hub reload)"],
-                        readError: [type: "boolean", description: "Present and true if reading the device threw on any poll (e.g. it was removed mid-poll); that tick's value was treated as unread"],
-                        neverReported: [type: "boolean", description: "Present and true if the attribute never reported a value during the poll window"],
-                        nonNumericAttribute: [type: "boolean", description: "Present and true on a TIMEOUT when a numeric comparator (gt/gte/lt/lte/between) was used on an attribute that reported a non-numeric value the whole window, so it can never match (use eq/ne for a string attribute). Distinct from neverReported."],
-                        note       : [type: "string", description: "Present with nonNumericAttribute -- human-readable recovery guidance (names the comparator/attribute, suggests eq/ne for a string attribute)."],
-                        transitioning: [type: "boolean", description: "Present only on a TIMEOUT: true if the value was still changing across polls (>=2 distinct non-null values seen) so the device is likely still settling, vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."],
-                        error      : [type: "string", description: "Present only if the poll loop threw after the command fired; the command still succeeded"]
-                    ]],
-                    error: [type: "string", description: "Failure reason (success=false)"],
-                    note: [type: "string", description: "Recovery guidance -- on a failed batch, which entries already actuated and what to re-send"]
-                ],
-
-                // The commands form returns success/count/sentCount/results instead, so
-                // device/command/state cannot be required overall.
-                required: ["success"]
             ]
         ],
         [
@@ -4591,31 +4436,6 @@ Default: most-recent events for a device (deviceId + optional limit).
                     since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
-                ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    events: [type: "array", description: "Event rows (most recent first)", items: [type: "object", properties: [
-                        name: [type: "string", description: "Event/attribute name"],
-                        value: [description: "Event value"],
-                        unit: [type: "string", description: "Unit of measure, if any"],
-                        description: [type: "string", description: "Human-readable description text"],
-                        date: [type: "string", description: "Event timestamp (ISO)"],
-                        type: [type: "string", description: "Location mode only: event type"],
-                        isStateChange: [type: "boolean", description: "Whether this event was a state change"]
-                    ]]],
-                    count: [type: "integer", description: "Events returned"],
-                    device: [type: "string", description: "Device label; present in device modes"],
-                    deviceId: [type: "string", description: "Device ID; present in history mode"],
-                    appId: [type: "integer", description: "App ID; present in app mode"],
-                    source: [type: "string", description: "'device', 'app', or 'location'; present in history mode"],
-                    sinceMode: [type: "string", enum: ["explicit", "relative"], description: "Which window drove the result: 'explicit' (since bookmark) or 'relative' (hoursBack); present in history mode"],
-                    hoursBack: [type: "integer", description: "Relative history window in hours; present in history mode only when sinceMode='relative'"],
-                    since: [type: "string", description: "Echoed absolute window start (ISO); present in history mode only when sinceMode='explicit'"],
-                    attributeFilter: [type: "string", description: "Echoed attribute filter; present in history mode"],
-                    sinceTimestamp: [type: "string", description: "Actual window start used (ISO); present in history mode"],
-                    timeFilterUnparseable: [type: "integer", description: "App/location modes: rows kept despite unparseable dates (window not enforced for them); present when > 0"]
                 ]
             ]
         ],
@@ -4641,25 +4461,6 @@ Only modify devices user explicitly requested. Writes require Write master. Call
                     tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]]
                 ],
                 required: ["deviceId"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "True when all requested changes applied without error"],
-                    device: [type: "string", description: "Device label"],
-                    deviceId: [type: "string", description: "Device ID"],
-                    changes: [type: "array", description: "Applied changes", items: [type: "object", properties: [
-                        property: [type: "string", description: "Property changed"],
-                        oldValue: [description: "Prior value, when known"],
-                        newValue: [description: "New value"]
-                    ]]],
-                    errors: [type: "array", description: "Per-property failures, or null when none", items: [type: "object", properties: [
-                        property: [type: "string", description: "Property that failed"],
-                        error: [type: "string", description: "Failure reason"]
-                    ]]],
-                    message: [type: "string", description: "Human-readable summary"]
-                ],
-                required: ["success", "device", "deviceId", "message"]
             ]
         ],
         // Device Admin
@@ -4676,24 +4477,6 @@ Device + history lost, automations break. Requires Write master.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created, device was verified, and user explicitly approved the deletion."]
                 ],
                 required: ["deviceId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether deletion was verified"],
-                    deviceId: [type: "string", description: "Deleted device ID"],
-                    deviceName: [type: "string", description: "Device label/name"],
-                    message: [type: "string", description: "Human-readable result"],
-                    warnings: [type: "array", description: "Pre-delete warnings (active device, radio membership, rule references)", items: [type: "string"]],
-                    auditInfo: [type: "object", description: "Audit trail", properties: [
-                        deletedAt: [type: "string", description: "Deletion timestamp"],
-                        deviceType: [type: "string", description: "Driver/type name"],
-                        deviceNetworkId: [type: "string", description: "Deleted device's DNI"],
-                        driverName: [type: "string", description: "Driver name"],
-                        lastHubBackup: [type: "string", description: "Last hub backup timestamp"]
-                    ]]
-                ],
-                required: ["success", "deviceId", "deviceName", "message"]
             ]
         ],
         [
@@ -4709,28 +4492,6 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the b
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms a hub backup exists (<24h) and the user approved the swap."]
                 ],
                 required: ["from_device_id", "to_device_id", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the swap completed"],
-                    swapped: [type: "object", description: "The committed swap", properties: [
-                        from: [type: "string", description: "Replaced device ID"],
-                        to: [type: "string", description: "Replacement device ID"]
-                    ]],
-                    verified: [type: "boolean", description: "true when the before/after dependent counts were both read and confirmed the swap; false = swap clicked but count verification was degraded"],
-                    appsRewired: [type: "integer", description: "Apps that referenced from_device_id before the swap (the rewired set); absent when the pre-count was unavailable"],
-                    remainingDependents: [type: "integer", description: "Apps still referencing from_device_id after the swap (0 expected)"],
-                    note: [type: "string", description: "Verification guidance"],
-                    error: [type: "string", description: "Failure reason (success=false)"],
-                    compatibleOptions: [type: "array", description: "Incompatible-target failure: compatible replacement devices the hub offered (first 30)", items: [type: "object", properties: [
-                        id: [type: "string", description: "Device ID"],
-                        label: [type: "string", description: "Device label"]
-                    ]]],
-                    compatibleOptionCount: [type: "integer", description: "Total compatible options offered (may exceed the 30 listed)"],
-                    buttonsFound: [type: "array", description: "Button-discovery failure: action button names found on the swap page", items: [type: "string"]]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -4750,28 +4511,6 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
                     confirm: [type: "boolean", description: "REQUIRED to apply (omit for list_options): confirms backup <24h + user approval."]
                 ],
                 required: ["old_device_id"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the replace (or options read) succeeded"],
-                    listOptions: [type: "boolean", description: "True when this was a read-only list_options call"],
-                    options: [type: "array", description: "Compatible replacement candidates (list_options); each {id, name, deviceTypes}", items: [type: "object", properties: [
-                        id: [type: "string", description: "Candidate device ID"],
-                        name: [type: "string", description: "Candidate device name"],
-                        deviceTypes: [type: "array", description: "Dashboard/device types the candidate supports", items: [type: "string"]]
-                    ]]],
-                    optionCount: [type: "integer", description: "Number of compatible candidates"],
-                    replaced: [type: "object", description: "The committed replace (apply path)", properties: [
-                        oldDeviceId: [type: "string", description: "The preserved device id"],
-                        newDeviceId: [type: "string", description: "The device whose hardware was adopted"]
-                    ]],
-                    preservedDeviceId: [type: "string", description: "The device id that survives (the old id)"],
-                    message: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Failure reason (success=false)"],
-                    note: [type: "string", description: "Next-step / recovery guidance"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -4785,24 +4524,6 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
                     confirm: [type: "boolean", description: "REQUIRED: must be true to create the device."]
                 ],
                 required: ["deviceTypeId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the device was created"],
-                    deviceId: [type: "string", description: "New device id"],
-                    label: [type: "string", description: "Applied/current label"],
-                    name: [type: "string", description: "Device name (driver default)"],
-                    deviceTypeId: [type: "string", description: "Driver-type id used"],
-                    deviceTypeName: [type: "string", description: "Driver type name"],
-                    virtual: [type: "boolean", description: "Whether the hub flagged the new device virtual"],
-                    capabilities: [type: "array", description: "Capability names", items: [type: "string"]],
-                    warnings: [type: "array", description: "Non-fatal warnings (e.g. radio-driver orphan-shell)", items: [type: "string"]],
-                    message: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Failure reason (success=false)"],
-                    note: [type: "string", description: "Next-step guidance"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -4818,19 +4539,6 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
                     includeInstructions: [type: "boolean", description: "Include join/exclude/factory-reset instructions[[FLAT_TRIM]] (HTML stripped) + notes[[/FLAT_TRIM]]. Default false (summaries)."],
                     cursor: [type: "string", description: "Pagination cursor. Pass \"\" (or omit) for the first page; iterate nextCursor."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "True on a successful read"],
-                    devices: [type: "array", description: "Matched catalog entries (projected; instructions only when includeInstructions=true)", items: [type: "object"]],
-                    count: [type: "integer", description: "Entries on this page"],
-                    total: [type: "integer", description: "Total entries matched by the filter"],
-                    nextCursor: [type: "string", description: "Present when more results remain"],
-                    note: [type: "string", description: "Pagination / filtering guidance"],
-                    error: [type: "string", description: "Failure reason (success=false)"]
-                ],
-                required: ["success"]
             ]
         ],
     ]

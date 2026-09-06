@@ -4019,99 +4019,6 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
     return findings
 
 
-OUTPUT_SCHEMA_FROZEN_COUNT = 117
-# Per-file declaration counts and a digest of the declarations' text: the total alone cannot see an
-# edit to an existing declaration, or one removed here and added there. Recompute both with
-# `python tests/sandbox_lint.py --output-schema-baseline` ONLY when a declaration is deliberately
-# removed with its tool; an edit to an existing one is what the freeze forbids.
-OUTPUT_SCHEMA_FROZEN_PER_FILE = {'libraries/mcp-app-cloner-lib.groovy': 3, 'libraries/mcp-bundles-lib.groovy': 4, 'libraries/mcp-code-management-lib.groovy': 14, 'libraries/mcp-custom-rules-lib.groovy': 8, 'libraries/mcp-dashboards-lib.groovy': 6, 'libraries/mcp-debug-logging-lib.groovy': 4, 'libraries/mcp-devices-lib.groovy': 11, 'libraries/mcp-diagnostics-lib.groovy': 16, 'libraries/mcp-discovery-lib.groovy': 2, 'libraries/mcp-files-lib.groovy': 4, 'libraries/mcp-hpm-lib.groovy': 1, 'libraries/mcp-item-backups-lib.groovy': 5, 'libraries/mcp-native-rules-lib.groovy': 10, 'libraries/mcp-rooms-lib.groovy': 5, 'libraries/mcp-self-admin-lib.groovy': 2, 'libraries/mcp-system-lib.groovy': 10, 'libraries/mcp-variables-lib.groovy': 8, 'libraries/mcp-virtual-devices-lib.groovy': 1, 'libraries/mcp-visual-rules-lib.groovy': 3}
-OUTPUT_SCHEMA_FROZEN_DIGEST = "60ebd94ff3ff93dd"
-
-
-_OUTPUT_SCHEMA_MARKER = re.compile(r"\boutputSchema\s*:\s*\[")
-
-
-def _output_schema_declarations(text: str) -> list[str]:
-    """Every `outputSchema: [ ... ]` block in a Groovy source -- any whitespace around the map-entry
-    colon, since Groovy accepts `outputSchema:[` and `outputSchema : [` too -- bracket-matched with
-    string literals skipped so a bracket inside a description cannot unbalance the walk. The text
-    returned starts at the canonical `outputSchema: [`, so the digest does not move with the spacing."""
-    out: list[str] = []
-    m = _OUTPUT_SCHEMA_MARKER.search(text)
-    while m:
-        j = m.end() - 1              # the opening bracket
-        depth = 0
-        k = j
-        n = len(text)
-        while k < n:
-            c = text[k]
-            if c in ("'", '"'):
-                q = c
-                k += 1
-                while k < n and text[k] != q:
-                    k += 2 if text[k] == "\\" else 1
-            elif c == "[":
-                depth += 1
-            elif c == "]":
-                depth -= 1
-                if depth == 0:
-                    break
-            k += 1
-        out.append("outputSchema: " + re.sub(r"\s+", " ", text[j:k + 1]).strip())
-        m = _OUTPUT_SCHEMA_MARKER.search(text, k + 1)
-    return out
-
-
-def _output_schema_inventory() -> tuple[dict, str]:
-    import glob as _glob
-    # Rooted at REPO_ROOT, not the current directory: pytest imports this module and calls the
-    # inventory from wherever it was started, and a cwd-relative glob would find no libraries
-    # there and report every declaration as removed.
-    libs = sorted(os.path.relpath(path, str(REPO_ROOT))
-                  for path in _glob.glob(os.path.join(str(REPO_ROOT), "libraries", "*.groovy")))
-    files = ["hubitat-mcp-server.groovy", "e2e-deadman-watchdog-v2.groovy", *libs]
-    per_file: dict = {}
-    digest = hashlib.sha256()
-    for rel in files:
-        path = os.path.join(REPO_ROOT, rel)
-        if not os.path.isfile(path):
-            continue
-        rel = rel.replace(os.sep, "/")      # one spelling on every platform, or the pin drifts by OS
-        with open(path, encoding="utf-8") as fh:
-            decls = _output_schema_declarations(fh.read())
-        if decls:
-            per_file[rel] = len(decls)
-        for d in decls:
-            digest.update(rel.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(d.encode("utf-8"))
-            digest.update(b"\0")
-    return per_file, digest.hexdigest()[:16]
-
-
-def check_output_schema_freeze() -> list[dict]:
-    """outputSchema is legacy and frozen (AGENTS.md § Schema design): the declarations that exist stay
-    as they are, a new tool declares none. Pin the count per file and a digest of the declarations
-    across the app sources so a new one, a moved one, or an edited one fails here with the policy,
-    the way the tool-count guard pins the catalog."""
-    per_file, digest = _output_schema_inventory()
-    total = sum(per_file.values())
-    if total == OUTPUT_SCHEMA_FROZEN_COUNT and per_file == OUTPUT_SCHEMA_FROZEN_PER_FILE and digest == OUTPUT_SCHEMA_FROZEN_DIGEST:
-        return []
-    if total != OUTPUT_SCHEMA_FROZEN_COUNT or per_file != OUTPUT_SCHEMA_FROZEN_PER_FILE:
-        direction = "added" if total > OUTPUT_SCHEMA_FROZEN_COUNT else ("removed" if total < OUTPUT_SCHEMA_FROZEN_COUNT else "moved between files")
-        message = (f"outputSchema is frozen (AGENTS.md § Schema design): {total} declarations found, the frozen set "
-                   f"has {OUTPUT_SCHEMA_FROZEN_COUNT} ({direction}). A new tool must not declare one; if a tool was "
-                   f"deleted with its declaration, re-pin with `python tests/sandbox_lint.py --output-schema-baseline`. "
-                   f"Per file now: {per_file}")
-    else:
-        message = ("outputSchema is frozen (AGENTS.md § Schema design): the count is unchanged but an existing "
-                   f"declaration's text changed (digest {digest}, frozen {OUTPUT_SCHEMA_FROZEN_DIGEST}). Revert the "
-                   "edit; the frozen declarations are not maintained.")
-    return [{"file": "AGENTS.md", "line": 0, "severity": "error", "rule": "output-schema-frozen",
-             "message": message, "source": ""}]
-
-
 def check_bm25_key_subscripts() -> list[dict]:
     """hub_search_tools sandbox fix guard. The platform's SandboxSubscriptGuard rejects a COMPUTED
     map key that collides with a reflection-ish property name, and one real corpus token
@@ -4170,6 +4077,93 @@ def check_bm25_key_subscripts() -> list[dict]:
         flag(0, f"`{name}` subscripts df/tf but is never assigned from _bm25Key(...) in bm25Score -- a raw corpus token as a map key trips the platform's SandboxSubscriptGuard.")
     if "_bm25Key(" not in body:
         flag(0, "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed.")
+    return findings
+
+def check_logs_json_snapshot_guard() -> list[dict]:
+    """Slow-read guard for the hub's /logs/json page. That one document carries every device and
+    app stat plus the job tables, so its fetch time grows with hub size and a synchronous read
+    built on it outruns the cloud relay on a large hub (hub_get_jobs and
+    hub_get_performance_stats both 502'd that way). Two source-level invariants keep the fix in
+    place: (1) the only hubInternalGet of "/logs/json" lives in _logsJsonFetchAndPublish, the
+    single fetch implementation behind the JVM snapshot (invoked inline on an unbudgeted request
+    and by the scheduled worker otherwise); (2) every tool whose implementation reads the
+    snapshot is listed in BOTH _mrtrReadTools() (so a modern client continues it through
+    requestState) and _budgetAwareTools() (so the leaf sees the request's __reqT0 clock and
+    hands back in_progress inside the relay budget). The raw-fetch scan matches either quote
+    style of the "/logs/json" literal; an indirect fetch (a path built at runtime, or a call
+    through _hubRequest) is outside what a source scan can see, and the runtime [hubrt] slow
+    warning is the backstop for that."""
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if not server.is_file():
+        return findings
+    sources = [server, *sorted((REPO_ROOT / "libraries").glob("*.groovy"))]
+    fn_re = re.compile(r"^(?:private\s+|static\s+)*(?:def|void|boolean|Map|List|String|Set|Long|long|int|Integer)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
+
+    def enclosing_fn(src: str, pos: int) -> str | None:
+        last = None
+        for m in fn_re.finditer(src, 0, pos):
+            last = m.group(1)
+        return last
+
+    def fn_bodies(src: str) -> list[tuple[str, int, str]]:
+        heads = list(fn_re.finditer(src))
+        out = []
+        for i, m in enumerate(heads):
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(src)
+            out.append((m.group(1), src.count("\n", 0, m.start()) + 1, src[m.start():end]))
+        return out
+
+    # (1) the raw fetch has exactly one home.
+    for f in sources:
+        src = f.read_text(encoding="utf-8")
+        rel = str(f.relative_to(REPO_ROOT))
+        for m in re.finditer(r"""hubInternalGet(?:Raw)?\(\s*(["'])/logs/json\1""", src):
+            fn = enclosing_fn(src, m.start())
+            if fn != "_logsJsonFetchAndPublish":
+                findings.append({"file": rel, "line": src.count("\n", 0, m.start()) + 1, "severity": "error",
+                                 "rule": "logs-json-snapshot-guard", "source": "",
+                                 "message": f"`{fn}` fetches /logs/json directly. That page grows with hub size and outruns the cloud relay; read it through _logsJsonSnapshot(args) so the fetch runs in the background worker and is cached."})
+
+    # (2) every snapshot reader is a continuation-eligible, budget-aware tool.
+    server_src = server.read_text(encoding="utf-8")
+
+    def set_literal(name: str) -> set[str] | None:
+        m = re.search(rf"def {re.escape(name)}\(\)\s*\{{\s*return\s*\[(.*?)\]\s*as\s+Set", server_src, re.S)
+        if not m:
+            return None
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    read_set = set_literal("_mrtrReadTools")
+    budget_set = set_literal("_budgetAwareTools")
+    if read_set is None or budget_set is None:
+        findings.append({"file": "hubitat-mcp-server.groovy", "line": 1, "severity": "error",
+                         "rule": "logs-json-snapshot-guard", "source": "",
+                         "message": "Could not parse _mrtrReadTools() / _budgetAwareTools() set literals -- has their shape changed?"})
+        return findings
+    dispatch: dict[str, set[str]] = {}
+    for f in sources:
+        for tool, fn in re.findall(r'case "(hub_[a-z0-9_]+)":\s*return\s+([A-Za-z_][A-Za-z0-9_]*)\(',
+                                   f.read_text(encoding="utf-8")):
+            dispatch.setdefault(fn, set()).add(tool)
+    for f in sources:
+        src = f.read_text(encoding="utf-8")
+        rel = str(f.relative_to(REPO_ROOT))
+        for fn, line, body in fn_bodies(src):
+            if fn.startswith("_logsJson") or "_logsJsonSnapshot(" not in body:
+                continue
+            tools = dispatch.get(fn)
+            if not tools:
+                findings.append({"file": rel, "line": line, "severity": "error",
+                                 "rule": "logs-json-snapshot-guard", "source": "",
+                                 "message": f"`{fn}` reads the /logs/json snapshot but no executeTool case dispatches to it, so its tool name cannot be checked against _mrtrReadTools()/_budgetAwareTools()."})
+                continue
+            for tool in sorted(tools):
+                missing = [n for n, members in (("_mrtrReadTools", read_set), ("_budgetAwareTools", budget_set)) if tool not in members]
+                if missing:
+                    findings.append({"file": rel, "line": line, "severity": "error",
+                                     "rule": "logs-json-snapshot-guard", "source": "",
+                                     "message": f"`{tool}` ({fn}) reads the /logs/json snapshot but is missing from {' and '.join(missing)}() in hubitat-mcp-server.groovy -- without both, a relay-bound call of it cannot continue and 502s on a large hub."})
     return findings
 
 def check_library_no_file_scope_block_comments() -> list[dict]:
@@ -4423,8 +4417,10 @@ def main() -> int:
     # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
     all_findings.extend(check_bm25_key_subscripts())
 
-    # outputSchema is frozen: no new declarations (AGENTS.md § Schema design).
-    all_findings.extend(check_output_schema_freeze())
+
+    # /logs/json grows with hub size: its only fetch is the worker-run one behind the JVM
+    # snapshot, and every tool reading the snapshot continues via requestState.
+    all_findings.extend(check_logs_json_snapshot_guard())
 
     # The conformance leg's referee is the vendored MCP JSON Schemas; make the byte hashes
     # their README records ENFORCED, so a loosened or half-refreshed schema fails here
@@ -4452,13 +4448,6 @@ def main() -> int:
 
     return 1 if errors else 0
 
-
-if __name__ == "__main__" and "--output-schema-baseline" in sys.argv:
-    _pf, _dg = _output_schema_inventory()
-    print(f"OUTPUT_SCHEMA_FROZEN_COUNT = {sum(_pf.values())}")
-    print(f"OUTPUT_SCHEMA_FROZEN_PER_FILE = {_pf!r}")
-    print(f'OUTPUT_SCHEMA_FROZEN_DIGEST = "{_dg}"')
-    sys.exit(0)
 
 if __name__ == "__main__":
     sys.exit(main())

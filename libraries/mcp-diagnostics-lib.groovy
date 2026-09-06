@@ -743,11 +743,228 @@ def toolGetHubLogs(args) {
     return result
 }
 
-// Shared helper: fetch /logs/json from hub internal API
-def fetchLogsJson() {
+// /logs/json is the hub's whole live Logs page in one document: every device and app stat, the
+// job tables and the current log buffer. It grows with device and app count, so on a large hub
+// one fetch can outrun the cloud relay's ceiling, and a client then sees a 502 with nothing to
+// retry. When the request's transport carries a time budget (relayBudgetMs over the cloud,
+// lanBudgetMs on the LAN) the fetch therefore runs in a scheduled worker, and its trimmed
+// result is held in the JVM for a short window so both tools built on it, and their cursor
+// pages, answer from one fetch. hub_get_jobs and hub_get_performance_stats are the only
+// readers; keep any new /logs/json consumer on _logsJsonSnapshot (sandbox_lint enforces it).
+def _logsJsonSnapshotTtlMs() { 30000L }
+// A fetch marker or failure older than this is treated as stale: the marker no longer blocks a
+// new worker, and the failure is no longer reported. It is a bound, not proof the worker died,
+// so every publish is fenced by the fetchId the worker was scheduled with.
+def _logsJsonFetchStaleMs() { 45000L }
+
+// How long a budgeted request may wait for the worker before handing back in_progress. The
+// leg does nothing else, so it keeps 1500 ms of headroom under the budget (the write
+// observer's cloud path keeps 2000 ms), capped so eight continuation slices still cover the
+// fetch's own 30 s timeout.
+def _logsJsonObserveWaitMs() {
+    boolean cloud = _isCloudRequest()
+    long cap = cloud ? 4500L : 6000L
+    long budget = cloud ? _relayBudgetMs() : _lanBudgetMs()
+    if (budget <= 0L) return cap
+    return Math.max(1L, Math.min(cap, budget - 1500L))
+}
+
+def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
+
+private List _logsJsonTrimStats(statsList) {
+    if (!(statsList instanceof List)) return []
+    return statsList.collect { stat ->
+        def trimmed = [
+            id: stat.id, name: stat.name, count: stat.count, pct: stat.pct, total: stat.total,
+            average: stat.average, stateSize: stat.stateSize, formattedPct: stat.formattedPct,
+            formattedPctTotal: stat.formattedPctTotal, hubActionCount: stat.hubActionCount,
+            pendingEventsCount: stat.pendingEventsCount, cloudCallCount: stat.cloudCallCount
+        ]
+        if (stat.customAttributes instanceof Map) {
+            trimmed.customAttributes = [eventsCount: stat.customAttributes.eventsCount,
+                                        statesCount: stat.customAttributes.statesCount]
+        }
+        if (stat.largeState) trimmed.largeState = true
+        return trimmed
+    }
+}
+
+// A present table that is not an array, or a table row that is not an object, is a changed
+// contract and must fail loudly rather than be reported as an empty hub.
+private List _logsJsonTable(Map data, String key) {
+    def table = data[key]
+    if (table == null) return []
+    if (!(table instanceof List)) throw new IllegalStateException("Unexpected /logs/json response: '${key}' is not an array")
+    if (key != "hubCommands" && table.any { !(it instanceof Map) }) {
+        throw new IllegalStateException("Unexpected /logs/json response: '${key}' contains a non-object entry")
+    }
+    return table
+}
+
+// Fetch, trim to the fields the tools read, and publish. Runs inline on an unbudgeted request
+// and inside runLogsJsonFetch for budgeted ones. A worker passes the fetchId it was scheduled
+// with; a stale worker (its id already replaced) parses for nothing and publishes nothing.
+def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
+    long t0 = now()
     def responseText = hubInternalGet("/logs/json", null, 30)
     if (!responseText) throw new RuntimeException("No data returned from /logs/json")
-    return new groovy.json.JsonSlurper().parseText(responseText)
+    def data = new groovy.json.JsonSlurper().parseText(responseText)
+    if (!(data instanceof Map)) throw new IllegalStateException("Unexpected /logs/json response: expected a JSON object")
+    if (data.jobs == null && data.deviceStats == null && data.appStats == null) {
+        throw new IllegalStateException("Unexpected /logs/json response: no jobs or stats tables (page shape changed?)")
+    }
+    def snap = [
+        at: now(), fetchMs: now() - t0, background: background,
+        uptime: data.uptime,
+        totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct,
+        totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
+        deviceStats: _logsJsonTrimStats(_logsJsonTable(data, "deviceStats")),
+        appStats: _logsJsonTrimStats(_logsJsonTable(data, "appStats")),
+        jobs: _logsJsonTable(data, "jobs").collect { job ->
+            [id: job.id, name: job.name, recurring: job.recurring, method: job.methodName, nextRun: job.nextRun]
+        },
+        runningJobs: _logsJsonTable(data, "runningJobs").collect { job ->
+            [id: job.id, name: job.name, method: job.methodName]
+        },
+        hubCommands: _logsJsonTable(data, "hubCommands")
+    ]
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        if (fetchId != null && LOGS_JSON_SNAPSHOT.fetchId != fetchId) return snap
+        LOGS_JSON_SNAPSHOT.snapshot = snap
+        LOGS_JSON_SNAPSHOT.remove("fetchError")
+    }
+    return snap
+}
+
+// Provenance a client can read back: whether this answer came from a cached snapshot, how old
+// it is, and whether the fetch ran in the background worker. Makes cache reuse observable.
+private Map _logsJsonProvenance(Map snap) {
+    return [fetchedAt: snap.at, ageMs: Math.max(0L, now() - (snap.at as Long)),
+            fetchMs: snap.fetchMs, background: snap.background == true,
+            budgeted: _logsJsonUsesBackgroundFetch()]
+}
+
+private Map _logsJsonFreshSnapshot() {
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        def snap = LOGS_JSON_SNAPSHOT.snapshot
+        if (snap instanceof Map && snap.at instanceof Long
+                && now() - (snap.at as Long) < _logsJsonSnapshotTtlMs()) return snap
+        return null
+    }
+}
+
+// Schedule the worker unless a non-stale fetch is already in flight. The marker is owned by a
+// fetchId; a scheduling failure rolls back exactly that marker and propagates.
+private void _logsJsonEnsureFetchScheduled() {
+    long fetchId
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        def startedAt = LOGS_JSON_SNAPSHOT.fetchStartedAt
+        if (startedAt instanceof Long && now() - (startedAt as Long) < _logsJsonFetchStaleMs()) return
+        fetchId = ((LOGS_JSON_SNAPSHOT.fetchId instanceof Long) ? (LOGS_JSON_SNAPSHOT.fetchId as Long) : 0L) + 1L
+        LOGS_JSON_SNAPSHOT.fetchId = fetchId
+        LOGS_JSON_SNAPSHOT.fetchStartedAt = now()
+    }
+    try {
+        runInMillis(200, "runLogsJsonFetch", [overwrite: false, data: [fetchId: fetchId]])
+    } catch (Exception scheduleErr) {
+        synchronized (LOGS_JSON_SNAPSHOT) {
+            if (LOGS_JSON_SNAPSHOT.fetchId == fetchId) LOGS_JSON_SNAPSHOT.remove("fetchStartedAt")
+        }
+        throw scheduleErr
+    }
+}
+
+def runLogsJsonFetch(Map job = [:]) {
+    Long fetchId = null
+    try { fetchId = job?.fetchId as Long } catch (Exception ignored) { fetchId = null }
+    try {
+        _logsJsonFetchAndPublish(fetchId, true)
+    } catch (Exception e) {
+        mcpLogError("monitoring", "Background /logs/json fetch failed", e)
+        String detail = e.message?.toString()?.trim()
+        if (!detail) detail = "${e.class.simpleName} while fetching /logs/json".toString()
+        synchronized (LOGS_JSON_SNAPSHOT) {
+            if (fetchId == null || LOGS_JSON_SNAPSHOT.fetchId == fetchId) {
+                LOGS_JSON_SNAPSHOT.fetchError = [at: now(), message: detail]
+            }
+        }
+    } finally {
+        synchronized (LOGS_JSON_SNAPSHOT) {
+            if (fetchId == null || LOGS_JSON_SNAPSHOT.fetchId == fetchId) LOGS_JSON_SNAPSHOT.remove("fetchStartedAt")
+        }
+    }
+}
+
+// The most recent worker failure, while it is younger than the stale bound. It stays visible to
+// every caller until a later fetch succeeds (publishing clears it) or it ages out, so a legacy
+// client repeating the call sees the same error and stops instead of polling.
+private Map _logsJsonRecentFetchError() {
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        def failure = LOGS_JSON_SNAPSHOT.fetchError
+        if (!(failure instanceof Map)) return null
+        if (!(failure.at instanceof Long) || now() - (failure.at as Long) >= _logsJsonFetchStaleMs()) {
+            LOGS_JSON_SNAPSHOT.remove("fetchError")
+            return null
+        }
+        return [:] + failure
+    }
+}
+
+// Resolve the snapshot for one request. Exactly one of:
+//   [state: "ready", snapshot: ...]   a snapshot inside its TTL (fetched inline when unbudgeted)
+//   [state: "pending"]                a budgeted request whose worker has not landed yet
+//   [state: "failed", error: ...]     the most recent worker failure; a retry is already scheduled
+def _logsJsonSnapshot(Map args) {
+    def fresh = _logsJsonFreshSnapshot()
+    if (fresh != null) return [state: "ready", snapshot: fresh]
+    if (!_logsJsonUsesBackgroundFetch()) return [state: "ready", snapshot: _logsJsonFetchAndPublish()]
+    def failure = _logsJsonRecentFetchError()
+    if (failure != null) {
+        _logsJsonEnsureFetchScheduled()
+        return [state: "failed", error: failure.message]
+    }
+    long t0 = (args?.__reqT0 instanceof Number) ? (args.__reqT0 as Long) : now()
+    _logsJsonEnsureFetchScheduled()
+    long deadline = t0 + _logsJsonObserveWaitMs()
+    // remainingBudget bounds the loop even when the clock does not advance between pauses.
+    long remainingBudget = Math.max(0L, deadline - now())
+    while (true) {
+        fresh = _logsJsonFreshSnapshot()
+        if (fresh != null) return [state: "ready", snapshot: fresh]
+        failure = _logsJsonRecentFetchError()
+        if (failure != null) return [state: "failed", error: failure.message]
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        if (remaining <= 0L) return [state: "pending"]
+        long sleepMs = Math.min(250L, remaining)
+        try {
+            pauseExecution(sleepMs as Long)
+        } catch (Exception waitErr) {
+            // Not an ordinary timeout: name the exception so a scheduler fault does not hide
+            // behind normal-looking in_progress traffic.
+            mcpLog("warn", "monitoring", "Snapshot wait interrupted (${waitErr.class.simpleName}): ${waitErr.message}")
+            return [state: "pending"]
+        }
+        remainingBudget -= sleepMs
+    }
+}
+
+// The remainder envelope for a budgeted request whose fetch is still running. A modern client
+// continues it through requestState; a legacy client repeats the identical call.
+private Map _logsJsonInProgress(String tool) {
+    return [
+        status: "in_progress", tool: tool, retryable: true,
+        note: "The hub is still producing its Logs page payload (every device and app stat plus the job tables, which grows with hub size). Call ${tool} again with the same arguments; once the fetch finishes, its result is served from a ${(_logsJsonSnapshotTtlMs() / 1000L) as Long} s cache."
+    ]
+}
+
+// The runtime-error contract for a Logs-page read that could not be served.
+private Map _logsJsonFailure(String tool, String detail) {
+    String reason = detail?.toString()?.trim() ?: "unknown /logs/json fetch failure"
+    return [
+        success: false, isError: true, tool: tool,
+        error: "${tool} could not read the hub's Logs page: ${reason}",
+        note: "Repeat the identical call once; a fresh fetch is already scheduled. If it fails again, check hub_get_logs for the hub-side error, then see hub_get_tool_guide(section='slow_ops')."
+    ]
 }
 
 def toolGetPerformanceStats(args) {
@@ -759,19 +976,24 @@ def toolGetPerformanceStats(args) {
 
     def data
     try {
-        data = fetchLogsJson()
+        def snap = _logsJsonSnapshot(args)
+        if (snap.state == "failed") return _logsJsonFailure("hub_get_performance_stats", snap.error)
+        if (snap.state == "pending") return _logsJsonInProgress("hub_get_performance_stats")
+        data = snap.snapshot
     } catch (Exception e) {
         mcpLogError("monitoring", "Failed to fetch performance stats", e)
-        return [error: "Failed to fetch performance stats: ${e.message}"]
+        return _logsJsonFailure("hub_get_performance_stats", e.message ?: e.class.simpleName)
     }
 
     def result = [
-        uptime: data.uptime
+        uptime: data.uptime,
+        snapshot: _logsJsonProvenance(data)
     ]
 
-    def formatStats = { statsList ->
-        if (!statsList) return []
-        // Sort
+    def formatStats = { cached ->
+        if (!cached) return []
+        // Sort a copy: the cached lists are shared by every concurrent caller of the snapshot.
+        def statsList = new ArrayList(cached)
         switch (sortBy) {
             case "count": statsList = statsList.sort { -(it.count ?: 0) }; break
             case "stateSize": statsList = statsList.sort { -(it.stateSize ?: 0) }; break
@@ -834,41 +1056,35 @@ def toolGetPerformanceStats(args) {
 }
 
 def toolGetHubJobs(args) {
+    def cursor = args?.cursor
     mcpLog("info", "monitoring", "Fetching hub jobs")
 
     def data
     try {
-        data = fetchLogsJson()
+        def snap = _logsJsonSnapshot(args)
+        if (snap.state == "failed") return _logsJsonFailure("hub_get_jobs", snap.error)
+        if (snap.state == "pending") return _logsJsonInProgress("hub_get_jobs")
+        data = snap.snapshot
     } catch (Exception e) {
         mcpLogError("monitoring", "Failed to fetch hub jobs", e)
-        return [error: "Failed to fetch hub jobs: ${e.message}"]
+        return _logsJsonFailure("hub_get_jobs", e.message ?: e.class.simpleName)
     }
 
-    def scheduledJobs = (data.jobs ?: []).collect { job ->
-        [
-            id: job.id,
-            name: job.name,
-            recurring: job.recurring,
-            method: job.methodName,
-            nextRun: job.nextRun
-        ]
-    }
+    // The snapshot's tables are lists by construction (_logsJsonTable is list-or-throw).
+    def scheduledJobs = data.jobs
+    def runningJobs = data.runningJobs
+    def hubActions = data.hubCommands
 
-    def runningJobs = (data.runningJobs ?: []).collect { job ->
-        [
-            id: job.id,
-            name: job.name,
-            method: job.methodName
-        ]
-    }
-
-    def hubActions = data.hubCommands ?: []
-
-    return [
+    // Only scheduledJobs pages; runningJobs and hubActions keep their full, backward-compatible
+    // shape on every page. Pages are best-effort: the cursor is an offset into the current
+    // snapshot, and a traversal that outlives the 30 s TTL reads its later pages from a refetch.
+    def paged = _paginateList(scheduledJobs, cursor, 100, "hub_get_jobs")
+    def result = [
         uptime: data.uptime,
+        snapshot: _logsJsonProvenance(data),
         scheduledJobs: [
-            count: scheduledJobs.size(),
-            jobs: scheduledJobs
+            count: paged.page.size(),
+            jobs: paged.page
         ],
         runningJobs: [
             count: runningJobs.size(),
@@ -879,6 +1095,11 @@ def toolGetHubJobs(args) {
             actions: hubActions
         ]
     ]
+    if (cursor != null) {
+        result.scheduledJobs.total = scheduledJobs.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    return result
 }
 
 def toolGetHubPerformance(args) {
@@ -2009,31 +2230,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     until: [type: "string", description: "Return only entries at or before this time. Same format as since. Default: now (no upper bound)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    logs: [type: "array", description: "Log entries, most recent first", items: [type: "object", properties: [
-                        name: [type: "string", description: "Source name"],
-                        level: [type: "string", description: "Log level"],
-                        message: [type: "string", description: "Log message"],
-                        time: [type: "string", description: "Entry timestamp"],
-                        type: [type: "string", description: "Entry type"]
-                    ]]],
-                    count: [type: "integer", description: "Entries on this page"],
-                    totalParsed: [type: "integer", description: "Total entries parsed from the hub"],
-                    appliedLimit: [type: "integer", description: "Limit applied before pagination"],
-                    total: [type: "integer", description: "Filtered total; present in cursor mode"],
-                    nextCursor: [type: "string", description: "Present when more results remain"],
-                    truncated: [type: "boolean", description: "Present when messages were trimmed for size"],
-                    note: [type: "string", description: "Present when truncated"],
-                    filteredOut: [type: "integer", description: "Entries excluded by active filters"],
-                    appliedFilters: [type: "object", description: "Echo of active filter args"],
-                    timeFilterUnparseable: [type: "integer", description: "Entries kept despite unparseable timestamps"],
-                    benignRmNoiseCount: [type: "integer", description: "Count of returned entries that are known-benign RM-internal noise (non-fatal, not an MCP bug); present only when >0"],
-                    benignRmNoiseNote: [type: "string", description: "Explanation of the benign RM-internal noise; present only when benignRmNoiseCount>0"]
-                ],
-                required: ["logs", "count"]
             ]
         ],
         // ==================== MONITORING TOOLS ====================
@@ -2047,33 +2243,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
                     limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    uptime: [description: "Hub uptime"],
-                    deviceSummary: [type: "object", description: "Device totals; present for type device/both", properties: [
-                        totalRuntime: [description: "Total device runtime"],
-                        pctOfUptime: [description: "Device % of uptime"],
-                        deviceCount: [type: "integer", description: "Devices reported"]
-                    ]],
-                    deviceStats: [type: "array", description: "Per-device stats; present for type device/both", items: [type: "object", properties: [
-                        id: [description: "Device ID"],
-                        name: [type: "string", description: "Device name"],
-                        count: [description: "Method call count"],
-                        pctBusy: [description: "% busy"],
-                        stateSize: [description: "State size"],
-                        totalMs: [description: "Total ms"]
-                    ]]],
-                    appSummary: [type: "object", description: "App totals; present for type app/both", properties: [
-                        totalRuntime: [description: "Total app runtime"],
-                        pctOfUptime: [description: "App % of uptime"],
-                        appCount: [type: "integer", description: "Apps reported"]
-                    ]],
-                    appStats: [type: "array", description: "Per-app stats; present for type app/both", items: [type: "object"]],
-                    note: [type: "string", description: "Present when limit=0"]
-                ],
-                required: ["uptime"]
             ]
         ],
         [
@@ -2081,32 +2250,9 @@ def _getAllToolDefinitions_partDiagnostics() {
             description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page. Requires Read master.",
             inputSchema: [
                 type: "object",
-                properties: [:]
-            ],
-            outputSchema: [
-                type: "object",
                 properties: [
-                    uptime: [description: "Hub uptime"],
-                    scheduledJobs: [type: "object", description: "Scheduled jobs", properties: [
-                        count: [type: "integer", description: "Number of scheduled jobs"],
-                        jobs: [type: "array", items: [type: "object", properties: [
-                            id: [description: "Job ID"],
-                            name: [type: "string", description: "Job name"],
-                            recurring: [description: "Whether the job recurs"],
-                            method: [type: "string", description: "Method invoked"],
-                            nextRun: [description: "Next scheduled run"]
-                        ]]]
-                    ]],
-                    runningJobs: [type: "object", description: "Currently running jobs", properties: [
-                        count: [type: "integer", description: "Number of running jobs"],
-                        jobs: [type: "array", items: [type: "object"]]
-                    ]],
-                    hubActions: [type: "object", description: "Pending hub actions", properties: [
-                        count: [type: "integer", description: "Number of hub actions"],
-                        actions: [type: "array", items: [type: "object"]]
-                    ]]
-                ],
-                required: ["scheduledJobs", "runningJobs", "hubActions"]
+                    cursor: [type: "string", description: "Opaque pagination cursor for scheduledJobs. Omit for the full list; pass '' for the first page of 100, then the returned nextCursor. runningJobs and hubActions stay in full on every page. Pages read a snapshot cached for 30 s, so a traversal that takes longer is best-effort."]
+                ]
             ]
         ],
         [
@@ -2118,31 +2264,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     recordSnapshot: [type: "boolean", description: "If true, also append this snapshot to the performance-history CSV in the hub File Manager — the tool's only write side-effect. Default: false (read-only).", default: false],
                     trendPoints: [type: "integer", description: "Number of recent historical data points to include. Default: 10, max: 50.", default: 10]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    current: [type: "object", description: "Current snapshot", properties: [
-                        timestamp: [type: "string", description: "Snapshot time"],
-                        timestampEpoch: [type: "integer", description: "Snapshot time in epoch millis"],
-                        freeMemoryKB: [description: "Free OS memory (KB)"],
-                        internalTempC: [description: "Internal temperature (C)"],
-                        databaseSizeKB: [description: "Database size (KB)"],
-                        uptimeSeconds: [description: "Hub uptime in seconds"],
-                        uptimeFormatted: [type: "string", description: "Human-readable uptime"]
-                    ]],
-                    trends: [type: "array", description: "Recent historical data points", items: [type: "object", properties: [
-                        timestamp: [type: "string", description: "Point time"],
-                        freeMemoryKB: [description: "Free OS memory (KB)"],
-                        internalTempC: [description: "Internal temperature (C)"],
-                        databaseSizeKB: [description: "Database size (KB)"],
-                        uptimeSeconds: [description: "Uptime in seconds"]
-                    ]]],
-                    healthAlerts: [type: "object", description: "The hub's own health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags like hubLowMemory/hubLargeDatabase/zwaveOffline/localBackupFailed/weakZigbee), details (full alert flag map + the hub's message strings)}. Complements the locally-derived warnings on `current`. null if /hub2/hubData was unreadable."],
-                    trendPointsAvailable: [type: "integer", description: "Total history rows available"],
-                    historyFile: [type: "string", description: "CSV history filename in File Manager"]
-                ],
-                required: ["current", "trends"]
             ]
         ],
         [
@@ -2154,32 +2275,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     limit: [type: "integer", description: "Max entries to return (most recent); 0 for all.[[FLAT_TRIM]] Hub may have thousands of entries.[[/FLAT_TRIM]]", default: 100],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pages within the limit-filtered entries. Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    entries: [type: "array", description: "Memory history entries", items: [type: "object", properties: [
-                        timestamp: [type: "string", description: "Entry timestamp"],
-                        freeMemoryKB: [type: "integer", description: "Free OS memory (KB)"],
-                        cpuLoad5min: [type: "string", description: "5-minute CPU load average"],
-                        totalJavaKB: [type: "integer", description: "Total Java heap (KB), when present"],
-                        freeJavaKB: [type: "integer", description: "Free Java heap (KB), when present"],
-                        directJavaKB: [type: "integer", description: "Direct Java memory (KB), when present"]
-                    ]]],
-                    summary: [type: "object", description: "Aggregate stats over all entries", properties: [
-                        totalEntries: [type: "integer", description: "Total entries available"],
-                        currentMemoryKB: [type: "integer", description: "Most recent free memory (KB)"],
-                        minMemoryKB: [type: "integer", description: "Minimum free memory (KB)"],
-                        maxMemoryKB: [type: "integer", description: "Maximum free memory (KB)"],
-                        avgMemoryKB: [type: "integer", description: "Average free memory (KB)"],
-                        memoryWarning: [type: "string", description: "Present when memory is low"],
-                        truncated: [type: "boolean", description: "Present when entries were limited"],
-                        message: [type: "string", description: "Present when no history available"]
-                    ]],
-                    total: [type: "integer", description: "Candidate entry count; present in cursor mode"],
-                    nextCursor: [type: "string", description: "Present when more results remain"]
-                ],
-                required: ["entries", "summary"]
             ]
         ],
         [
@@ -2197,52 +2292,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array.[[FLAT_TRIM]] Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page.[[/FLAT_TRIM]]"]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    summary: [type: "object", description: "Health counts", properties: [
-                        totalDevices: [type: "integer", description: "Devices checked"],
-                        healthyCount: [type: "integer", description: "Healthy devices"],
-                        staleCount: [type: "integer", description: "Stale devices"],
-                        unknownCount: [type: "integer", description: "Devices with no/unreadable activity"],
-                        staleThresholdHours: [type: "integer", description: "Staleness threshold used"],
-                        checkedAt: [type: "string", description: "Check timestamp"],
-                        staleDevicesInPage: [type: "integer", description: "Stale devices on this page; present in cursor mode"]
-                    ]],
-                    staleDevices: [type: "array", description: "Stale device entries (paginated)", items: [type: "object", properties: [
-                        id: [type: "string", description: "Device ID"],
-                        name: [type: "string", description: "Device label"],
-                        lastActivity: [type: "string", description: "Last-activity ISO timestamp or 'never'"],
-                        hoursAgo: [type: "number", description: "Hours since last activity, or null"]
-                    ]]],
-                    unknownDevices: [type: "array", description: "Devices with no readable activity", items: [type: "object"]],
-                    healthyDevices: [type: "array", description: "Present when includeHealthy=true", items: [type: "object"]],
-                    pingResults: [type: "array", description: "Present when pingHosts supplied", items: [type: "object", properties: [
-                        ipAddress: [type: "string", description: "Target IP"],
-                        reachable: [type: "boolean", description: "Whether the host responded"],
-                        packetLoss: [description: "Packet-loss percentage"],
-                        rttAvg: [description: "Average round-trip time"]
-                    ]]],
-                    traceroute: [type: "object", description: "Present when traceroute supplied. {host, endpoint, output (plain-text route table), error (present on fetch failure)}", properties: [
-                        host: [type: "string", description: "Target IPv4"],
-                        endpoint: [type: "string", description: "Internal API endpoint used"],
-                        output: [type: "string", description: "Plain-text traceroute route table (truncated to 8000 chars)"],
-                        error: [type: "string", description: "Present when the traceroute fetch failed"]
-                    ]],
-                    speedtest: [type: "object", description: "Present when speedtest=true. {endpoint, output (plain-text wget log with WAN download speed), error (present on fetch failure)}", properties: [
-                        endpoint: [type: "string", description: "Internal API endpoint used"],
-                        output: [type: "string", description: "Plain-text speedtest wget log incl. WAN download speed (truncated to 8000 chars)"],
-                        error: [type: "string", description: "Present when the speedtest fetch failed"]
-                    ]],
-                    recommendation: [type: "string", description: "Present when stale/unknown devices exist"],
-                    total: [type: "integer", description: "Total stale devices; present in cursor mode"],
-                    nextCursor: [type: "string", description: "Pagination cursor; present when more stale devices remain"],
-                    identifyHubTriggered: [type: "boolean", description: "Present when identifyHub=true: LED blink result"],
-                    identifyHubError: [type: "string", description: "Present when the LED-blink request failed"],
-                    message: [type: "string", description: "Present when no devices are selected"]
-                ],
-                required: ["summary"]
             ]
         ],
         [
@@ -2260,31 +2309,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart. Default false."],
                     include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + available files under result.firmware. Default false."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    zwave: [type: "object", description: "Z-Wave details; present when both radios requested"],
-                    zigbee: [type: "object", description: "Zigbee details; present when both radios requested"],
-                    zwaveVersion: [description: "Z-Wave SDK version; present for radio='zwave'"],
-                    zwaveData: [type: "object", description: "Parsed Z-Wave info; present for radio='zwave'"],
-                    zigbeeChannel: [description: "Zigbee channel; present for radio='zigbee'"],
-                    zigbeeId: [description: "Zigbee ID; present for radio='zigbee'"],
-                    zigbeeData: [type: "object", description: "Parsed Zigbee info; present for radio='zigbee'"],
-                    matterData: [type: "object", description: "Parsed Matter details; present for radio='matter'. {enabled, installed, networkState, ipAddresses, fabricId, devices[]}"],
-                    topology: [type: "object", description: "Mesh route/topology; present only when include_topology=true. {endpoint, routes (parsed node/route graph), zwaveTopologyTable (raw, Z-Wave only), error?}"],
-                    nodeState: [description: "Per-node Z-Wave state; present when node_id given (parsed JSON or plain text)"],
-                    status: [type: "object", description: "Lifecycle status pollers; present when include_status=true. {zwaveRepair, zwaveRepairRunning, zwaveExclude, zwaveJoinDiscovery, zwaveAntennaTest, zwaveNodeReplace:{status,info}, zigbee}"],
-                    matterPairStatus: [type: "object", description: "Per-node Matter commissioning status; present when radio='matter' and node_id is given"],
-                    matterLogs: [type: "object", description: "Matter chip-tool logs; present when include_logs=true. {text}"],
-                    channelScan: [description: "Zigbee channel energy-scan results; present when include_channel_scan=true"],
-                    smartStart: [type: "object", description: "SmartStart provisioning entries; present when include_smartstart=true. {items:[...]}"],
-                    firmware: [type: "object", description: "Firmware-eligible devices + files; present when include_firmware=true. {devices, files}"],
-                    source: [type: "string", description: "Where data came from: hub_api, hub_api_raw, or sdk_only"],
-                    endpoint: [type: "string", description: "Internal API endpoint used"],
-                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
-                    note: [type: "string", description: "Status note when extended info unavailable"]
-                ]
             ]
         ],
         [
@@ -2293,18 +2317,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [:]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    beforeFreeMemoryKB: [type: "integer", description: "Free memory before GC (KB), or null"],
-                    afterFreeMemoryKB: [type: "integer", description: "Free memory after GC (KB), or null"],
-                    timestamp: [type: "string", description: "When GC ran"],
-                    deltaKB: [type: "integer", description: "Memory delta (KB); present when both readings succeeded"],
-                    memoryReclaimed: [type: "boolean", description: "Whether free memory increased; present when both readings succeeded"],
-                    summary: [type: "string", description: "Human-readable GC result"]
-                ],
-                required: ["timestamp", "summary"]
             ]
         ],
         [
@@ -2318,21 +2330,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     long_range_channel: [type: "integer", enum: [0, 1, 255], description: "Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for enable or config-only changes."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the change applied"],
-                    radio: [type: "string", description: "Always 'zwave'"],
-                    enabled: [type: "boolean", description: "Resulting enabled state; present for enable/disable"],
-                    region: [description: "Resulting region; present for config update"],
-                    longRangeChannel: [description: "Resulting long-range channel; present for config update"],
-                    message: [type: "string", description: "Human-readable result"],
-                    note: [type: "string", description: "Follow-up guidance"],
-                    error: [type: "string", description: "Present on failure"],
-                    response: [description: "Hub response body"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -2349,24 +2346,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     ping_device: [type: "object", description: "Toggle keep-alive ping for ONE device: {device_id, enabled}."],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the change applied"],
-                    radio: [type: "string", description: "Always 'zigbee'"],
-                    enabled: [type: "boolean", description: "Resulting enabled state; present for enable/disable"],
-                    channel: [description: "Resulting channel; present for channel/power update"],
-                    powerLevel: [description: "Resulting power level; present for channel/power update"],
-                    rebuildNetworkOnReboot: [type: "boolean", description: "Resulting rebuild-on-reboot setting; present for a settings update"],
-                    inactiveDevicePingEnabled: [type: "boolean", description: "Resulting inactive-device-ping setting; present for a settings update"],
-                    pingDevice: [type: "object", description: "Resulting per-device ping {deviceId, enabled}; present for ping_device"],
-                    message: [type: "string", description: "Human-readable result"],
-                    warning: [type: "string", description: "Channel-change disruption warning"],
-                    error: [type: "string", description: "Present on failure"],
-                    response: [description: "Hub response body"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -2383,21 +2362,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     confirm: [type: "boolean", description: "Required true for exclusion_start and node_remove (backup <24h also enforced)."]
                 ],
                 required: ["action"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the operation was accepted"],
-                    action: [type: "string", description: "Echo of the requested action"],
-                    nodeId: [type: "string", description: "Echo of node_id; present for per-node actions"],
-                    message: [type: "string", description: "Human-readable result"],
-                    duration: [type: "string", description: "Expected duration; present for repair_start"],
-                    warning: [type: "string", description: "Disruption warning"],
-                    note: [type: "string", description: "Follow-up / polling guidance"],
-                    error: [type: "string", description: "Present on failure"],
-                    response: [description: "Hub response body"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -2409,19 +2373,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     action: [type: "string", enum: ["radio_reboot", "rebuild_network", "channel_scan"], description: "radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), or channel_scan (trigger an energy scan)."],
                 ],
                 required: ["action"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the operation was accepted"],
-                    action: [type: "string", description: "Echo of the requested action"],
-                    message: [type: "string", description: "Human-readable result"],
-                    warning: [type: "string", description: "Disruption warning; present for rebuild_network"],
-                    note: [type: "string", description: "Follow-up guidance"],
-                    error: [type: "string", description: "Present on failure"],
-                    response: [description: "Hub response body"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -2436,20 +2387,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     confirm: [type: "boolean", description: "Required true to disable Matter (backup <24h also enforced)."]
                 ],
                 required: ["action"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the operation was accepted"],
-                    action: [type: "string", description: "Echo of the requested action"],
-                    nodeId: [type: "string", description: "Echo of node_id; present for open_pairing_window"],
-                    message: [type: "string", description: "Human-readable result"],
-                    warning: [type: "string", description: "Reboot-required warning; present for enable/disable"],
-                    note: [type: "string", description: "Follow-up guidance"],
-                    error: [type: "string", description: "Present on failure"],
-                    response: [description: "Hub response body"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -2469,21 +2406,6 @@ Requires Write master.""",
                     confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
                 ],
                 required: ["target", "action", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the operation was accepted"],
-                    target: [type: "string", description: "Echo of the requested target"],
-                    action: [type: "string", description: "Echo of the requested action"],
-                    message: [type: "string", description: "Human-readable result"],
-                    warning: [type: "string", description: "Irreversibility / brick / disconnect warning"],
-                    lastBackup: [type: "string", description: "Formatted last-backup timestamp; present for radio reset"],
-                    note: [type: "string", description: "Follow-up guidance"],
-                    error: [type: "string", description: "Present on failure"],
-                    response: [description: "Hub response body"]
-                ],
-                required: ["success"]
             ]
         ],
         // Captured State Management
@@ -2495,18 +2417,6 @@ Requires Write master.""",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50).[[/FLAT_TRIM]]"]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    capturedStates: [type: "array", description: "Captured state entries", items: [type: "object"]],
-                    count: [type: "integer", description: "Entries on this page"],
-                    maxLimit: [type: "integer", description: "Max captured states retained"],
-                    total: [type: "integer", description: "Total entries; present in cursor mode"],
-                    nextCursor: [type: "string", description: "Present when more results remain"],
-                    warning: [type: "string", description: "Present at/near capacity"]
-                ],
-                required: ["capturedStates", "count"]
             ]
         ],
         [
@@ -2517,16 +2427,6 @@ Requires Write master.""",
                 properties: [
                     stateId: [type: "string", description: "The ID of the captured state to delete. Omit to delete ALL captured states."],
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the delete succeeded"],
-                    message: [type: "string", description: "Human-readable result"],
-                    remaining: [type: "integer", description: "States remaining; present on single delete"],
-                    cleared: [type: "integer", description: "States cleared; present on delete-all"]
-                ],
-                required: ["success", "message"]
             ]
         ],
     ]

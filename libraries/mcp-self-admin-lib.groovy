@@ -16,8 +16,8 @@ def toolUpdateMcpSettings(args) {
 
     // Allowlist of SCALAR settings that can be modified via this tool, with their Hubitat input
     // type (matches the input "<key>", "<type>", ... declarations in the mainPage section).
-    // useGateways and publishOutputSchemas are allowlisted: they only reshape tools/list
-    // (gateway vs flat; whether outputSchema is advertised) — same class as
+    // useGateways is allowlisted: it only reshapes tools/list
+    // (gateway vs flat) — same class as
     // enableCustomRuleEngine, no write-path or lockout risk; clients must reconnect
     // afterward to pick up the new tool surface.
     // enableMandatoryBPS (issue #299) is allowlisted as an ESCAPE HATCH: hub_update_mcp_settings is
@@ -45,7 +45,6 @@ def toolUpdateMcpSettings(args) {
         "enableRead":             "bool",
         "enableCustomRuleEngine": "bool",
         "useGateways":            "bool",
-        "publishOutputSchemas":   "bool",
         "enableMandatoryBPS":     "bool",
         "bypassDeviceAllowlist":  "bool",
         "maxConcurrentWrites":    "number",
@@ -173,14 +172,11 @@ def toolUpdateMcpSettings(args) {
     // its advertised schemas). Only allowlisted keys can appear in `updates`, so enableWrite /
     // enableDeveloperMode are intentionally omitted -- they are excluded from allowedSettings and
     // can never land here.
-    def schemaAffectingKeys = ["enableRead", "enableCustomRuleEngine", "useGateways", "publishOutputSchemas"] as Set
+    def schemaAffectingKeys = ["enableRead", "enableCustomRuleEngine", "useGateways"] as Set
     def touchedSchemaKey = updates.keySet().any { schemaAffectingKeys.contains(it) }
     def message = "Updated ${updateCount} ${settingWord}."
     if (touchedSchemaKey) {
-        message += " MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag, useGateways, or publishOutputSchemas."
-    }
-    if (updates.publishOutputSchemas == true) {
-        message += " WARNING: publishOutputSchemas is now ON -- leave OFF if using Claude Desktop; spec-validating clients fail every call to a schema-advertising tool when any advertised schema detail is inaccurate. Nothing requires this setting."
+        message += " MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag or useGateways."
     }
     def result = [
         success: true,
@@ -873,36 +869,14 @@ def _getAllToolDefinitions_partSelfAdmin() {
     return [
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle, useGateways, or publishOutputSchemas reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON the per-device tools reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, selectedDevices — any other key is rejected. mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100 (default 2; 0 disables the server-side all-write concurrency cap). backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. publishOutputSchemas (bool, default OFF): leave OFF if using Claude Desktop — spec-validating clients reject every call to a schema-advertising tool when any schema detail is inaccurate; never required, do not enable it to fix a connection. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON the per-device tools reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, selectedDevices — any other key is rejected. mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100 (default 2; 0 disables the server-side all-write concurrency cap). backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write') for per-mode semantics."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the operation succeeded"],
-                    updated: [type: "object", description: "Map of applied scalar setting key → coerced new value (excludes selectedDevices, reported under its own key). Present on success; absent when `success: false` (a device-scope runtime fetch failure)"],
-                    selectedDevices: [
-                        type: "object",
-                        description: "Present only when the settings batch changed the device-access scope: the resulting set for selectedDevices",
-                        properties: [
-                            mode: [type: "string", description: "The mode applied (replace/add/remove)"],
-                            authorizedDeviceIds: [type: "array", items: [type: "string"], description: "The resulting authorized device ID set"],
-                            authorizedCount: [type: "integer", description: "Size of the resulting authorized set"],
-                            added: [type: "array", items: [type: "string"], description: "Device IDs newly added to the scope"],
-                            removed: [type: "array", items: [type: "string"], description: "Device IDs removed from the scope"]
-                        ]
-                    ],
-                    message: [type: "string", description: "Human-readable result, including reconnect note. Present on success; absent when `success: false`"],
-                    error: [type: "string", description: "Failure detail; present only on a runtime failure (e.g. the device-list fetch for selectedDevices failed)"],
-                    note: [type: "string", description: "Actionable guidance; present only on a runtime failure"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -922,27 +896,6 @@ A real deploy is accepted quickly with `status: "in_progress"`, then runs in Hub
                     confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]
                 ],
                 required: ["ref"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "True when the deploy (or dry-run plan) completed; false on abort or app-update failure"],
-                    ref: [type: "string", description: "The git ref deployed"],
-                    dryRun: [type: "boolean", description: "True when this was a plan-only run (no writes)"],
-                    aborted: [type: "boolean", description: "True when the deploy stopped before the self app save; the running server was left untouched"],
-                    partial: [type: "boolean", description: "True when bundle(s) + other apps landed but the self app did not update -- its call threw (likely the self-update recompile dropped the response) OR returned a failure"],
-                    abortReason: [type: "string", description: "Machine-readable abort cause (app_source_fetch_failed / manifest_fetch_failed / manifest_unparseable / bundle_location_unusable / bundle_required_but_undeclared / app_class_unresolved / bundle_install_failed / bundle_install_threw / app_update_failed / app_update_threw)"],
-                    appUrl: [type: "string", description: "Raw URL the self app source was fetched from (for the #include coverage check)"],
-                    includes: [type: "array", description: "Parsed #include tokens (namespace.Name) from the self app source", items: [type: "string"]],
-                    plannedBundles: [type: "array", description: "dryRun: library bundles that would be installed (name, ref-anchored url)", items: [type: "object"]],
-                    plannedApps: [type: "array", description: "dryRun: apps that would be deployed (name, namespace, classId, url, isSelf); self app last", items: [type: "object"]],
-                    bundles: [type: "array", description: "Per-bundle install results (name, url, success, error)", items: [type: "object"]],
-                    apps: [type: "array", description: "Per-app deploy results (name, namespace, classId, isSelf, success, app); self app last", items: [type: "object"]],
-                    app: [type: "object", description: "The hub_update_app result for the self app leg (present only when the self app update RETURNED a failure, not on the threw/dropped-response path)"],
-                    message: [type: "string", description: "Human-readable summary"],
-                    error: [type: "string", description: "Failure detail; present on abort / failure"]
-                ],
-                required: ["success"]
             ]
         ],
     ]

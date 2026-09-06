@@ -1896,6 +1896,8 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
+        assert all("outputSchema" not in t for t in tools), \
+            "tools/list advertises a removed outputSchema"
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
@@ -5056,7 +5058,7 @@ class TestRunner:
                 assert res.get("success") is False, \
                     f"a failed row must make the envelope unsuccessful: {res}"
                 # partial means SOME actioned and some not -- an all-failed batch is a
-                # failure, not a partial one, matching the leaf and the outputSchema.
+                # failure, not a partial one, matching the leaf result.
                 assert res.get("partial") is (len(failed) < len(results)), \
                     f"partial must mean some-actioned-some-not, not merely any-failure: {res}"
                 assert sorted(str(x) for x in (res.get("failedRuleIds") or [])) == \
@@ -10579,6 +10581,76 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             assert "name" in job, "Job missing 'name'"
 
     @test("system_tools")
+    def test_get_hub_jobs_cursor(self) -> None:
+        """hub_get_jobs pages scheduledJobs through the universal cursor; runningJobs and
+        hubActions stay in full on every page, and the pages add up to the reported total."""
+        first = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_jobs",
+            "args": {"cursor": ""},
+        })
+        assert isinstance(first, dict), f"hub_get_jobs returned {type(first)}"
+        sj = first["scheduledJobs"]
+        assert sj["count"] == len(sj["jobs"]), \
+            f"scheduledJobs.count {sj['count']} != len(jobs) {len(sj['jobs'])}"
+        assert sj["count"] <= 100, f"page holds {sj['count']} jobs; page size is 100"
+        assert "total" in sj, "cursor mode must report scheduledJobs.total"
+        assert sj["total"] >= sj["count"], f"total {sj['total']} < page count {sj['count']}"
+        assert "runningJobs" in first and "hubActions" in first, \
+            "runningJobs / hubActions must stay in full on a paged response"
+        seen = list(sj["jobs"])
+        cursor = first.get("nextCursor")
+        pages = 1
+        while cursor is not None:
+            pages += 1
+            assert pages <= 50, "nextCursor never ended"
+            page = self.client.call_tool("hub_manage_logs", {
+                "tool": "hub_get_jobs",
+                "args": {"cursor": cursor},
+            })
+            assert page.get("runningJobs") == first.get("runningJobs"), \
+                f"page {pages}: runningJobs must match page 1 in full"
+            assert page.get("hubActions") == first.get("hubActions"), \
+                f"page {pages}: hubActions must match page 1 in full"
+            seen.extend(page["scheduledJobs"]["jobs"])
+            cursor = page.get("nextCursor")
+        assert len(seen) == sj["total"], \
+            f"pages summed to {len(seen)} jobs but total is {sj['total']}"
+        # Exercise the second Logs-page reader immediately after the paginated jobs flow.
+        stats = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_performance_stats",
+            "args": {"limit": 1},
+        })
+        assert isinstance(stats, dict) and "uptime" in stats, f"performance stats after jobs: {stats}"
+
+    @test("system_tools")
+    def test_get_hub_jobs_cold_fetch_continues(self) -> None:
+        """A cold Logs-page read over the cloud relay runs its fetch in the background worker.
+
+        The snapshot cache lives 30 s; after sitting past it, the first hub_get_jobs is a cold
+        fetch. Over the relay (a budgeted transport) that fetch must come from the background
+        worker, which the result's snapshot provenance reports, whether the call completed in
+        one round trip or continued via requestState. The immediate second read is served from
+        the same snapshot: same fetchedAt, older age."""
+        import time as _time
+        _time.sleep(31)
+        cold = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_jobs", "args": {"cursor": ""}})
+        assert isinstance(cold, dict), f"hub_get_jobs returned {type(cold)}"
+        assert "scheduledJobs" in cold, f"cold read returned no jobs: {cold}"
+        prov = cold.get("snapshot") or {}
+        # background is the worker path; it is taken exactly when the transport carries a
+        # budget (relayBudgetMs over the relay), which the provenance reports as budgeted.
+        assert "budgeted" in prov and "background" in prov, f"cold read carries no provenance: {prov}"
+        assert prov["background"] == prov["budgeted"], \
+            f"cold read fetch path does not match the transport budget: {prov}"
+        assert prov.get("ageMs", 10**9) < 30000, f"cold read served a stale snapshot: {prov}"
+        warm = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_performance_stats", "args": {"limit": 1}})
+        assert isinstance(warm, dict) and "uptime" in warm, f"warm read after cold fetch: {warm}"
+        wprov = warm.get("snapshot") or {}
+        assert wprov.get("fetchedAt") == prov.get("fetchedAt"), \
+            f"warm read did not reuse the cold snapshot: {wprov} vs {prov}"
+        assert wprov.get("ageMs", 0) >= prov.get("ageMs", 0), f"warm age went backwards: {wprov} vs {prov}"
+
+    @test("system_tools")
     def test_manage_rooms_list(self) -> None:
         result = self.client.call_tool("hub_manage_rooms", {
             "tool": "hub_list_rooms",
@@ -12676,15 +12748,16 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                      if not isinstance(t.get("name"), str) or not isinstance(t.get("inputSchema"), dict)]
         assert not malformed, \
             f"legacy catalog entries missing the spec-required name/inputSchema pair: {malformed}"
-        # publishOutputSchemas is OFF for the run, so nothing advertises an outputSchema --
-        # and an advertised one would OBLIGE the server to return structuredContent on every
-        # result of that tool, which spec-validating legacy clients enforce (issue #342).
+        # Output-schema publication has been removed in both protocol eras.
         with_schema = [t.get("name") for t in tools if "outputSchema" in t]
         assert not with_schema, f"legacy catalog advertises outputSchema on: {with_schema}"
         # One catalog, both eras. Pinned against the live modern list rather than a count so
         # a tool added, renamed, or hidden cannot drift the two surfaces apart unnoticed.
         legacy_names = {t.get("name") for t in tools}
-        modern_names = {t.get("name") for t in self.client.list_tools().get("tools", [])}
+        modern_tools = self.client.list_tools().get("tools", [])
+        assert all("outputSchema" not in t for t in modern_tools), \
+            "modern catalog advertises a removed outputSchema"
+        modern_names = {t.get("name") for t in modern_tools}
         assert legacy_names == modern_names, \
             ("the legacy and modern catalogs disagree: "
              f"legacy-only={sorted(legacy_names - modern_names)}, "

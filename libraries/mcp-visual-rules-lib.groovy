@@ -1793,29 +1793,6 @@ def _getAllToolDefinitions_partVisualRules() {
                 properties: [
                     appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."]
                 ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean"],
-                    rules: [type: "array", description: "List mode: [{appId, name, disabled, paused}] (paused is name-suffix detected; appId read gives authoritative rulePaused). An OMITTED paused or disabled means it was undeterminable from the node data (null name / absent disabled key)."],
-                    count: [type: "integer"],
-                    appId: [type: "integer"],
-                    format: [type: "string", description: "'classic' (whenNodes/thenNodes/elseNodes) or 'graph' (nodes/edges)"],
-                    name: [type: "string"],
-                    rulePaused: [type: "boolean"],
-                    whenNodes: [type: "array", description: "classic format: trigger nodes"],
-                    thenNodes: [type: "array", description: "classic format: action nodes"],
-                    elseNodes: [type: "array", description: "classic format: else-branch action nodes"],
-                    promptHistory: [type: "array", description: "classic format: AI-builder prompts recorded by the hub"],
-                    definition: [type: "object", description: "graph format: parsed {version, nodes, edges}"],
-                    ruleJson: [type: "string", description: "graph format: the raw double-encoded definition string as stored"],
-                    definitionParseError: [type: "string", description: "graph format: present when the stored ruleJson is not parseable JSON"],
-                    validationErrors: [type: "array"],
-                    error: [type: "string"],
-                    note: [type: "string"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1831,26 +1808,6 @@ def _getAllToolDefinitions_partVisualRules() {
                     confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
                 ],
                 required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean"],
-                    appId: [type: "integer", description: "The created or edited rule's app id"],
-                    format: [type: "string", description: "'classic' or 'graph' -- the serialization this rule speaks"],
-                    created: [type: "boolean"],
-                    name: [type: "string"],
-                    rulePaused: [type: "boolean"],
-                    verified: [type: "boolean", description: "Whether a read-back confirmed the name, requested pause state, and definition node counts"],
-                    definition: [type: "object", description: "Read-back of what the hub persisted"],
-                    previousDefinition: [type: "object", description: "The definition before a full replacement (recovery aid)"],
-                    validationErrors: [type: "array", description: "Hub-side validation problems; the rule saved but may not run"],
-                    hubNativeFormat: [type: "string"],
-                    health: [type: "object", description: "Rule-health report (same shape as hub_get_rule_health's output) attached to every response that resolves to a rule id — early CREATE failures (format mismatch, save-after-create) carry no appId and omit it. For a graph Visual Rule broken=true means non-empty validationErrors."],
-                    error: [type: "string"],
-                    note: [type: "string"]
-                ],
-                required: ["success"]
             ]
         ],
         [
@@ -1863,20 +1820,6 @@ def _getAllToolDefinitions_partVisualRules() {
                     confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
                 ],
                 required: ["appId", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean"],
-                    appId: [type: "integer"],
-                    name: [type: "string"],
-                    format: [type: "string"],
-                    verified: [type: "boolean", description: "Whether the app was confirmed gone after the delete"],
-                    predeleteDefinition: [type: "object", description: "The rule definition captured before deletion (recovery aid)"],
-                    error: [type: "string"],
-                    note: [type: "string"]
-                ],
-                required: ["success"]
             ]
         ]
     ]

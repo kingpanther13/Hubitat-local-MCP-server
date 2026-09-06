@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.1.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.2.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -31,6 +31,11 @@
 @groovy.transform.Field static final Map WRITE_REQUEST_LEASES = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
+// JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
+// _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot (the trimmed page + at), fetchId
+// (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
+// fetchId), fetchError (last worker failure, at + message).
+@groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
 // freshly scheduled worker execution can read an atomicState snapshot that predates
@@ -223,7 +228,7 @@ def mainPage() {
             }
             href name: "advancedOverrides", page: "advancedOverridesPage",
                  title: "Advanced: Per-tool Overrides & expert settings",
-                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and expert wire-format settings (output schema publication)."
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and configure Origin validation."
         }
 
         section("Best-Practice Guidance") {
@@ -448,18 +453,6 @@ def advancedOverridesPage() {
                   description: "Each tool is listed once; disabling it removes it from every gateway it belongs to.",
                   options: overrideOptions.tools, multiple: true, required: false, submitOnChange: true
         }
-        // publishOutputSchemas lives on this Advanced sub-page on purpose (issue #342):
-        // it changes the wire contract with spec-validating clients, so it must not sit
-        // in the main settings where a curious user flips it without reading.
-        section("Output schema publication") {
-            paragraph "<b>Recommended: leave OFF unless you know what you're doing — especially with Claude Desktop.</b> " +
-                      "Turning this ON advertises each base tool's outputSchema on tools/list and the gateway catalog, and the server then also returns structuredContent (a second, structured copy of the result) on every successful call to those tools, roughly doubling their response size. " +
-                      "Spec-validating clients hold the server to the advertised schema on every call, so any schema inaccuracy surfaces as a failed tool call on those clients. OFF is always the safe choice; nothing requires this setting.<br>" +
-                      "<b>Leave OFF if using Claude Desktop.</b>"
-            input "publishOutputSchemas", "bool", title: "Publish tool output schemas",
-                  description: "Leave OFF (default). ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.",
-                  defaultValue: false
-        }
         // Deny-by-default stays: this only ADDS names. It exists for reverse-proxy / remote-access
         // setups where a browser client's Origin reaches the hub and is neither the hub's own LAN
         // address nor cloud.hubitat.com.
@@ -473,8 +466,8 @@ def advancedOverridesPage() {
                   description: "e.g. mcp.example.com, hubitat.tailnet-1234.ts.net -- recognized in BOTH modes. Hostnames only; a pasted URL is reduced to its hostname.",
                   required: false
         }
-        section("Slow-write time budgets") {
-            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
+        section("Slow-operation time budgets") {
+            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes and the two Logs-page reads that grow with hub size (hub_get_jobs, hub_get_performance_stats) automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
@@ -576,6 +569,9 @@ def installed() {
 
 def updated() {
     log.info "MCP Rule Server updated"
+    // Shed the retired publication toggle and its migration marker on upgraded hubs.
+    app.removeSetting("publishOutputSchemas")
+    atomicState.remove("publishOutputSchemasForcedOff")
     atomicState.remove("toolSearchCorpus")        // Invalidate BM25 corpus cache on app update
     atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
     atomicState.remove("toolSearchCorpusVersion")  // ...and the retired version stamp, so an upgraded hub sheds it
@@ -620,39 +616,6 @@ def updated() {
         state.remove("capturedDeviceStates")
         mcpLog("info", "capture-migration", "Migrated ${migratedCount} captured state(s) from state to atomicState")
     }
-
-    // One-time reset of the advanced publishOutputSchemas toggle (issue #354).
-    // Also hooked into handleMcpRequest -- see _forcePublishSchemasOffOnce for why.
-    _forcePublishSchemasOffOnce()
-}
-
-// ===== One-time force publishOutputSchemas OFF migration (issue #354) =====
-// The advanced publishOutputSchemas toggle makes every tools/call fail on
-// spec-validating MCP clients (Claude Desktop): they hold the server to each
-// advertised outputSchema and reject any result lacking conforming
-// structuredContent. At least one install (issue #354) reached ON with the user
-// unable to recall setting it, so reset it OFF once for everybody. Called from BOTH updated() and
-// the top of handleMcpRequest because a code deploy (HPM update, hub_update_app)
-// recompiles the class WITHOUT firing updated() (the same fact
-// requiredParamsCatalogFingerprint relies on) -- an updated()-only migration would
-// miss every user who updates via HPM and never reopens the app page, so the
-// request-path hook catches them on their first MCP call after the update.
-//
-// atomicState.publishOutputSchemasForcedOff locks it to a single firing: a user
-// who deliberately re-enables the toggle AFTER the migration keeps their choice,
-// the same one-shot contract as the customEngineMigrated guard above (atomicState,
-// not state, because this also runs on the concurrent request path where a stale
-// state snapshot could lose the marker and re-fire onto a deliberate re-enable).
-// The marker is set unconditionally (even when the setting was already OFF/null)
-// so the guard also fast-exits the per-request hook -- which runs on every MCP
-// request -- once the migration has run.
-private void _forcePublishSchemasOffOnce() {
-    if (atomicState.publishOutputSchemasForcedOff == true) return
-    if (settings.publishOutputSchemas == true) {
-        app.updateSetting("publishOutputSchemas", [type: "bool", value: false])
-        mcpLog("info", "schema-migration", "Forced publishOutputSchemas=false (one-time reset, issue #354; the advanced toggle breaks strict MCP clients when left ON)")
-    }
-    atomicState.publishOutputSchemasForcedOff = true
 }
 
 def uninstalled() {
@@ -791,14 +754,6 @@ def handleMcpRequest() {
                 jsonRpcError(null, -32600, "Forbidden: the Origin header does not name a known identity for this MCP endpoint.")))
         }
     }
-
-    // Issue #354: reset publishOutputSchemas OFF once. Hooked here (not only in
-    // updated()) because an HPM code deploy recompiles the class without firing
-    // updated(), so HPM updaters would otherwise never get the reset until they
-    // reopened the app page. try/catch so a migration hiccup can never break
-    // request handling; the guard inside makes this a fast no-op after it runs.
-    try { _forcePublishSchemasOffOnce() }
-    catch (Exception e) { mcpLog("warn", "schema-migration", "one-time publishOutputSchemas reset skipped: ${e.message}") }
 
     def requestBody
     try {
@@ -1313,11 +1268,6 @@ def serverInstructions() {
 // request headers (MCP-Protocol-Version / Mcp-Method / Mcp-Name) are validated against
 // the body in handleMcpRequest. A header naming one of the LEGACY entries is served as
 // legacy -- those revisions define no mirrored headers to check.
-//
-// outputSchema (a 2025-06-18 feature) is declared on every tool but, by default,
-// NOT advertised on the wire (issue #290); enabling publishOutputSchemas
-// advertises it in wire form AND attaches structuredContent to advertised tools'
-// results per the spec MUST (issue #342).
 def supportedProtocolVersions() {
     [modernProtocolVersion(), "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 }
@@ -1551,7 +1501,8 @@ def handleResourcesRead(msg) {
 }
 
 // MCP 2026-07-28 request-to-request continuation wrapper. Only modern, explicitly
-// eligible slow writes enter this path; every other call keeps the established
+// eligible slow operations (the write set and, when the transport carries a time
+// budget, the Logs-page reads) enter this path; every other call keeps the established
 // dispatcher below. The first round is deliberately mutation-free so the client
 // possesses requestState before any write can outlive its HTTP response.
 def handleToolsCall(msg) {
@@ -1589,6 +1540,18 @@ def handleToolsCall(msg) {
                 binding, reqT0, reactiveToolName?.toString())
             rec = claim.record as Map
             if (claim.outcome == "terminal") {
+                if (rec.terminalResult instanceof Map && rec.terminalResult.__slowReadReplay == true
+                        && _mrtrReadTools().contains(rec.leafTool?.toString())) {
+                    Map replayArgs = _mrtrCopyMap(args as Map)
+                    replayArgs.__reqT0 = reqT0
+                    def replayed = executeTool(toolName, replayArgs)
+                    if (replayed instanceof Map && replayed.status == "in_progress") {
+                        // The snapshot is gone and a fresh fetch did not land in time; a
+                        // terminal record cannot continue, so the client starts a fresh call.
+                        throw new IllegalArgumentException("Invalid or expired requestState")
+                    }
+                    return _renderToolResult(msg.id, toolName, reactiveToolName, args, replayed, false)
+                }
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                     rec.terminalResult, rec.terminalIsError == true)
             }
@@ -1616,6 +1579,17 @@ def handleToolsCall(msg) {
                     requireDestructiveConfirm(leafArgs?.confirm as Boolean)
                     return _renderToolResult(msg.id, toolName, reactiveToolName,
                         args, refusal, false)
+                }
+            }
+            if (_mrtrReadTools().contains(leafName)) {
+                // A read has no mutation to protect, so round zero runs it: a cached or
+                // quickly landed snapshot answers in one round trip, and only a fetch that is
+                // still pending reserves a requestState for the client to continue.
+                Map readArgs = _mrtrCopyMap(args as Map)
+                readArgs.__reqT0 = reqT0
+                def readResult = executeTool(toolName, readArgs)
+                if (!(readResult instanceof Map && readResult.status == "in_progress")) {
+                    return _renderToolResult(msg.id, toolName, reactiveToolName, args, readResult, false)
                 }
             }
             def reservation = _mrtrReserve(toolName, reactiveToolName, binding)
@@ -1767,20 +1741,6 @@ def handleToolsCallLegacy(msg) {
     }
 }
 
-// True when toolName is a base tool (not a gateway, not gateway-folded) whose DEFINITION
-// declares an outputSchema -- the shape of the issue #290 advertised surface. This checks
-// the catalog shape ONLY: it does NOT check publishOutputSchemas or useGateways, so every
-// caller must additionally gate on `settings.publishOutputSchemas == true &&
-// settings.useGateways != false` (both handleToolsCall sites do). With those gates, it
-// answers "is this tool currently advertised with a schema", which is what obligates
-// structuredContent on results (issue #342).
-def _advertisesOutputSchema(toolName) {
-    def gwConfig = getGatewayConfig()
-    if (gwConfig.containsKey(toolName)) return false
-    if (gwConfig.values().any { it.tools?.contains(toolName) }) return false
-    return getAllToolDefinitions().find { it.name == toolName }?.outputSchema != null
-}
-
 // ==================== Slow-op time budgets ====================
 // Eligible modern calls use MCP request-to-request continuation. Legacy calls
 // retain the established in_progress remainder envelope, so both paths share the
@@ -1816,21 +1776,36 @@ def _maxConcurrentWrites() {
     return settings.maxConcurrentWrites != null ? (settings.maxConcurrentWrites as Integer) : 2
 }
 
-// The leaves whose partial-commit or serial-dispatch loops consume the __reqT0 budget
-// clock. This is the injection allowlist for handleToolsCall/handleGateway: tools
-// outside it never see the key (several validate their args strictly and reject
-// unknown keys).
+// The leaves that consume the __reqT0 request-start clock: partial-commit and serial-dispatch
+// loops that pause under the budget, and the Logs-page reads that observe their background
+// fetch under it. Only these ever see the key; strict-arg leaves must not.
 def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
-            "hub_import_native_app", "hub_call_device_command"] as Set
+            "hub_import_native_app", "hub_call_device_command",
+            "hub_get_jobs", "hub_get_performance_stats"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
 
-def _mrtrEligibleTools() {
+def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item"] as Set
+}
+
+// Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
+// under the same requestState contract as the writes above but never hold a write lease, never
+// count toward the write cap, and store no payload in their terminal record (a replay re-runs
+// the read from its cached snapshot). The leaf itself answers status: "in_progress" while its
+// background fetch is still running. Every member must also be in getReadOnlyToolNames().
+def _mrtrReadTools() {
+    return ["hub_get_jobs", "hub_get_performance_stats"] as Set
+}
+
+// A read only continues when the request's transport carries a time budget; without one the
+// fetch runs inline and a modern client gets the ordinary single-response shape.
+def _mrtrReadContinuationActive() {
+    return (_isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()) > 0L
 }
 
 private Set _mrtrDetachedWorkerTools() {
@@ -1840,7 +1815,9 @@ private Set _mrtrDetachedWorkerTools() {
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     String leaf = leafToolName?.toString()
-    if (!_mrtrEligibleTools().contains(leaf) || !(args instanceof Map)) return false
+    boolean eligibleLeaf = _mrtrWriteTools().contains(leaf) ||
+        (_mrtrReadTools().contains(leaf) && _mrtrReadContinuationActive())
+    if (!eligibleLeaf || !(args instanceof Map)) return false
     // A mis-routed gateway call (a leaf outside this gateway's tool set) must refuse
     // through ordinary dispatch, never enter the MRTR path: round zero would reserve
     // an active record that pins a cap slot for its full TTL before the route is
@@ -2031,6 +2008,7 @@ private List _activeWritesLocked() {
     def active = []
     _writeStateMapLocked("mrtrRequests").values().each { rec ->
         if (rec instanceof Map && rec.status == "active" &&
+                !_mrtrReadTools().contains(rec.leafTool?.toString()) &&
                 (_writeExecutionLiveLocked(rec.claimId) ||
                  (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
             active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
@@ -2148,7 +2126,11 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
     String outer = outerToolName?.toString()
     String leaf = leafToolName?.toString()
     def leafArgs = _mrtrLeafArguments(outer, leaf, outerArgs)
-    if (settings.enableWrite == false) {
+    boolean readLeaf = _mrtrReadTools().contains(leaf)
+    if (readLeaf && settings.enableRead == false) {
+        throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${leaf}.")
+    }
+    if (!readLeaf && settings.enableWrite == false) {
         throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${leaf}.")
     }
     if ((settings.disabled_gateways ?: []).contains(outer)) {
@@ -2157,7 +2139,7 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
     if (getEffectiveDisabledTools().contains(leaf)) {
         throw new IllegalArgumentException("${leaf} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
     }
-    if (settings.enableMandatoryBPS != false && leafArgs?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
+    if (!readLeaf && settings.enableMandatoryBPS != false && leafArgs?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
         throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
     }
 }
@@ -2208,6 +2190,11 @@ private boolean _mrtrBindingMatches(Map rec, Map binding) {
 
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
+// A read terminal only needs to survive a lost final HTTP response, not the ten-minute write
+// TTL: its record holds a replay marker rather than a payload, and the replay re-reads the
+// cached snapshot, so the record is kept exactly as long as that snapshot can be (30 s). A
+// later replay gets "expired requestState" and starts a fresh call instead of a refetch.
+def _mrtrReadTerminalTtlMs() { _logsJsonSnapshotTtlMs() }
 def _mrtrMaxRecords() { 16 }
 def _mrtrMaxContinuationSlices() { 8 }
 
@@ -2358,15 +2345,19 @@ private List _mrtrSweepLocked() {
             cleanup << ([:] + (v as Map))
         }
     }
-    if (kept.size() > _mrtrMaxRecords()) {
-        def removable = kept.entrySet().findAll { it.value?.status != "active" }.sort { a, b ->
+    // Reads and writes are capped as separate pools here too, so read traffic can never
+    // push a write's replayable terminal out and a write backlog never evicts a read.
+    Set readSet = _mrtrReadTools()
+    [true, false].each { boolean readClass ->
+        int cap = readClass ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
+        def sameClass = kept.entrySet().findAll { readSet.contains(it.value?.leafTool?.toString()) == readClass }
+        if (sameClass.size() <= cap) return
+        def removable = sameClass.findAll { it.value?.status != "active" }.sort { a, b ->
             long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
             long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
             av <=> bv
         }
-        removable.take(Math.min(removable.size(), kept.size() - _mrtrMaxRecords())).each {
-            kept.remove(it.key)
-        }
+        removable.take(Math.min(removable.size(), sameClass.size() - cap)).each { kept.remove(it.key) }
     }
     if (kept.size() != stored.size()) _writeStateSetLocked("mrtrRequests", kept)
     _mrtrSweepWorkItemsLocked()
@@ -2389,10 +2380,18 @@ private Map _mrtrFindActiveLocked(leafTool, Map binding) {
     return null
 }
 
-private boolean _mrtrMakeRoomLocked() {
+// Reads and writes each have their own share of the retained-record pool, so a burst of read
+// continuations (several agents polling jobs) can never refuse a write with
+// request_state_capacity, and a backlog of write terminals never blocks a read.
+def _mrtrMaxReadRecords() { 8 }
+
+private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
     def stored = _writeStateMapLocked("mrtrRequests")
-    if (stored.size() < _mrtrMaxRecords()) return true
-    def removable = stored.entrySet().findAll { it.value?.status != "active" }.sort { a, b ->
+    Set readSet = _mrtrReadTools()
+    int cap = readLeaf ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
+    def sameClass = stored.entrySet().findAll { readSet.contains(it.value?.leafTool?.toString()) == readLeaf }
+    if (sameClass.size() < cap) return true
+    def removable = sameClass.findAll { it.value?.status != "active" }.sort { a, b ->
         long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
         long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
         av <=> bv
@@ -2400,10 +2399,10 @@ private boolean _mrtrMakeRoomLocked() {
     if (removable.isEmpty()) return false
     def kept = [:]
     kept.putAll(stored)
-    int removeCount = Math.max(1, kept.size() - _mrtrMaxRecords() + 1)
+    int removeCount = Math.max(1, sameClass.size() - cap + 1)
     removable.take(Math.min(removeCount, removable.size())).each { kept.remove(it.key) }
     _writeStateSetLocked("mrtrRequests", kept)
-    return kept.size() < _mrtrMaxRecords()
+    return kept.count { k, v -> readSet.contains(v?.leafTool?.toString()) == readLeaf } < cap
 }
 
 // Duplicate detection, global write capacity, storage capacity, and record
@@ -2422,14 +2421,16 @@ def _mrtrReserve(outerTool, leafTool, Map binding) {
             // unchanged, so this cannot schedule or execute the write twice.
             outcome = [accepted: true, stateId: duplicate.stateId, rejoined: true]
         } else {
-            def capacityRefusal = _writeCapacityRefusalLocked()
+            boolean readLeaf = _mrtrReadTools().contains(leafTool?.toString())
+            def capacityRefusal = readLeaf ? null : _writeCapacityRefusalLocked()
             if (capacityRefusal != null) {
                 outcome = [accepted: false, refusal: capacityRefusal]
-            } else if (!_mrtrMakeRoomLocked()) {
+            } else if (!_mrtrMakeRoomLocked(readLeaf)) {
+                int limit = readLeaf ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
                 outcome = [accepted: false, refusal: [
                     success: false, isError: true, status: "request_state_capacity",
-                    limit: _mrtrMaxRecords(),
-                    note: "All ${_mrtrMaxRecords()} retained requestState records are active. Nothing was run; finish or let an existing operation expire before starting another."
+                    limit: limit,
+                    note: "All ${limit} retained ${readLeaf ? 'read' : 'write'} requestState records are active. Nothing was run; finish or let an existing operation expire before starting another."
                 ]]
             } else {
                 String stateId = "mrtr-${java.util.UUID.randomUUID()}".toString()
@@ -2623,6 +2624,9 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             else nextLeaf.patches = result.patchesRemaining
             kind = "patches"
         }
+    } else if (_mrtrReadTools().contains(leafTool) && result.status == "in_progress") {
+        // The background fetch is still running; the next leg re-runs the identical read.
+        kind = "slow_read"
     }
     if (kind == null) return null
     return [kind: kind, nextArguments: _mrtrWithLeafArguments(rec, executionArgs, nextLeaf)]
@@ -2680,6 +2684,18 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         // Finish with a protocol-level terminal result before a conforming client
         // can hit that ceiling and surface its own opaque retry-limit exception.
         if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
+            if (continuation.kind?.toString() == "slow_read") {
+                // Nothing was committed: the read only ever observed its background fetch,
+                // which keeps running and publishes to the cache when it lands.
+                def readCapped = [
+                    success: false, isError: true, status: "slow_read_timeout", tool: leaf,
+                    error: "The hub's Logs-page fetch did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
+                    note: "No hub state was changed. The fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, check hub_get_logs for a slow or failing /logs/json.",
+                    mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
+                ]
+                _mrtrStoreTerminal(stateId, rec, claim, readCapped, true)
+                return [outcome: "terminal", result: readCapped, isError: true]
+            }
             def capped = [
                 success: false, isError: true, status: "continuation_limit",
                 tool: leaf,
@@ -2852,11 +2868,22 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.remove("claimId")
             rec.remove("claimedGeneration")
             rec.remove("claimedAt")
-            rec.terminalResult = result
+            // A read's successful payload can be as large as the hub is; keep only a marker
+            // and re-run the idempotent read from its cached snapshot on replay.
+            boolean readLeaf = _mrtrReadTools().contains(rec.leafTool?.toString())
+            rec.terminalResult = (readLeaf && !isError)
+                ? [__slowReadReplay: true, tool: rec.leafTool] : result
             rec.terminalIsError = isError
             rec.finishedAt = now()
             rec.updatedAt = rec.finishedAt
-            rec.expiresAt = rec.finishedAt + _mrtrTerminalTtlMs()
+            rec.expiresAt = rec.finishedAt + (readLeaf ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
+            // The replay re-reads the cached snapshot, so the record must not outlive it:
+            // clock the read TTL from when that snapshot was fetched, not from finishedAt.
+            def fetchedAt = (readLeaf && result instanceof Map && result.snapshot instanceof Map)
+                ? result.snapshot.fetchedAt : null
+            if (fetchedAt instanceof Number) {
+                rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
+            }
             _mrtrPutLocked(stateId, rec)
             // Record proof only AFTER the durable terminal write returned. If a
             // subsequent app disable/enable exposes the older claimed-active
@@ -3476,9 +3503,6 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     def envelopeBody = [content: [[type: "text", text: jsonText]]]
     if (isErrorOverride || (rendered instanceof Map && rendered.isError == true)) {
         envelopeBody.isError = true
-    } else if (settings.publishOutputSchemas == true && settings.useGateways != false
-            && rendered instanceof Map && _advertisesOutputSchema(toolName)) {
-        envelopeBody.structuredContent = rendered
     }
     def candidateResponse = jsonRpcResult(id, envelopeBody)
     String candidateJson = groovy.json.JsonOutput.toJson(candidateResponse)
@@ -3494,9 +3518,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         String tooLarge = groovy.json.JsonOutput.toJson(
             _responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))
         def body = [content: [[type: "text", text: tooLarge]]]
-        boolean schemaAdvertised = settings.publishOutputSchemas == true &&
-            settings.useGateways != false && _advertisesOutputSchema(toolName)
-        if (envelopeBody.isError == true || schemaAdvertised) body.isError = true
+        if (envelopeBody.isError == true) body.isError = true
         return jsonRpcResult(id, body)
     }
     return [__preserialized: candidateJson]
@@ -3547,9 +3569,11 @@ def _responseTooLargeSuggestion(String toolName) {
             return "Narrow with deviceId/appId/level/source/pattern, set a smaller limit, or filter by time window (since/until). The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
         case "hub_export_native_app":
             return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
-        case "hub_get_info":
         case "hub_get_jobs":
+            return "Pass cursor='' to page scheduledJobs 100 at a time (then follow nextCursor); runningJobs and hubActions stay in full on every page."
         case "hub_get_performance_stats":
+            return "Pass a smaller limit (default 20; limit=0 returns every device and app) or narrow type to device or app."
+        case "hub_get_info":
         case "hub_get_metrics":
             return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
         case "hub_get_source":
@@ -3773,7 +3797,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (trace/debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
+                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs', default) or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_delete_debug_logs: "Clear all MCP debug log entries",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
@@ -3851,7 +3875,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level, source, pattern/patterns, since/until, deviceId|appId, limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
+                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
@@ -3928,7 +3952,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways publishOutputSchemas outputSchema output schema structured content claude desktop gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access"
             ]
         ],
         hub_read_devices: [
@@ -4415,12 +4439,6 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
                 def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
                 def title = displayMeta[name]?.title
                 if (title) entry.title = title as String
-                // Forward outputSchema only when the advanced publishOutputSchemas
-                // setting is on (issue #290) -- OFF by default. Wire form (required
-                // stripped, see _wireOutputSchema) matches the tools/list emission so
-                // spec-validating clients accept both result shapes (issue #342). The
-                // flat tools/list path never emits it (size).
-                if (settings.publishOutputSchemas == true && d?.outputSchema != null) entry.outputSchema = _wireOutputSchema(d.outputSchema)
                 entry
             }
         ]
@@ -4641,27 +4659,6 @@ private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     }
 }
 
-// Wire form of a published outputSchema (issue #342): strip `required` arrays recursively.
-// The definitions' `required` arrays document the SUCCESS shape, but the runtime error
-// contract ([success:false, error, note]) legitimately omits those keys, and per MCP spec
-// (2025-06-18 server/tools: servers MUST return structured results that CONFORM to a
-// published schema) spec-validating clients jsonschema-validate every non-isError result
-// against the advertised schema. Stripping `required` on the wire lets both shapes
-// validate; the success-shape documentation stays intact in the definitions and in
-// hub_get_tool_guide. The `v instanceof List` guard keeps a PROPERTY literally named
-// "required" (a Map under `properties`) intact -- only schema-keyword arrays are dropped.
-def _wireOutputSchema(schema) {
-    if (!(schema instanceof Map)) return schema
-    def out = [:]
-    schema.each { k, v ->
-        if (k == 'required' && v instanceof List) return
-        if (v instanceof Map) out[k] = _wireOutputSchema(v)
-        else if (v instanceof List) out[k] = v.collect { it instanceof Map ? _wireOutputSchema(it) : it }
-        else out[k] = v
-    }
-    return out
-}
-
 // When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
 // at call time. The hide rules live in the biTools / customEngineMode blocks below;
 // useGateways=false additionally flattens the catalog (every tool individually) and
@@ -4698,11 +4695,7 @@ def getToolDefinitions() {
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
         def transformed = applyDescriptionTransform(filtered, true)
         return transformed.collect { tool ->
-            // Flat mode ALWAYS drops outputSchema to protect the 124,000-byte tools/list
-            // cap (this is the all-tools-individually surface) -- independent of the
-            // publishOutputSchemas setting (issue #290), which only gates the gateway-mode
-            // base tools and the gateway catalog disclosure, where the budget has headroom.
-            def base = tool.findAll { it.key != 'outputSchema' }
+            def base = tool
             // hub_set_rule self-gateway: in flat mode its 25-param fat inputSchema is the
             // biggest single consumer of the tools/list budget, so fold it to a thin
             // {operation,args} selector (the agent probes for an operation's real schema
@@ -4762,24 +4755,11 @@ def getToolDefinitions() {
     // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
     // if a future author adds one to a base-tool description.
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
-    // outputSchema is opt-in (issue #290): the flat path above always strips it; on this
-    // gateway-mode base-tool surface (and the gateway catalog) it is emitted only when the
-    // advanced publishOutputSchemas setting is on (wire form -- see _wireOutputSchema; and
-    // handleToolsCall then attaches structuredContent per the spec MUST, issue #342).
-    boolean publishSchemas = settings.publishOutputSchemas == true
     return transformed.collect { tool ->
-        // Gateway entries already carry annotations (incl. readOnlyHint) from the
-        // collectMany above and never carry outputSchema, so return them untouched. Leaf
-        // base tools get their annotations from the canonical set here -- the presence of
-        // readOnlyHint (not just the annotations map) is the load-bearing signal -- and
-        // have their outputSchema stripped unless publishOutputSchemas is on.
+        // Gateways already carry complete annotations from above. Check readOnlyHint,
+        // not just the map: a leaf with only a title still needs its canonical hints.
         if (tool.annotations?.containsKey('readOnlyHint')) return tool
-        // Published schemas go out in wire form (required stripped -- see _wireOutputSchema)
-        // so spec-validating clients accept success AND error result shapes.
-        def leaf = (publishSchemas && tool.outputSchema != null)
-            ? tool.collectEntries { k, v -> [(k): (k == 'outputSchema' ? _wireOutputSchema(v) : v)] }
-            : tool.findAll { it.key != 'outputSchema' }
-        leaf + [annotations: (leaf.annotations ?: [:]) + annotationsForLeaf(leaf.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+        tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
 }
 
@@ -6004,14 +5984,14 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         }
     }
     long _hubRtT0 = now()
+    String _hubRtOutcome = "ok"
+    boolean _hubRtLogged = false
     try {
         if (method == 'GET') httpGet(params, reader)
         else httpPost(params, reader)
-        // [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, so one
-        // debug line profiles a heavy RM wizard build (count + latency of each GET/POST). Debug-gated.
-        // Path is secret-redacted so the WiFi-join leg's psk is never written to the hub log.
-        logDebug("[hubrt] ${method} ${_redactSecretsInPath(path)} (${now() - _hubRtT0}ms)")
     } catch (Exception e) {
+        _hubRtOutcome = e.class.simpleName
+
         // hubInternalGetRaw path: a 3xx with followRedirects=false is the success case (read the
         // Location header), not an error.
         if (opts.handle3xx) {
@@ -6026,15 +6006,42 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             }
         }
         if (shouldRetryWithFreshCookie(e, opts.isRetry)) {
+            // Log this attempt on its own before recursing, so the outer finally does not
+            // fold the retry's duration into the failed attempt's line.
+            _hubRtLogged = true
+            try { _hubRtLog(method, path, now() - _hubRtT0, "${_hubRtOutcome}, retrying".toString()) }
+            catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
             mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on ${method} ${_redactSecretsInPath(path)}")
             return _hubRequest(method, path, opts + [isRetry: true])
         }
         throw e
+    } finally {
+        // Diagnostic only: a failure inside the logger must never replace the real outcome
+        // (or the real exception) of the round-trip it describes.
+        if (!_hubRtLogged) {
+            try { _hubRtLog(method, path, now() - _hubRtT0, _hubRtOutcome) }
+            catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
+        }
     }
     // Re-throw a mid-stream read failure rather than returning a Reader/stream toString() junk
     // string that downstream code would treat as a real body (matches the hardened deploy path).
     if (readError != null) throw readError
     return result
+}
+
+// [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, on success
+// and on failure alike, so one debug line profiles a heavy RM wizard build (count + latency of
+// each GET/POST). Path is secret-redacted so the WiFi-join leg's psk is never written to the
+// hub log. A completed request whose duration meets the relay budget is also logged at warn
+// regardless of caller: no relay-bound caller can answer synchronously on top of it, so the
+// endpoint is named here before some client sees the 502.
+private void _hubRtLog(String method, String path, long elapsedMs, String outcome) {
+    String redacted = _redactSecretsInPath(path)
+    logDebug("[hubrt] ${method} ${redacted} (${elapsedMs}ms${outcome == 'ok' ? '' : ', ' + outcome})")
+    long budget = _relayBudgetMs()
+    if (budget > 0L && elapsedMs >= budget) {
+        mcpLog("warn", "hub-admin", "[hubrt] slow internal ${method} ${redacted} took ${elapsedMs}ms (${outcome}), at or over the ${budget}ms cloud-relay budget -- a request that waits on it synchronously cannot be answered over the relay (see hub_get_tool_guide(section='slow_ops'))")
+    }
 }
 
 /**
@@ -8358,7 +8365,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.1.0"
+    return "4.2.0"
 }
 
 
@@ -8714,7 +8721,7 @@ For replace/add every id is validated against the full hub device list (discover
 - `enableDeveloperMode` -- lockout protection; must stay UI-only to disable.
 - `disabled_tools` / `disabled_gateways` -- could self-disable this tool.
 
-**Schema refresh / reconnect.** Changing an `enable*` toggle, `useGateways`, or `publishOutputSchemas` reshapes `tools/list`; changing `selectedDevices` changes which devices are visible. So MCP clients may need to reconnect to refresh cached schemas / device visibility.
+**Schema refresh / reconnect.** Changing an `enable*` toggle or `useGateways` reshapes `tools/list`; changing `selectedDevices` changes which devices are visible. So MCP clients may need to reconnect to refresh cached schemas / device visibility.
 
 ### hub_update_package
 
@@ -9001,6 +9008,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **hub_list_devices:**
 - Use detailed=false for initial discovery
+- Inventory counts: count is the number returned on this page; total is the matching count before pagination; unfilteredTotal, when present, is the count in the requested device scope before filters or pagination (not necessarily the whole hub).
 - With detailed=true, paginate: 20-30 devices per request
 - Make tool calls sequentially, not in parallel
 - Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side
@@ -9081,7 +9089,7 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 
 ### hub_list_devices
 
-**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands` (full field list in the tool's `outputSchema`). `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
+**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands`. `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
 
 **format='context' (the house-snapshot primitive).** One call answers "what's in this house and what state is it in": the `summary` field is a self-contained plain-text block -- a header (`Mode:`, `HSM:` when available, `Devices: N of M`) plus one line per device (`- Label (id, room) - Cap1, Cap2; attr=value, ...`). Attribute values carry the reported unit directly appended with no separator (`temperature=72.5°F`, `battery=87%`) -- parse on `=` accordingly -- and come from one currentStates read per device: the SAME per-device hub read summary mode pays (the saving vs ~21 per-attribute currentValue() calls is hub-side; the "cheap" part is the compact output). A device whose state read fails is marked `(state unavailable)` on its line rather than silently rendered attribute-less. The default attribute set: switch/level/motion/contact/presence/lock/temperature/humidity/illuminance/battery/power/energy/thermostat fields/speed/position/valve/water/smoke. Page size defaults to 50 (set `limit` to change); `nextCursor` is always emitted when more devices remain, and the header repeats it. Structured fields (`mode`, `hsmStatus`, `count`, `total`, filter echoes) ride alongside the text. Combine with the filters below for scoped snapshots ("what's on in the Kitchen" = `roomFilter` + `onlyOn`). Ignores `fields`/`detailed`; not available with `scope='all'`.
 
@@ -9298,7 +9306,7 @@ Rule Machine, Visual Rules Builder, and the other supported classic apps (Button
 
 `ruleFormat` says which engine answered: `rm` / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
 
-The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM `*BROKEN*` / `**Broken Trigger|Action|Condition**` markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check (the full key list plus `brokenMarkerCounts` lives in the tool's outputSchema).
+The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM `*BROKEN*` / `**Broken Trigger|Action|Condition**` markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check.
 
 **`source` parameter — which source(s) to read:**
 - `auto` (default): the preferred compiled-state verdict plus the RM HTML render detections + a cross-check.
@@ -9992,13 +10000,13 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
 
-        slow_ops: '''## Slow writes over Streamable HTTP
+        slow_ops: '''## Slow operations over Streamable HTTP
 
 Hubitat's cloud relay can end one HTTP request while hub-side work continues. MCP 2026-07-28 request-to-request continuation solves this without changing transport, installing an extension, or asking the caller to invent a token.
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, and the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and, only when the request's transport carries a time budget, the two Logs-page reads described below.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
@@ -10011,6 +10019,8 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 ### Older clients
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
+
+Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
 The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
 
