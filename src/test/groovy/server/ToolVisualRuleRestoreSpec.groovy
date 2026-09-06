@@ -128,14 +128,27 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         }
     }
 
-    /** hubInternalGetRaw stub for firmware WITHOUT the versioned child types: createchild answers with
-     *  no Location, so the legacy builder-page route is what actually creates the child. */
+    /** An exception carrying an HTTP status the way HttpResponseException does (duck-typed via
+     *  .response.status). hubInternalGetRaw's transport THROWS every non-2xx/non-3xx -- the reader
+     *  closure only runs for a 2xx and only a 3xx is converted into a struct -- so a firmware that
+     *  REFUSES the versioned child route reaches the caller as one of these, never as a status-500
+     *  map. Mirrors HubInternalRetrySpec.FakeHttpException. */
+    private static class FakeHttpException extends RuntimeException {
+        final def response
+        FakeHttpException(int status, String body) {
+            super("status code: ${status}, reason phrase: refused, body: ${body}".toString())
+            this.response = [status: status]
+        }
+    }
+
+    /** hubInternalGetRaw stub for firmware WITHOUT the versioned child types: createchild is REFUSED
+     *  (the transport throws the status), so the legacy builder-page route creates the child. */
     private void stubLegacyCreateOnly(String html) {
         def paths = rawPaths
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             paths << path
             if (path.startsWith('/installedapp/createchild/')) {
-                return [status: 500, location: null, data: 'No such app type']
+                throw new FakeHttpException(500, 'No such app type')
             }
             [status: 200, location: null, data: html]
         }
@@ -785,6 +798,31 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains('still exists but could not be read')
+        rawPaths.isEmpty()
+        posts.isEmpty()
+    }
+
+    def "restore reports failure, not a recreate, when a VRB-typed original is FOUND but its rule read returns null"() {
+        given: 'app 664 exists and is typed a Visual Rule, but neither rule endpoint answers a rule'
+        enableWrite()
+        def snapshot = vrbSnapshot(664, [appLabel: 'Hall light', vrbFormat: 'classic',
+                                         vrbRulePaused: false, vrbDefinition: classicDefinition()])
+        stubDownload(json(snapshot).getBytes('UTF-8'))
+        hubGet.register('/installedapp/configure/json/664') { params -> throw new RuntimeException('Vue child') }
+        hubGet.register('/installedapp/json/664') { params -> json([id: 664, name: 'r', type: 'Visual Rule Builder 1.0', disabled: false, user: false]) }
+        hubGet.register('/app/ruleBuilder20Json/664') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/664') { params -> '' }
+        registerVrbParent()
+        stubCreateChild(665)
+        stubPostJson()
+
+        when:
+        def result = script._rmRestoreFromBackup([type: 'rm-rule', fileName: 'mcp-rm-backup-664-t.json'])
+
+        then: 'a read that RETURNED null is as inconclusive as one that threw -- no second live copy'
+        result.success == false
+        result.error.contains('still exists as a Visual Rule Builder 1.0')
+        result.error.contains('nothing was written')
         rawPaths.isEmpty()
         posts.isEmpty()
     }

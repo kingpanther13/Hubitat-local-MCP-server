@@ -207,10 +207,16 @@ private Map _vrbCreateChild(String version) {
             def newId = builder.group(2).toInteger()
             def fmt = builder.group(1) ? "graph" : "classic"
             mcpLog("info", "vrb", "Versioned create of a Visual Rule Builder ${version} child redirected to its ${fmt} builder page -> adopted app id ${newId}")
-            return [appId: newId, format: fmt, version: fmt == "graph" ? "2.0" : "1.0", route: "createchild"]
+            // Still the createchild route -- the hub named the id on the wire -- but the id and the
+            // version came from a BUILDER-page redirect, not the configure Location, so say so
+            // rather than let the label imply the usual answer.
+            return [appId: newId, format: fmt, version: fmt == "graph" ? "2.0" : "1.0", route: "createchild",
+                    routeNote: "The hub answered the versioned create with a redirect to its ${fmt} builder page; the new rule's id and version were read from that URL.".toString()]
         }
-        // Only a DEFINITIVE answer -- a non-2xx status with a body -- proves the parent has no such
-        // child type and nothing was created; that is the one case the legacy route may follow.
+        // Only a DEFINITIVE answer proves the parent has no such child type and created nothing;
+        // that is the one case the legacy route may follow. A real REFUSAL never reaches this line
+        // -- the transport throws it and the catch below reads its status -- so what a returned
+        // struct can still be is a 3xx carrying a body whose Location matched neither regex.
         // A 2xx with no usable Location (the auto-followed absolute redirect), a null or an
         // empty answer is a LOST response: the child may exist, and is reconciled, never re-made.
         def status = (resp?.status != null) ? (resp.status as Integer) : null
@@ -219,6 +225,16 @@ private Map _vrbCreateChild(String version) {
                 "createchild answered ${status}: ${resp.data?.toString()?.take(200)}".toString() :
                 "createchild answered ${status ?: 'nothing'} with no usable Location (${resp?.location ?: 'none'})".toString())
     } catch (Exception e) {
+        // hubInternalGetRaw THROWS on a definitive non-2xx/non-3xx: _hubRequest's reader closure
+        // runs only for a 2xx and its catch converts only a 3xx into a struct, so firmware that has
+        // no such child type answers 4xx/5xx and lands HERE, never in the struct test above. A
+        // status proves the parent answered and made nothing; an exception with NO status (timeout,
+        // transport) leaves the outcome unknown and stays on the reconcile path below.
+        if (!unsupported) {
+            Integer thrownStatus = null
+            try { thrownStatus = e.response?.status as Integer } catch (Exception ignored) { thrownStatus = null }
+            if (thrownStatus != null && thrownStatus >= 400) unsupported = true
+        }
         // Two cases where nothing was created and the legacy route is safe: the parent refused
         // the child type outright, or the parent itself could not be read (the versioned
         // create was never attempted).
@@ -237,22 +253,24 @@ private Map _vrbCreateChild(String version) {
         // "The read showed no new child" and "the read failed" must not collapse into the same
         // branch: the second one leaves the child's existence UNKNOWN, and creating again on unknown
         // is exactly the duplicate this block exists to prevent.
+        // parentSeen is necessarily true here -- the !parentSeen case took the fallback above.
+        // ONE expression for the delta, read twice: two copies that drifted apart is exactly what
+        // would turn "no child appeared" into a duplicate rule.
+        def newChildren = { -> (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) } }
         def appeared = []
         def reconciled = false
-        if (parentSeen) {
-            try {
-                appeared = (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) }
-                reconciled = true
-                if (appeared.isEmpty()) {
-                    // An empty one-shot delta does not prove the write failed: the list can lag the
-                    // create. One more look after a short pause before concluding anything.
-                    pauseExecution(1500)
-                    appeared = (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) }
-                }
-            } catch (Exception readError) {
-                reconciled = false
-                mcpLog("warn", "vrb", "Could not re-read the Visual Rules Builder parent after a failed versioned create: ${readError.message}")
+        try {
+            appeared = newChildren()
+            reconciled = true
+            if (appeared.isEmpty()) {
+                // An empty one-shot delta does not prove the write failed: the list can lag the
+                // create. One more look after a short pause before concluding anything.
+                pauseExecution(1500)
+                appeared = newChildren()
             }
+        } catch (Exception readError) {
+            reconciled = false
+            mcpLog("warn", "vrb", "Could not re-read the Visual Rules Builder parent after a failed versioned create: ${readError.message}")
         }
         if (!reconciled) {
             throw new IllegalStateException("Versioned create of a Visual Rule Builder ${version} child failed (${e.message}) and the parent could not be re-read to tell whether a child was created; refusing to create again. List rules with hub_get_visual_rule, delete any empty unnamed shell, and retry.")
@@ -1241,6 +1259,7 @@ private Map _toolSetVisualRuleImpl(args) {
             if (resolved.warnings) out.preflightWarnings = resolved.warnings
             // Which create route made the child -- the legacy fallback is otherwise invisible.
             if (created.route) out.createRoute = created.route
+            if (created.routeNote) out.createRouteNote = created.routeNote
             return out
         } catch (Exception e) {
             // Log the ORIGINAL failure before attempting cleanup -- the cleanup helper never
@@ -1388,7 +1407,7 @@ private Map _toolSetVisualRuleImpl(args) {
             // A rename ships no document back (it is the operation most likely to run in a loop),
             // and its failure says which operation failed so a batch caller can attribute it.
             if (out.success == false) out.error = "Rename failed: ${out.error}".toString()
-            else out.remove("definition")
+            out.remove("definition")
             return out
         }
         if (hasPaused) {
@@ -1437,7 +1456,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             // containsKey is enough: _vrbSaveGraphMeta sets these only when the hub sent a
             // non-null value. (Unlike the read-back merge below, where a present EMPTY list is
             // itself the answer and must not be collapsed by a truthiness test.)
-            ["storedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
+            ["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
                 if (saved.containsKey(k)) failed[k] = saved[k]
             }
             return failed
@@ -1465,11 +1484,16 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
     def nameOk = after != null && _vrbNameMatches(after, name)
     def pauseOk = pausedRequested == null || ((after?.data?.rulePaused == true) == pausedRequested)
     def countsOk = after != null && _vrbDefinitionCountsMatch(format, definition, after.data)
-    // A pause the hub REFUSED is a failure even when the read-back happens to show the requested
-    // state (a redundant pause on an already-paused rule, say): the hub said no, and a clean
-    // success would hide that it did.
-    def pauseRefused = pauseResult?.success == false
-    def verified = nameOk && pauseOk && countsOk && !pauseRefused
+    // A pause the hub REFUSED fails the write only when a real state change was asked for. An
+    // idempotent re-apply (paused:true on an already-paused rule) changed nothing whether the hub
+    // took it or not, so it stays a success and carries the refusal as a note.
+    def pauseChangeRequested = pausedRequested != null && pausedRequested != (currentPaused == true)
+    def pauseRefused = pauseResult?.success == false && pauseChangeRequested
+    def pauseRefusedIdempotent = pauseResult?.success == false && !pauseChangeRequested
+    // The read-back agreeing on name, pause state and counts is what makes `definition` real; a
+    // refused-pause failure still has that, a read-back that never confirmed does not.
+    def readBackConfirmed = nameOk && pauseOk && countsOk
+    def verified = readBackConfirmed && !pauseRefused
     def out = [success: verified, appId: appId, format: format, created: created,
                name: after?.data?.name, rulePaused: after?.data?.rulePaused == true, verified: verified]
     if (format == "graph") {
@@ -1487,6 +1511,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         // pause state is the last word (same rule as the read tool).
         if (after?.data?.rulePaused == true) out.activated = false
         if (savedMeta?.containsKey("storedSuccessfully")) out.storedSuccessfully = savedMeta.storedSuccessfully
+        if (savedMeta?.containsKey("activatedSuccessfully")) out.activatedSuccessfully = savedMeta.activatedSuccessfully
         if (savedMeta?.activationError != null) out.activationError = savedMeta.activationError
         if (savedMeta?.storageError != null) out.storageError = savedMeta.storageError
         // Presence, not truthiness: an EMPTY list from the save is a positive statement that this
@@ -1504,22 +1529,33 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
     if (validationErrors) {
         out.validationErrors = validationErrors
         out.note = "Stored as an INACTIVE DRAFT: the hub reported validation errors, so the rule was saved but NOT activated and will not run until they are fixed. See hub_get_tool_guide(section='visual_rule_reference')."
+    } else if (format == "graph" && out.activated == false && after?.data?.rulePaused == true) {
+        // Not an activation failure: `activated` means "actually runs", and a paused rule does not.
+        // The remedy is a resume, never the re-save the branch below prescribes.
+        out.note = "Stored; activated is false because the rule is PAUSED, not because activation failed. Resume with hub_set_visual_rule(appId=${appId}, paused: false)."
     } else if (format == "graph" && out.activated == false) {
         // Storage succeeded, validation passed, and the rule STILL is not running: activation
         // threw on the hub (activationError) or no runtime exists. Say so with the cause.
         out.note = "Stored but NOT activated: " + (out.activationError ? "the hub reported an activation error -- ${out.activationError}." : "the hub reports no active runtime for this rule.") +
                 " Re-read with hub_get_visual_rule(appId=${appId}); re-saving the definition retries activation."
     }
+    if (pauseRefusedIdempotent) {
+        def already = "The hub refused the pause request${pauseResult.error ? " (${pauseResult.error})" : ""}, but the rule is already ${pausedRequested ? 'paused' : 'running'}, so nothing needed changing.".toString()
+        out.note = out.note ? "${out.note} ${already}".toString() : already
+    }
     if (!verified) {
-        out.error = (pauseRefused && nameOk && pauseOk && countsOk) ?
+        out.error = (pauseRefused && readBackConfirmed) ?
                 "Pause/resume failed: the hub refused the pause request${pauseResult.error ? " (${pauseResult.error})" : ""}, although the read-back shows the requested state." :
                 "Save POST was sent but the read-back did not confirm the new state (name ok: ${nameOk}, pause ok: ${pauseOk}, definition counts ok: ${countsOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
         def hints = []
         if (pauseResult?.success == false) hints << "The pause endpoint reported failure${pauseResult.error ? " (${pauseResult.error})" : ""}."
         hints << "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
-        out.note = hints.join(" ")
+        // APPEND: the INACTIVE-DRAFT / paused note above says why the rule will not run, and the
+        // pause diagnostic is additional to it -- overwriting it loses that explanation entirely.
+        out.note = out.note ? "${out.note} ${hints.join(' ')}".toString() : hints.join(" ")
         mcpLog("warn", "vrb", "Read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk}, countsOk=${countsOk})")
-    } else if (after != null) {
+    }
+    if (after != null && readBackConfirmed) {
         out.definition = format == "graph" ? after.data.definition :
                 [whenNodes: after.data.whenNodes, thenNodes: after.data.thenNodes, elseNodes: after.data.elseNodes]
     }
@@ -1647,12 +1683,23 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
                         error: "App ${savedId} still exists but could not be read (${readError.message}); nothing was written.",
                         note: "Retry once the hub answers, or delete the rule first (hub_delete_visual_rule) and re-run the restore to recreate it."]
             }
+            // _vrbDetect also RETURNS null without throwing -- an empty body, an unparseable body,
+            // a {success:false} answer -- and the installed-app type is the only thing separating
+            // "this id belongs to some other app now" (recreate is right) from "a VRB rule that
+            // would not read" (recreating it leaves two live copies of the same rule).
+            def installedType = existence.info?.type?.toString() ?: ""
+            if (existing == null && installedType.startsWith("Visual Rule Builder")) {
+                return [success: false, type: "visual-rule", originalRuleId: savedId, backupFile: fileName,
+                        error: "App ${savedId} still exists as a ${installedType} but its definition could not be read; nothing was written.",
+                        note: "Retry once the hub answers, or delete the rule first (hub_delete_visual_rule) and re-run the restore to recreate it."]
+            }
         }
         Integer targetId
         boolean recreated
         String targetFormat
         String createdVersion = null
         String createdRoute = null
+        String createdRouteNote = null
         // A 1.0 snapshot can be replayed onto a 2.0 target by translating it; the reverse cannot
         // (2.0-only structure has no 1.0 expression), so a graph snapshot on a classic target
         // still refuses.
@@ -1681,6 +1728,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
             targetFormat = created.format
             createdVersion = created.version
             createdRoute = created.route
+            createdRouteNote = created.routeNote
         }
 
         String translatedFrom = null
@@ -1708,6 +1756,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
                    name: saved.name, rulePaused: saved.rulePaused, verified: saved.verified]
         if (createdVersion) out.version = createdVersion
         if (createdRoute) out.createRoute = createdRoute
+        if (createdRouteNote) out.createRouteNote = createdRouteNote
         if (translatedFrom) out.translatedFrom = translatedFrom
         if (preflightWarnings) out.preflightWarnings = preflightWarnings
         if (saved.containsKey("activated")) out.activated = saved.activated

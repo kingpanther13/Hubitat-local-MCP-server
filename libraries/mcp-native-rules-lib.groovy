@@ -5084,6 +5084,13 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     return null
 }
 
+private int _rmEmptyRenderPauseMs() {
+    // One tuning value for one problem -- RM's transient empty render -- shared by the walker's
+    // nav recovery and addAction's doActPage re-read. A method, not a field: the Groovy sandbox
+    // rejects static field initializers.
+    return 750
+}
+
 // RM occasionally answers a navigate with an EMPTY render -- a target page carrying no inputs and
 // no hrefs -- that the very next render fills in (observed on a 2.5.1.174 hub: a doActPage with
 // nothing on it, no hub error logged, the same op green on every other run). Reported as-is it
@@ -5096,7 +5103,15 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
 // request may have landed, and a retry would double-submit.
 private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefParams, Map navResp, Long reqT0) {
     if (!(navResp?.configPage instanceof Map)) return navResp
-    if (hrefParams != null && !hrefParams.isEmpty()) return navResp
+    if (hrefParams != null && !hrefParams.isEmpty()) {
+        // A param-bearing sub-page's schema lives ONLY in this nav response, so a re-read cannot
+        // stand in for it and the empty render is reported as-is. Say so, or it leaves no trace.
+        def paramSchema = _rmCollectWalkSchema(navResp.configPage as Map, null)
+        if (paramSchema.inputs.isEmpty() && paramSchema.hrefs.isEmpty()) {
+            mcpLog("debug", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page, but it was entered with href params whose state a plain GET cannot reproduce; reporting it as-is")
+        }
+        return navResp
+    }
     // A page that RENDERED AN ERROR is not a transient empty render: RM answered, and said why
     // the page has nothing on it (live: a doActPage entered without the wizard state RM expects
     // answers "Cannot invoke method startsWith() on null object" on the POST and on a GET alike).
@@ -5109,13 +5124,17 @@ private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefP
         return navResp
     }
     mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; re-reading it once")
-    pauseExecution(750)
+    pauseExecution(_rmEmptyRenderPauseMs())
     try {
         def reread = _rmFetchConfigJson(appId, targetPage)
         if (reread?.configPage instanceof Map) {
             def again = _rmCollectWalkSchema(reread.configPage as Map, null)
             if (!again.inputs.isEmpty() || !again.hrefs.isEmpty()) {
-                return navResp + [configPage: reread.configPage, navRetried: true]
+                // The re-read's `app` token travels with its configPage: leaving the POST's stale
+                // one beside a fresh page hands the next form post an out-of-date app.version.
+                def grafted = [configPage: reread.configPage, navRetried: true]
+                if (reread.app != null) grafted.app = reread.app
+                return navResp + grafted
             }
         }
     } catch (Exception rereadExc) {
@@ -5672,13 +5691,21 @@ private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, 
 // the caller's spec is not mutated) so the add's own budget checks see the real clock. The
 // signature of _rmAddAction stays as it is: the specs stub it by arity.
 private Map _rmWithClock(Map spec, Long reqT0) {
-    if (reqT0 == null || spec == null || spec.__reqT0 != null) return spec
+    if (reqT0 == null || spec == null) return spec
+    // Only a positive Number is a clock. A client-supplied nested spec can carry anything under
+    // this internal key, and "x" or 0 would either blow up the cast downstream or read as a
+    // budget already spent -- so anything else is ignored and replaced by the real clock.
+    if (spec.__reqT0 instanceof Number && ((Number) spec.__reqT0).longValue() > 0) return spec
     return spec + [__reqT0: reqT0]
 }
 
 Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
-    Long reqT0 = actionSpec?.__reqT0 != null ? (actionSpec.__reqT0 as Long) : null
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
+    // Read the clock only AFTER the shape guard, and only when it is a positive Number: this key
+    // rides a client-supplied nested spec, where a string would surface as a bare parser message
+    // and a 0 would silently mark the budget spent.
+    Long reqT0 = (actionSpec.__reqT0 instanceof Number && ((Number) actionSpec.__reqT0).longValue() > 0) ?
+            ((Number) actionSpec.__reqT0).longValue() : null
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
     if (actionSpec.discover == true) {
@@ -6971,10 +6998,17 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         // after a short pause; a second empty render flows into the schema-gated writes, which
         // report it the way they always have.
         mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
-        pauseExecution(750)
-        doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
-        doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
-        actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+        pauseExecution(_rmEmptyRenderPauseMs())
+        try {
+            // _rmFetchConfigJson THROWS on an empty body -- the very transient this block exists to
+            // survive -- so a failed re-read degrades to the original read (schema-gated writes then
+            // report it as they always have) instead of failing the add with "app N may not exist".
+            doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
+            doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
+            actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+        } catch (Exception rereadExc) {
+            mcpLog("debug", "rm-native", "addAction: doActPage re-read failed for app ${appId} (${rereadExc.message}); keeping the original read")
+        }
     }
     if (actTypeField) {
         def m = (actTypeField.toString() =~ /^actType\.(\d+)$/)
@@ -8985,8 +9019,12 @@ Map _rmWalkStep(Integer appId, Map spec) {
         appeared.isEmpty() && disappeared.isEmpty() &&
         valueEcho?.match == false
 
+    // The page the op landed on carried RM's own render error. That is a FAILED op, not an
+    // advisory: an agent branching on success must not go on writing into a page RM could not
+    // build.
+    def pageError = afterCfg?.configPage?.error
     def result = [
-        success: _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false)),
+        success: pageError == null && _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false)),
         page: page,
         operation: operation,
         before: beforeSchema,
@@ -9007,12 +9045,15 @@ Map _rmWalkStep(Integer appId, Map spec) {
         silentRejection: silentRejection,
         health: health
     ]
-    // The page the op landed on carried RM's own render error: an empty `after` schema then has
-    // a stated cause, and commitSignal's "check health" is not the whole story.
-    def pageError = afterCfg?.configPage?.error
     if (pageError != null) {
         result.pageError = pageError.toString()
-        result.repairHints = (result.repairHints ?: []) + ["The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, not because the op committed. Enter the page the way the wizard does (the href or button on its parent page) rather than by name.".toString()]
+        // An error page that still returned inputs is a different animal from one that returned
+        // nothing: only the second one explains an empty `after` schema.
+        def emptyAfter = afterSchema.inputs.isEmpty() && afterSchema.hrefs.isEmpty()
+        result.repairHints = (result.repairHints ?: []) + [((emptyAfter ?
+                "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, not because the op committed." :
+                "The page '${page}' rendered with an error (${pageError}) alongside its inputs, so what it shows may not reflect what RM stored.") +
+                " Enter the page the way the wizard does (the href or button on its parent page) rather than by name.").toString()]
     }
     if (health.unreadable == true) {
         result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); the operation itself committed. Verify via hub_get_rule_health(${appId}).".toString()]

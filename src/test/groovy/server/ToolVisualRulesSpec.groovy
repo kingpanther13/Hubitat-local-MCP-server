@@ -96,14 +96,27 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         }
     }
 
-    /** hubInternalGetRaw stub for firmware WITHOUT the versioned child types: createchild answers with
-     *  no Location, so the create fails and the legacy builder-page route is what actually runs. */
+    /** An exception carrying an HTTP status the way HttpResponseException does (duck-typed via
+     *  .response.status). hubInternalGetRaw's transport THROWS every non-2xx/non-3xx -- the reader
+     *  closure only runs for a 2xx and only a 3xx is converted into a struct -- so a firmware that
+     *  REFUSES the versioned child route reaches the caller as one of these, never as a status-500
+     *  map. Mirrors HubInternalRetrySpec.FakeHttpException. */
+    private static class FakeHttpException extends RuntimeException {
+        final def response
+        FakeHttpException(int status, String body) {
+            super("status code: ${status}, reason phrase: refused, body: ${body}".toString())
+            this.response = [status: status]
+        }
+    }
+
+    /** hubInternalGetRaw stub for firmware WITHOUT the versioned child types: createchild is REFUSED
+     *  (the transport throws the status), so the legacy builder-page route creates the child. */
     private void stubLegacyCreateOnly(String html) {
         def paths = rawPaths
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             paths << path
             if (path.startsWith('/installedapp/createchild/')) {
-                return [status: 500, location: null, data: 'No such app type']
+                throw new FakeHttpException(500, 'No such app type')
             }
             [status: 200, location: null, data: html]
         }
@@ -448,6 +461,10 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.success == true
         result.appId == 1234
         result.createRoute == 'createchild'
+
+        and: 'the label stays honest: the id came off a builder-page redirect, not the configure Location'
+        result.createRouteNote.contains('builder page')
+        result.createRouteNote.contains('read from that URL')
     }
 
     def "a graph definition on a hub that can only create 1.0 children is refused and the orphan shell force-deleted"() {

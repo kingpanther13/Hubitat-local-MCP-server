@@ -86,14 +86,27 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         }
     }
 
-    /** hubInternalGetRaw stub for firmware WITHOUT the versioned child types: createchild answers with
-     *  no Location, so the legacy builder-page route is what actually creates the child. */
+    /** An exception carrying an HTTP status the way HttpResponseException does (duck-typed via
+     *  .response.status). hubInternalGetRaw's transport THROWS every non-2xx/non-3xx -- the reader
+     *  closure only runs for a 2xx and only a 3xx is converted into a struct -- so a firmware that
+     *  REFUSES the versioned child route reaches the caller as one of these, never as a status-500
+     *  map. Mirrors HubInternalRetrySpec.FakeHttpException. */
+    private static class FakeHttpException extends RuntimeException {
+        final def response
+        FakeHttpException(int status, String body) {
+            super("status code: ${status}, reason phrase: refused, body: ${body}".toString())
+            this.response = [status: status]
+        }
+    }
+
+    /** hubInternalGetRaw stub for firmware WITHOUT the versioned child types: createchild is REFUSED
+     *  (the transport throws the status), so the legacy builder-page route creates the child. */
     private void stubLegacyCreateOnly(String html) {
         def paths = rawPaths
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             paths << path
             if (path.startsWith('/installedapp/createchild/')) {
-                return [status: 500, location: null, data: 'No such app type']
+                throw new FakeHttpException(500, 'No such app type')
             }
             [status: 200, location: null, data: html]
         }
@@ -1223,7 +1236,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.note.contains('untouched')
     }
 
-    def "a rename WIPES a rule whose ruleJson is empty beside a populated graphDocument"() {
+    def "a rename PRESERVES the document the read resolved when ruleJson is an empty graph beside a populated graphDocument"() {
         given:
         enableWrite()
         def graph = script._vrb2Compose(editorDefinition())
@@ -1242,7 +1255,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         when:
         def result = script.toolSetVisualRule([appId: 843, name: 'Renamed', confirm: true])
 
-        then: 'the reviewer\'s red case, now green: the document the read showed is what went back'
+        then: 'the document the read showed is what went back on the wire'
         graph.nodes.size() > 0
         new JsonSlurper().parseText(new JsonSlurper().parseText(posts[0].body as String).ruleJson as String).nodes.size() == graph.nodes.size()
         result.success == true
@@ -1251,20 +1264,77 @@ class ToolVisualRule20Spec extends ToolSpecBase {
     }
 
     def "a rename the hub refuses to pause is not a clean success, even when the read-back matches"() {
-        given: 'the pause endpoint refuses, and the rule already reads paused'
+        given: 'the rule is RUNNING, the pause endpoint refuses the change, and the read-back reads paused'
         enableWrite()
+        def reads = 0
         def state = [name: 'Before', ruleJson: json(validGraph())]
         stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.name = b.name; state.ruleJson = b.ruleJson; [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
-        hubGet.register('/app/ruleBuilder20Json/870') { params -> json([name: state.name, rulePaused: true, ruleJson: state.ruleJson, validationErrors: []]) }
-        hubGet.register('/app/ruleBuilderPause/870/true') { params -> '{"success":false,"message":"already paused"}' }
+        hubGet.register('/app/ruleBuilder20Json/870') { params ->
+            reads++
+            json([name: state.name, rulePaused: reads > 1, ruleJson: state.ruleJson, validationErrors: []])
+        }
+        hubGet.register('/app/ruleBuilderPause/870/true') { params -> '{"success":false,"message":"pause rejected"}' }
 
         when:
         def result = script.toolSetVisualRule([appId: 870, name: 'After', paused: true, confirm: true])
 
-        then:
+        then: 'a state change WAS asked for and refused, so the write is not a success'
         result.success == false
         result.error.startsWith('Rename failed:')
-        result.error.contains('already paused')
+        result.error.contains('pause rejected')
+
+        and: 'both sentences survive: why the rule will not run, and what the pause endpoint said'
+        result.note.contains('PAUSED')
+        result.note.contains('pause endpoint reported failure')
+
+        and: 'a rename still ships no document back, failed or not'
+        !result.containsKey('definition')
+    }
+
+    def "a redundant pause on an already-paused rule the hub refuses is still a success, with the refusal as a note"() {
+        given: 'the rule is already paused; the caller asks for paused:true again and the hub says no'
+        enableWrite()
+        def state = [name: 'Idem', ruleJson: json(validGraph())]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.name = b.name; state.ruleJson = b.ruleJson; [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/872') { params -> json([name: state.name, rulePaused: true, ruleJson: state.ruleJson, validationErrors: []]) }
+        hubGet.register('/app/ruleBuilderPause/872/true') { params -> '{"success":false,"message":"already paused"}' }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 872, confirm: true, paused: true, definition: validGraph()])
+
+        then: 'nothing needed changing, so the refusal is a note rather than a failed write'
+        result.success == true
+        result.verified == true
+        result.rulePaused == true
+        result.note.contains('already paused')
+        !result.containsKey('error')
+
+        and: 'the confirmed read-back still hands back what the hub holds'
+        result.definition != null
+    }
+
+    def "a definition edit whose real pause change the hub refuses fails but keeps the confirmed definition"() {
+        given: 'the rule is running; the caller pauses it, the hub refuses, and the read-back reads paused'
+        enableWrite()
+        def reads = 0
+        def state = [name: 'Edit', ruleJson: json(validGraph())]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.name = b.name; state.ruleJson = b.ruleJson; [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/873') { params ->
+            reads++
+            json([name: state.name, rulePaused: reads > 1, ruleJson: state.ruleJson, validationErrors: []])
+        }
+        hubGet.register('/app/ruleBuilderPause/873/true') { params -> '{"success":false,"message":"pause rejected"}' }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 873, confirm: true, paused: true, definition: validGraph()])
+
+        then:
+        result.success == false
+        result.error.startsWith('Pause/resume failed:')
+
+        and: 'the read-back confirmed name, pause and counts, so the document it read stays on the response'
+        result.definition != null
+        result.note.contains('pause endpoint reported failure')
     }
 
     def "a rename to the rule's current name that fails its read-back says rename, not pause"() {
@@ -1391,6 +1461,15 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.success == true
         result.rulePaused == true
         result.activated == false
+
+        and: 'the hub said it activated the save, and that verdict rides the response verbatim'
+        result.activatedSuccessfully == true
+
+        and: 'the note names the pause as the reason and prescribes a resume, not another save'
+        result.note.contains('PAUSED')
+        result.note.contains('paused: false')
+        !result.note.contains('Stored but NOT activated')
+        !result.note.contains('retries activation')
     }
 
     def "a versioned create whose answer is lost and whose child never appears refuses to create again"() {
@@ -1417,6 +1496,33 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.success == false
         result.error.contains('create outcome is unknown')
         result.error.contains('hub_get_visual_rule')
+        rawPaths == [CREATE_2_0]
+        posts.isEmpty()
+    }
+
+    def "a versioned create the transport lost WITHOUT a status is reconciled, never sent down the legacy route"() {
+        given: 'createchild throws with no HTTP status at all -- a timeout, not a refusal'
+        enableWrite()
+        int appsListCalls = 0
+        hubGet.register('/hub2/appsList') { params ->
+            appsListCalls++
+            json([apps: [[key: 700, data: [id: 700, appTypeId: 99, name: 'Visual Rules Builder', type: 'Visual Rules Builder', disabled: false], children: []]]])
+        }
+        script.metaClass.pauseExecution = { Long ms -> }
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            throw new RuntimeException('Read timed out')
+        }
+        stubPostJson()
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Timed out', definition: editorDefinition(), confirm: true])
+
+        then: 'no status means the child may exist, so it is reconciled and then refused -- no second create'
+        appsListCalls == 3
+        result.success == false
+        result.error.contains('create outcome is unknown')
         rawPaths == [CREATE_2_0]
         posts.isEmpty()
     }

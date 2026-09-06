@@ -10397,6 +10397,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.repairHints.any { it.contains("rendered with an error") }
         !result.opResult.containsKey("navRetried")
         targetGets == 0
+
+        and: 'a page RM could not build is a FAILED op -- an agent branching on success must not write into it'
+        result.success == false
+
+        and: 'the hint says the schema is empty, because this page returned nothing at all'
+        result.repairHints.any { it.contains("its schema is empty because RM could not build it") }
     }
 
     def "walkStep drive carries the page forward: a step omitting page inherits the navigate target"() {

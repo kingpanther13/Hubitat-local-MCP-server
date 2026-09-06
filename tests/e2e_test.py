@@ -2240,6 +2240,15 @@ class TestRunner:
             "scope='all' devices missing the mcpAuthorized flag"
         assert "mcpAuthorizedCount" in result and "unauthorizedCount" in result, \
             "scope='all' missing mcpAuthorizedCount/unauthorizedCount"
+        # idsComplete is present ONLY to say the record SET could not be vouched for, and every
+        # inventory that cannot vouch for its ids also lacks capabilities -- so a response with no
+        # capabilitiesPartial must not carry the flag at all, and a present one is always false.
+        if result.get("capabilitiesPartial"):
+            assert result.get("idsComplete", False) is False, \
+                f"idsComplete may only ever be present as false: {result.get('idsComplete')!r}"
+        else:
+            assert "idsComplete" not in result, \
+                f"a complete inventory must omit idsComplete rather than assert it: {result}"
 
     @test("devices")
     def test_list_devices_context_format(self) -> None:
@@ -8656,13 +8665,15 @@ class TestRunner:
                 f"a valid editor definition must ACTIVATE, not land as an inactive draft: {created}"
             assert not created.get("validationErrors"), \
                 f"a valid editor definition must come back with no validationErrors: {created}"
-            # Which route made the child is reported, and both documented values are correct
-            # outcomes: the versioned child type on this firmware, the legacy builder page on a
-            # hub without it. A hub-vintage fact, not a regression -- so name it, don't pin it.
-            assert created.get("createRoute") in ("createchild", "createVisualRuleBuilderRule"), \
-                f"createRoute must name the route that made the rule: {created}"
-            if created.get("createRoute") != "createchild":
-                print(f"    hub_set_visual_rule create: made via the legacy route ({created.get('createRoute')})")
+            # The versioned child-create route is what a supported hub (platform 2.5.1+) answers;
+            # the legacy builder page is only reached when the parent REFUSES that route.
+            assert created.get("createRoute") == "createchild", \
+                f"a supported hub creates the child through the versioned route: {created}"
+            # The hub's own storage verdict rides the response when the firmware sends it, and a
+            # clean create must not carry a false one.
+            if "storedSuccessfully" in created:
+                assert created["storedSuccessfully"] is True, \
+                    f"a clean editor-form create must report storedSuccessfully true: {created}"
             # validationIssues is optional on the wire (a pre-2.0 firmware answers without it, and
             # both emitters gate on presence); when it IS answered, a clean save's list is empty
             # and must survive as one.
@@ -8706,14 +8717,10 @@ class TestRunner:
             entry = next((r for r in (self._get_visual_rule().get("rules") or [])
                           if str(r.get("appId")) == str(app_id)), None)
             assert entry is not None, f"editor-form rule {app_id} missing from the listing"
-            # The version comes from the child's app TYPE suffix, which only the versioned route
-            # guarantees; a legacy-route child (accepted above) may carry no suffix, and then
-            # `version` is omitted rather than guessed.
-            if created.get("createRoute") == "createchild":
-                assert entry.get("version") == "2.0", \
-                    f"a rule created from the editor form must list as version 2.0: {entry}"
-            elif "version" not in entry:
-                print("    hub_get_visual_rule list: version omitted for the legacy-route child (no type suffix)")
+            # The version comes from the child's app TYPE suffix, which the versioned route
+            # asserted above guarantees.
+            assert entry.get("version") == "2.0", \
+                f"a rule created from the editor form must list as version 2.0: {entry}"
 
             # (c) EDIT via the documented flow: send the read-back editor back with changes --
             # OR decision -> AND, plus an ELSE action (same switch, same 'on' state, so the
@@ -12829,7 +12836,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         CI-only refusal travels with it no matter who calls it.
         """
         refuse_unless_ci_test_hub(self.client.hub_url)
-        refuse_unless_leased_test_hub(self.client)
+        refuse_unless_leased_test_hub(self.client, refuse_when_unreadable=False)
         print("\n--- Cleanup ---")
 
         # Layer 1: tracked artifacts
@@ -13557,34 +13564,56 @@ def refuse_unless_ci_test_hub(hub_url: str) -> None:
         _refuse(reasons)
 
 
-def refuse_unless_leased_test_hub(client: HubitatMcpClient) -> None:
+def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
+                                  refuse_when_unreadable: bool = True) -> None:
     """The tell that identifies the hub rather than the transport: the CI lease protocol
     (.github/scripts/lease_acquire.sh) writes the Hub Variable `_TEST_HUB_LEASED_BY` on the
     sacrificial hub and nowhere else. A hub without it has never been leased for e2e and is
-    refused; so is a hub whose variable cannot be read (an unreadable hub proves nothing). One
-    read, before the first sweep."""
-    # A relay 504 / connection error is a transport fact, not a hub fact: the CI cleanup step was
-    # refused on one (2026-09-06) and left the sweep undone. Transport errors get a few bounded
-    # retries; a tool-level answer ("Variable not found") refuses at once.
+    refused. One read, before the first sweep.
+
+    refuse_when_unreadable=False is the CLEANUP call: main() already proved this hub's identity
+    before the first write, so an unreadable variable at cleanup time is a fact about the relay,
+    not about the hub -- and refusing there strands every BAT_E2E_ artifact on the shared hub,
+    which is the failure the guard's retry loop was added for. A definitive answer still refuses
+    in both modes."""
+    # Three failure shapes, and only one of them is the hub speaking. A JSON-RPC error is the
+    # hub's own verdict (toolGetVariable throws IllegalArgumentException for an absent variable
+    # and handleToolsCall maps that to -32602); a lost response, an undecodable body, and an
+    # isError:true runtime fault inside the tool all leave the variable unknown and retry.
     got = None
     last_exc: Exception | None = None
+    last_kind = "the hub was not heard"
     for attempt in range(4):
         try:
             got = client.call_tool("hub_manage_variables", {
                 "tool": "hub_get_variable", "args": {"name": TEST_HUB_LEASE_VARIABLE}})
             break
-        except McpToolError as exc:  # the hub answered: the variable is not there
-            _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} is not present on this hub ({str(exc)[:120]}); "
-                     "only the sacrificial test hub carries the e2e lease variable"])
-        except Exception as exc:  # RelayLostResponseError / requests errors: the hub was not heard
-            last_exc = exc
-            if attempt < 3:
-                print(f"  lease-variable read attempt {attempt + 1}/4 failed ({type(exc).__name__}); retrying in 10s")
-                time.sleep(10)
+        except RelayLostResponseError as exc:  # the response was lost; the hub said nothing
+            last_exc, last_kind = exc, "the response was lost in transport"
+        except McpToolError as exc:  # isError:true -- a runtime fault INSIDE the tool
+            last_exc, last_kind = exc, "the tool faulted at runtime (isError), which says nothing about the variable"
+        except McpError as exc:
+            if str(exc).startswith("JSON-RPC error:"):
+                _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
+                         f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
+            # The only other McpError is an exhausted-retry decode failure, i.e. transport.
+            last_exc, last_kind = exc, "the response could not be decoded"
+        except Exception as exc:
+            last_exc, last_kind = exc, "the hub was not heard"
+        if attempt < 3:
+            print(f"  lease-variable read attempt {attempt + 1}/4 failed "
+                  f"({type(last_exc).__name__}); retrying in 10s")
+            time.sleep(10)
     if got is None:
-        _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} could not be read after 4 attempts "
-                 f"({type(last_exc).__name__}: {str(last_exc)[:160]}); an unreadable hub proves nothing"])
-    if not isinstance(got, dict) or (got.get("name") != TEST_HUB_LEASE_VARIABLE and "value" not in got):
+        reason = (f"hub variable {TEST_HUB_LEASE_VARIABLE!r} could not be read after 4 attempts -- "
+                  f"{last_kind} ({type(last_exc).__name__}: {str(last_exc)[:160]})")
+        if not refuse_when_unreadable:
+            print(f"  [WARN] lease variable unreadable ({reason}); identity was proven at start, sweeping")
+            return
+        _refuse([f"{reason}; an unreadable hub proves nothing"])
+    # Both of toolGetVariable's success branches echo the requested name back and carry a `value`
+    # key (null-valued or not), so either one missing means this is not that tool answering.
+    if not isinstance(got, dict) or got.get("name") != TEST_HUB_LEASE_VARIABLE or "value" not in got:
         _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} is not present on this hub; only the sacrificial test hub carries the e2e lease variable"])
 
 
@@ -13660,10 +13689,14 @@ def main() -> None:
         verbose=args.verbose,
     )
 
-    # The hub-side tell, read before the first write of any mode.
-    refuse_unless_leased_test_hub(client)
-
     runner = TestRunner(client, verbose=args.verbose)
+
+    # The hub-side tell, read before the first write of any mode. --cleanup-only reads it below
+    # the restore-completion wait instead: that wait exists to ride out the documented 3-5 minute
+    # window in which every MCP call 504s, so a lease read taken above it can only report a
+    # transport failure. TestRunner's constructor touches no hub.
+    if not args.cleanup_only:
+        refuse_unless_leased_test_hub(client)
 
     if args.setup_perm_fixtures:
         # Bootstrap a test hub for the permanent-fixture model, WITHOUT running any test. Separated
@@ -13765,6 +13798,8 @@ def main() -> None:
                           "(failed restore, or a slow recompile); sweeping anyway.")
                 else:
                     time.sleep(_restore_backoff[min(attempt - 1, len(_restore_backoff) - 1)])
+        # Now that the recompile window is behind us, the hub-side identity tell.
+        refuse_unless_leased_test_hub(client)
         runner.cleanup()
         # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
         # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
