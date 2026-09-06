@@ -164,8 +164,9 @@ definition(
 #include mcp.McpAppClonerLib
 
 // Discovery tools (issue #209 modularization): BM25 tool search + the tool-guide
-// dispatcher. getToolGuideSections() content stays in this file (sandbox-lint's
-// guide-pointer/TOOL_GUIDE.md parity checks anchor on it).
+// dispatcher. getToolGuideSections() keeps the section MAP here (sandbox-lint's
+// guide-pointer/TOOL_GUIDE.md parity checks anchor on it); a section's text may
+// delegate to its domain library's method, which the lint follows to that file.
 #include mcp.McpDiscoveryLib
 // Native Rule Machine + classic-app tools (issue #209): the RM 5.1 wizard authoring
 // surface (hub_set_rule) + native-app CRUD. The shared classic-dynamicPage wizard
