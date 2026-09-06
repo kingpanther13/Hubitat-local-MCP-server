@@ -1138,7 +1138,7 @@ def toolGetVisualRule(args) {
             // firmware) activation is inferred, and only for a rule that HAS a document: a
             // never-saved shell is not running anything.
             out.activated = out.containsKey("runtimeActive") ? (out.runtimeActive == true) :
-                    (!(out.validationErrors) && out.definition instanceof Map)
+                    (!(out.validationErrors) && out.definition instanceof Map && out.rulePaused != true)
             out.remove("runtimeActive")
             if (out.definition instanceof Map) {
                 // The editor form is the shape to modify and send back. A stored graph the
@@ -1481,7 +1481,8 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         out.activated = savedMeta?.containsKey("activatedSuccessfully") ?
                 (savedMeta.activatedSuccessfully == true) :
                 (after != null && validationErrors.isEmpty() &&
-                        (after.data.containsKey("runtimeActive") ? after.data.runtimeActive == true : after.data.definition instanceof Map))
+                        (after.data.containsKey("runtimeActive") ? after.data.runtimeActive == true :
+                                (after.data.definition instanceof Map && after.data.rulePaused != true)))
         if (savedMeta?.containsKey("storedSuccessfully")) out.storedSuccessfully = savedMeta.storedSuccessfully
         if (savedMeta?.activationError != null) out.activationError = savedMeta.activationError
         if (savedMeta?.storageError != null) out.storageError = savedMeta.storageError

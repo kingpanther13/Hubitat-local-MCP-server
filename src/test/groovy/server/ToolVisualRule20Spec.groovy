@@ -1367,11 +1367,13 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         hubGet.register('/app/ruleBuilder20Json/876') { params -> json([name: 'Shell', rulePaused: false, ruleJson: '', validationErrors: []]) }
         hubGet.register('/app/ruleBuilder20Json/877') { params -> json([name: 'Old firmware', rulePaused: false, ruleJson: json(validGraph()), validationErrors: []]) }
         hubGet.register('/app/ruleBuilder20Json/878') { params -> json([name: 'Stopped', rulePaused: false, ruleJson: json(validGraph()), validationErrors: [], runtimeGraph: null]) }
+        hubGet.register('/app/ruleBuilder20Json/879') { params -> json([name: 'Paused', rulePaused: true, ruleJson: json(validGraph()), validationErrors: []]) }
 
         expect:
         script.toolGetVisualRule([appId: 876]).activated == false
         script.toolGetVisualRule([appId: 877]).activated == true
         script.toolGetVisualRule([appId: 878]).activated == false
+        script.toolGetVisualRule([appId: 879]).activated == false   // paused: a document, no errors, no runtime key -- not running
     }
 
     def "a versioned create whose answer is lost and whose child never appears refuses to create again"() {
