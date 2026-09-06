@@ -5097,6 +5097,11 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
 private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefParams, Map navResp, Long reqT0) {
     if (!(navResp?.configPage instanceof Map)) return navResp
     if (hrefParams != null && !hrefParams.isEmpty()) return navResp
+    // A page that RENDERED AN ERROR is not a transient empty render: RM answered, and said why
+    // the page has nothing on it (live: a doActPage entered without the wizard state RM expects
+    // answers "Cannot invoke method startsWith() on null object" on the POST and on a GET alike).
+    // Re-reading it yields the same error; the walker surfaces the error text instead.
+    if (navResp.configPage.error != null) return navResp
     def schema = _rmCollectWalkSchema(navResp.configPage as Map, null)
     if (!schema.inputs.isEmpty() || !schema.hrefs.isEmpty()) return navResp
     if (_timeBudgetExceeded(reqT0)) {
@@ -8979,6 +8984,13 @@ Map _rmWalkStep(Integer appId, Map spec) {
         silentRejection: silentRejection,
         health: health
     ]
+    // The page the op landed on carried RM's own render error: an empty `after` schema then has
+    // a stated cause, and commitSignal's "check health" is not the whole story.
+    def pageError = afterCfg?.configPage?.error
+    if (pageError != null) {
+        result.pageError = pageError.toString()
+        result.repairHints = (result.repairHints ?: []) + ["The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, not because the op committed. Enter the page the way the wizard does (the href or button on its parent page) rather than by name.".toString()]
+    }
     if (health.unreadable == true) {
         result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); the operation itself committed. Verify via hub_get_rule_health(${appId}).".toString()]
     }

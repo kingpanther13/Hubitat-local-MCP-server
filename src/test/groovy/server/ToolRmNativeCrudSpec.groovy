@@ -10326,6 +10326,45 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.after?.inputs == []
     }
 
+    def "walkStep navigate reports a target page that rendered an ERROR as pageError, and never re-reads it"() {
+        given: 'RM answers the navigate with its own render error and no sections'
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "A", install: false, error: null,
+                             sections: [[title: "", input: [[name: "runAction", type: "button"]], body: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def targetGets = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> targetGets++; JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", error: "Cannot invoke method startsWith() on null object", sections: []]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.pauseExecution = { Long ms -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (!(body?.any { k, v -> k.toString().startsWith("_action_href_") })) return [status: 200, location: null, data: "{}"]
+            [status: 200, location: null, data: JsonOutput.toJson([app: [id: 100, version: 7],
+                configPage: [name: "doActPage", error: "Cannot invoke method startsWith() on null object", sections: []]])]
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "selectActions", operation: "navigate", navigate: [targetPage: "doActPage"]],
+            confirm: true
+        ])
+
+        then: 'the error is on the result, the empty schema has its cause, and nothing was re-read'
+        result.pageError == "Cannot invoke method startsWith() on null object"
+        result.after?.inputs == []
+        result.repairHints.any { it.contains("rendered with an error") }
+        !result.opResult.containsKey("navRetried")
+        targetGets == 0
+    }
+
     def "walkStep drive carries the page forward: a step omitting page inherits the navigate target"() {
         given:
         enableWrite()
