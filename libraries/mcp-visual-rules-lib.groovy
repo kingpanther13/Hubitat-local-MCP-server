@@ -191,7 +191,6 @@ private Map _vrbCreateChild(String version) {
     def wantedFormat = (version == "1.0") ? "classic" : "graph"
     def before = [] as Set
     def parentSeen = false
-    boolean unsupported = false
     try {
         def parent = _vrbParentNode()
         parentSeen = true
@@ -236,11 +235,9 @@ private Map _vrbCreateChild(String version) {
         // after the write landed; taking the legacy route on either makes a second rule and orphans
         // the first. Every 5xx, and an exception with no status at all (timeout, transport), stays
         // on the reconcile path below, which never re-creates on an unknown outcome.
-        if (!unsupported) {
-            Integer thrownStatus = null
-            try { thrownStatus = e.response?.status as Integer } catch (Exception ignored) { thrownStatus = null }
-            if (thrownStatus in [404, 405, 501]) unsupported = true
-        }
+        Integer thrownStatus = null
+        try { thrownStatus = e.response?.status as Integer } catch (Exception ignored) { thrownStatus = null }
+        boolean unsupported = thrownStatus in [404, 405, 501]
         // Two cases where nothing was created and the legacy route is safe: the parent refused
         // the child type outright, or the parent itself could not be read (the versioned
         // create was never attempted).
