@@ -131,7 +131,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
     /** An exception carrying an HTTP status the way HttpResponseException does (duck-typed via
      *  .response.status). hubInternalGetRaw's transport THROWS every non-2xx/non-3xx -- the reader
      *  closure only runs for a 2xx and only a 3xx is converted into a struct -- so a firmware that
-     *  REFUSES the versioned child route reaches the caller as one of these, never as a status-500
+     *  has NO SUCH child route answers 404 and reaches the caller as one of these, never as a struct
      *  map. Mirrors HubInternalRetrySpec.FakeHttpException. */
     private static class FakeHttpException extends RuntimeException {
         final def response
@@ -148,7 +148,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             paths << path
             if (path.startsWith('/installedapp/createchild/')) {
-                throw new FakeHttpException(500, 'No such app type')
+                throw new FakeHttpException(404, 'No such app type')
             }
             [status: 200, location: null, data: html]
         }
