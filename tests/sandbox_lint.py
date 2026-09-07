@@ -3694,7 +3694,7 @@ def _run_tool_guide_library_pointer_self_test() -> int:
         failures += 1
         print(f"SELF-TEST FAIL [tool-guide-library-pointer]: false positive on a valid library pointer ({fp})")
     if not failures:
-        print("tool-guide library-pointer self-test: PASS (2 fixtures)")
+        print(f"tool-guide library-pointer self-test: PASS ({LIBRARY_POINTER_FIXTURES} fixtures)")
     return failures
 
 
@@ -3759,6 +3759,14 @@ def _run_tool_guide_anchor_self_test() -> int:
                 f"  all-finding-rules: {sorted({f['rule'] for f in findings})}"
             )
     return failures
+
+
+# Fixture counts for the three self-test suites that print their own PASS line instead of
+# iterating a fixture table. Named once so the PASS line and the run_self_test total read the
+# same value -- two hardcoded copies is exactly how a summary starts understating coverage.
+LIBRARY_POINTER_FIXTURES = 2
+BLOCK_COMMENT_FIXTURES = 4
+SCHEMA_PROVENANCE_FIXTURES = 6
 
 
 def run_self_test() -> int:
@@ -3927,6 +3935,9 @@ def run_self_test() -> int:
         + len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)
         + len(ENVELOPE_PARITY_SELF_TEST_CASES)
         + len(READ_WRITE_SPLIT_SELF_TEST_CASES)
+        + LIBRARY_POINTER_FIXTURES
+        + BLOCK_COMMENT_FIXTURES
+        + SCHEMA_PROVENANCE_FIXTURES
     )
     print(
         f"Self-test: {total_cases} case(s) passed "
@@ -3935,7 +3946,10 @@ def run_self_test() -> int:
         f"{len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)} tool-guide-anchor, "
         f"{len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)} discrete-event-caps, "
         f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity, "
-        f"{len(READ_WRITE_SPLIT_SELF_TEST_CASES)} read-write-split)."
+        f"{len(READ_WRITE_SPLIT_SELF_TEST_CASES)} read-write-split, "
+        f"{LIBRARY_POINTER_FIXTURES} tool-guide-library-pointer, "
+        f"{BLOCK_COMMENT_FIXTURES} library-block-comment, "
+        f"{SCHEMA_PROVENANCE_FIXTURES} mcp-schema-provenance)."
     )
     return 0
 
@@ -4320,7 +4334,7 @@ def _run_library_block_comment_self_test() -> int:
         failures += 1
         print("SELF-TEST FAIL [library-block-comment]: file-scope /* after a // comment / string containing triple-quotes was NOT flagged")
     if failures == 0:
-        print("library block-comment self-test: PASS (4 fixtures)")
+        print(f"library block-comment self-test: PASS ({BLOCK_COMMENT_FIXTURES} fixtures)")
     return failures
 
 
@@ -4444,7 +4458,7 @@ def _run_vendored_schema_hash_self_test() -> int:
         failures += 1
         print("SELF-TEST FAIL [mcp-schema-provenance]: a provenance section with no hash bullet was not flagged")
     if failures == 0:
-        print("mcp-schema provenance self-test: PASS (6 fixtures)")
+        print(f"mcp-schema provenance self-test: PASS ({SCHEMA_PROVENANCE_FIXTURES} fixtures)")
     return failures
 
 
