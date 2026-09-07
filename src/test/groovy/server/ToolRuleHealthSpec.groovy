@@ -61,6 +61,56 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         hubGet.register("/installedapp/statusJson/${id}".toString()) { statusJson(id) }
     }
 
+    @spock.lang.Unroll
+    def "public health preserves a literal pause suffix without positive state evidence (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        seedHealthy(100)
+        hubGet.register('/installedapp/configure/json/100') { configJson(100, 'Living Room (Paused)') }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
+        def health = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        health.ok == true
+        health.paused == null
+        health.label == 'Living Room (Paused)'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "public health uses Visual Rule pause evidence even without a classic config page (#format, paused=#paused)"() {
+        given:
+        settingsMap.enableRead = true
+        def payload = [name: 'Visual (Paused)', rulePaused: paused]
+        hubGet.register('/app/ruleBuilderJson/100') {
+            JsonOutput.toJson(format == 'vrb-classic' ? payload + [whenNodes: [], thenNodes: []] : [:])
+        }
+        hubGet.register('/app/ruleBuilder20Json/100') {
+            JsonOutput.toJson(payload + [ruleJson: [:], validationErrors: []])
+        }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+
+        then:
+        health.ruleFormat == format
+        health.paused == paused
+        health.label == 'Visual (Paused)'
+
+        where:
+        format        | paused
+        'vrb-classic' | false
+        'vrb-classic' | true
+        'vrb-graph'   | false
+        'vrb-graph'   | true
+    }
+
     // ---------- preferred source: ruleBuilderJson broken boolean ----------
 
     def "auto: healthy rule -> ok=true, broken=false, both sources contributed"() {
