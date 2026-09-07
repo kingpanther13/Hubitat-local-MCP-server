@@ -9136,7 +9136,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 
-**hub_read_apps_code (4 tools):**
+### hub_read_apps_code (4 tools)
 
 - **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
@@ -9162,7 +9162,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
-**hub_read_apps_code (2 tools) — HPM package state introspection (Read master required):**
+### hub_read_apps_code (2 tools) — HPM package state introspection (Read master required)
 
 - **hub_list_hpm_packages** — return all packages tracked by Hubitat Package Manager with full component inventory
   - If hpmAppId is omitted, HPM is auto-discovered by scanning installed apps for type="Hubitat Package Manager"
@@ -9177,7 +9177,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-**hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules:**
+### hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
 - **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "stopped" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
@@ -9210,13 +9210,13 @@ For READING an RM rule's current state, use **hub_get_app_config** in the hub_re
 
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
-**Safety model for native CRUD:**
+### Safety model for native CRUD
 1. Every existing-app edit has a full File Manager rollback baseline (configure/json + statusJson); by default, edits to the same app reuse the newest baseline for one hour. The response's backup.backupKey is the restore handle, and restoring a reused baseline undoes every edit made after it. Deletes and destructive Required Expression replacement always take a fresh snapshot.
 2. Multi-device capability inputs (capability.X with multiple=true) require a 3-field POST payload group (settings[name]=csv, name.type=capability.X, name.multiple=true). Omitting name.multiple=true poisons the AppSetting DB flag and every render throws `Command 'size' is not supported by device`. hub_set_rule emits the full group automatically from the input schema — callers never have to think about this.
 3. After every write, the multiple flags in the live appSettings are verified. If any flipped, one automatic retry fires with the full group. Persistent divergence throws and the response surfaces hub_restore_backup as the next step.
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
 
-**CRUD workflow example:**
+### CRUD workflow example
   hub_set_rule(name="BAT-RM-demo", confirm=true) → {appId: 974, ...}
   hub_get_app_config(appId=974, includeSettings=true) → input schema + current settings
   hub_set_rule(appId=974, addTrigger={capability: "Switch", deviceIds: [8, 9], state: "on"}, confirm=true)
@@ -9273,7 +9273,7 @@ This is the generic upsert tool for ANY classic SmartApp. It is separate from th
 
 **Button Rules.** A Button Rule cannot be created standalone and is NOT an `appType` value — create it via the `buttonRule` parameter (`buttonRule={controllerId, buttonNumber, event}`). It routes through the controller's add-button flow and returns `buttonRuleId` with the Button trigger auto-seeded; author its actions via `hub_set_rule(appId=buttonRuleId, addAction=...)`. The controller must already have a button device assigned.
 
-**RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference')`. For Rule Machine RULES use `hub_set_rule`.
+**RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference_walkstep')`. For Rule Machine RULES use `hub_set_rule`.
 
 **Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and destructive Required Expression replacement always take a fresh snapshot.
 
@@ -9817,4 +9817,102 @@ The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls clou
 No custom operation-token or deployment-job protocol is exposed. If a non-continuation write loses its response, read current hub state before deciding whether it is safe to retry.
 '''
     ]
+}
+
+// Sub-section registry (issue #392). Four sections carry ~75% of the guide, so a caller after one
+// fact -- a Mode condition shape, say -- had to pull the whole 56 KB set_rule_reference. This maps
+// each oversized parent to narrower keys that hub_get_tool_guide accepts directly; parent keys are
+// untouched and still return the whole section.
+//
+// A sub-key's value is the list of "### " heading PREFIXES it owns inside the parent's markdown.
+// A prefix claims EVERY heading it matches (so 'hub_update_app' takes both hub_update_app blocks),
+// and the EMPTY list means "owns the preamble" -- the text before the parent's first "### ".
+// The invariant: inside one parent, every block is claimed by exactly one sub-key. ToolGuideSubSectionsSpec
+// enforces it, so a newly added "### " heading fails CI instead of silently becoming unreachable.
+def getToolGuideSubSections() {
+    return [
+        hub_admin_write: [
+            hub_admin_write_overview: [],
+            hub_admin_write_destructive: ["Destructive Write Tools", "Tool-Specific Requirements",
+                                          "hub_call_destructive_ops", "hub_update_firmware"],
+            hub_admin_write_radios: ["hub_call_zwave", "hub_set_zwave", "hub_call_zigbee",
+                                     "hub_set_zigbee", "hub_call_matter"],
+            hub_admin_write_devices: ["hub_call_device_command", "hub_call_device_swap",
+                                      "hub_call_device_replace", "hub_create_device"],
+            hub_admin_write_code: ["hub_update_app", "hub_create_app", "hub_update_package"],
+            hub_admin_write_system: ["hub_get_info", "hub_list_modes", "hub_manage_mode",
+                                     "hub_set_mode_manager", "hub_get_hsm_status",
+                                     "hub_set_system_settings", "hub_update_mcp_settings"]
+        ],
+        performance: [
+            performance_overview: [],
+            performance_devices: ["hub_list_devices", "hub_list_device_events", "hub_get_device",
+                                  "hub_get_compatible_devices"],
+            performance_diagnostics: ["hub_get_logs", "hub_get_radio_details", "hub_get_metrics",
+                                      "hub_get_performance_stats", "hub_delete_debug_logs",
+                                      "hub_report_issue"]
+        ],
+        builtin_app_tools: [
+            builtin_app_tools_overview: [],
+            builtin_app_tools_apps: ["hub_read_apps_code", "hub_get_app_config", "hub_list_apps",
+                                     "hub_list_drivers", "hub_list_app_pages", "hub_list_hpm_packages",
+                                     "hub_list_device_dependents"],
+            builtin_app_tools_rules: ["hub_manage_native_rules_and_apps", "hub_call_rule",
+                                      "hub_get_rule_health", "hub_list_rule_local_variables"],
+            builtin_app_tools_crud: ["Safety model for native CRUD", "CRUD workflow example",
+                                     "hub_set_native_app", "hub_delete_native_app",
+                                     "hub_clone_native_app", "hub_export_native_app",
+                                     "hub_import_native_app"]
+        ],
+        set_rule_reference: [
+            set_rule_reference_overview: [],
+            set_rule_reference_triggers: ["`addTrigger`"],
+            set_rule_reference_actions: ["`addAction`"],
+            set_rule_reference_conditions: ["`addRequiredExpression`", "`replaceRequiredExpression`",
+                                            "Extended per-capability spec shapes",
+                                            "Supported comparison shapes",
+                                            "deviceId vs deviceIds normalization"],
+            set_rule_reference_walkstep: ["`walkStep`", "Raw `settings`/`button` mode"],
+            set_rule_reference_responses: ["Partial-success and trailing-updateRule",
+                                           "Action-mutation defensive recovery"]
+        ]
+    ]
+}
+
+// Split a guide section into its "### " blocks. Index 0 is the preamble (everything before the
+// first "### "); every later entry starts with its own heading line. Used by the sub-section
+// resolver and by the spec that proves the split is lossless.
+def guideSectionBlocks(text) {
+    def blocks = []
+    def cur = []
+    (text ?: '').toString().split("\n", -1).each { line ->
+        if (line.startsWith("### ")) {
+            blocks << cur.join("\n")
+            cur = []
+        }
+        cur << line
+    }
+    blocks << cur.join("\n")
+    return blocks
+}
+
+// Resolve a sub-section key to [parent, content], or null when the key is not one. Block 0 goes to
+// the sub-key declared with an empty prefix list; every other block goes to the sub-key one of whose
+// prefixes starts its heading text.
+def guideSubSectionLookup(subKey) {
+    def registry = getToolGuideSubSections()
+    def parentKey = registry.keySet().find { registry[it].containsKey(subKey) }
+    if (!parentKey) return null
+    def prefixes = registry[parentKey][subKey]
+    def blocks = guideSectionBlocks(getToolGuideSections()[parentKey])
+    def mine = []
+    blocks.eachWithIndex { block, idx ->
+        if (idx == 0) {
+            if (!prefixes) mine << block
+            return
+        }
+        def heading = block.split("\n", -1)[0].substring(4)
+        if (prefixes.any { heading.startsWith(it) }) mine << block
+    }
+    return [parent: parentKey, content: mine.join("\n")]
 }

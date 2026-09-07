@@ -323,22 +323,37 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
 
 def toolGetToolGuide(section) {
     def sections = getToolGuideSections()
+    def subSections = getToolGuideSubSections()
 
     if (section) {
         def key = section.toLowerCase().replaceAll(/[^a-z_]/, "_")
         if (sections.containsKey(key)) {
-            return [
+            def result = [
                 success: true,
                 section: key,
                 content: sections[key]
             ]
-        } else {
+            // Sub-keys of an oversized parent (issue #392): advertise them on the parent's own
+            // response so the next call can be the narrow one, without a trip to the schema.
+            if (subSections.containsKey(key)) result.subSections = subSections[key].keySet().toList()
+            return result
+        }
+        def sub = guideSubSectionLookup(key)
+        if (sub) {
             return [
-                success: false,
-                error: "Unknown section: ${section}",
-                availableSections: sections.keySet().toList()
+                success: true,
+                section: key,
+                parentSection: sub.parent,
+                content: sub.content,
+                note: "Part of the '${sub.parent}' section; hub_get_tool_guide(section='${sub.parent}') returns all of it.".toString()
             ]
         }
+        return [
+            success: false,
+            error: "Unknown section: ${section}",
+            availableSections: sections.keySet().toList(),
+            availableSubSections: subSections.collectEntries { k, v -> [(k): v.keySet().toList()] }
+        ]
     }
 
     // Return full guide
@@ -356,11 +371,11 @@ def _getAllToolDefinitions_partDiscovery() {
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]] when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. Always pass a section to minimize tokens. The full guide is large: if a call times out, retry with a specific `section` (a much smaller payload) rather than the whole guide -- that is the reliable recovery.",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]] when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Always pass a section to minimize tokens -- the whole guide does not fit one response.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "REQUIRED for efficiency: pass one section key (see enum). Omit only to fetch the full guide / discover the available keys.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]]
+                    section: [type: "string", description: "REQUIRED: one section key from the enum.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]]
                 ]
             ]
         ],

@@ -213,9 +213,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
         and: 'they keep a capability-name summary + a guide pointer (agent never blind)'
         addTrigger.contains('Periodic Schedule')
-        addTrigger.contains("hub_get_tool_guide(section='set_rule_reference')")
+        addTrigger.contains("hub_get_tool_guide(section='set_rule_reference_triggers')")
         addAction.contains('ifThen')
-        addRequiredExpression.contains("hub_get_tool_guide(section='set_rule_reference')")
+        addRequiredExpression.contains("hub_get_tool_guide(section='set_rule_reference_conditions')")
 
         and: 'the full per-capability reference lives in the set_rule_reference guide'
         guide.contains('`addTrigger` capability families')
@@ -380,7 +380,10 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def listDevicesFieldsDesc = listDevicesDef.inputSchema.properties.fields.description as String
 
         when: 'collect every section name from hub_get_tool_guide and every pointer in the schemas'
-        def validSections = script.getToolGuideSections().keySet() as Set
+        // Issue #392: a pointer may target a section OR one of the narrower sub-keys the same
+        // `section` parameter resolves; both are reachable content, so both count as valid here.
+        def validSections = (script.getToolGuideSections().keySet() as Set) +
+                            (script.getToolGuideSubSections().values().collectMany { it.keySet().toList() } as Set)
         def pointerPattern = ~/hub_get_tool_guide\(section\s*=\s*['"]([a-z_]+)['"]\)/
         def descriptionsToCheck = [
             addTriggerDesc, addRequiredExprDesc,
@@ -403,12 +406,15 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // actually reachable through the MCP layer at runtime. This is the test that
         // proves flat-mode callers can fetch the reference content the trim points them at.
         //
-        // 4 unique sections across the 5 trimmed description sites:
-        // - set_rule_reference (addTrigger + addRequiredExpression both point here)
-        // - performance (hub_list_devices top-level + .fields property)
-        // - builtin_app_tools (hub_list_hpm_packages -- drift prose lives here post-merge)
-        // - set_rule_create_reference (hub_set_rule create paragraph)
-        pointerSections.containsAll(['set_rule_reference', 'performance', 'builtin_app_tools', 'set_rule_create_reference'])
+        // 5 unique keys across the 5 trimmed description sites -- issue #392 retargeted the
+        // ones whose parent was oversized at the narrower sub-key that actually answers them:
+        // - set_rule_reference_triggers (addTrigger)
+        // - set_rule_reference_conditions (addRequiredExpression)
+        // - performance_devices (hub_list_devices top-level + .fields property)
+        // - builtin_app_tools_apps (hub_list_hpm_packages -- drift prose lives here post-merge)
+        // - set_rule_create_reference (hub_set_rule create paragraph; parent is already small)
+        pointerSections.containsAll(['set_rule_reference_triggers', 'set_rule_reference_conditions',
+                                     'performance_devices', 'builtin_app_tools_apps', 'set_rule_create_reference'])
         pointerSections.every { it in validSections }
 
         and: 'each of the 4 trimmed tools carries at least one valid hub_get_tool_guide pointer in its flat-mode reachable description text'
@@ -431,16 +437,22 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     }
 
     def "hub_get_tool_guide section enum stays in lockstep with getToolGuideSections() (#296 reachability guard)"() {
-        given: 'the advertised section enum on hub_get_tool_guide, and the served section map'
+        given: 'the advertised section enum on hub_get_tool_guide, and the served section + sub-section maps'
         def guideDef = script.getAllToolDefinitions().find { it.name == 'hub_get_tool_guide' }
         def enumKeys = (guideDef.inputSchema.properties.section.enum as List) as Set
         def sectionKeys = script.getToolGuideSections().keySet() as Set
+        // Issue #392: the enum also advertises the sub-keys of the four oversized sections; both
+        // resolve through the same `section` parameter, so both belong in this lockstep check.
+        def subSectionKeys = script.getToolGuideSubSections().values().collectMany { it.keySet() } as Set
 
-        expect: 'every advertised enum key resolves to a real served section -- a schema-valid client is never pointed at a missing section'
-        (enumKeys - sectionKeys).isEmpty()
+        expect: 'every advertised enum key resolves to a real served section or sub-section -- a schema-valid client is never pointed at a missing one'
+        (enumKeys - sectionKeys - subSectionKeys).isEmpty()
 
         and: 'every served section is advertised in the enum -- a newly added section is discoverable, not orphaned. The #296 defect this guards: dashboards/bundles/rooms/variables were served by getToolGuideSections() but absent from the enum, so schema-validating clients (and LLMs reading the enum) could not request them.'
         (sectionKeys - enumKeys).isEmpty()
+
+        and: 'every served sub-section is advertised too -- same orphaning failure, one level down'
+        (subSectionKeys - enumKeys).isEmpty()
     }
 
     def "hub_get_tool_guide end-to-end: dispatcher resolves the new section keys and returns sentinel-bearing content"() {
@@ -572,7 +584,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // marker. Both must be absent in flat mode.
         !flatFieldsDesc.contains('mcpManaged')
         !flatFieldsDesc.contains('auto-promotes the response to detailed mode')
-        flatFieldsDesc.contains("hub_get_tool_guide(section='performance')")
+        flatFieldsDesc.contains("hub_get_tool_guide(section='performance_devices')")
 
         and: 'gateway-mode ALSO drops the enumeration -- migrated to the served performance guide (#296); no marker tokens either way'
         !gwFieldsDesc.contains('mcpManaged')
@@ -635,7 +647,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // descriptions retain the capability-name summary + guide pointer, which is what the
         // hint surfaces (token-only strip). An AND assertion catches one going stale.
         ex.message.contains('Periodic Schedule')      // addTrigger name summary
-        ex.message.contains("hub_get_tool_guide(section='set_rule_reference')")  // addRequiredExpression guide pointer
+        ex.message.contains("hub_get_tool_guide(section='set_rule_reference_conditions')")  // addRequiredExpression guide pointer
     }
 
     def "guide:true through the gateway bypasses the required-param pre-validation and returns the reference"() {

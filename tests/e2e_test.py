@@ -12085,6 +12085,33 @@ class TestRunner:
             content = res.get("content", "")
             assert "##" in content and len(content) > 80, f"guide section {sec} returned trivial content: {content[:120]!r}"
 
+    @test("best_practice_gating")
+    def test_guide_sub_section_is_a_cheap_slice_of_its_parent(self) -> None:
+        """Issue #392: the four oversized sections split into sub-keys the same `section` parameter
+        takes. Proven on the hub, not just in unit tests: the sub-key resolves, names its parent,
+        carries the fact it is supposed to carry, and costs a fraction of the parent."""
+        parent = self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference"})
+        assert isinstance(parent, dict) and parent.get("success") is True, f"parent section not reachable: {parent}"
+        advertised = parent.get("subSections") or []
+        assert "set_rule_reference_conditions" in advertised, (
+            f"parent response does not advertise its sub-keys: {advertised!r}"
+        )
+
+        sub = self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference_conditions"})
+        assert isinstance(sub, dict) and sub.get("success") is True, f"sub-section not reachable: {sub}"
+        assert sub.get("parentSection") == "set_rule_reference", f"missing parent pointer: {sub!r}"
+
+        parent_len = len(parent.get("content", ""))
+        sub_content = sub.get("content", "")
+        # The motivating case: learning the Mode / Variable condition shapes used to cost the
+        # whole section. The STPage capability list is where those shapes are documented.
+        assert "STPage capability list" in sub_content, f"condition reference missing: {sub_content[:200]!r}"
+        assert "`addTrigger` capability families" not in sub_content, "sub-section leaked the trigger reference"
+        assert len(sub_content) < parent_len / 2, (
+            f"sub-section is {len(sub_content)} chars against a "
+            f"{parent_len}-char parent -- the split is not paying off"
+        )
+
     # -----------------------------------------------------------------------
     # GROUP 11: hub_get_device_attribute poll mode (2 tests -- wall-clock coverage, I7)
     # These exercise the real pauseExecution + now() path that Spock unit tests

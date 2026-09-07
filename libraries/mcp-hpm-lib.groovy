@@ -637,7 +637,7 @@ def _getAllToolDefinitions_partHpm() {
         [
             name: "hub_list_hpm_packages",
             description: """List all packages tracked by Hubitat Package Manager (HPM): name, version, beta flag, author, and component inventory (apps/drivers/files) as HPM recorded at install/update time. Requires Read master; HPM must be installed.[[FLAT_TRIM]]
-Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]""",
+Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section='builtin_app_tools_apps')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [

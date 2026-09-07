@@ -458,7 +458,7 @@ def toolGetAppConfig(args) {
         return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
     }
     if (!(parsed.configPage.sections instanceof List)) {
-        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call hub_list_app_pages for this app, or `hub_get_tool_guide(section='builtin_app_tools')` for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
+        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call hub_list_app_pages for this app, or `hub_get_tool_guide(section='builtin_app_tools_apps')` for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
     }
 
     // Hub returns app.appType as a ~30-key metadata object (author, classLocation,
@@ -2781,7 +2781,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
                     triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() on after the code save, so its subscriptions/schedules/atomicState re-initialize against the new code. Mechanically this submits the app's mainPage 'Done' form, which RE-SENDS EVERY input on that page -- the tool rebuilds them from the instance's live settings so nothing is blanked, and REFUSES to submit (updatedFired:false, partial:true) if it cannot read them, rather than risk clearing device selections. On failure the code save still stands: success stays true with partial:true, updatedFired:false and repairHints. Omit it to match what the hub's own editor Save does (no lifecycle call)."],
-                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write')."],
+                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["appId", "confirm"]
