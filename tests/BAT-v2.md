@@ -4922,3 +4922,15 @@ uv run --python 3.12 --with pyyaml tests/wizard_probe_examples/diag_demo.py
 
 Set `DEVICE_ID=<id>` to override the default switch device ID (1063).
 - The warning paragraph about "Do not use back button" is also normal and does not indicate a bug.
+
+### T708 ? Pause reporting preserves a literal name across rule engines
+
+**Prompt**: "Using only throwaway rules with no real-device actions, create a Rule Machine rule and a Visual Rule in each builder this hub supports. Give each a name ending in `(Paused)`. Pause and resume each, and check whether the rule health report agrees with its own runtime state while preserving the full name. Remove every test rule afterward."
+
+**Expected**: Health reports `paused:true` after pause and `paused:false` after resume, with the same literal name both times. A dedicated Visual Rule read and rename verification preserve that name too. If neither compiled nor status pause evidence is readable and no tagged pause decoration exists, health returns `paused:null` instead of guessing from a bare suffix. Use single-rule reads for state verification; the lightweight Visual Rule list has its own suffix-based detection. No existing automation is modified.
+
+### T709 ? Clone and import report whether inactive staging actually landed
+
+**Prompt**: "Create an empty throwaway rule and make an inactive clone and an inactive import of its export. Verify that both new apps are disabled and the source is unchanged. If staging fails after creation, identify the created app and disable it without creating another copy. Clean up all test apps."
+
+**Expected**: Both operations return the discovered new app ID and list it in `stagedDisabled`; independent reads show disabled. Any failed disable produces `success:false`, `isError:true`, the affected IDs and a targeted disable remedy, warning against repeating clone/import. If discovery fails, the response warns that staging could not run and any created app may still be enabled. Failure paths are deterministic unit-test cases; do not inject production-hub failures to force them.

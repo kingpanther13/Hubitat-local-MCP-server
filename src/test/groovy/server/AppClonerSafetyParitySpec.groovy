@@ -57,4 +57,42 @@ class AppClonerSafetyParitySpec extends ToolSpecBase {
         result.error.contains('hub_set_app_disabled')
         cleaned == [900]
     }
+    def "staging continuation keeps prior failures and never repeats an attempted disable"() {
+        given:
+        def disabled = []
+        def cleaned = []
+        boolean overBudget = true
+        script.metaClass._timeBudgetExceeded = { Long start -> overBudget }
+        script.metaClass.toolSetAppDisabled = { Map args ->
+            disabled << args.appId
+            args.appId == 200 ? [success: false, error: 'denied'] : [success: true]
+        }
+        script.metaClass._appClonerCleanup = { Integer id -> cleaned << id }
+        def cp = [phase: 'stage_disable', newAppId: 200, clonerAppId: 900,
+                  stageTargets: [200, 201, 202], stageFailures: [], stagedDisabled: [],
+                  baseResult: [success: true, newAppId: 200]]
+
+        when:
+        def waiting = script._mrtrAppClonerStageSlice(cp, 'import')
+
+        then:
+        disabled == [200]
+        cleaned == []
+        cp.stageTargets == [201, 202]
+        cp.stageFailures*.appId == [200]
+        waiting.__mrtrContinue.kind == 'import_native_app'
+        waiting.__mrtrContinue.checkpoint.stageTargets == [201, 202]
+
+        when:
+        overBudget = false
+        def terminal = script._mrtrAppClonerStageSlice(cp, 'import')
+
+        then:
+        disabled == [200, 201, 202]
+        terminal.success == false
+        terminal.stagedDisabled == [201, 202]
+        terminal.stageFailures*.appId == [200]
+        terminal.error.contains('NEW APP ITSELF (200)')
+        cleaned == [900]
+    }
 }

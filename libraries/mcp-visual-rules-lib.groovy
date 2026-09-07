@@ -1093,12 +1093,8 @@ private String _vrbBareName(Object raw, boolean paused) {
 }
 
 private boolean _vrbNameMatches(Map after, String requestedName) {
-    // Read-back name comparison for every save path. A PAUSED rule comes back carrying the hub's
-    // own "(Paused)" decoration, usually HTML-wrapped ("Name <span
-    // class='text-red'>(Paused)</span>"), so a literal compare reported verified:false on a write
-    // that had landed -- and on create that left the child installed, inviting a duplicate on
-    // retry. Accept the literal name OR the decoration-stripped one; a name that differs beyond
-    // the suffix still fails.
+    // Graph reads may include a tagged runtime decoration. Preserve classic
+    // names verbatim so a successful write cannot invite a duplicate retry.
     if (after == null) return false
     return stripAppConfigHtml(after.data?.name)?.toString() == requestedName ||
            _vrbBareName(after.data?.name, after.data?.rulePaused == true) == requestedName

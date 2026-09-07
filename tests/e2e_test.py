@@ -4220,7 +4220,7 @@ class TestRunner:
         # The bundled create is the suite's heaviest single create; route it through
         # _create_native_rule so a dropped relay response gets verified by label lookup
         # instead of hard-failing the whole lifecycle.
-        app_id = self._create_native_rule("NativeRule", {
+        app_id = self._create_native_rule("NativeRule (Paused)", {
             "addTrigger": {
                 "capability": "Certain Time (and optional date)",
                 "time": "A specific time", "atTime": "17:00",
@@ -4405,12 +4405,20 @@ class TestRunner:
         paused = _rule_status_when(app_id, lambda s: s.get("status") == "paused" and s.get("paused") is True)
         assert paused.get("status") == "paused" and paused.get("paused") is True, \
             f"paused rule should read status paused + paused:true, got: {paused}"
+        paused_health = _rule_health_when(app_id, lambda h: h.get("paused") is True)
+        assert paused_health.get("paused") is True, f"health lost the live pause state: {paused_health}"
+        assert paused_health.get("label") == f"{PREFIX}NativeRule (Paused)", \
+            f"health must strip only the runtime decoration: {paused_health}"
 
         _status_write("hub_set_rule_paused", {"ruleId": app_id, "paused": False},
                       "hub_set_rule_paused(paused=False)")
         resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
         assert resumed.get("status") == "active" and resumed.get("paused") is False, \
             f"resumed rule should read status active again, got: {resumed}"
+        resumed_health = _rule_health_when(app_id, lambda h: h.get("paused") is False)
+        assert resumed_health.get("paused") is False, f"health guessed from a literal suffix: {resumed_health}"
+        assert resumed_health.get("label") == f"{PREFIX}NativeRule (Paused)", \
+            f"health removed a literal part of the rule name: {resumed_health}"
 
         _lifecycle_write("stop", True, "hub_call_rule(action=stop)")
         stopped_health = _rule_health_when(app_id, lambda h: h.get("stopped") is True)
@@ -4889,12 +4897,13 @@ class TestRunner:
 
     @test("native_apps")
     def test_clone_stage_disabled(self) -> None:
-        # stageDisabled closes the staging window a clone otherwise opens: the cloner copies
+        # stageDisabled disables the new subtree after the clone commits: the cloner copies
         # pause state, so a clone of an ACTIVE rule lands ACTIVE and starts reacting to live
         # events the moment it exists. One tiny source rule -- the clone copies whatever the
         # source holds, so a big source would double the wizard cost of this test.
         src_id = self._create_native_rule("StageSrc")
         staged_id = None
+        imported_id = None
         try:
             # The appCloner wizard routinely runs longer than one cloud-relay request;
             # the modern client follows the server's requestState checkpoints.
@@ -4902,12 +4911,13 @@ class TestRunner:
                           "stageDisabled": True, "confirm": True}
             staged_clone = self.client.call_tool("hub_manage_native_rules_and_apps",
                 {"tool": "hub_clone_native_app", "args": clone_args})
-            assert staged_clone.get("success") is True and staged_clone.get("newAppId"), \
-                f"stageDisabled clone should succeed, got: {staged_clone}"
             staged_id = staged_clone.get("newAppId")
             # Track it before asserting: the clone is a real installed app now, so a failure
             # below must not orphan it on the test hub.
-            self.created_native_app_ids.append(str(staged_id))
+            if staged_id:
+                self.created_native_app_ids.append(str(staged_id))
+            assert staged_clone.get("success") is True and staged_id, \
+                f"stageDisabled clone should succeed, got: {staged_clone}"
             assert str(staged_id) in [str(x) for x in (staged_clone.get("stagedDisabled") or [])], \
                 f"stagedDisabled should list the new app, got: {staged_clone}"
             st = self._rm_rule_status_when(staged_id, lambda s: s.get("disabled") is True)
@@ -4916,7 +4926,25 @@ class TestRunner:
             src = self._rm_rule_status(src_id)
             assert src.get("disabled") is False, \
                 f"stageDisabled must not touch the SOURCE rule, got: {src}"
+            exported = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_export_native_app", "args": {"appId": src_id}})
+            assert exported.get("success") is True and exported.get("jsonContent"), \
+                f"source export failed: {exported}"
+            imported = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_import_native_app", "args": {
+                    "parentHintAppId": src_id, "jsonContent": exported["jsonContent"],
+                    "newName": f"{PREFIX}StagedImport", "stageDisabled": True, "confirm": True}})
+            imported_id = imported.get("newAppId")
+            if imported_id:
+                self.created_native_app_ids.append(str(imported_id))
+            assert imported.get("success") is True and imported_id, f"staged import failed: {imported}"
+            assert str(imported_id) in [str(x) for x in (imported.get("stagedDisabled") or [])], imported
+            status = self._rm_rule_status_when(imported_id, lambda s: s.get("disabled") is True)
+            assert status.get("disabled") is True, f"staged import is enabled: {status}"
+            assert self._rm_rule_status(src_id).get("disabled") is False, "import disabled its source"
         finally:
+            if imported_id:
+                self._delete_native(imported_id)
             if staged_id:
                 self._delete_native(staged_id)
             self._delete_native(src_id)
@@ -8100,6 +8128,19 @@ class TestRunner:
             print(f"    [WARN] visual-rule listing lookup for {name!r} failed: {exc}")
         return None
 
+    def _check_visual_literal_pause_name(self, app_id: Any, name: str) -> None:
+        for paused in (True, False):
+            changed = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule", "args": {
+                    "appId": app_id, "name": name, "paused": paused, "confirm": True}})
+            assert changed.get("success") is True, f"literal-name pause write did not verify: {changed}"
+            own = self._get_visual_rule(app_id)
+            assert own.get("name") == name and own.get("rulePaused") is paused, own
+            health = self.client.call_tool("hub_read_diagnostics", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert health.get("paused") is paused and health.get("label") == name, \
+                f"health disagrees with the Visual Rule's own state/name: {health}"
+
     @test("visual_rules")
     def test_visual_rule_classic_lifecycle(self) -> None:
         # Full VRB round-trip: create from a classic definition (a 1.0 rule, or a translated
@@ -8292,6 +8333,8 @@ class TestRunner:
             replaced_blob = json.dumps(got.get("whenNodes") if fmt == "classic" else got.get("definition"))
             assert "Turns on" in replaced_blob, \
                 f"replaced definition did not round-trip 'Turns on': {replaced_blob[:300]}"
+            self._check_visual_literal_pause_name(app_id, f"{PREFIX}VisualRuleLiteral (Paused)")
+
         finally:
             # DELETE inline -- the delete contract IS part of the lifecycle under
             # test (the tracked-id sweep stays as backstop if this raises). On a relay
@@ -8849,6 +8892,8 @@ class TestRunner:
                 )
                 if self._get_visual_rule(warn_id).get("success") is False:
                     self._untrack_native_app(warn_id)
+            self._check_visual_literal_pause_name(app_id, f"{PREFIX}VisualGraphLiteral (Paused)")
+
         finally:
             # DELETE, same contract the lifecycle test asserts: on a relay 504 the response is
             # gone so absence is the evidence, and the id stays tracked until an independent

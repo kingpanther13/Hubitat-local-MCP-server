@@ -453,3 +453,14 @@ the same terms as anyone accessing them from a Hubitat hub they own — as a
 reference for interoperability with the published admin HTTP surface. Do not
 redistribute outside this repo or the contexts that already legitimately serve
 them.
+
+## Pause/name wire observations (2026-09-07, platform 2.5.1.181)
+
+Throwaway, device-free rules read through server 4.2.2 confirmed that RM's export
+state carries Boolean `paused`. Classic Visual Rule JSON carries `rulePaused`
+and the rule's own `name` (including a user-typed `(Paused)` suffix); graph Visual
+Rule JSON carries `rulePaused` and appends a real HTML span for its runtime pause
+decoration. Strip that decoration before HTML cleanup, without stripping a bare
+suffix from the stored name. Pausing the classic fixture with a literal suffix
+previously caused a false rename-verification failure despite the stored name
+being correct. These are wire observations, not refreshed UI bundle captures.
