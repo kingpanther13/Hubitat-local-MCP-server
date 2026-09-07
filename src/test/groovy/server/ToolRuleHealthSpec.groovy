@@ -175,6 +175,32 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         health.label == 'Literal (Paused)'
     }
 
+    @spock.lang.Unroll
+    def "explicit stopped state #stored wins over older config markup"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/installedapp/configure/json/100') {
+            configJson(100, 'Literal (Stopped) <span>(Stopped)</span>')
+        }
+        hubGet.register('/installedapp/statusJson/100') {
+            JsonOutput.toJson([appSettings: [], appState: [[name: 'stopped', value: stored]]])
+        }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        health.stopped == expected
+        health.label == 'Literal (Stopped)'
+
+        where:
+        stored  | expected
+        false   | false
+        'false' | false
+        true    | true
+        'true'  | true
+    }
+
     // ---------- preferred source: ruleBuilderJson broken boolean ----------
 
     def "auto: healthy rule -> ok=true, broken=false, both sources contributed"() {

@@ -4220,13 +4220,13 @@ class TestRunner:
         # The bundled create is the suite's heaviest single create; route it through
         # _create_native_rule so a dropped relay response gets verified by label lookup
         # instead of hard-failing the whole lifecycle.
-        app_id = self._create_native_rule("NativeRule (Paused)", {
+        app_id = self._create_native_rule("NativeRule", {
             "addTrigger": {
                 "capability": "Certain Time (and optional date)",
                 "time": "A specific time", "atTime": "17:00",
             },
             "addActions": [{"capability": "log", "message": "E2E native rule fired"}],
-        })
+        }, name_suffix=" (Paused)")
 
         # VERIFY: the new rule shows up in the NATIVE RM rule list (RMUtils).
         rules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
@@ -4236,6 +4236,10 @@ class TestRunner:
             for r in rule_list
         )
         assert found, f"created native rule {app_id} not found in hub_list_rules"
+        fixture_entry = next(r for r in rule_list if str(r.get("id")) == str(app_id))
+        expected_label = fixture_entry.get("name") or fixture_entry.get("label")
+        assert isinstance(expected_label, str) and expected_label.endswith(" (Paused)"), fixture_entry
+
 
         # STATUS (issue #359): hub_list_rules surfaces each rule's live status. The freshly-
         # created, enabled rule reads "active"; pausing via hub_set_rule_paused flips it to
@@ -4407,7 +4411,7 @@ class TestRunner:
             f"paused rule should read status paused + paused:true, got: {paused}"
         paused_health = _rule_health_when(app_id, lambda h: h.get("paused") is True)
         assert paused_health.get("paused") is True, f"health lost the live pause state: {paused_health}"
-        assert paused_health.get("label") == f"{PREFIX}NativeRule (Paused)", \
+        assert paused_health.get("label") == expected_label, \
             f"health must strip only the runtime decoration: {paused_health}"
 
         _status_write("hub_set_rule_paused", {"ruleId": app_id, "paused": False},
@@ -4417,7 +4421,7 @@ class TestRunner:
             f"resumed rule should read status active again, got: {resumed}"
         resumed_health = _rule_health_when(app_id, lambda h: h.get("paused") is False)
         assert resumed_health.get("paused") is False, f"health guessed from a literal suffix: {resumed_health}"
-        assert resumed_health.get("label") == f"{PREFIX}NativeRule (Paused)", \
+        assert resumed_health.get("label") == expected_label, \
             f"health removed a literal part of the rule name: {resumed_health}"
 
         _lifecycle_write("stop", True, "hub_call_rule(action=stop)")
@@ -4930,6 +4934,8 @@ class TestRunner:
                 "tool": "hub_export_native_app", "args": {"appId": src_id}})
             assert exported.get("success") is True and exported.get("jsonContent"), \
                 f"source export failed: {exported}"
+            before_import = self.client.call_tool("hub_read_rules", {"tool": "hub_list_rules", "args": {}})
+            before_ids = {str(r.get("id")) for r in (before_import.get("rules") or [])}
             imported = self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_import_native_app", "args": {
                     "parentHintAppId": src_id, "jsonContent": exported["jsonContent"],
@@ -4941,6 +4947,16 @@ class TestRunner:
             assert str(imported_id) in [str(x) for x in (imported.get("stagedDisabled") or [])], imported
             status = self._rm_rule_status_when(imported_id, lambda s: s.get("disabled") is True)
             assert status.get("disabled") is True, f"staged import is enabled: {status}"
+            after_import = self.client.call_tool("hub_read_rules", {"tool": "hub_list_rules", "args": {}})
+            added_rules = [r for r in (after_import.get("rules") or []) if str(r.get("id")) not in before_ids]
+            for rule in added_rules:
+                # Keep any unexpected test duplicate available to the final cleanup sweep.
+                if str(rule.get("name") or rule.get("label") or "").startswith(PREFIX):
+                    rule_id = str(rule.get("id"))
+                    if rule_id not in self.created_native_app_ids:
+                        self.created_native_app_ids.append(rule_id)
+            assert {str(r.get("id")) for r in added_rules} == {str(imported_id)}, \
+                f"import must create exactly one rule, got: {added_rules}"
             assert self._rm_rule_status(src_id).get("disabled") is False, "import disabled its source"
         finally:
             if imported_id:
@@ -5501,7 +5517,7 @@ class TestRunner:
     # ---- shared helpers for the native-authoring coverage below ----
 
     def _create_native_rule(self, suffix: str, extra: dict | None = None,
-                            return_result: bool = False) -> Any:
+                            return_result: bool = False, *, name_suffix: str = "") -> Any:
         """Create a native RM rule via hub_set_rule (no appId), track it.
 
         With no `extra` this creates an empty shell; pass `extra` to BUNDLE create-time
@@ -5513,7 +5529,7 @@ class TestRunner:
         whole-test retry uses a different label and never reissues the uncertain write."""
         self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
         label = (f"{PREFIX}{suffix}_{_run_artifact_suffix()}_"
-                 f"{self._native_rule_fixture_seq}")
+                 f"{self._native_rule_fixture_seq}{name_suffix}")
         args = {"name": label, "confirm": True}
         if extra:
             args.update(extra)
@@ -8136,7 +8152,7 @@ class TestRunner:
             assert changed.get("success") is True, f"literal-name pause write did not verify: {changed}"
             own = self._get_visual_rule(app_id)
             assert own.get("name") == name and own.get("rulePaused") is paused, own
-            health = self.client.call_tool("hub_read_diagnostics", {
+            health = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_get_rule_health", "args": {"appId": app_id}})
             assert health.get("paused") is paused and health.get("label") == name, \
                 f"health disagrees with the Visual Rule's own state/name: {health}"
