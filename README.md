@@ -1658,6 +1658,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.2.2** - feat: Visual Rule Builder 2.0 support — editor form, pre-flight validation, versioned create. PRs: [#398](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/398)
 - **v4.2.1** - fix: move MCP log history to native Hubitat storage. PRs: [#406](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/406)
 - **v4.2.0** - chore: remove deprecated output schemas. PRs: [#405](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/405)
 - **v4.1.1** - test: clear TOOL_SEARCH_INDEX in the groovy2x-spock scaffold harness too; ci: add e2e:skip label (cancel in-flight e2e, keep the hub free, gate stays pending); fix: hub_get_jobs and hub_get_performance_stats continue over the relay instead of 502ing on large hubs. PRs: [#397](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/397), [#400](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/400), [#401](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/401)
