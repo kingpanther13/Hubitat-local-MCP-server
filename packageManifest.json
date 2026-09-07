@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "4.2.0",
+    "version": "4.2.1",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-09-06",
+    "dateReleased": "2026-09-07",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v4.2.0 - 2026-09-06\n- chore: remove deprecated output schemas (#405)\n  - Removed the deprecated “Publish tool output schemas” option. Tool results are returned as JSON text, including on installations that previously enabled the option.",
+    "releaseNotes": "v4.2.1 - 2026-09-07\n- fix: move MCP log history to native Hubitat storage (#406)\n  - Reduce logging overhead by storing MCP history in Hubitat's native logs instead of repeatedly saving the complete history in app state.\n  - Read native logs, structured MCP logs, and logging status through `hub_get_logs` using its `hub`, `mcp`, and `status` modes.\n  - Correct source names and time filtering for current Hubitat log formats.\n\nv4.2.0 - 2026-09-06\n- chore: remove deprecated output schemas (#405)\n  - Removed the deprecated “Publish tool output schemas” option. Tool results are returned as JSON text, including on installations that previously enabled the option.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

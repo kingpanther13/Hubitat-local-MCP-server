@@ -1602,7 +1602,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         response.error == null
         response.result.isError != true
         inner.identifyHubTriggered == true
-        seen == [identifyHub: true]
+        seen == [identifyHub: true, __reqT0: 1234567890000L]
     }
 
     def "mixed-mode metrics count only snapshot writes and firmware status polls stay read-shaped"() {

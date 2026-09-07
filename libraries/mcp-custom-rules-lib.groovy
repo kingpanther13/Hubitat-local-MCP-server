@@ -695,15 +695,14 @@ def toolGetRuleDiagnostics(args) {
         throw new IllegalArgumentException("Rule not found: ${ruleId}")
     }
 
+    def logHistory = getDebugLogReadResult(args)
+    if (logHistory.status == "in_progress") return logHistory + [tool: "hub_get_custom_rule"]
     def ruleData = childApp.getRuleData()
-
-    // Get recent logs for this rule
-    initDebugLogs()
-    def ruleLogs = (state.debugLogs.entries ?: []).findAll { it.ruleId == ruleId }
+    def ruleLogs = (logHistory.entries ?: []).findAll { it.ruleId == ruleId }
     def recentLogs = ruleLogs.drop(Math.max(0, ruleLogs.size() - 10))
     def errorLogs = ruleLogs.findAll { it.level == "error" }
 
-    return [
+    def result = [
         source: "mcp_custom_engine",
         rule: [
             id: ruleData.id,
@@ -730,12 +729,17 @@ def toolGetRuleDiagnostics(args) {
             localVariables: ruleData.localVariables ?: [:]
         ],
         logs: [
-            recentCount: recentLogs.size(),
-            errorCount: errorLogs.size(),
+            recentCount: logHistory.error ? null : recentLogs.size(),
+            errorCount: logHistory.error ? null : errorLogs.size(),
             recent: recentLogs.collect { [time: formatTimestamp(it.timestamp), level: it.level, message: it.message] },
             errors: errorLogs.drop(Math.max(0, errorLogs.size() - 5)).collect { [time: formatTimestamp(it.timestamp), message: it.message, stackTrace: it.stackTrace] }
         ]
     ]
+    if (logHistory.error) {
+        result.logReadError = logHistory.error
+        result.logReadRetryable = logHistory.retryable
+    }
+    return result
 }
 
 def _getAllToolDefinitions_partCustomRules() {

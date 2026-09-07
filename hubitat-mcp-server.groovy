@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.2.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.2.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -36,6 +36,9 @@
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
 // fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
+@groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
+// Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
+@groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
 // freshly scheduled worker execution can read an atomicState snapshot that predates
@@ -468,7 +471,7 @@ def advancedOverridesPage() {
                   required: false
         }
         section("Slow-operation time budgets") {
-            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes and the two Logs-page reads that grow with hub size (hub_get_jobs, hub_get_performance_stats) automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
+            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes, Logs-page reads, and native log history recovery automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
@@ -1783,7 +1786,8 @@ def _maxConcurrentWrites() {
 def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
-            "hub_get_jobs", "hub_get_performance_stats"] as Set
+            "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
+            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -1791,7 +1795,8 @@ def _budgetAwareTools() {
 def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
-            "hub_create_driver", "hub_update_driver", "hub_delete_item"] as Set
+            "hub_create_driver", "hub_update_driver", "hub_delete_item",
+            "hub_delete_debug_logs"] as Set
 }
 
 // Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
@@ -1800,7 +1805,8 @@ def _mrtrWriteTools() {
 // the read from its cached snapshot). The leaf itself answers status: "in_progress" while its
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
-    return ["hub_get_jobs", "hub_get_performance_stats"] as Set
+    return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
+            "hub_report_issue", "hub_get_custom_rule"] as Set
 }
 
 // A read only continues when the request's transport carries a time budget; without one the
@@ -2625,7 +2631,8 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             else nextLeaf.patches = result.patchesRemaining
             kind = "patches"
         }
-    } else if (_mrtrReadTools().contains(leafTool) && result.status == "in_progress") {
+    } else if ((_mrtrReadTools().contains(leafTool) || leafTool == "hub_delete_debug_logs")
+            && result.status == "in_progress") {
         // The background fetch is still running; the next leg re-runs the identical read.
         kind = "slow_read"
     }
@@ -2691,7 +2698,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 def readCapped = [
                     success: false, isError: true, status: "slow_read_timeout", tool: leaf,
                     error: "The hub's Logs-page fetch did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
-                    note: "No hub state was changed. The fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, check hub_get_logs for a slow or failing /logs/json.",
+                    note: "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
                 ]
                 _mrtrStoreTerminal(stateId, rec, claim, readCapped, true)
@@ -3794,20 +3801,18 @@ def getGatewayConfig() {
         // Option B: manage_logs_diagnostics split into logs + diagnostics
         hub_manage_logs: [
             description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/app/location event history: use the core hub_list_device_events tool.)",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_delete_debug_logs", "hub_set_log_level"],
+            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_delete_debug_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (trace/debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
+                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
-                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs', default) or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_delete_debug_logs: "Clear all MCP debug log entries",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
-                hub_get_logs: "errors warnings messages trace syslog output print recent latest newest device app scope regex pattern filter time window since until last hour minute",
+                hub_get_logs: "mcp internal debug logging status buffer capacity errors warnings trace syslog recent device app regex time window since until",
                 hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity how many level",
                 hub_delete_debug_logs: "wipe reset mcp internal",
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
@@ -3872,12 +3877,11 @@ def getGatewayConfig() {
         ],
         hub_read_diagnostics: [
             description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
+            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level, source, pattern/patterns, since/until, deviceId|appId, limit",
+                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
-                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
@@ -3888,7 +3892,6 @@ def getGatewayConfig() {
                 hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
                 hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity level",
                 hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history health alerts safe mode radio offline backup failed weak mesh",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate",
@@ -5014,8 +5017,6 @@ def executeTool(toolName, args) {
         case "hub_delete_captured_state": return toolDeleteCapturedState(args)
 
         // Debug Logging Tools
-        case "hub_get_debug_logs":
-            return (args.mode == "status") ? toolGetLoggingStatus(args) : toolGetDebugLogs(args)
         case "hub_delete_debug_logs": return toolClearDebugLogs(args)
         case "hub_set_log_level": return toolSetLogLevel(args)
         case "hub_report_issue": return toolGenerateBugReport(args)
@@ -6522,14 +6523,220 @@ def logDebug(msg) {
  * Initialize the debug logging state structure
  */
 def initDebugLogs() {
-    if (!state.debugLogs) {
-        state.debugLogs = [
-            entries: [],
-            config: [logLevel: "error", maxEntries: 100]
-        ]
+    String appId = app?.id?.toString() ?: "0"
+    synchronized (DEBUG_LOG_BUFFERS) {
+        if (DEBUG_LOG_BUFFERS.containsKey(appId)) return DEBUG_LOG_BUFFERS[appId]
+        def legacy = state.debugLogs instanceof Map ? state.debugLogs : [:]
+        def config = [logLevel: legacy.config?.logLevel ?: "error", maxEntries: 100]
+        String generation = atomicState.debugLogGeneration
+        boolean fresh = !generation
+        if (fresh) {
+            generation = java.util.UUID.randomUUID().toString()
+            atomicState.debugLogGeneration = generation
+        }
+        def buffer = [appId: appId, generation: generation, config: config,
+                      entries: [], hydrated: fresh]
+        // The old state-backed history is discarded once; subsequent reloads use native logs.
+        state.debugLogs = [config: config]
+        DEBUG_LOG_BUFFERS[appId] = buffer
+        return buffer
     }
-    if (!state.debugLogs.entries) state.debugLogs.entries = []
-    if (!state.debugLogs.config) state.debugLogs.config = [logLevel: "error", maxEntries: 100]
+}
+
+private Map _debugLogRecord(Map raw, String id) {
+    def entry = [timestamp: raw.timestamp instanceof Number ? raw.timestamp.longValue() : now(),
+                 level: raw.level, component: raw.component, message: raw.message?.toString()?.take(500)]
+    if (raw.ruleId) entry.ruleId = raw.ruleId
+    if (raw.ruleName) entry.ruleName = raw.ruleName
+    if (raw.duration) entry.duration = raw.duration
+    if (raw.stackTrace) entry.stackTrace = raw.stackTrace.toString().take(1000)
+    if (raw.details) entry.details = raw.details
+    // Detach nested caller data once per line; never serialize the whole ring on append.
+    def detached = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(entry))
+    return [id: id, entry: detached]
+}
+
+private void _appendDebugLogRecord(Map buffer, Map record) {
+    buffer.entries << record
+    while (buffer.entries.size() > 100) {
+        buffer.entries.remove((int)0)
+    }
+}
+
+private void _emitNativeDebugLog(Map buffer, Map record, String fullMessage = null) {
+    def nativeEntry = fullMessage == null ? record.entry : record.entry + [message: fullMessage]
+    String line = "[MCP1] " + groovy.json.JsonOutput.toJson(
+        [appId: buffer.appId, generation: buffer.generation, id: record.id, entry: nativeEntry])
+    switch (record.entry.level) {
+        case "debug": log.debug line; break
+        case "info": log.info line; break
+        case "warn": log.warn line; break
+        case "error": log.error line; break
+        default: log.warn "(unknown level '${record.entry.level}') ${line}"; break
+    }
+}
+
+private Map _getDebugLogHistoryResult(Map args = [:]) {
+    def buffer = initDebugLogs()
+    String generation
+    synchronized (buffer) {
+        if (buffer.hydrated) return [entries: _debugLogSnapshot(buffer)]
+        generation = buffer.generation
+    }
+    if (!_logsJsonUsesBackgroundFetch()) return [entries: _fetchDebugLogHistory(buffer, generation)]
+    long t0 = args?.__reqT0 instanceof Number ? args.__reqT0 as Long : now()
+    _scheduleDebugLogHistory(buffer)
+    long deadline = t0 + _logsJsonObserveWaitMs()
+    long remainingBudget = Math.max(0L, deadline - now())
+    while (true) {
+        synchronized (buffer) {
+            if (buffer.hydrated) return [entries: _debugLogSnapshot(buffer)]
+            if (buffer.fetchError) throw new IllegalStateException("Native log recovery failed; retry this request: ${buffer.fetchError}")
+        }
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        if (remaining <= 0L) return [status: "in_progress", retryable: true,
+            note: "Native log history is loading. Continue with requestState when supplied, otherwise repeat the same call."]
+        long waitMs = Math.min(250L, remaining)
+        pauseExecution(waitMs)
+        remainingBudget -= waitMs
+    }
+}
+
+def getDebugLogEntries(Map args = [:]) {
+    def history = getDebugLogReadResult(args)
+    if (history.entries != null) return history.entries
+    throw new IllegalStateException(history.error ?: history.note)
+}
+
+private void _scheduleDebugLogHistory(Map buffer) {
+    String fetchId
+    String generation
+    synchronized (buffer) {
+        if (buffer.hydrated) return
+        // Allow a full HTTP timeout plus authentication retry before replacing a worker.
+        if (buffer.fetchStartedAt instanceof Number && now() - (buffer.fetchStartedAt as Long) < 90000L) return
+        fetchId = java.util.UUID.randomUUID().toString()
+        generation = buffer.generation
+        buffer.fetchId = fetchId
+        buffer.fetchStartedAt = now()
+    }
+    try {
+        runInMillis(200, "runDebugLogHistoryFetch", [overwrite: false,
+            data: [appId: buffer.appId, generation: generation, fetchId: fetchId]])
+    } catch (Exception e) {
+        synchronized (buffer) {
+            if (buffer.fetchId == fetchId) buffer.remove("fetchStartedAt")
+        }
+        throw e
+    }
+}
+
+def runDebugLogHistoryFetch(Map job = [:]) {
+    def buffer = initDebugLogs()
+    synchronized (buffer) {
+        if (job.appId != buffer.appId || job.generation != buffer.generation ||
+            !job.fetchId || job.fetchId != buffer.fetchId || buffer.hydrated ||
+            buffer.fetchClaimId == job.fetchId) return
+        // A scheduled callback can be redelivered while its original fetch is running.
+        buffer.fetchClaimId = job.fetchId
+    }
+    try {
+        _fetchDebugLogHistory(buffer, job.generation.toString(), job.fetchId.toString())
+    } catch (Exception e) {
+        synchronized (buffer) {
+            if (buffer.generation == job.generation && buffer.fetchId == job.fetchId) {
+                buffer.fetchError = e.message ?: e.class.simpleName
+            }
+        }
+    } finally {
+        synchronized (buffer) {
+            if (buffer.generation == job.generation && buffer.fetchId == job.fetchId) buffer.remove("fetchStartedAt")
+        }
+    }
+}
+
+private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId = null) {
+    // Recovery is a reader cost. Logging continues while the scoped hub read runs.
+    def text = hubInternalGet("/logs/past/json", [type: "app", id: buffer.appId], 30)
+    def rows = text ? new groovy.json.JsonSlurper().parseText(text) : null
+    if (!(rows instanceof List)) throw new IllegalStateException("Unexpected native log history response")
+    def recovered = [:]
+    rows.each { row ->
+        def parsed = _parseHubLogLine(row?.toString())
+        if (parsed?.sourceId != null && (parsed.type != "app" || parsed.sourceId != buffer.appId)) return
+        String message = parsed?.message ?: ""
+        int marker = message.indexOf("[MCP1] ")
+        if (marker >= 0) {
+            def envelope
+            try {
+                envelope = new groovy.json.JsonSlurper().parseText(message.substring(marker + 7))
+            } catch (Exception ignored) {
+                // A native line may have been truncated by the hub's own log retention.
+                envelope = null
+            }
+            if (envelope instanceof Map && envelope.appId == buffer.appId &&
+                envelope.generation == generation && envelope.id && envelope.entry instanceof Map) {
+                recovered[envelope.id] = _debugLogRecord(envelope.entry, envelope.id.toString())
+            }
+        }
+    }
+    synchronized (buffer) {
+        // A clear during the HTTP read establishes a new generation; old rows stay excluded.
+        if (buffer.generation == generation && (fetchId == null || buffer.fetchId == fetchId)) {
+            buffer.entries.each { recovered[it.id] = it }
+            buffer.entries = []
+            recovered.values().each { _appendDebugLogRecord(buffer, it) }
+            buffer.hydrated = true
+            buffer.remove("fetchError")
+        }
+        return _debugLogSnapshot(buffer)
+    }
+}
+
+private List _debugLogSnapshot(Map buffer) {
+    return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(buffer.entries.collect { it.entry }))
+}
+
+def getDebugLogReadResult(Map args = [:]) {
+    try {
+        return _getDebugLogHistoryResult(args)
+    } catch (Exception e) {
+        // Diagnostic consumers can still report independent hub and rule information.
+        return [entries: null, retryable: true, error: "MCP log history unavailable: ${e.message ?: e.class.simpleName}".toString()]
+    }
+}
+
+def clearDebugLogEntries(Map args = [:]) {
+    def history = getDebugLogReadResult(args)
+    if (history.status == "in_progress") return history
+    def buffer = initDebugLogs()
+    synchronized (buffer) {
+        int count = buffer.entries.size()
+        String generation = java.util.UUID.randomUUID().toString()
+        atomicState.debugLogGeneration = generation
+        buffer.generation = generation
+        buffer.entries = []
+        buffer.hydrated = true
+        buffer.remove("fetchId")
+        buffer.remove("fetchClaimId")
+        buffer.remove("fetchStartedAt")
+        buffer.remove("fetchError")
+        def result = [clearedCount: history.error ? null : count]
+        if (history.error) {
+            result.countIncomplete = true
+            result.logReadError = history.error
+        }
+        return result
+    }
+}
+
+def setDebugLogLevel(String level) {
+    def buffer = initDebugLogs()
+    synchronized (buffer) {
+        def config = [logLevel: level, maxEntries: 100]
+        state.debugLogs = [config: config]
+        buffer.config = config
+    }
 }
 
 /**
@@ -6547,7 +6754,8 @@ def getConfiguredLogLevel() {
     // Settings take priority (can be set via UI)
     if (settings.mcpLogLevel) return settings.mcpLogLevel
     // Fall back to state (can be set via MCP hub_set_log_level tool)
-    return state.debugLogs?.config?.logLevel ?: "error"
+    def buffer = initDebugLogs()
+    synchronized (buffer) { return buffer.config.logLevel }
 }
 
 /**
@@ -6567,50 +6775,14 @@ def shouldLog(level) {
  * Add a log entry to the MCP-accessible debug buffer
  */
 def mcpLog(String level, String component, String message, String ruleId = null, Map extraData = null) {
+    def buffer = initDebugLogs()
     if (!shouldLog(level)) return
-
-    initDebugLogs()
-
-    def entry = [
-        timestamp: now(),
-        level: level,
-        component: component,
-        // Cap stored payload so each buffer entry stays bounded -- the
-        // `state.debugLogs = state.debugLogs` writeback below re-serializes the
-        // whole buffer on every log line, so an uncapped caller message/trace
-        // would inflate every subsequent write. Mirrors the 500-char response
-        // cap idiom in handleMcpRequest. details stays a structured Map (every
-        // caller passes a small bounded Map, not unbounded text).
-        message: message?.take(500)
-    ]
-
-    if (ruleId) entry.ruleId = ruleId
-    if (extraData?.duration) entry.duration = extraData.duration
-    if (extraData?.ruleName) entry.ruleName = extraData.ruleName
-    if (extraData?.details) entry.details = extraData.details
-    if (extraData?.stackTrace) entry.stackTrace = extraData.stackTrace?.toString()?.take(1000)
-
-    state.debugLogs.entries << entry
-
-    // Enforce max entries limit (circular buffer)
-    def maxEntries = state.debugLogs.config?.maxEntries ?: 100
-    while (state.debugLogs.entries.size() > maxEntries) {
-        state.debugLogs.entries.remove((int)0)
-    }
-
-    // Force top-level state reassignment to ensure nested mutations are persisted
-    state.debugLogs = state.debugLogs
-
-    // Also log to Hubitat logs. Append the structured stackTrace (class + message,
-    // set by mcpLogError) to the warn/error native lines so the exception detail
-    // stays visible on the Hubitat Logs page, not only in the MCP debug buffer.
-    def traceSuffix = extraData?.stackTrace ? " -- ${extraData.stackTrace.toString().take(1000)}" : ""
-    switch (level) {
-        case "debug": log.debug "[${component}] ${message}"; break
-        case "info": log.info "[${component}] ${message}"; break
-        case "warn": log.warn "[${component}] ${message}${traceSuffix}"; break
-        case "error": log.error "[${component}] ${message}${traceSuffix}"; break
-        default: log.warn "[${component}] (unknown level '${level}') ${message}${traceSuffix}"; break
+    def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
+    ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
+    def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
+    synchronized (buffer) {
+        _emitNativeDebugLog(buffer, record, message)
+        _appendDebugLogRecord(buffer, record)
     }
 }
 
@@ -8168,7 +8340,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.2.0"
+    return "4.2.1"
 }
 
 
@@ -8826,7 +8998,11 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
 - Use the attribute filter to reduce data volume
 
-### hub_get_logs (filter pipeline, regex, and time-window reference)
+### hub_get_logs (history, logging status, and filters)
+
+Use mode='hub' (default) for native app/device logs, mode='mcp' for structured MCP entries, or mode='status' for MCP log level, counts, and capacity. MCP mode keeps level/component/ruleId/limit/cursor filters and the existing diagnostic fields used by hub_report_issue. Debug and info are retained alongside warnings and errors when admitted by the configured threshold. After reload, MCP history recovers from this app's native Past Logs; retention shares Hubitat's approximately 1 MB rolling history with other apps and devices. The memory view keeps up to 100 entries without storing the ring in app state.
+
+The following filter pipeline applies to hub mode. Current three-column native timestamps use the hub's timezone; timezone-free since/until arguments still mean UTC.
 
 - Filter pipeline order: scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.
 - `pattern` / `patterns`: the regex matches the log message field ONLY (use `source` for app/device-name substring matching); it is compiled once and throws on invalid regex syntax. A pathological regex like `(.*)*` may hang the matcher -- prefer simple alternation (`error|fail`) or anchored prefixes.
@@ -8883,7 +9059,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 ### hub_delete_debug_logs
 
-Clears ONLY the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs). It does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state). Use it to reset that buffer before reproducing an issue, or to free space.
+Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable clear marker, so old native entries do not return after reload. Hubitat system logs (hub_get_logs) and captured device states (hub_delete_captured_state) are unchanged. Use it before reproducing an issue.
 
 ### hub_report_issue
 
@@ -9612,7 +9788,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and, only when the request's transport carries a time budget, the two Logs-page reads described below.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`. When the transport carries a time budget, log and diagnostic reads also continue as described below.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
@@ -9625,6 +9801,8 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 ### Older clients
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
+
+Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 

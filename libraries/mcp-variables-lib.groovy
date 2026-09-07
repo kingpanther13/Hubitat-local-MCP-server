@@ -199,7 +199,7 @@ def toolListVariables(args = null) {
         }
     } catch (Exception e) {
         // Surface to mcpLog (not just logDebug) so a "no hub variables" response can be
-        // distinguished from "hub variable API broke" via hub_get_debug_logs.
+        // distinguished from "hub variable API broke" via hub_get_logs(mode='mcp').
         hubVarsError = e.message ?: e.toString()
         mcpLog("warn", "hub-vars", "hub_list_variables: getAllGlobalVars() failed: ${hubVarsError} -- returning empty hubVariables", null, [details: [error: hubVarsError]])
     }

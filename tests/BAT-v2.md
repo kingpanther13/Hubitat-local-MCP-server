@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 117 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 116 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -1011,7 +1011,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_read_diagnostics` → `hub_get_device_health` (also in `hub_manage_diagnostics` via multi-membership).
 
-### T51 — Discover hub_get_debug_logs (hub_manage_logs)
+### T51 — Discover hub_get_logs(mode='mcp') (hub_manage_logs)
 
 ```json
 {
@@ -1019,7 +1019,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_get_debug_logs`.
+**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_get_logs(mode='mcp')`.
 
 ### T52 — Discover hub_report_issue (core)
 
@@ -1052,7 +1052,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_set_log_level` and → `hub_get_debug_logs` (mode='status').
+**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_set_log_level` and → `hub_get_logs` (mode='status').
 
 ### T55 — Discover hub_list_captured_states (hub_read_diagnostics)
 
@@ -1104,7 +1104,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_delete_debug_logs`, then → `hub_get_debug_logs`.
+**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_delete_debug_logs`, then → `hub_get_logs(mode='mcp')`.
 
 ---
 
@@ -1305,7 +1305,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `hub_get_logs` (system logs), not `hub_get_debug_logs` (MCP-specific).
+**Expected**: Routes to `hub_get_logs` (system logs), not `hub_get_logs(mode='mcp')` (MCP-specific).
 
 ---
 
@@ -1359,7 +1359,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: All four are reads available from `hub_read_diagnostics` (hub_get_metrics, hub_get_device_health, hub_get_logs, hub_get_debug_logs) — a read-only client gets the whole report from the pure-read gateway; the write-bearing `hub_manage_diagnostics` / `hub_manage_logs` also expose them.
+**Expected**: These reads are available from `hub_read_diagnostics`: `hub_get_metrics`, `hub_get_device_health`, and `hub_get_logs` in hub and MCP modes. A read-only client gets the whole report from the pure-read gateway; the write-bearing `hub_manage_diagnostics` / `hub_manage_logs` also expose them.
 
 ### T84 — Cross-gateway workflow
 
@@ -2377,7 +2377,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_get_debug_logs`.
+**Expected**: `hub_get_logs(mode='mcp')`.
 **Equivalent to**: T51
 
 #### T280 — Clean up diagnostic logs
@@ -2389,7 +2389,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_delete_debug_logs`, then `hub_get_debug_logs` to verify.
+**Expected**: `hub_delete_debug_logs`, then `hub_get_logs(mode='mcp')` to verify.
 **Equivalent to**: T59
 
 #### T281 — Troubleshoot a broken automation
@@ -2414,7 +2414,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_set_log_level` (to 'warn' or 'error'), then `hub_get_debug_logs` (mode='status').
+**Expected**: `hub_set_log_level` (to 'warn' or 'error'), then `hub_get_logs` (mode='status').
 **Equivalent to**: T54
 
 #### T283 — Generate a bug report
@@ -2527,7 +2527,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_get_metrics` + `hub_get_device_health` + `hub_get_logs` + `hub_get_debug_logs`.
+**Expected**: `hub_get_metrics` + `hub_get_device_health` + `hub_get_logs` + `hub_get_logs(mode='mcp')`.
 **Equivalent to**: T83
 
 #### T299 — Complete smart home inventory
@@ -2681,17 +2681,17 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 117 |
+| Total distinct tools in codebase | 116 |
 
-**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (8), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (5), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 117 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 116 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
