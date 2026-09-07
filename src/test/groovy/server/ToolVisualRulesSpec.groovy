@@ -30,6 +30,23 @@ import support.ToolSpecBase
  */
 class ToolVisualRulesSpec extends ToolSpecBase {
 
+    def "a paused classic rule keeps its literal pause suffix in the dedicated read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
+        hubGet.register('/app/ruleBuilderJson/100') {
+            json(classicDefinition() + [name: 'Literal (Paused)', rulePaused: true])
+        }
+
+        when:
+        def result = script.toolGetVisualRule([appId: 100])
+
+        then:
+        result.success == true
+        result.name == 'Literal (Paused)'
+        result.rulePaused == true
+    }
+
     private static final String GRAPH_NOT_FOUND = '{"success":false,"message":"Rule builder instance not found"}'
 
     // The per-version child-create routes the VRB parent (id 700 in registerAppsList) exposes.
