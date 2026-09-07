@@ -9319,8 +9319,28 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
                 // restore would then replay the empty graph and verify zero against zero. The key
                 // keeps its name so existing backups still restore.
                 def doc = vrb.data.definition
+                // A rollback handle the reader ALREADY KNOWS is unreadable is worse than none: the
+                // file uploads, the manifest registers it, the delete envelope advertises it, and
+                // the restore that follows the delete answers "not parseable JSON" with the rule
+                // already gone. definitionParseError is exactly that knowledge, so refuse here --
+                // the caller gates its destructive op on this backup, and refusing the backup
+                // refuses the delete.
+                if (doc == null && vrb.data.definitionParseError) {
+                    throw new IllegalArgumentException(
+                            "Cannot back up Visual Rule ${ruleId}: its stored graph document is unreadable " +
+                            "(${vrb.data.definitionParseError}), so no restorable snapshot can be taken and " +
+                            "nothing was written. Inspect it with hub_get_visual_rule(appId=${ruleId}); a rule " +
+                            "whose document cannot be read can only be re-authored, not restored.")
+                }
                 snapshot.vrbRuleJson = (doc instanceof Map && doc.nodes instanceof List && !doc.nodes.isEmpty()) ?
                         groovy.json.JsonOutput.toJson(doc) : vrb.data.ruleJson?.toString()
+                // An empty shell (no nodes, no raw bytes) is a legitimate thing to delete, so this
+                // is a marker rather than a refusal -- it lets restore say the rule HAD no graph
+                // instead of blaming the snapshot's age.
+                if (!snapshot.vrbRuleJson) {
+                    snapshot.vrbGraphEmpty = true
+                    mcpLog("warn", "vrb", "Backup for Visual Rule ${ruleId}: the rule has no stored graph document, so the snapshot carries no definition to restore")
+                }
             }
         }
     }

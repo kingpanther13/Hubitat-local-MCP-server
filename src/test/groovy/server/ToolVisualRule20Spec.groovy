@@ -106,7 +106,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             paths << path
             if (path.startsWith('/installedapp/createchild/')) {
-                throw new FakeHttpException(500, 'No such app type')
+                throw new FakeHttpException(404, 'No such app type')
             }
             [status: 200, location: null, data: html]
         }
@@ -675,6 +675,71 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         def e = thrown(IllegalArgumentException)
         e.message == 'definition.whenNodes must be an array of node objects.'
         rawPaths.isEmpty()
+        posts.isEmpty()
+    }
+
+    def "a 5xx on the versioned create reconciles instead of creating a second rule via the legacy route"() {
+        given: 'createchild throws 503 AFTER the child landed -- the write succeeded, the answer did not'
+        enableWrite()
+        def children = []
+        hubGet.register('/hub2/appsList') { params ->
+            json([apps: [[key: 700, data: [id: 700, appTypeId: 99, name: 'Visual Rules Builder', type: 'Visual Rules Builder', disabled: false],
+                          children: children.collect { [key: it, data: [id: it, name: '', type: 'Visual Rule Builder 2.0', disabled: false], children: []] }]]])
+        }
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            if (path.startsWith('/installedapp/createchild/')) {
+                children << 818
+                throw new FakeHttpException(503, 'Service Unavailable')
+            }
+            [status: 302, location: '/installedapp/list', data: null]
+        }
+        def state = [name: null, ruleJson: null]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state.name = b.name
+            state.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
+        }
+        hubGet.register('/app/ruleBuilder20Json/818') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, validationErrors: []])
+        }
+        hubGet.register('/installedapp/json/818') { params -> json([id: 818, name: '', type: 'Visual Rule Builder 2.0', disabled: false, user: false]) }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Reconciled', definition: editorDefinition(), confirm: true])
+
+        then: 'the child the 5xx hid was adopted; /app/createVisualRuleBuilderRule was never called'
+        result.success == true
+        result.appId == 818
+        result.createRoute == 'createchild'
+        rawPaths == [CREATE_2_0]
+        !rawPaths.contains('/app/createVisualRuleBuilderRule')
+    }
+
+    def "a 5xx on the versioned create with no child appearing refuses rather than taking the legacy route"() {
+        given: 'createchild throws 500 and nothing was created -- the outcome is unknown, not a refusal'
+        enableWrite()
+        hubGet.register('/hub2/appsList') { params ->
+            json([apps: [[key: 700, data: [id: 700, appTypeId: 99, name: 'Visual Rules Builder', type: 'Visual Rules Builder', disabled: false],
+                          children: []]]])
+        }
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            if (path.startsWith('/installedapp/createchild/')) throw new FakeHttpException(500, 'Internal Server Error')
+            [status: 200, location: null, data: '<html>window.HubitatRuleBuilder20AppId = 819</html>']
+        }
+        stubPostJson()
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Unknown outcome', definition: editorDefinition(), confirm: true])
+
+        then: 'no second create of any kind, and the caller is told the outcome is unknown'
+        result.success == false
+        result.error.contains('outcome is unknown')
+        rawPaths == [CREATE_2_0]
         posts.isEmpty()
     }
 

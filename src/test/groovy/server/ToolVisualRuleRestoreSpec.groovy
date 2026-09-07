@@ -277,6 +277,45 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         snap.statusJson?.error?.contains('no statusJson')
     }
 
+    def "backup capture (graph VRB child): an unreadable stored document refuses the snapshot instead of handing back a dead rollback handle"() {
+        given: 'ruleJson is bytes that do not parse -- the read already knows the document is unreadable'
+        stubUploads()
+        hubGet.register('/installedapp/configure/json/703') { params -> throw new RuntimeException('Vue child -- no classic config page') }
+        hubGet.register('/installedapp/statusJson/703') { params -> throw new RuntimeException('no statusJson either') }
+        hubGet.register('/app/ruleBuilder20Json/703') { params ->
+            json([name: 'Corrupt rule', rulePaused: false, ruleJson: '{not json at all', validationErrors: []])
+        }
+
+        when:
+        script._rmBackupRuleSnapshot(703, 'pre-delete')
+
+        then: 'the destructive op is refused at capture, and NOTHING was uploaded'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('unreadable')
+        e.message.contains('703')
+        uploads.isEmpty()
+    }
+
+    def "backup capture (graph VRB child): a rule with no stored graph is marked, so restore does not blame the snapshot's age"() {
+        given: 'a shell rule -- no graphDocument, no ruleJson; deleting it must stay possible'
+        stubUploads()
+        hubGet.register('/installedapp/configure/json/704') { params -> throw new RuntimeException('Vue child -- no classic config page') }
+        hubGet.register('/installedapp/statusJson/704') { params -> throw new RuntimeException('no statusJson either') }
+        hubGet.register('/app/ruleBuilder20Json/704') { params ->
+            json([name: 'Empty shell', rulePaused: false, ruleJson: null, validationErrors: []])
+        }
+
+        when:
+        def result = script._rmBackupRuleSnapshot(704, 'pre-delete')
+
+        then: 'the backup is taken and says why it carries no definition'
+        result.backupKey.toString().startsWith('rm-rule_704_')
+        def snap = parsedUpload()
+        snap.vrbFormat == 'graph'
+        snap.vrbGraphEmpty == true
+        !snap.vrbRuleJson
+    }
+
     def "backup fallback: configure/json throws but the id speaks classic VRB -- snapshot still written with configJson null"() {
         given:
         stubUploads()

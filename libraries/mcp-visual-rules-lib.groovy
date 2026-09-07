@@ -219,27 +219,27 @@ private Map _vrbCreateChild(String version) {
             return [appId: newId, format: fmt, version: fmt == "graph" ? "2.0" : "1.0", route: "createchild",
                     routeNote: "The hub answered the versioned create with a redirect to its ${fmt} builder page; the new rule's id and version were read from that URL.".toString()]
         }
-        // Only a DEFINITIVE answer proves the parent has no such child type and created nothing;
-        // that is the one case the legacy route may follow. A real REFUSAL never reaches this line
-        // -- the transport throws it and the catch below reads its status -- so what a returned
-        // struct can still be is a 3xx carrying a body whose Location matched neither regex.
-        // A 2xx with no usable Location (the auto-followed absolute redirect), a null or an
-        // empty answer is a LOST response: the child may exist, and is reconciled, never re-made.
+        // NOTHING that reaches this line is definitive. A real refusal throws and is classified in
+        // the catch below; _hubRequest only turns a 3xx into a struct, and a 3xx means the hub
+        // redirected -- which is what it does AFTER creating the child, so a Location that matched
+        // neither regex is a lost id, not a refusal. A 2xx with no usable Location (the auto-followed
+        // absolute redirect), a null or an empty answer is a lost response too. All of them are
+        // reconciled against the parent's children below, never re-created.
         def status = (resp?.status != null) ? (resp.status as Integer) : null
-        unsupported = status != null && (status < 200 || status >= 300) && (resp?.data ? true : false)
-        throw new IllegalArgumentException(unsupported ?
-                "createchild answered ${status}: ${resp.data?.toString()?.take(200)}".toString() :
+        throw new IllegalArgumentException(
                 "createchild answered ${status ?: 'nothing'} with no usable Location (${resp?.location ?: 'none'})".toString())
     } catch (Exception e) {
-        // hubInternalGetRaw THROWS on a definitive non-2xx/non-3xx: _hubRequest's reader closure
-        // runs only for a 2xx and its catch converts only a 3xx into a struct, so firmware that has
-        // no such child type answers 4xx/5xx and lands HERE, never in the struct test above. A
-        // status proves the parent answered and made nothing; an exception with NO status (timeout,
-        // transport) leaves the outcome unknown and stays on the reconcile path below.
+        // hubInternalGetRaw THROWS on a definitive non-2xx/non-3xx, so firmware that has no such
+        // child type lands HERE. Only a status that proves the ROUTE DOES NOT EXIST is definitive:
+        // 404/405 (no such path or verb) and 501 (not implemented). A 5xx is NOT -- the hub can
+        // insert the child and then throw rendering the redirect, and a proxy can answer 502/503/504
+        // after the write landed; taking the legacy route on either makes a second rule and orphans
+        // the first. Every 5xx, and an exception with no status at all (timeout, transport), stays
+        // on the reconcile path below, which never re-creates on an unknown outcome.
         if (!unsupported) {
             Integer thrownStatus = null
             try { thrownStatus = e.response?.status as Integer } catch (Exception ignored) { thrownStatus = null }
-            if (thrownStatus != null && thrownStatus >= 400) unsupported = true
+            if (thrownStatus in [404, 405, 501]) unsupported = true
         }
         // Two cases where nothing was created and the legacy route is safe: the parent refused
         // the child type outright, or the parent itself could not be read (the versioned
@@ -1654,7 +1654,9 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
     }
     if (definition == null) {
         return [success: false, type: "visual-rule", originalRuleId: savedId, backupFile: fileName,
-                error: "This Visual Rule snapshot carries no captured rule definition (the rule was unreadable when the backup was taken, or the backup predates VRB-aware snapshots).",
+                error: snapshot.vrbGraphEmpty == true ?
+                        "This Visual Rule had no stored graph document when the backup was taken, so the snapshot carries nothing to restore." :
+                        "This Visual Rule snapshot carries no captured rule definition (the backup predates VRB-aware snapshots).",
                 note: "Recreate the rule manually with hub_set_visual_rule -- see hub_get_tool_guide(section='visual_rule_reference')."]
     }
     def name = snapshot.appLabel?.toString()?.trim() ?: "restored-visual-rule-${savedId}"
