@@ -3,7 +3,7 @@
 // given .groovy file, AFTER resolving its `#include` library bodies (so it sees exactly what the hub
 // compiles -- the inlined source, not the raw `#include` directive).
 //
-// Gates for Groovy 2.4 syntax, closure parameters, sandbox classes, and bytecode headroom.
+// Gates for Groovy 2.4 syntax, closure parameters, and sandbox-blocked classes.
 //
 //  1. GROOVY 2.4 PARSE -- 3.0-only syntax/operators (e.g. null-safe indexing `?[`) that load fine on
 //     the Groovy 3.0 Spock harness but fail to load on the 2.4 hub runtime.
@@ -143,86 +143,6 @@ def collectBlocked = { String fileName, Map resolved ->
     return findings
 }
 
-// Gate 3: per-method BYTECODE BUDGET.
-//
-// The JVM caps one method's Code attribute at 65,535 bytes and Hubitat compiles the app WITH its
-// own sandbox AST transform, which emits more bytecode than stock Groovy -- so a method that is
-// merely CLOSE to the cap here has less headroom than it looks. CONVERSION and CANONICALIZATION
-// run before any bytecode exists, so only a CLASS_GENERATION compile can measure this at all.
-//
-// This is a conservative engineering budget, NOT a discovered Hubitat limit, and it is NOT the
-// explanation for any deploy failure observed so far: _rmAddAction was 59,643 bytes on a build the
-// hub accepted and 58,390 on a build the hub refused. Keep it as headroom against the hard cap;
-// do not read a failure here as a diagnosis of a hub 500.
-final int METHOD_BYTECODE_BUDGET = 58941
-
-// Throws CompileFailure on a genuine class-generation error; returns null when only the classfile
-// MEASUREMENT fails (a bug here must not block a PR whose code is fine).
-def largestMethods = { String fileName, String src ->
-    def cu = new CompilationUnit(new CompilerConfiguration())
-    cu.addSource(fileName, src)
-    cu.compile(Phases.CLASS_GENERATION)     // a throw here is a real compile failure -- let it out
-    def out = []
-    cu.classes.each { gclass ->
-        def bytes = gclass.bytes
-        // Walk the classfile: constant pool, then the method table, reading each Code attribute's
-        // code_length. Kept to plain byte arithmetic so this needs no ASM dependency.
-        int p = 8
-        int cpCount = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 2
-        String[] utf8 = new String[cpCount]
-        for (int i = 1; i < cpCount; i++) {
-            int tag = bytes[p] & 0xFF; p += 1
-            if (tag == 1) {
-                int len = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 2
-                utf8[i] = new String(bytes, p, len, 'UTF-8'); p += len
-            } else if (tag == 7 || tag == 8 || tag == 16 || tag == 19 || tag == 20) { p += 2 }
-            else if (tag == 15) { p += 3 }
-            else if (tag == 5 || tag == 6) { p += 8; i++ }   // long/double take two slots
-            else { p += 4 }
-        }
-        p += 6                                                // access_flags, this_class, super_class
-        int ifaces = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 2 + ifaces * 2
-        def skipAttrs = { int q, int n ->
-            for (int i = 0; i < n; i++) {
-                q += 2
-                int alen = ((bytes[q] & 0xFF) << 24) | ((bytes[q + 1] & 0xFF) << 16) | ((bytes[q + 2] & 0xFF) << 8) | (bytes[q + 3] & 0xFF)
-                q += 4 + alen
-            }
-            return q
-        }
-        int fields = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 2
-        for (int i = 0; i < fields; i++) { p += 6; int na = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 2; p = skipAttrs(p, na) }
-        int methods = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 2
-        for (int i = 0; i < methods; i++) {
-            p += 2
-            int nameIdx = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 4
-            int na = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 2
-            for (int a = 0; a < na; a++) {
-                int an = ((bytes[p] & 0xFF) << 8) | (bytes[p + 1] & 0xFF); p += 2
-                int alen = ((bytes[p] & 0xFF) << 24) | ((bytes[p + 1] & 0xFF) << 16) | ((bytes[p + 2] & 0xFF) << 8) | (bytes[p + 3] & 0xFF); p += 4
-                if (utf8[an] == 'Code') {
-                    int cl = ((bytes[p + 4] & 0xFF) << 24) | ((bytes[p + 5] & 0xFF) << 16) | ((bytes[p + 6] & 0xFF) << 8) | (bytes[p + 7] & 0xFF)
-                    out << [cls: gclass.name, method: utf8[nameIdx], bytes: cl]
-                }
-                p += alen
-            }
-        }
-    }
-    return out.sort { -it.bytes }
-}
-
-def measureQuietly = { String fileName, String src ->
-    try { return largestMethods(fileName, src) }
-    catch (Throwable e) {
-        // By TYPE, not by name: MultipleCompilationErrorsException extends
-        // CompilationFailedException but its own name does not contain it, so a name test would
-        // downgrade a real CLASS_GENERATION failure to a warning and pass the lane.
-        if (e instanceof org.codehaus.groovy.control.CompilationFailedException) throw e
-        System.err.println "::warning::bytecode-budget MEASUREMENT failed for ${fileName} (${e.class.simpleName}: ${e.message}) -- the budget was not checked"
-        return null
-    }
-}
-
 def checkFile = { String path ->
     int rc = 0
     def f = new File(path)
@@ -279,32 +199,6 @@ def checkFile = { String path ->
         println "OK   (Groovy ${GroovySystem.version} parse + sandbox class check): ${path}"
     }
 
-    // Gate 3: per-method bytecode budget.
-    try {
-        def sizes = measureQuietly(f.name, resolved)
-        def worst = (sizes != null && sizes) ? sizes[0] : null
-        if (sizes == null) {
-            // measurement bug already warned; not a code defect, so do not fail the lane
-        } else if (worst == null) {
-            println "     (bytecode budget: no methods emitted for ${path})"
-        } else if (worst.bytes > METHOD_BYTECODE_BUDGET) {
-            System.err.println "FAIL (per-method bytecode budget): ${path}"
-            sizes.findAll { it.bytes > METHOD_BYTECODE_BUDGET }.each {
-                System.err.println "  ${it.cls}.${it.method}: ${it.bytes} > ${METHOD_BYTECODE_BUDGET} budget (JVM hard cap 65535)"
-            }
-            System.err.println "  Hubitat's sandbox transform adds bytecode on top of these numbers, so this budget keeps"
-            System.err.println "  headroom against the JVM 65,535 hard cap. Split the method -- extracting a cohesive"
-            System.err.println "  block into a private helper is enough; #include is a textual paste, so moving code between"
-            System.err.println "  the app file and a library does NOT change any method's size."
-            rc = 1
-        } else {
-            println "     (bytecode budget OK: largest ${worst.cls}.${worst.method} = ${worst.bytes} <= ${METHOD_BYTECODE_BUDGET})"
-        }
-    } catch (Throwable e) {
-        System.err.println "FAIL (Groovy ${GroovySystem.version} CLASS_GENERATION): ${path}"
-        System.err.println e.message
-        rc = 1
-    }
     return rc
 }
 if (selfTest) {

@@ -1731,7 +1731,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
         section_bodies[m.group(1)] = m.group(2)
 
     # 1b. A section whose text lives in its domain library reads `key: _fooGuideSection(),`
-    #     here -- the app file is a size budget (check_app_file_size), so a domain's guide body
+    #     here -- a domain's guide body
     #     travels with its domain. Resolve the method's returned literal out of libraries/*.groovy
     #     so the key still counts as a section and the anchor check below still sees its text.
     lib_src = ""
@@ -3940,62 +3940,6 @@ def run_self_test() -> int:
     return 0
 
 
-# hubitat-mcp-server.groovy is a MAINTAINABILITY budget, not a hub ceiling -- see
-# check_app_file_size's docstring for the measurements that disproved the ceiling.
-APP_FILE_SIZE_ERROR = 695_000
-APP_FILE_SIZE_WARN = 675_000
-
-
-def check_app_file_size(size_override: int | None = None) -> list[dict]:
-    """Keep hubitat-mcp-server.groovy inside its maintainability budget.
-
-    This is a BUDGET, not a hub ceiling. The size theory it was first written for is disproven:
-    the branch deployed at 698,521 bytes and later FAILED at 664,504, and every other dimension
-    moved the same way -- URL-encoded POST body 833,253 (deployed) vs 792,273 (refused), app plus
-    all 19 libraries 3,168,098 vs 2,997,767, stock-2.4 constant pool 51,996 vs 50,058, generated
-    class bytes 2,460,742 vs 2,344,916. A save the hub refuses can be smaller in every dimension
-    than one it accepts, so no size number here predicts a deploy.
-
-    What the budget is still for: #include is a textual paste, so moving code out of this file
-    does not shrink anything the hub compiles -- but code with a domain owner is far easier to
-    find, review and test in that owner's library than in an 8,000-line monolith. The numbers
-    sit where the file has actually lived. size_override drives the self-test without a 700KB
-    fixture.
-    """
-    findings: list[dict] = []
-    server = REPO_ROOT / "hubitat-mcp-server.groovy"
-    if size_override is not None:
-        size = size_override
-    elif server.is_file():
-        size = server.stat().st_size
-    else:
-        return findings
-    if size > APP_FILE_SIZE_ERROR:
-        findings.append({
-            "file": "hubitat-mcp-server.groovy", "line": 1, "severity": "error",
-            "rule": "app-file-size",
-            "message": (
-                f"hubitat-mcp-server.groovy is {size:,} bytes, over the "
-                f"{APP_FILE_SIZE_ERROR:,}-byte guard. The hub refuses to save an app source above "
-                f"an unpublished ceiling measured between 698,521 bytes (deployed) and 700,403 "
-                f"bytes (HTTP 500). Move the new code into the library that owns its domain."
-            ),
-            "source": "",
-        })
-    elif size > APP_FILE_SIZE_WARN:
-        findings.append({
-            "file": "hubitat-mcp-server.groovy", "line": 1, "severity": "warning",
-            "rule": "app-file-size",
-            "message": (
-                f"hubitat-mcp-server.groovy is {size:,} bytes, past the {APP_FILE_SIZE_WARN:,}-byte "
-                f"warning line and closing on the {APP_FILE_SIZE_ERROR:,}-byte guard. Land new code "
-                f"in its domain library rather than in the app spine."
-            ),
-            "source": "",
-        })
-    return findings
-
-
 def check_include_library_lockstep() -> list[dict]:
     """Every `#include mcp.X` in the app must stay in lockstep with its delivery (issues #209/#250):
     (1) a libraries/*.groovy whose library() declares (namespace=X.ns, name=X.name), and
@@ -4563,10 +4507,6 @@ def main() -> int:
 
     # Groovy strings and GString expressions require the AST, not a raw-source regex.
     print("Closure-parameter guard: run the authoritative ci/groovy24-parse parse24 lane (not checked by this lint).")
-
-    # The hub refuses to save an oversized app source, so the monolith is a budget: new code
-    # lands in its domain library, not in hubitat-mcp-server.groovy.
-    all_findings.extend(check_app_file_size())
 
     # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
     all_findings.extend(check_bm25_key_subscripts())

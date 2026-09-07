@@ -18,8 +18,8 @@ runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
   empty parameter arrays (implicit `it`) remain allowed. Findings retain original library locations.
   This is the authoritative closure guard; `sandbox_lint.py` only points to this lane. Stock Groovy
   processes the same AST successfully; a hub-specific transform is not exercised locally, and null
-  parameters have not been proven to cause the observed hub failure. The lane also checks syntax,
-  sandbox-blocked classes, and bytecode budgets. `parse24` runs its positive/negative fixtures first;
+  parameters have not been proven to cause the observed hub failure. The lane also checks syntax
+  and sandbox-blocked classes. `parse24` runs its positive/negative fixtures first;
   they can also run directly via `parse_check.groovy --self-test <absolute-repo-root>`.
 - **Groovy 2.5 Spock** (`ci/groovy2x-spock/`) — runs this same spec corpus against a Groovy 2.5
   runtime via [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) (the biocomp-API fork

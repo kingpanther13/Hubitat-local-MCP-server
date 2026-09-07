@@ -967,29 +967,15 @@ def adminUpdateApp(args) {
     try {
         // Copied error-capture from toolUpdateItemCodeInner (server 13112-13230): read the
         // /app/ajax/update response errorMessage synchronously.
-        // /app/saveOrUpdateJson FIRST, mirroring the server's own hub_update_app: it answers
-        // {success, id, message} and carries a Groovy COMPILE ERROR verbatim in `message`, where
-        // the older /app/ajax/update form answers a bare HTTP 500 with an empty body for the same
-        // rejection -- three e2e runs burned on that silence. The old form stays as the fallback
-        // for a hub that does not serve the JSON route.
-        def result = hubPostJson("/app/saveOrUpdateJson", groovy.json.JsonOutput.toJson(
-                [id: (itemId?.toString()?.isInteger() ? itemId.toString().toInteger() : itemId),
-                 source: sourceCode, version: currentVersion]))
-        boolean jsonRouteAnswered = result?.status != null && result.status != 404 && result.status != 405
-        if (!jsonRouteAnswered) {
-            mcpAdminLog "saveOrUpdateJson unavailable (status ${result?.status}); falling back to /app/ajax/update"
-            result = hubPostForm("/app/ajax/update", [id: itemId, version: currentVersion, source: sourceCode])
-        }
+        def result = hubPostForm("/app/ajax/update", [id: itemId, version: currentVersion, source: sourceCode])
         def responseData = result?.data
         def success = false
         def errorMsg = null
         if (responseData) {
             try {
                 def parsed = new groovy.json.JsonSlurper().parseText(responseData.toString())
-                // saveOrUpdateJson: {success, message}. ajax/update: {status:"success", errorMessage}.
-                success = (parsed.success == true) || (parsed.status == "success")
-                errorMsg = parsed.message ?: parsed.errorMessage
-                if (success) errorMsg = null
+                success = parsed.status == "success"
+                errorMsg = parsed.errorMessage
             } catch (Exception parseErr) {
                 errorMsg = "Unexpected response format -- update may have succeeded but could not be confirmed. Check the app in the Hubitat web UI."
             }
@@ -1002,7 +988,7 @@ def adminUpdateApp(args) {
             success = true
         } else {
             success = false
-            errorMsg = "No/empty response from the code-save endpoint (HTTP ${result?.status}) -- the loopback POST failed (not a self-update, so an empty response is a real failure, not a reload)."
+            errorMsg = "No/empty response from /app/ajax/update (HTTP ${result?.status}) -- the loopback POST failed (not a self-update, so an empty response is a real failure, not a reload)."
         }
 
         // Deploy-outcome record (generalized from the issue #237 lastSelfDeploy; persists across reloads).

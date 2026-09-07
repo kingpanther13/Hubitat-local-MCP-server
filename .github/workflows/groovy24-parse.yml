@@ -13,7 +13,7 @@ name: Groovy 2.4 Parse Check
 #      class of bug that previously only a real-hub deploy caught (e.g. `instanceof InputStream`).
 # Dynamic hub globals (log, state, ...) are never resolved as classes, so they are not false
 # positives; if a file references a hub-only TYPE by name the sandbox gate is skipped for it (notice)
-# while the syntax and closure-parameter gates still run. A bytecode budget limits method size.
+# while the syntax and closure-parameter gates still run.
 #
 # It is fully standalone: a separate build under ci/groovy24-parse/ that never touches the
 # root build.gradle or the existing 3.0 unit-test lane.

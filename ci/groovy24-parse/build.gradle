@@ -48,7 +48,7 @@ tasks.register('parse24Fixtures', JavaExec) {
 tasks.register('parse24', JavaExec) {
     dependsOn 'parse24Fixtures'
     group = 'verification'
-    description = 'Check deployed Groovy for 2.4 syntax, null closure parameters, sandbox-blocked classes, and method bytecode budgets.'
+    description = 'Check deployed Groovy for 2.4 syntax, null closure parameters, and sandbox-blocked classes.'
     javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
     classpath = configurations.groovy24
     mainClass = 'groovy.ui.GroovyMain'

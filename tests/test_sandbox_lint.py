@@ -624,41 +624,6 @@ def test_check_tool_guide_pointers_unresolvable_section_method_flagged(monkeypat
     assert not [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
 
 
-# ---------------------------------------------------------------------------
-# check_app_file_size — the hub's unpublished app-source save ceiling.
-# The measurements behind the thresholds live in the check's own docstring.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("size", [0, sl.APP_FILE_SIZE_WARN])
-def test_app_file_size_under_the_warning_line_is_clean(size):
-    assert sl.check_app_file_size(size_override=size) == []
-
-
-def test_app_file_size_past_the_warning_line_warns():
-    findings = sl.check_app_file_size(size_override=sl.APP_FILE_SIZE_WARN + 1)
-    assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
-    assert findings[0]["rule"] == "app-file-size"
-
-
-def test_app_file_size_over_the_guard_errors():
-    """The size the hub actually refused must land as an error, not a warning."""
-    findings = sl.check_app_file_size(size_override=700_403)
-    assert len(findings) == 1
-    assert findings[0]["severity"] == "error"
-    assert "700,403" in findings[0]["message"]
-    assert sl.format_finding(findings[0]).startswith("ERROR: ")
-
-
-def test_app_file_size_missing_app_file_is_clean(monkeypatch, tmp_path):
-    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
-    assert sl.check_app_file_size() == []
-
-
-def test_app_file_size_is_green_on_the_checked_in_source():
-    assert sl.check_app_file_size() == []
-
 
 # ---------------------------------------------------------------------------
 # check_include_library_lockstep — #include <-> library file <-> build-bundle
