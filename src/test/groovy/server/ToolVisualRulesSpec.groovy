@@ -821,6 +821,32 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.rulePaused == true
     }
 
+    @Unroll
+    def "rename verification compares the already-decoded own name (#requested)"() {
+        given:
+        enableWrite()
+        def wireState = [name: 'Old name', rulePaused: true, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/46') { GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/46') { json(wireState) }
+        stubPostJson { path, body ->
+            wireState.name = encoded
+            null
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 46, name: requested, confirm: true])
+
+        then:
+        result.success == true
+        result.verified == true
+        result.name == requested
+
+        where:
+        requested                       | encoded
+        'Literal <span>(Paused)</span>'  | 'Literal &lt;span&gt;(Paused)&lt;/span&gt;'
+        'Literal &amp; (Paused)'         | 'Literal &amp;amp; (Paused)'
+    }
+
     def "rename-only on an ALREADY-paused rule verifies past the standing decoration"() {
         given: 'the rule is already paused, so the decoration is present before this call'
         enableWrite()
