@@ -191,6 +191,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         health.stopped == expected
+        health.paused == null
         health.label == 'Literal (Stopped)'
 
         where:

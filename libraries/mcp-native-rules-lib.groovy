@@ -15335,15 +15335,19 @@ def toolCheckRuleHealth(args) {
     def rawLabel = result.label?.toString()
     Boolean pausedVerdict = result.paused instanceof Boolean ? result.paused :
         (status != null ? _readAppStateBoolean(status, "paused", null) : null)
-    Boolean stoppedVerdict = status != null ? _readAppStateBoolean(status, "stopped", false) : null
+    Boolean stoppedVerdict = status != null ? _readAppStateBoolean(status, "stopped", null) : null
     boolean visual = result.ruleFormat in ["vrb-classic", "vrb-graph"]
     while (!visual && rawLabel != null) {
         def decoration = rawLabel =~ /<[^>]+>\s*\((Paused|Stopped)\)\s*(?:<\/[^>]+>\s*)*$/
         if (!decoration.find()) break
-        if (decoration.group(1) == "Stopped") stoppedVerdict = true
-        else if (pausedVerdict == null) pausedVerdict = true
+        if (decoration.group(1) == "Stopped") {
+            if (stoppedVerdict == null) stoppedVerdict = true
+        } else if (pausedVerdict == null) pausedVerdict = true
         rawLabel = rawLabel.substring(0, decoration.start()).trim()
     }
+    // A readable status with no stopped flag means never stopped; it must not
+    // masquerade as an explicit false while evaluating the markup fallback.
+    if (stoppedVerdict == null && status != null) stoppedVerdict = false
     result.stopped = stoppedVerdict
     result.paused = pausedVerdict
     if (!visual && rawLabel != null) result.label = rawLabel.replaceAll(/<[^>]+>/, "").trim()

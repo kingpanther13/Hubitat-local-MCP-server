@@ -4240,7 +4240,6 @@ class TestRunner:
         expected_label = fixture_entry.get("name") or fixture_entry.get("label")
         assert isinstance(expected_label, str) and expected_label.endswith(" (Paused)"), fixture_entry
 
-
         # STATUS (issue #359): hub_list_rules surfaces each rule's live status. The freshly-
         # created, enabled rule reads "active"; pausing via hub_set_rule_paused flips it to
         # "paused" (+ paused:true), and resuming returns it to "active". Reuses THIS rule --
