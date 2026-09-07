@@ -1093,11 +1093,9 @@ private String _vrbBareName(Object raw, boolean paused) {
 }
 
 private boolean _vrbNameMatches(Map after, String requestedName) {
-    // Graph reads may include a tagged runtime decoration. Preserve classic
-    // names verbatim so a successful write cannot invite a duplicate retry.
-    if (after == null) return false
-    return stripAppConfigHtml(after.data?.name)?.toString() == requestedName ||
-           _vrbBareName(after.data?.name, after.data?.rulePaused == true) == requestedName
+    // _vrbDetect already removed runtime markup and decoded the own name.
+    // Processing it again would reinterpret literal tags/entities as decoration.
+    return after != null && after.data?.name?.toString() == requestedName
 }
 
 private Map _vrbNotVisualRuleError(Integer appId) {
@@ -1346,13 +1344,8 @@ private Map _toolSetVisualRuleImpl(args) {
     // Rename and/or pause without replacing the definition: re-save the EXISTING definition under
     // the new name (the save endpoints have no rename-only verb), then apply the pause flag.
     try {
-        // Strip the hub's "(Paused)" decoration off the fallback. On a RESUME the caller sends no
-        // name, so requestedName falls back to the name read BEFORE the write -- and the rule was
-        // paused then, so that string carries the decoration while the post-resume read-back is
-        // bare. _vrbNameMatches strips `actual` but not `requestedName`, and its decoration-
-        // tolerant branch needs rulePaused==true, which the resume just made false: every resume
-        // of a paused rule therefore reported verified:false on a write that had landed.
-        def requestedName = (name ?: _vrbBareName(detected.data?.name, detected.data?.rulePaused == true))?.toString()
+        // The detected name is already normalized, including before a resume.
+        def requestedName = (name ?: detected.data?.name)?.toString()
         if (name && name != detected.data.name?.toString()) {
             Map existing = null
             if (detected.format == "graph") {

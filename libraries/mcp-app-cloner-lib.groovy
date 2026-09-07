@@ -267,7 +267,7 @@ private boolean _appClonerCleanup(Integer clonerAppId) {
 }
 
 private void _appClonerClickClone(Integer clonerAppId, String referrer, String configUrl) {
-    // The first click can be swallowed while Hubitat persists the selection.
+    // Hubitat can swallow the first click; repeat both the click and form refresh.
     def btnBody = [
         id: clonerAppId.toString(),
         name: "cloneRuleButton",
