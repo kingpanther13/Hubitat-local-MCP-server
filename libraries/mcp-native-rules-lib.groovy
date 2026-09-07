@@ -15330,35 +15330,23 @@ def toolCheckRuleHealth(args) {
         checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString()
         result.checkErrors = checkErrors
     }
-    // stopped, by precedence: (1) a "(Stopped)" inside real markup is a hub-rendered
-    // runtime decoration beyond doubt (the hub entity-escapes a user-typed '<'), and a
-    // stopped rule's statusJson is often UNREADABLE, so markup decides first; (2) a
-    // readable statusJson answers from its own state.stopped -- the SAME field the
-    // hub_call_rule stop/start toggle reads for its no-op detection (absent means
-    // never-stopped, i.e. false); (3) neither available -> null, never a guess -- a
-    // plain unmarked suffix reads the same as a rule literally NAMED "... (Stopped)".
-    // The trailing "(Paused)" is the SAME decoration hub_list_rules reads for its paused
-    // flag, so report it here too rather than making a caller fetch every rule on the hub to
-    // learn one rule's pause state. Null when the label was unreadable -- never a guess.
+    // A plain suffix can be the user's name, even when the rule really is paused.
+    // Only real markup proves which text is a runtime decoration; typed '<' is escaped.
     def rawLabel = result.label?.toString()
-    boolean markedUp = rawLabel != null && (rawLabel =~ /<[^>]+>\s*\(Stopped\)\s*(?:<\/[^>]+>\s*)*$/).find()
-    Boolean stoppedVerdict
-    if (markedUp) {
-        stoppedVerdict = true
-    } else if (status != null) {
-        stoppedVerdict = _readAppStateBoolean(status, "stopped", false)
-    } else {
-        stoppedVerdict = null
+    Boolean pausedVerdict = result.paused instanceof Boolean ? result.paused :
+        (status != null ? _readAppStateBoolean(status, "paused", null) : null)
+    Boolean stoppedVerdict = status != null ? _readAppStateBoolean(status, "stopped", false) : null
+    boolean visual = result.ruleFormat in ["vrb-classic", "vrb-graph"]
+    while (!visual && rawLabel != null) {
+        def decoration = rawLabel =~ /<[^>]+>\s*\((Paused|Stopped)\)\s*(?:<\/[^>]+>\s*)*$/
+        if (!decoration.find()) break
+        if (decoration.group(1) == "Stopped") stoppedVerdict = true
+        else if (pausedVerdict == null) pausedVerdict = true
+        rawLabel = rawLabel.substring(0, decoration.start()).trim()
     }
     result.stopped = stoppedVerdict
-    if (rawLabel != null) {
-        def plain = rawLabel.replaceAll(/<[^>]+>/, "").trim()
-        result.paused = (plain =~ /\(Paused\)\s*$/).find()
-        def tidy = plain.replaceAll(/\s*\(Paused\)\s*$/, "").trim()
-        result.label = (stoppedVerdict == true) ? tidy.replaceAll(/\s*\(Stopped\)\s*$/, "").trim() : tidy
-    } else {
-        result.paused = null
-    }
+    result.paused = pausedVerdict
+    if (!visual && rawLabel != null) result.label = rawLabel.replaceAll(/<[^>]+>/, "").trim()
     return result
 }
 

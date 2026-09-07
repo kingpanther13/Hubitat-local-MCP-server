@@ -1777,7 +1777,17 @@ def _lanBudgetMs() {
 }
 
 def _maxConcurrentWrites() {
-    return settings.maxConcurrentWrites != null ? (settings.maxConcurrentWrites as Integer) : 2
+    def value = settings.maxConcurrentWrites
+    if (value == null) return 2
+    try {
+        BigDecimal limit = new BigDecimal(value.toString())
+        if (limit >= 0 && limit <= 100 && limit.stripTrailingZeros().scale() <= 0) {
+            return limit.intValue()
+        }
+    } catch (Exception ignored) { }
+    // Stored preferences can bypass the public API's validation; never let an
+    // overflow or malformed value silently turn the write limit off.
+    return 2
 }
 
 // The leaves that consume the __reqT0 request-start clock: partial-commit and serial-dispatch
@@ -3158,300 +3168,6 @@ private void _mrtrCleanupRecord(Map rec) {
     catch (Exception e) {
         mcpLog("warn", "mrtr", "Could not clean temporary appCloner ${clonerId}: ${e.message}")
     }
-}
-
-private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
-    Map args = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), outerArgs) as Map
-    // Deep copy: the staging phases append to the checkpoint's own lists, and a
-    // shallow copy would land those appends in the shared requestState record
-    // before the slice decides what to store.
-    Map cp = (rec.checkpoint instanceof Map) ? _mrtrCopyMap(rec.checkpoint as Map) : null
-    if (cp == null) {
-        requireDestructiveConfirm(args?.confirm as Boolean)
-        def rawSource = (args?.sourceAppId != null) ? args.sourceAppId : args?.appId
-        if (rawSource == null) throw new IllegalArgumentException("sourceAppId (or appId) is required")
-        Integer sourceAppId = normalizeRuleId(rawSource)
-        String newName = args?.newName?.toString()?.trim()
-        def sourceCfg
-        try { sourceCfg = _rmFetchConfigJson(sourceAppId) }
-        catch (Exception sourceErr) {
-            mcpLog("warn", "rm-native", "hub_clone_native_app: source ${sourceAppId} config fetch failed: ${sourceErr.message}")
-            sourceCfg = null
-        }
-        if (!sourceCfg?.app) throw new IllegalArgumentException("Source app ${sourceAppId} not found or unreadable")
-        String sourceLabel = sourceCfg.app.label?.toString()
-        Integer parentAppId = null
-        try {
-            parentAppId = sourceCfg.app.parentAppId != null ? sourceCfg.app.parentAppId.toString() as Integer : null
-        } catch (NumberFormatException ignored) { }
-        def preIds = []
-        if (parentAppId != null) {
-            try {
-                def parentCfg = _rmFetchConfigJson(parentAppId)
-                preIds = ((parentCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
-            } catch (Exception preErr) {
-                mcpLog("warn", "rm-native", "hub_clone_native_app: pre-clone parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may be less precise")
-            }
-        }
-        def initRes = _appClonerInit(sourceAppId)
-        cp = [phase: "clone_clicks", clonerAppId: initRes.clonerAppId,
-              referrer: initRes.referrer, configUrl: initRes.configUrl,
-              sourceAppId: sourceAppId, sourceLabel: sourceLabel,
-              parentAppId: parentAppId, preIds: preIds, newName: newName,
-              stageDisabled: args?.stageDisabled == true]
-        return _mrtrControl("clone_native_app", cp)
-    }
-
-    Integer clonerAppId = cp.clonerAppId as Integer
-    try {
-        if (cp.phase == "clone_clicks") {
-            def btnBody = [
-                id: clonerAppId.toString(), name: "cloneRuleButton",
-                ("settings[cloneRuleButton]".toString()): "clicked",
-                ("cloneRuleButton.type".toString()): "button"
-            ]
-            for (int attempt = 0; attempt < 2; attempt++) {
-                hubInternalPostForm("/installedapp/btn", btnBody)
-                pauseExecution(500)
-                _appClonerSubmitForm(clonerAppId, "main", "source", cp.referrer?.toString(), cp.configUrl?.toString(), null)
-                pauseExecution(500)
-            }
-            cp.phase = "clone_commit"
-            return _mrtrControl("clone_native_app", cp)
-        }
-        if (cp.phase == "clone_commit") {
-            _appClonerCommitImportRule(clonerAppId, cp.sourceAppId as Integer,
-                cp.newName?.toString(), cp.referrer?.toString(), cp.configUrl?.toString())
-            Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
-                (cp.preIds ?: []) as Set, cp.sourceLabel?.toString(), cp.newName?.toString())
-            String note = newAppId
-                ? "Cloned source ${cp.sourceAppId} -> new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_native_app (or hub_set_rule for RM rules) to further customize."
-                : "Clone fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
-            def baseResult = [success: newAppId != null, sourceAppId: cp.sourceAppId,
-                              clonerAppId: clonerAppId, newAppId: newAppId, note: note]
-            if (newAppId == null) {
-                baseResult.isError = true
-                baseResult.error = note
-                _appClonerCleanup(clonerAppId)
-                return baseResult
-            }
-            if (cp.stageDisabled != true) {
-                _appClonerCleanup(clonerAppId)
-                return baseResult
-            }
-            def stagePlan = _mrtrAppClonerStagePlan(newAppId)
-            cp.phase = "stage_disable"
-            cp.newAppId = newAppId
-            cp.stageTargets = stagePlan.targets
-            cp.stageFailures = stagePlan.failures
-            cp.stagedDisabled = []
-            cp.baseResult = baseResult
-            return _mrtrControl("clone_native_app", cp)
-        }
-        if (cp.phase == "stage_disable") return _mrtrAppClonerStageSlice(cp, "clone")
-        throw new IllegalStateException("Unknown clone continuation phase '${cp.phase}'")
-    } catch (Exception e) {
-        try { _appClonerCleanup(clonerAppId) } catch (Exception ignored) { }
-        throw e
-    }
-}
-
-private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
-    Map args = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), outerArgs) as Map
-    // Deep copy: the staging phases append to the checkpoint's own lists, and a
-    // shallow copy would land those appends in the shared requestState record
-    // before the slice decides what to store.
-    Map cp = (rec.checkpoint instanceof Map) ? _mrtrCopyMap(rec.checkpoint as Map) : null
-    if (cp == null) {
-        requireDestructiveConfirm(args?.confirm as Boolean)
-        if (args?.parentHintAppId == null) {
-            throw new IllegalArgumentException("parentHintAppId is required (any existing rule's id under the target parent — used to seed the cloner)")
-        }
-        Integer parentHintAppId = normalizeRuleId(args.parentHintAppId)
-        String newName = args?.newName?.toString()?.trim()
-        String jsonContent = args?.jsonContent?.toString()
-        if (!jsonContent && args?.fromFile) {
-            try { jsonContent = new String(downloadHubFile(args.fromFile.toString()), "UTF-8") }
-            catch (Exception e) { throw new IllegalArgumentException("Cannot read fromFile '${args.fromFile}': ${e.message}") }
-        }
-        if (!jsonContent) throw new IllegalArgumentException("jsonContent or fromFile is required")
-        def parsed
-        try { parsed = new groovy.json.JsonSlurper().parseText(jsonContent) }
-        catch (Exception e) { throw new IllegalArgumentException("jsonContent is not valid JSON: ${e.message}") }
-        def replacements = (parsed instanceof Map) ? parsed.appReplacements : null
-        if (!(replacements instanceof Map) || replacements.isEmpty()) {
-            throw new IllegalArgumentException("jsonContent does not contain an appReplacements map — not an appCloner export")
-        }
-        Integer originalSourceId
-        try { originalSourceId = ((replacements.keySet() as List)[0]).toString() as Integer }
-        catch (Exception e) { throw new IllegalArgumentException("Could not extract original source id from appReplacements: ${e.message}") }
-        String originalLabel = replacements[originalSourceId.toString()]?.appLabel?.toString()
-        def hintCfg
-        try { hintCfg = _rmFetchConfigJson(parentHintAppId) }
-        catch (Exception ignored) { hintCfg = null }
-        if (!hintCfg?.app) throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} not found or unreadable")
-        Integer parentAppId = null
-        try { parentAppId = hintCfg.app.parentAppId?.toString() as Integer }
-        catch (Exception ignored) { }
-        if (parentAppId == null) {
-            throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} has no numeric parentAppId — pass a child of the target parent app")
-        }
-        def preIds = []
-        try {
-            def parentCfg = _rmFetchConfigJson(parentAppId)
-            preIds = ((parentCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
-        } catch (Exception preErr) {
-            mcpLog("warn", "rm-native", "hub_import_native_app: pre-import parent ${parentAppId} fetch failed: ${preErr.message}")
-        }
-        def initRes = _appClonerInit(parentHintAppId)
-        Integer clonerAppId = initRes.clonerAppId as Integer
-        try {
-            String configUrl = initRes.configUrl?.toString()
-            _appClonerSubmitForm(clonerAppId, "main", "source", configUrl, configUrl,
-                [("settings[ruleUpload]".toString()): jsonContent])
-            pauseExecution(2000)
-            cp = [phase: "import_commit", clonerAppId: clonerAppId,
-                  referrer: configUrl, configUrl: configUrl,
-                  parentAppId: parentAppId, preIds: preIds,
-                  originalSourceId: originalSourceId, originalLabel: originalLabel,
-                  contentLength: jsonContent.length(), newName: newName,
-                  stageDisabled: args?.stageDisabled == true]
-            return _mrtrControl("import_native_app", cp)
-        } catch (Exception e) {
-            try { _appClonerCleanup(clonerAppId) } catch (Exception ignored) { }
-            throw e
-        }
-    }
-
-    Integer clonerAppId = cp.clonerAppId as Integer
-    try {
-        if (cp.phase == "import_commit") {
-            _appClonerCommitImportRule(clonerAppId, cp.originalSourceId as Integer,
-                cp.newName?.toString(), cp.referrer?.toString(), cp.configUrl?.toString())
-            Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
-                (cp.preIds ?: []) as Set, cp.originalLabel?.toString(), cp.newName?.toString())
-            String note = newAppId
-                ? "Imported '${cp.originalLabel ?: 'app'}' as new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_native_app (or hub_set_rule for RM rules) to further customize."
-                : "Import fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
-            def baseResult = [success: newAppId != null, clonerAppId: clonerAppId,
-                              newAppId: newAppId, originalSourceId: cp.originalSourceId,
-                              originalLabel: cp.originalLabel, contentLength: cp.contentLength,
-                              note: note]
-            if (newAppId == null) {
-                baseResult.isError = true
-                baseResult.error = note
-                _appClonerCleanup(clonerAppId)
-                return baseResult
-            }
-            if (cp.stageDisabled != true) {
-                _appClonerCleanup(clonerAppId)
-                return baseResult
-            }
-            def stagePlan = _mrtrAppClonerStagePlan(newAppId)
-            cp.phase = "stage_disable"
-            cp.newAppId = newAppId
-            cp.stageTargets = stagePlan.targets
-            cp.stageFailures = stagePlan.failures
-            cp.stagedDisabled = []
-            cp.baseResult = baseResult
-            return _mrtrControl("import_native_app", cp)
-        }
-        if (cp.phase == "stage_disable") return _mrtrAppClonerStageSlice(cp, "import")
-        throw new IllegalStateException("Unknown import continuation phase '${cp.phase}'")
-    } catch (Exception e) {
-        try { _appClonerCleanup(clonerAppId) } catch (Exception ignored) { }
-        throw e
-    }
-}
-
-private Map _mrtrAppClonerStagePlan(Integer newAppId) {
-    List targets = []
-    List failures = []
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/appsList"))
-        Map root = null
-        def findNode
-        findNode = { List nodes ->
-            for (def node : (nodes ?: [])) {
-                if (node?.data?.id?.toString() == newAppId.toString()) { root = node; return }
-                findNode(node?.children as List)
-                if (root != null) return
-            }
-        }
-        findNode(parsed?.apps as List)
-        if (root == null) throw new IllegalStateException("app ${newAppId} not present in /hub2/appsList")
-        Set visited = [] as Set
-        def collect
-        collect = { Map node ->
-            String id = node?.data?.id?.toString()
-            if (!id?.isInteger() || visited.contains(id)) return
-            visited << id
-            targets << id.toInteger()
-            (node?.children as List ?: []).each { child -> if (child instanceof Map) collect(child) }
-        }
-        collect(root)
-    } catch (Exception treeErr) {
-        mcpLog("warn", "rm-native", "stageDisabled: /hub2/appsList enumeration failed (${treeErr.message}) — falling back to configure/json BFS")
-        Set visited = [] as Set
-        List queue = [newAppId]
-        while (queue) {
-            Integer id = queue.remove(0) as Integer
-            if (visited.contains(id)) continue
-            visited << id
-            targets << id
-            try {
-                def cfg = _rmFetchConfigJson(id)
-                ((cfg?.childApps ?: []) as List).each { child ->
-                    String childId = child?.id?.toString()
-                    if (childId?.isInteger()) queue << childId.toInteger()
-                }
-            } catch (Exception childErr) {
-                failures << [appId: id, kind: "childEnumeration",
-                             error: "child enumeration failed for app ${id}: ${childErr.message}; descendants may not have been discovered"]
-            }
-        }
-    }
-    return [targets: targets.unique(), failures: failures]
-}
-
-private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
-    List targets = (cp.stageTargets instanceof List) ? cp.stageTargets as List : []
-    List staged = (cp.stagedDisabled instanceof List) ? cp.stagedDisabled as List : []
-    List failures = (cp.stageFailures instanceof List) ? cp.stageFailures as List : []
-    List remaining = []
-    long t0 = now()
-    for (int i = 0; i < targets.size(); i++) {
-        if (i > 0 && _timeBudgetExceeded(t0)) {
-            remaining = targets.subList(i, targets.size()).collect { it }
-            break
-        }
-        def id = targets[i]
-        def disabled
-        try { disabled = toolSetAppDisabled([appId: id, disabled: true]) }
-        catch (Exception e) { disabled = [success: false, error: e.message ?: e.toString()] }
-        if (disabled?.success == true) staged << id
-        else failures << [appId: id, kind: "disable", error: disabled?.error ?: "disable read-back mismatch"]
-    }
-    if (remaining) {
-        cp.stageTargets = remaining
-        cp.stagedDisabled = staged
-        cp.stageFailures = failures
-        return _mrtrControl("${operationLabel}_native_app".toString(), cp)
-    }
-    def result = (cp.baseResult instanceof Map) ? ([:] + cp.baseResult) : [:]
-    result.stagedDisabled = staged.unique()
-    if (failures) {
-        result.success = false
-        result.partial = true
-        result.isError = true
-        result.stageFailures = failures
-        result.error = "stageDisabled did not fully land for ${failures.size()} app(s). The ${operationLabel} committed (newAppId=${cp.newAppId}); do not repeat it."
-        result.note = "${result.note} STAGING FAILED — inspect stageFailures."
-    } else {
-        result.note = "${result.note} Staged inactive: ${result.stagedDisabled.size()} app(s) disabled."
-    }
-    _appClonerCleanup(cp.clonerAppId as Integer)
-    return result
 }
 
 // Copy tool results without JSON round-tripping so serializer failures remain
@@ -7543,7 +7259,9 @@ private Map _ruleCompiledState(Integer appId) {
             // _vrbFetchClassic and the endpoint inventory); a lone key on some other app's state
             // must NOT be misread as a healthy VRB rule (codex review).
             if (parsed.containsKey("whenNodes") && parsed.containsKey("thenNodes")) {
-                return [ruleFormat: "vrb-classic", broken: null, validationErrors: [], endpoint: "ruleBuilderJson"]
+                return [ruleFormat: "vrb-classic", broken: null, validationErrors: [], endpoint: "ruleBuilderJson",
+                        paused: parsed.rulePaused instanceof Boolean ? parsed.rulePaused : null,
+                        label: stripAppConfigHtml(parsed.name)]
             }
             if (parsed.containsKey("broken")) {
                 def pred = (parsed.containsKey("hasPredicate") || parsed.containsKey("predCapabs")) ?
@@ -7552,6 +7270,7 @@ private Map _ruleCompiledState(Integer appId) {
                 // source there is (appSettings key order is arbitrary). Carried through raw so
                 // callers reuse this fetch rather than opening a second path to the endpoint.
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
+                        paused: parsed.paused instanceof Boolean ? parsed.paused : null,
                         predicate: pred,
                         capabsfalse: (parsed.capabsfalse instanceof Map ? parsed.capabsfalse : null),
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
@@ -7572,7 +7291,9 @@ private Map _ruleCompiledState(Integer appId) {
         catch (Exception e) { gp = null; if (readError == null) readError = "ruleBuilder20Json response was not JSON: ${e.message}" }
         if (gp instanceof Map && gp.success != false) {
             def ve = (gp.validationErrors ?: []).collect { it?.toString() }
-            return [ruleFormat: "vrb-graph", broken: !ve.isEmpty(), validationErrors: ve, endpoint: "ruleBuilder20Json"]
+            return [ruleFormat: "vrb-graph", broken: !ve.isEmpty(), validationErrors: ve, endpoint: "ruleBuilder20Json",
+                    paused: gp.rulePaused instanceof Boolean ? gp.rulePaused : null,
+                    label: _vrbBareName(gp.name, gp.rulePaused == true)]
         }
     }
     // No recognized rule shape. Distinguish a clean negative (null) from a read failure so the
@@ -7883,6 +7604,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def checkErrors = []           // lone-source read failures: visible diagnostics, never gate-failing evidence
     def label = null
     Boolean appDisabled = null     // red-X state from the configure-json app block; null = not read
+    Boolean paused = null
     def configPageError = null
     def brokenMarkers = []
     def multipleFlagPoison = []
@@ -7907,6 +7629,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             ruleFormat = cs.ruleFormat
             sourcesUsed << cs.endpoint
             broken = cs.broken
+            paused = cs.paused
+            if (cs.label != null) label = cs.label
             if (cs.predicate != null) predicate = cs.predicate
             compiledActionList = _rmCoerceActionIndices(cs.actionList)   // null in -> null out
             if (cs.validationErrors) validationErrors = cs.validationErrors
@@ -8089,6 +7813,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
         ruleFormat: ruleFormat,
         label: label,
+        paused: paused,
         disabled: appDisabled,
         configPageError: configPageError,
         brokenMarkers: brokenMarkers.unique(),

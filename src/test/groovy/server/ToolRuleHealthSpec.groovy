@@ -111,6 +111,70 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         'vrb-graph'   | true
     }
 
+    @spock.lang.Unroll
+    def "public health uses compiled RM paused=#paused with source=#source"() {
+        given:
+        seedHealthy(100, [paused: paused])
+        hubGet.register('/installedapp/configure/json/100') { configJson(100, 'Literal (Paused)') }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: source])
+
+        then:
+        health.paused == paused
+        health.label == (source == 'auto' ? 'Literal (Paused)' : null)
+
+        where:
+        paused | source
+        false  | 'auto'
+        true   | 'auto'
+        false  | 'ruleBuilderJson'
+        true   | 'ruleBuilderJson'
+    }
+
+    @spock.lang.Unroll
+    def "public health strips only proved markup and preserves the real name (#label)"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/installedapp/configure/json/100') { configJson(100, label) }
+        hubGet.register('/installedapp/statusJson/100') { throw new IOException('status unavailable') }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        health.label == expected
+        health.paused == paused
+        health.stopped == stopped
+        health.eventSubscriptionCount == null
+        health.checkErrors.any { it.contains('statusJson:') }
+
+        where:
+        label                                                                                               | expected          | paused | stopped
+        'Literal (Paused) <span>(Paused)</span>'                                                             | 'Literal (Paused)'| true   | null
+        'Literal (Stopped) <span>(Stopped)</span>'                                                           | 'Literal (Stopped)'| null  | true
+        'Literal (Paused) <span>(Paused)</span> <span>(Stopped)</span>'                                       | 'Literal (Paused)'| true   | true
+        'Literal (Paused) <span>(Stopped)</span> <span>(Paused)</span>'                                       | 'Literal (Paused)'| true   | true
+        'Literal (Paused)'                                                                                  | 'Literal (Paused)'| null   | null
+        'Literal &lt;span&gt;(Paused)&lt;/span&gt;'                                                           | 'Literal &lt;span&gt;(Paused)&lt;/span&gt;' | null | null
+    }
+
+    def "public config-only health uses the status paused boolean without stripping a literal suffix"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/installedapp/configure/json/100') { configJson(100, 'Literal (Paused)') }
+        hubGet.register('/installedapp/statusJson/100') {
+            JsonOutput.toJson([appSettings: [], appState: [[name: 'paused', value: 'false']]])
+        }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'configPage'])
+
+        then:
+        health.paused == false
+        health.label == 'Literal (Paused)'
+    }
+
     // ---------- preferred source: ruleBuilderJson broken boolean ----------
 
     def "auto: healthy rule -> ok=true, broken=false, both sources contributed"() {

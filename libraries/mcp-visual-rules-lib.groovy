@@ -1082,15 +1082,14 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
     return [map: map, format: _vrbDetectDefinitionFormat(map)]
 }
 
-// The rule's name with the hub's paused decoration removed. Only strips when the rule actually
-// reads back paused, so an UNPAUSED rule a user genuinely named "... (Paused)" keeps its name; a
-// paused one so named is indistinguishable from the decoration and is stripped.
 private String _vrbBareName(Object raw, boolean paused) {
-    def s = stripAppConfigHtml(raw)?.toString()
-    if (s != null && paused && s.endsWith("(Paused)")) {
-        return s.substring(0, s.length() - "(Paused)".length()).trim()
+    // Classic builder JSON already carries the rule's own name; graph JSON adds an HTML
+    // decoration. A bare suffix cannot be distinguished from a literal part of the name.
+    def s = raw?.toString()
+    if (s != null && paused) {
+        s = s.replaceFirst(/<[^>]+>\s*\(Paused\)\s*(?:<\/[^>]+>\s*)*$/, "")
     }
-    return s
+    return stripAppConfigHtml(s)?.toString()
 }
 
 private boolean _vrbNameMatches(Map after, String requestedName) {
