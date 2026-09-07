@@ -139,7 +139,7 @@ def toolUpdateMcpSettings(args) {
 
     // Apply each scalar update via app.updateSetting() — the documented Hubitat sandbox API for
     // self-modifying app settings. mcpLogLevel needs special handling because the runtime
-    // log threshold is cached in state.debugLogs.config (UI display reads from settings).
+    // The small logging config and JVM threshold mirror are updated together.
     //
     // Apply order is intentional: app.updateSetting calls first, then mcpLogLevel last via
     // toolSetLogLevel. If toolSetLogLevel ever evolves to throw on an unexpected condition,

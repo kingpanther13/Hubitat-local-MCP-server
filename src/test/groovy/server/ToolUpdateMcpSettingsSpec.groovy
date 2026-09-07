@@ -361,7 +361,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     def "mcpLogLevel updates state.debugLogs.config AND settings (via toolSetLogLevel delegation)"() {
         given:
         enableDeveloperModeAndAdminWrite()
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'info', maxEntries: 100]])
 
         when:
         def result = script.toolUpdateMcpSettings([
@@ -616,7 +616,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         // covered by the live-hub BAT scenarios in tests/BAT-v2.md Section 12.
         given:
         enableDeveloperModeAndAdminWrite()
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'info', maxEntries: 100]])
 
         when:
         def result = script.toolUpdateMcpSettings([
@@ -811,7 +811,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'info', maxEntries: 100]])
 
         when:
         def response = mcpDriver.callTool('hub_update_mcp_settings', [

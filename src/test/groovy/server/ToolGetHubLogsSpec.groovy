@@ -2,6 +2,8 @@ package server
 
 import groovy.json.JsonOutput
 import support.ToolSpecBase
+import support.TestLocation
+import spock.lang.Shared
 
 /**
  * Spec for toolGetHubLogs.
@@ -28,6 +30,33 @@ import support.ToolSpecBase
  * against multi-entry buffers.
  */
 class ToolGetHubLogsSpec extends ToolSpecBase {
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
+    def setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
+    }
+
+    def setup() {
+        sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
+    }
+
+    def "current three-column native rows expose source and timestamp while preserving message filters"() {
+        given:
+        sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
+        registerLogs(['2026-09-06 12:00:00.000\tWARN\tapp|194|MCP Rule Server|[monitoring] slow request'])
+
+        when:
+        def result = script.toolGetHubLogs([level: 'warn', source: 'MCP Rule Server', pattern: 'slow',
+            since: '2026-09-06T15:00:00Z', until: '2026-09-06T17:00:00Z'])
+
+        then:
+        result.count == 1
+        result.logs[0].name == 'MCP Rule Server'
+        result.logs[0].time == '2026-09-06 12:00:00.000'
+        result.logs[0].type == 'app'
+        result.logs[0].message.contains('[monitoring] slow request')
+        !result.timeFilterUnparseable
+    }
 
     // Shared convenience: registers a canned log array with the mock hub
     private void registerLogs(List<String> lines) {

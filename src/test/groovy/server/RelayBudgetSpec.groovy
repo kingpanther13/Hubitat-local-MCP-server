@@ -902,11 +902,11 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.relayBudgetMs = budget
         settingsMap.mcpLogLevel = 'debug'
-        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
 
         when:
         script._hubRtLog('GET', '/hub/wifi/join?psk=hunter2', elapsed as long, outcome)
-        def warns = stateMap.debugLogs.entries.findAll { it.level == 'warn' && it.message?.contains('[hubrt] slow internal') }
+        def warns = script.getDebugLogEntries().findAll { it.level == 'warn' && it.message?.contains('[hubrt] slow internal') }
 
         then:
         warns.size() == expectedWarns

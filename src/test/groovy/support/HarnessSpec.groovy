@@ -334,6 +334,8 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
+        (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()
+        (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.
         (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()
@@ -409,6 +411,20 @@ abstract class HarnessSpec extends Specification {
         return f.get(null)
     }
 
+    protected void seedDebugLogHistory(Map history) {
+        def config = [logLevel: history.config?.logLevel ?: 'error', maxEntries: 100]
+        stateMap.debugLogs = [config: config]
+        def buffer = script.initDebugLogs()
+        synchronized (buffer) {
+            buffer.config = config
+            buffer.entries = []
+            (history.entries ?: []).eachWithIndex { entry, index ->
+                script._appendDebugLogRecord(buffer, script._debugLogRecord(entry, "fixture-${index}".toString()))
+            }
+            buffer.hydrated = true
+        }
+    }
+
     /**
      * Create another execution instance of the already compiled app class.
      * Hubitat gives concurrent executions distinct script instances; the
@@ -424,6 +440,22 @@ abstract class HarnessSpec extends Specification {
         HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
         peer.initializeFromParent(script as HubitatAppScript)
         wireInstanceOverrides(peer)
+        return peer
+    }
+
+    protected Object newCompiledScriptInstance(Map context) {
+        def peer = newCompiledScriptInstance()
+        def inheritedApi = appExecutor
+        def peerApi = Mock(AppExecutor) {
+            _ * getApp() >> context.app
+            _ * getState() >> { context.state instanceof Closure ? context.state.call() : context.state }
+            _ * getAtomicState() >> { context.atomicState instanceof Closure ? context.atomicState.call() : context.atomicState }
+            _ * getSettings() >> { inheritedApi.getSettings() }
+            _ * now() >> { inheritedApi.now() }
+            _ * getLog() >> { context.containsKey('log') ? context.log : inheritedApi.getLog() }
+        }
+        // These accessors are delegated concrete methods; EMC overrides are unreliable.
+        API_FIELD.set(peer, peerApi)
         return peer
     }
 

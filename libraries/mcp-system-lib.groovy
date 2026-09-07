@@ -56,6 +56,8 @@ def _healthAlertsFromHub2(hub2) {
 }
 
 def toolGetHubInfo(args = null) {
+    def logHistory = getDebugLogReadResult(args ?: [:])
+    if (logHistory.status == "in_progress") return logHistory + [tool: "hub_get_info"]
     def hub = location.hub
     def info = [
         temperatureScale: location.temperatureScale
@@ -125,11 +127,15 @@ def toolGetHubInfo(args = null) {
         }
     } catch (Exception e) { info.databaseSizeKB = "unavailable" }
 
-    // MCP-specific stats (always available)
+    // Native log history can be temporarily unavailable independently of these stats.
     info.mcpServerVersion = currentVersion()
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
-    info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
+    info.mcpLogEntries = logHistory.entries == null ? null : logHistory.entries.size()
+    if (logHistory.error) {
+        info.mcpLogReadError = logHistory.error
+        info.mcpLogReadRetryable = logHistory.retryable
+    }
     info.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
     // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
     // actually needed (the destructive-confirm gate's 24h window reads this same state key) --

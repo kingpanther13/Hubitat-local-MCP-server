@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 117 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 116 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 117 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 116 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -273,9 +273,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (117 total — 36 on tools/list)
+### MCP Tools (116 total — 36 on tools/list)
 
-The server has 117 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 116 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -365,14 +365,13 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 </details>
 
 <details>
-<summary><b>hub_read_diagnostics</b> (9) — Diagnostics, metrics, memory, radio details (read-only)</summary>
+<summary><b>hub_read_diagnostics</b> (8) — Diagnostics, metrics, memory, radio details (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_get_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until, max 30d relative -- throws if exceeded; use ISO-8601 for longer ranges), and server-side deviceId/appId scoping. `pattern` matches the message field only; pathological regex like `(.*)*` may hang the matcher. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) |
+| `hub_get_logs` | Read hub history (default), structured MCP history (`mode='mcp'`), or MCP logging status (`mode='status'`). |
 | `hub_get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) |
 | `hub_get_jobs` | Scheduled jobs, running jobs, and hub actions |
-| `hub_get_debug_logs` | Retrieve MCP debug log entries. Pass `mode='status'` to get logging system status and capacity instead. |
 | `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only by default; does not record a new snapshot) |
 | `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Read master) |
 | `hub_get_device_health` | Find stale/offline devices |
@@ -551,14 +550,13 @@ Whole-hub backup *creation* is the flat core tool `hub_create_backup`.
 </details>
 
 <details>
-<summary><b>hub_manage_logs</b> (6) — Logs, performance stats, and log configuration</summary>
+<summary><b>hub_manage_logs</b> (5) — Logs, performance stats, and log configuration</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_get_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until, max 30d relative -- throws if exceeded; use ISO-8601 for longer ranges), and server-side deviceId/appId scoping. `pattern` matches the message field only; pathological regex like `(.*)*` may hang the matcher. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) (also in `hub_read_diagnostics`) |
+| `hub_get_logs` | Read hub history (default), structured MCP history (`mode='mcp'`), or MCP logging status (`mode='status'`). |
 | `hub_get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) (also in `hub_read_diagnostics`) |
 | `hub_get_jobs` | Scheduled jobs, running jobs, and hub actions (also in `hub_read_diagnostics`) |
-| `hub_get_debug_logs` | Retrieve MCP debug log entries. Pass `mode='status'` to get logging system status and capacity instead. (also in `hub_read_diagnostics`) |
 | `hub_delete_debug_logs` | Clear all MCP debug logs |
 | `hub_set_log_level` | Set MCP log level (debug/info/warn/error) |
 

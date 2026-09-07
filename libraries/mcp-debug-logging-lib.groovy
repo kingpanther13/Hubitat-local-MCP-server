@@ -1,4 +1,4 @@
-library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_debug_logs/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_logs MCP modes/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolGetDebugLogs(args) {
     initDebugLogs()
@@ -8,7 +8,11 @@ def toolGetDebugLogs(args) {
     def component = args.component
     def ruleId = args.ruleId
 
-    def logs = state.debugLogs.entries ?: []
+    def history = getDebugLogReadResult(args)
+    if (history.status == "in_progress") return history + [tool: "hub_get_logs"]
+    if (history.error) throw new IllegalStateException(history.error)
+    def stored = history.entries
+    def logs = stored
 
     // Apply filters
     if (level && level != "all") {
@@ -41,12 +45,12 @@ def toolGetDebugLogs(args) {
         return e
     }
     def cursor = args?.cursor
-    def paged = _paginateList(materialized, cursor, 100, "hub_get_debug_logs")
+    def paged = _paginateList(materialized, cursor, 100, "hub_get_logs")
     def result = [
         entries: paged.page,
         count: paged.page.size(),
-        totalStored: state.debugLogs.entries?.size() ?: 0,
-        maxEntries: state.debugLogs.config?.maxEntries ?: 100,
+        totalStored: stored.size(),
+        maxEntries: 100,
         currentLogLevel: getConfiguredLogLevel()
     ]
     if (cursor != null) {
@@ -58,10 +62,11 @@ def toolGetDebugLogs(args) {
 
 def toolClearDebugLogs(args) {
     initDebugLogs()
-    def count = state.debugLogs.entries?.size() ?: 0
-    state.debugLogs.entries = []
-    mcpLog("info", "server", "Debug logs cleared (${count} entries removed)")
-    return [success: true, clearedCount: count]
+    def cleared = clearDebugLogEntries(args)
+    if (cleared.status == "in_progress") return cleared + [tool: "hub_delete_debug_logs"]
+    def detail = cleared.countIncomplete ? "previous entry count unavailable" : "${cleared.clearedCount} entries removed"
+    mcpLog("info", "server", "Debug logs cleared (${detail})")
+    return [success: true] + cleared
 }
 
 def toolSetLogLevel(args) {
@@ -75,10 +80,7 @@ def toolSetLogLevel(args) {
     initDebugLogs()
     // Log BEFORE changing level so confirmation isn't suppressed when raising threshold
     mcpLog("info", "server", "Log level changed from ${previousLevel} to: ${level}")
-    // Use read-modify-write for state persistence (nested mutations don't persist in Hubitat)
-    def config = state.debugLogs.config ?: [:]
-    config.logLevel = level
-    state.debugLogs = [entries: state.debugLogs.entries ?: [], config: config]
+    setDebugLogLevel(level)
     // Update the setting so UI stays in sync (use [type, value] map for enum settings)
     app.updateSetting("mcpLogLevel", [type: "enum", value: level])
 
@@ -91,14 +93,18 @@ def toolSetLogLevel(args) {
 
 def toolGetLoggingStatus(args) {
     initDebugLogs()
-    def entries = state.debugLogs.entries ?: []
+    def history = getDebugLogReadResult(args)
+    if (history.status == "in_progress") return history + [tool: "hub_get_logs"]
+    if (history.error) throw new IllegalStateException(history.error)
+    def entries = history.entries
 
     def result = [
         version: currentVersion(),
         currentLogLevel: getConfiguredLogLevel(),
         availableLevels: getLogLevels(),
         totalEntries: entries.size(),
-        maxEntries: state.debugLogs.config?.maxEntries ?: 100,
+        maxEntries: 100,
+        storage: "hub_native_logs",
         entriesByLevel: [
             debug: entries.count { it.level == "debug" },
             info: entries.count { it.level == "info" },
@@ -121,7 +127,9 @@ def toolGenerateBugReport(args) {
     def windowMs = ((args.logWindowSeconds == null ? 120 : args.logWindowSeconds) as Integer) * 1000L
 
     initDebugLogs()
-    def allEntries = (state.debugLogs.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
+    def history = getDebugLogReadResult(args)
+    if (history.status == "in_progress") return history + [tool: "hub_report_issue"]
+    def allEntries = (history.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
     def anchor = _bugReportResolveAnchor(args, allEntries)
     def scopedLogs = _bugReportScopedLogs(args, allEntries, anchor, windowMs)
     def env = _bugReportEnvironmentSummary(args, privacyMode)
@@ -135,7 +143,8 @@ def toolGenerateBugReport(args) {
         includeRawLogs: includeRawLogs,
         env: env,
         ruleInfo: ruleInfo,
-        scopedLogs: scopedLogs
+        scopedLogs: scopedLogs,
+        logReadError: history.error
     )
 
     def result = [
@@ -152,6 +161,12 @@ def toolGenerateBugReport(args) {
         ],
         instructions: "Click submitUrl — the GitHub issue title is pre-filled. In the issue form, type a short description of what you were doing in the 'What happened' field, then paste the 'report' content into the 'Agent report output' field. If you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, and filenames with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting — public mode is a best-effort assist, not a guarantee."
     ]
+    if (history.error) {
+        result.logs.error = history.error
+        result.logs.retryable = history.retryable
+        result.logs.relevantCount = null
+        result.logs.otherRecentLogCount = null
+    }
     if (scopedLogs.scoped && !scopedLogs.includedUnrelated && scopedLogs.otherCount > 0) {
         result.logs.hint = "Pass includeUnrelatedRecentLogs=true to include the ${scopedLogs.otherCount} omitted recent log entr${scopedLogs.otherCount == 1 ? 'y' : 'ies'}."
     }
@@ -402,7 +417,9 @@ private String _bugReportBuildMarkdown(Map params) {
 """
     }
     def logSection
-    if (!includeRawLogs) {
+    if (params.logReadError) {
+        logSection = "## Recent Error/Warning Logs\n_MCP log history unavailable. Log counts and evidence could not be recovered; retry after native logging is available._"
+    } else if (!includeRawLogs) {
         def n = relevantLines.size()
         def stand = n > 0 ?
             "_${n} relevant entr${n == 1 ? 'y' : 'ies'} (raw text omitted in public mode — re-run with privacyMode='private' or pass includeRawLogs=true to see them)._" :
@@ -463,23 +480,8 @@ def _getAllToolDefinitions_partDebugLogging() {
     return [
         // Debug Logging Tools
         [
-            name: "hub_get_debug_logs",
-            description: "Read the MCP debug-log system (stored in app state). mode='logs' (default) returns stored entries; mode='status' returns logging-system status.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    mode: [type: "string", enum: ["logs", "status"], description: "logs = stored entries (default); status = current log level + counts + capacity.", default: "logs"],
-                    limit: [type: "integer", description: "logs mode: max entries to return (default: 50, max: 200)"],
-                    level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "logs mode: filter by log level (default: all)"],
-                    component: [type: "string", description: "logs mode: filter by component (e.g., 'server', 'rule')"],
-                    ruleId: [type: "string", description: "logs mode: filter by specific rule ID"],
-                    cursor: [type: "string", description: "logs mode: opt-in pagination cursor.[[FLAT_TRIM]] Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
             name: "hub_delete_debug_logs",
-            description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs).[[FLAT_TRIM]] Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
+            description: "Clear the structured MCP history view read by hub_get_logs(mode='mcp').[[FLAT_TRIM]] A durable clear marker keeps old native entries from reappearing after reload. Use before reproducing an issue. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -525,7 +527,7 @@ def _readOnlyToolNames_partDebugLogging() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Diagnostics + logs (read)
-        "hub_get_debug_logs", "hub_report_issue"
+        "hub_report_issue"
     ]
 }
 
@@ -543,7 +545,6 @@ def _toolDisplayMeta_partDebugLogging() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         hub_report_issue: [title: "Generate Diagnostic Report", summary: "Generate a comprehensive diagnostic report for bug reports."],
-        hub_get_debug_logs: [title: "Get MCP Debug Logs", summary: "MCP debug log entries, or logging-system status."],
         hub_delete_debug_logs: [title: "Clear MCP Debug Logs", summary: "Clear all MCP debug log entries."],
         hub_set_log_level: [title: "Set MCP Log Level", summary: "Set the MCP log level (debug, info, warn, error)."]
     ]

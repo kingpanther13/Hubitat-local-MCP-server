@@ -147,7 +147,7 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item', 'hub_restore_backup', 'hub_delete_backup',
             'hub_get_logs', 'hub_get_performance_stats', 'hub_get_jobs',
-            'hub_get_debug_logs', 'hub_delete_debug_logs', 'hub_set_log_level',
+            'hub_delete_debug_logs', 'hub_set_log_level',
             'hub_get_metrics', 'hub_get_memory_history', 'hub_call_gc',
             'hub_get_device_health',
             'hub_get_radio_details',

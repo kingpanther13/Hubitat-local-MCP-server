@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 117 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 116 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -12,9 +12,9 @@ As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used 
 
 Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every sub-tool read-only), **`hub_manage_*`** gateways contain at least one write. A read tool may appear in BOTH a `hub_read_*` gateway and a mixed `hub_manage_*` gateway (multi-membership).
 
-**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
+**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (8), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
-**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (5), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 All safety gates are preserved: the Read/Write master gate runs centrally in `executeTool()` and re-applies per sub-tool when a gateway routes back through it, and the destructive `confirm`+backup checks run in the handlers of the destructive write tools.
 
@@ -82,7 +82,6 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `hub_list_device_dependents` | 100 | Pages `appsUsing`. |
 | `hub_get_logs` | 100 | Filters + `limit` apply first; cursor pages within the filtered result. |
 | `hub_get_memory_history` | 100 | `limit=0` + cursor pages the full hub ring buffer (the only way to retrieve every entry without losing data). |
-| `hub_get_debug_logs` | 100 | Filters apply first; cursor pages within. |
 | `hub_get_jobs` | 100 | Pages `scheduledJobs`; `runningJobs` and `hubActions` stay in full. Served from a 30 s cached `/logs/json` snapshot shared with `hub_get_performance_stats`, so a traversal is best-effort past that TTL. When the transport carries a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on LAN) the fetch runs in the background and the call continues via `requestState`; legacy clients repeat the identical call on `status: "in_progress"`. |
 
 Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hub_get_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `hub_list_files`/`hub_read_file` round-trip) plus the universal size guard as the backstop.
@@ -528,6 +527,14 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - `patterns` (array of strings): multiple regexes; `patternMode='any'` (default) = OR, `patternMode='all'` = AND; compatible with `pattern` (both apply)
 - `since` / `until`: ISO-8601 timestamp (e.g. `'2024-01-15T10:30:00Z'`) or relative offset (`'30m'`, `'2h'`, `'1d'`, `'7d'`); relative offset subtracted from now; max 30d (throws if exceeded -- use ISO-8601 for longer ranges); entries with unparseable time fields pass through rather than being excluded. ISO-8601 timestamps without an explicit TZ marker (e.g., `'2024-01-15T10:30:00'` or `'2024-01-15 10:30:00.000'`) are parsed as UTC.
 - For single-device or single-app logs, pass `deviceId` or `appId` -- this is a server-side scope filter (mutually exclusive) and is much cheaper than post-filtering the full buffer
+- Current three-column hub log rows are decoded as timestamp, level, and source/message; their timestamps use the hub's configured time zone. Older five-column rows retain their UTC interpretation. Explicit time-zone offsets in `since`/`until` are honored.
+
+**hub_get_logs (mode='mcp' or 'status'):**
+- Reads structured MCP history; `mode='status'` returns the configured threshold, capacity, and entry counts. Use `hub_get_logs` for the broader native history of apps and devices.
+- Debug, info, warn, and error entries admitted by the configured log level are written through Hubitat's native logger. A bounded memory cache serves recent MCP history; after a reload it recovers entries from native Past Logs scoped to this app. Logging does not write a second file or persist the full ring in app state.
+- The MCP view holds at most 100 entries. Structured messages retain the existing 500-character limit and exception text the existing 1,000-character limit; diagnostic details are preserved. Native logs retain the full message. Hubitat also prunes its shared Past Logs by size (approximately 1 MB across the hub), so native history may contain fewer MCP entries after a reload. Explicitly purging Hubitat logs removes that recovery source.
+- `hub_delete_debug_logs` clears the MCP view using a durable generation marker. Older native log lines remain visible through Hubitat's Logs page and `hub_get_logs`; they do not reappear in the MCP view after a reload.
+- Existing stored MCP entries migrate into native logging with their original timestamps and structured fields before their old state copy is removed. Rule filters and bug-report context continue to use the structured entries.
 
 **hub_list_device_events (windowed mode):**
 - Windowed mode activates when `hoursBack` OR `since` is supplied: up to 7 days of history
@@ -1174,13 +1181,19 @@ Surfaced via `hub_get_tool_guide(section='slow_ops')`. Hubitat's cloud relay can
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, and the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
 The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and the round-zero response marks it `rejoined: true`; it cannot reserve or run a second write. This lets a client safely replay a mutation-free preflight whose HTTP response was lost. To INTENTIONALLY run the same write twice while the first record is still live, vary the arguments (for example the rule name or an added comment field) or wait out the record TTL -- a byte-identical repeat always coalesces. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
 
 Why `input_required`/`requestState` rather than the spec's Tasks primitive: each continuation round is one bounded HTTP leg of ONE logical tool call -- the server never holds a client-facing job object with its own lifecycle, and compatible clients (the official SDKs included) continue automatically inside a single `call_tool()` with no polling code. Tasks model work that outlives the request exchange with independent status/cancel semantics; the one operation here that genuinely outlives its exchange (package deployment, which recompiles this app) returns immediately and publishes a durable, request-correlated outcome instead. `input_required` with no `inputRequests` is the spec's state-only continuation shape: the server is asking the client to continue the exchange, not to answer a question.
+
+### Slow log and diagnostic reads
+
+When the transport has a time budget, `hub_get_jobs`, `hub_get_performance_stats`, and native log reads through `hub_get_logs` use background fetches and the same `requestState` continuation. Cold MCP history recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. A warm read can finish on its first call. Reads hold no write lease, and their log payloads stay outside persisted continuation records.
+
+`hub_delete_debug_logs` waits for recovery before clearing, then retains its small terminal result so replay cannot clear again. Reload recovery reads existing native history; old state-backed entries are discarded once when updating to native storage. Legacy clients that receive `status: "in_progress"` repeat the same read or clear call.
 
 ### Global write concurrency cap
 

@@ -23,7 +23,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
     // ---------- helpers ----------
 
     private void seedLogs(List entries) {
-        stateMap.debugLogs = [entries: entries, config: [logLevel: 'error', maxEntries: 100]]
+        seedDebugLogHistory([entries: entries, config: [logLevel: 'error', maxEntries: 100]])
     }
 
     private Map baseArgs(Map overrides = [:]) {

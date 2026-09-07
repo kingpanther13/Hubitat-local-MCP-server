@@ -80,7 +80,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status',
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
-            'hub_get_debug_logs', 'hub_report_issue',
+            'hub_report_issue',
             'hub_get_logs', 'hub_list_device_events', 'hub_get_performance_stats',
             'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
             'hub_list_apps', 'hub_get_source', 'hub_list_backups', 'hub_get_backup',
@@ -493,7 +493,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status',
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
-            'hub_get_debug_logs', 'hub_report_issue',
+            'hub_report_issue',
             'hub_get_logs', 'hub_get_performance_stats',
             'hub_get_jobs', 'hub_get_memory_history',
             'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
@@ -567,7 +567,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 117
+        names.size() == 116
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
