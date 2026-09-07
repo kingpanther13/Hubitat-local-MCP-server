@@ -1658,6 +1658,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.2.1** - fix: move MCP log history to native Hubitat storage. PRs: [#406](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/406)
 - **v4.2.0** - chore: remove deprecated output schemas. PRs: [#405](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/405)
 - **v4.1.1** - test: clear TOOL_SEARCH_INDEX in the groovy2x-spock scaffold harness too; ci: add e2e:skip label (cancel in-flight e2e, keep the hub free, gate stays pending); fix: hub_get_jobs and hub_get_performance_stats continue over the relay instead of 502ing on large hubs. PRs: [#397](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/397), [#400](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/400), [#401](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/401)
 - **v4.1.0** - build(deps): bump actions/setup-java from 5 to 6 in the github-actions group ([#394](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/394), @app/dependabot); build(deps): bump the gradle-dependencies group with 3 updates ([#396](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/396), @app/dependabot); fix: correct rule-health structural detection, restore three tools broken on platform 2.5.1.174 and in-place restore of rules with device pickers. PRs: [#394](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/394), [#396](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/396), [#395](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/395)
