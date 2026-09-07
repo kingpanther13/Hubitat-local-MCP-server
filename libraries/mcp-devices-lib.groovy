@@ -683,12 +683,220 @@ def _buildContextJson() {
     return result
 }
 
+// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
+// as {key, data:{id,name,...}, children:[...]}. Flatten to the {id, label} shape the caller
+// expects; `name` there is the user-facing label (the driver name is `secondaryName`).
+private List _flattenHub2DeviceTree(nodes, List acc = null) {
+    // A non-List at the TOP level means the contract moved -- return null so the caller raises it,
+    // rather than an empty list that would read as "this hub has no devices". Nested `children`
+    // legitimately arrive absent, so those recurse into the accumulator.
+    if (!(nodes instanceof List)) return acc
+    if (acc == null) acc = []
+    // A node that is not a Map is contract drift. Skipping it would hand back a SHORTER inventory
+    // that reads as authoritative -- and since an empty inventory now means "this hub has no
+    // devices", devices:[null] would read as an empty hub. Fail the whole read instead; the caller
+    // reports "shape" and callers of THAT keep their existing behaviour for an unreadable source.
+    boolean malformed = false
+    nodes.each { node ->
+        if (!(node instanceof Map)) { malformed = true; return }
+        def data = node.data
+        // A node without a data.id is the same drift as a non-map node: skipping it would return
+        // a SHORTER list that still reads as authoritative (the live tree carries an id on every
+        // node, container or leaf).
+        if (!(data instanceof Map) || data.id == null) { malformed = true; return }
+        acc << [id: data.id, label: data.name]
+        // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
+        // discarding that let a bad node nested under a valid parent produce a short list that
+        // still read as authoritative -- the exact failure the top-level check exists to stop.
+        // An absent `children` is not malformed: the recursion returns the accumulator unchanged.
+        if (_flattenHub2DeviceTree(node.children, acc) == null) malformed = true
+    }
+    if (malformed) {
+        mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a node that is not a map or has no data.id -- treating the inventory as unreadable rather than returning a short list")
+        return null
+    }
+    return acc
+}
+
+// Every hub device, authorized or not -- it lives with its primary consumer
+// (hub_list_devices scope='all') and the selectedDevices settings validator calls it
+// cross-library.
+// /device/listWithCapabilities/json carried capabilities but is gone as of platform 2.5.1.173 and
+// later (404; confirmed on .173, .174 and .181). On such hubs the inventory is assembled from two
+// reads, UNIONED by id: /hub2/devicesList is the SPINE (the authoritative whole-hub tree, no
+// capabilities) and /hub2/vrb/devices -- the VRB 2.0 device picker feed, a flat array carrying
+// {id, label, capabilities} for every device -- supplies capabilities. Spine devices come first in
+// tree order; a device only the feed lists is appended after them. Neither source's omission ever
+// costs a device: a spine device the feed omits (or whose entry has no capabilities list) is
+// present without a `capabilities` key (the caller fills authorized devices in from the Groovy
+// model), a feed device the tree omits is present from the feed, and either omission flags the
+// result partial with a counted note.
+// `source` is the endpoint the records were built from: the tree, unless the feed supplied
+// capabilities for them (the union), or the feed alone when the tree could not be used.
+// Returns [source, capabilities, records] (+ partialNote when capabilities is false but records
+// exist, + idsComplete:false whenever the ID SET cannot be vouched for -- the two sources
+// disagree about it: the feed lists a device the tree lacks; the tree could not be read so the
+// feed stands alone; the tree answered EMPTY beside a populated feed (contradictory data, the
+// feed is the honest answer); or the tree answered EMPTY with no feed answer at all (an empty hub
+// and a dead endpoint look identical when nothing is alive to contradict either).
+// On failure records is null and `failure` is "fetch" (with fetchError) or "shape" -- a missing
+// body, a missing `devices` key or a malformed node. The caller owns the wording.
+private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
+    try {
+        def txt = hubInternalGet("/device/listWithCapabilities/json")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+        // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
+        if (txt && parsed instanceof List && !parsed.isEmpty()) {
+            return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
+        }
+        // A 200 that is not a device list is contract drift; say so rather than fall through silently.
+        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
+    } catch (Exception e) {
+        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
+    }
+
+    // The spine. Its failure modes are the caller's failure modes -- unless the feed can stand in.
+    def spine = null
+    def spineFailure = null
+    try {
+        def txt = hubInternalGet("/hub2/devicesList")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "{}")
+        spine = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
+        if (!(spine instanceof List)) {
+            mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
+            spineFailure = [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
+            spine = null
+        }
+    } catch (Exception e) {
+        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList fetch/parse failed: ${e.message}")
+        spineFailure = [source: "/hub2/devicesList", capabilities: false, records: null, failure: "fetch", fetchError: e.message]
+    }
+
+    // The capability feed, keyed by id string in feed order. Every entry with an id is kept (its
+    // raw id and label); `capabilities` is set only when the entry carries a real list, so an entry
+    // without one is absorbed per record, never a reason to drop the feed.
+    def feed = null
+    boolean feedHasCapabilities = false
+    try {
+        def txt = hubInternalGet("/hub2/vrb/devices")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+        if (txt && parsed instanceof List && !parsed.isEmpty()) {
+            feed = [:]
+            parsed.each { entry ->
+                if (!(entry instanceof Map) || entry.id == null) return
+                def rec = [id: entry.id, label: entry.label]
+                // An EMPTY list is not an answer: the feed lists devices it cannot see into with
+                // `capabilities: []`, and an authorized device would then hide from capabilityFilter
+                // behind a list the model could have filled. Treat it exactly like an absent list.
+                if (entry.capabilities instanceof List && !entry.capabilities.isEmpty()) { rec.capabilities = entry.capabilities; feedHasCapabilities = true }
+                feed[entry.id.toString()] = rec
+            }
+            if (feed.isEmpty()) {
+                mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices answered ${parsed.size()} entries but none carried an id")
+                feed = null
+            } else if (!feedHasCapabilities) {
+                mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices answered ${feed.size()} entries but none carried a capabilities list")
+            }
+        } else {
+            mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices answered with ${txt ? 'an empty or unrecognized body' : 'no body'}")
+        }
+    } catch (Exception e) {
+        mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices unavailable (${e.message})")
+    }
+
+    if (spine != null && feed == null) {
+        if (spine.isEmpty()) {
+            // Nothing is alive to contradict an empty tree: a hub with no devices and a dead
+            // endpoint answering {devices: []} look identical from here, so the id set cannot be
+            // vouched for. Zero records, flagged -- never zero devices passed off as the truth.
+            mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList reports no devices and /hub2/vrb/devices did not answer; the inventory cannot be vouched for")
+            return [source: "/hub2/devicesList", capabilities: false, idsComplete: false, records: spine,
+                    partialNote: "The whole-hub device tree (/hub2/devicesList) answered no devices and the Visual Rule Builder device feed (/hub2/vrb/devices) did not answer, so an empty hub cannot be told from a dead endpoint. Retry to cross-check."]
+        }
+        // Capability-less last resort: the caller fills authorized devices in from the model.
+        return [source: "/hub2/devicesList", capabilities: false, records: spine]
+    }
+    boolean spineContradicted = false
+    if (spine != null && spine.isEmpty()) {
+        // The tree says "no devices" while the feed lists some. A dead endpoint can answer empty,
+        // so an empty spine is only trustworthy when nothing contradicts it; here the feed does,
+        // and passing zero devices off as the complete truth is the one outcome that must not
+        // happen. Fall through to the feed-alone answer, flagged partial with this reason.
+        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList answered no devices while /hub2/vrb/devices listed ${feed.size()}; using the feed alone")
+        spineContradicted = true
+        spine = null
+    }
+    if (spine != null) {
+        def missingCapabilities = 0   // spine devices the feed gave no capabilities list for
+        def spineIds = [] as Set
+        def records = spine.collect { d ->
+            def key = d.id?.toString()
+            spineIds << key
+            def entry = feed[key]
+            if (entry != null && entry.containsKey("capabilities")) return [id: d.id, label: d.label, capabilities: entry.capabilities]
+            missingCapabilities++
+            return [id: d.id, label: d.label]   // no `capabilities` key on purpose: routes to the model fill-in
+        }
+        // The union's other direction: a device only the feed lists keeps its feed record. Its
+        // presence PROVES the tree short, so the id set is complete only when there are none.
+        def feedOnly = feed.findAll { key, rec -> !spineIds.contains(key) }.values() as List
+        def feedOnlyWithoutCapabilities = feedOnly.findAll { !it.containsKey("capabilities") }.size()
+        records.addAll(feedOnly)
+        boolean idsComplete = feedOnly.isEmpty()
+        def notes = []
+        if (!feedOnly.isEmpty()) {
+            notes << "The whole-hub device tree (/hub2/devicesList) omitted ${feedOnly.size()} device(s) that the Visual Rule Builder device feed (/hub2/vrb/devices) lists; they are included from the feed" +
+                    (feedOnlyWithoutCapabilities > 0 ? ", ${feedOnlyWithoutCapabilities} of them without a capabilities list (an empty list there means unknown, not none)." : ".")
+        }
+        if (!feedHasCapabilities) {
+            // A feed with no capabilities list anywhere is an id source, not a capability source:
+            // it omitted nothing, the caller fills authorized devices in from the model, and the
+            // no-capability-source wording applies (so no partialNote for that alone).
+            mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices carried no capabilities lists; inventory is /hub2/devicesList with the feed's ids unioned in")
+            def out = [source: "/hub2/devicesList", capabilities: false, records: records]
+            if (!idsComplete) { out.idsComplete = false; out.partialNote = notes.join(" ").toString() }
+            return out
+        }
+        if (missingCapabilities == 0 && idsComplete) return [source: "/hub2/vrb/devices", capabilities: true, records: records]
+        if (missingCapabilities > 0) {
+            notes.add(0, "The Visual Rule Builder device feed (/hub2/vrb/devices) omitted ${missingCapabilities} of ${spine.size()} device(s) listed by /hub2/devicesList, or listed them without capabilities; those carry capabilities only when MCP-authorized, so capabilityFilter cannot match them otherwise.")
+        }
+        mcpLog("warn", logCategory, "${logPrefix}: ${notes.join(' ')}")
+        def out = [source: "/hub2/vrb/devices", capabilities: false, records: records, partialNote: notes.join(" ").toString()]
+        if (!idsComplete) out.idsComplete = false
+        return out
+    }
+
+    // The spine could not be used (unreadable, or it contradicted the feed). The feed alone is
+    // still a usable inventory, but nothing can vouch for its completeness, so it is reported
+    // partial with the reason and idsComplete:false -- never as the complete capability-bearing
+    // answer the successful path returns. The records ARE the feed's, so `source` names it.
+    if (feed != null) {
+        def why = spineContradicted ?
+                "answered no devices while /hub2/vrb/devices listed ${feed.size()} and was not trusted" :
+                "could not be read (${spineFailure?.fetchError ?: spineFailure?.failure})"
+        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList ${why}; inventory is the /hub2/vrb/devices feed alone")
+        return [source: "/hub2/vrb/devices", capabilities: false, idsComplete: false, records: feed.values() as List,
+                partialNote: "The whole-hub device tree (/hub2/devicesList) ${why}, so this inventory is the Visual Rule Builder device feed (/hub2/vrb/devices) alone and may omit devices the feed filters out. Retry to cross-check.".toString()]
+    }
+    return spineFailure
+}
+
+// The capabilitiesNote for a partial scope='all' inventory: the counted note the inventory read
+// produced, else the no-capability-source wording (both response shapes carry the same text).
+private String _allHubCapabilitiesNote(Map inventory) {
+    return inventory.partialNote ?: "No capability-bearing source was usable on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and /hub2/vrb/devices either did not answer or carried no capabilities lists -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+}
+
 // scope='all' implementation: every hub device + an mcpAuthorized flag. The Groovy device model is
 // authorization-scoped, so an admin endpoint is the only way the app sees devices it isn't granted:
-// /device/listWithCapabilities/json (id/label/capabilities) where it still exists, else the
-// /hub2/devicesList fallback, which lists the same devices WITHOUT capabilities (filled in for
-// authorized ones only, and reported as source + capabilitiesPartial). Lightweight uniform records
-// (no attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
+// /device/listWithCapabilities/json (id/label/capabilities) where it still exists; on 2.5.1.173+
+// where it is gone, the /hub2/devicesList tree (every id, no capabilities) unioned with the
+// /hub2/vrb/devices picker feed (capabilities) -- see _fetchAllHubDeviceRecords. `source` names
+// which answered for capabilities; a device without a capabilities record is filled in from the
+// Groovy model when authorized, and the result says capabilitiesPartial + capabilitiesNote when
+// any device lacks one or the tree could not be read. Lightweight uniform records (no
+// attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
 private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor) {
     if (labelFilter != null && !(labelFilter instanceof String)) {
         throw new IllegalArgumentException("labelFilter must be a string")
@@ -700,7 +908,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     if (format && !["summary", "ids"].contains(resolvedFormat)) {
         throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only (detailed/currentStates require MCP-authorized devices; got '${format}')")
     }
-    // The fallback source exposes no capabilities, so those are filled in from the Groovy model
+    // The last-resort source exposes no capabilities, so those are filled in from the Groovy model
     // where the app has access and left empty where it does not (an unauthorized device's
     // capabilities are simply not knowable from inside the sandbox).
     def inventory = _fetchAllHubDeviceRecords("device", "hub_list_devices scope='all'")
@@ -715,7 +923,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     def capabilitiesComplete = inventory.capabilities
     def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
     (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
-    // Capability lookup for the fallback source, built once from the authorization-scoped model.
+    // Capability lookup for the capability-less source, built once from the authorization-scoped model.
     def capsById = [:]
     if (!capabilitiesComplete) {
         // Both sources that feed authorizedIds above, so every device tagged mcpAuthorized
@@ -759,8 +967,9 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         r.source = sourceEndpoint
         if (!capabilitiesComplete) {
             r.capabilitiesPartial = true
-            r.capabilitiesNote = "The capabilities endpoint (/device/listWithCapabilities/json) did not answer on this hub -- it was removed in platform 2.5.1.173 and later -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+            r.capabilitiesNote = _allHubCapabilitiesNote(inventory)
         }
+        if (inventory.idsComplete == false) r.idsComplete = false
         if (labelFilter) r.labelFilter = labelFilter
         if (capabilityFilter) r.capabilityFilter = capabilityFilter
         if (limit && limit > 0) {
@@ -786,8 +995,10 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         // Say it plainly rather than let an empty list read as "this device has no capabilities":
         // capabilityFilter can only match authorized devices on this path.
         result.capabilitiesPartial = true
-        result.capabilitiesNote = "The capabilities endpoint (/device/listWithCapabilities/json) did not answer on this hub -- it was removed in platform 2.5.1.173 and later -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+        result.capabilitiesNote = _allHubCapabilitiesNote(inventory)
     }
+    // The record SET, as distinct from its capabilities: a caller branches on this field.
+    if (inventory.idsComplete == false) result.idsComplete = false
     if (labelFilter) result.labelFilter = labelFilter
     if (capabilityFilter) result.capabilityFilter = capabilityFilter
     if (limit && limit > 0) {

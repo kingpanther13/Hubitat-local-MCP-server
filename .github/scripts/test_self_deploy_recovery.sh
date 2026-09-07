@@ -33,6 +33,21 @@ check "no lastSelfDeploy -> ''"                              ""      "$(printf '
 buggy="$(printf '%s' '{"lastSelfDeploy":{"success":false}}' | jq -r '.lastSelfDeploy.success // empty')"
 check "buggy '// empty' returns '' for false (do NOT reintroduce)" "" "$buggy"
 
+# The SAME extraction in deploy_app_via_watchdog (mcp_watchdog_lib.sh), which reads the
+# confirmation poll's success flag. It carried the buggy form until 2026-09-06, so a rejected
+# deploy timed out at 420s instead of printing the hub's error; pin it here too.
+lib_flag() { jq -r '.lastSelfDeploy.success | if type=="boolean" then tostring else "" end'; }
+check "watchdog-lib poll: success:false -> 'false'" "false" "$(printf '%s' '{"lastSelfDeploy":{"success":false}}' | lib_flag)"
+check "watchdog-lib poll: success:true  -> 'true'"  "true"  "$(printf '%s' '{"lastSelfDeploy":{"success":true}}'  | lib_flag)"
+LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mcp_watchdog_lib.sh"
+if [ ! -f "$LIB" ]; then
+  echo "FAIL: cannot find mcp_watchdog_lib.sh next to this test (looked at $LIB)"; fail=1
+elif grep -q 'lastSelfDeploy.success // empty' "$LIB"; then
+  echo "FAIL: mcp_watchdog_lib.sh reintroduced '// empty' on the success flag"; fail=1
+else
+  echo "ok: mcp_watchdog_lib.sh does not use '// empty' on the success flag"
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo "ALL SELF-DEPLOY RECOVERY EXTRACTION TESTS PASSED"
 else

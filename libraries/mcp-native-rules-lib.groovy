@@ -4433,7 +4433,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     // builder string-matches it into a "nothing needs to be restored" hint,
     // which would be a lie on every post-delete path.
     def addResult
-    try { addResult = _rmAddAction(appId, spec) }
+    try { addResult = _rmAddAction(appId, _rmWithClock(spec, reqT0)) }
     catch (Exception addExc) { throw new IllegalStateException(_rmModifyPostDeleteMsg(actionIdx, "re-add", addExc)) }
     if (addResult?.success == false) {
         // partial:true -- the rule IS half-mutated (delete committed, add did not),
@@ -4760,7 +4760,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
 // The body is intentionally minimal — the server only needs the
 // navigation marker to perform the transition. We don't need to mirror
 // every hidden button input on the source page.
-private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null) {
+private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null, Long reqT0 = null, boolean recoverEmptyRender = false) {
     // For plain page navigation use hrefName="name" + hrefIndex=0. The
     // server treats the marker `_action_href_name|<page>|0` as a generic
     // navigation request.
@@ -4810,7 +4810,10 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         _rmCacheInvalidate(cache, appId)
         if (resp?.data) {
             try {
-                return new groovy.json.JsonSlurper().parseText(resp.data) as Map
+                def navResp = new groovy.json.JsonSlurper().parseText(resp.data) as Map
+                // Opt-in (the walkStep sites only): every other caller navigates to COMMIT state and
+                // never reads the render, so a re-read would cost them a pause and a GET for nothing.
+                return recoverEmptyRender ? _rmRecoverEmptyNavRender(appId, targetPage, hrefParams, navResp, reqT0) : navResp
             } catch (Exception parseExc) {
                 mcpLog("debug", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} response wasn't JSON (${parseExc.message}) -- caller will plain-fetch the schema")
             }
@@ -4819,6 +4822,65 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         mcpLog("warn", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} POST failed for app ${appId}: ${postExc.message} -- downstream 'X not in schema' errors likely point at this")
     }
     return null
+}
+
+private int _rmEmptyRenderPauseMs() {
+    // One tuning value for one problem -- RM's transient empty render -- shared by the walker's
+    // nav recovery and addAction's doActPage re-read. A method, not a field: the Groovy sandbox
+    // rejects static field initializers.
+    return 750
+}
+
+// RM occasionally answers a navigate with an EMPTY render -- a target page carrying no inputs and
+// no hrefs -- that the very next render fills in (observed on a 2.5.1.174 hub: a doActPage with
+// nothing on it, no hub error logged, the same op green on every other run). Reported as-is it
+// reads as "wizard broke", and at the BEFORE site it makes the following navigate click the
+// default link. The nav POST itself is state-committing (it bakes the in-flight action) and is
+// not known to be idempotent, so it is never re-sent: the target page is re-READ once instead.
+// Three cases are reported as-is: a page reached with href params (its schema lives only in the
+// nav response, a GET cannot stand in), a spent time budget, and a re-read that is empty too.
+// A null or non-JSON POST never reaches here -- that is precisely the case where the first
+// request may have landed, and a retry would double-submit.
+private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefParams, Map navResp, Long reqT0) {
+    if (!(navResp?.configPage instanceof Map)) return navResp
+    if (hrefParams != null && !hrefParams.isEmpty()) {
+        // A param-bearing sub-page's schema lives ONLY in this nav response, so a re-read cannot
+        // stand in for it and the empty render is reported as-is. Say so, or it leaves no trace.
+        def paramSchema = _rmCollectWalkSchema(navResp.configPage as Map, null)
+        if (paramSchema.inputs.isEmpty() && paramSchema.hrefs.isEmpty()) {
+            mcpLog("debug", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page, but it was entered with href params whose state a plain GET cannot reproduce; reporting it as-is")
+        }
+        return navResp
+    }
+    // A page that RENDERED AN ERROR is not a transient empty render: RM answered, and said why
+    // the page has nothing on it (live: a doActPage entered without the wizard state RM expects
+    // answers "Cannot invoke method startsWith() on null object" on the POST and on a GET alike).
+    // Re-reading it yields the same error; the walker surfaces the error text instead.
+    if (navResp.configPage.error != null) return navResp
+    def schema = _rmCollectWalkSchema(navResp.configPage as Map, null)
+    if (!schema.inputs.isEmpty() || !schema.hrefs.isEmpty()) return navResp
+    if (_timeBudgetExceeded(reqT0)) {
+        mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; time budget spent, reporting it as-is")
+        return navResp
+    }
+    mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; re-reading it once")
+    pauseExecution(_rmEmptyRenderPauseMs())
+    try {
+        def reread = _rmFetchConfigJson(appId, targetPage)
+        if (reread?.configPage instanceof Map) {
+            def again = _rmCollectWalkSchema(reread.configPage as Map, null)
+            if (!again.inputs.isEmpty() || !again.hrefs.isEmpty()) {
+                // The re-read's `app` token travels with its configPage: leaving the POST's stale
+                // one beside a fresh page hands the next form post an out-of-date app.version.
+                def grafted = [configPage: reread.configPage, navRetried: true]
+                if (reread.app != null) grafted.app = reread.app
+                return navResp + grafted
+            }
+        }
+    } catch (Exception rereadExc) {
+        mcpLog("debug", "rm-native", "navigate -> ${targetPage} re-read failed for app ${appId}: ${rereadExc.message}")
+    }
+    return navResp
 }
 
 // Submit a sub-page back to its parent via _action_previous=Done, carrying
@@ -5364,8 +5426,141 @@ private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, 
 //
 // Returns: [success, actionIndex, capability, action, settingsApplied,
 // configPageError]
+// The gateway stamps __reqT0 on the TOP-LEVEL argument map only, and every _rmAddAction caller
+// hands it a child action-spec map; this carries the request clock down on that map (a copy --
+// the caller's spec is not mutated) so the add's own budget checks see the real clock. The
+// signature of _rmAddAction stays as it is: the specs stub it by arity.
+private Map _rmWithClock(Map spec, Long reqT0) {
+    if (reqT0 == null || spec == null) return spec
+    // Only a positive Number is a clock. A client-supplied nested spec can carry anything under
+    // this internal key, and "x" or 0 would either blow up the cast downstream or read as a
+    // budget already spent -- so anything else is ignored and replaced by the real clock.
+    if (spec.__reqT0 instanceof Number && ((Number) spec.__reqT0).longValue() > 0) return spec
+    return spec + [__reqT0: reqT0]
+}
+
+// Extracted from _rmAddAction to keep that method under the hub's per-method bytecode budget
+// (ci/groovy24-parse enforces it): every check here refuses a bad spec BEFORE any wizard
+// write, so RM is genuinely untouched on a throw.
+private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleIds) {
+    // Pre-validate device IDs exist on the hub. RM 5.1 silently stores
+    // {<bogusId>: null} for unknown IDs in any device-bearing setting and
+    // the action renders as broken with no execution. Validate the top-
+    // level deviceIds list (used by switch / dimmer / lock / shade /
+    // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
+    _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
+    // Pre-validate a rule-targeting action's target rule id BEFORE any wizard write
+    // (including the selectActions page-init POST below), so a bogus target is
+    // refused with RM genuinely untouched. Capability-gated so only the rule-
+    // targeting subtypes pay the rule-list resolve; validRuleIds is threaded by
+    // bulk callers so a batch resolves the set once.
+    if (_rmSpecTargetsRule(actionSpec)) {
+        _rmValidateRuleTargetExists(cap, actionSpec.ruleIds ?: actionSpec.deviceIds, validRuleIds)
+    }
+    if (actionSpec.events instanceof List) {
+        (actionSpec.events as List).eachWithIndex { ev, evIdx ->
+            if (ev instanceof Map) {
+                _rmValidateDeviceIdsExist("addAction.events[${evIdx}].deviceIds", (ev as Map).deviceIds)
+            }
+        }
+    }
+    if (actionSpec.expression instanceof Map) {
+        def exprConds = (actionSpec.expression as Map).conditions
+        if (exprConds instanceof List) {
+            // Pre-pass: reject nested subExpression at the top level rather than
+            // recursing into a shape the doActPage walker does not yet support. The
+            // walker also rejects subExpression with a targeted message at the first
+            // condition site, but catching it here is cheaper and produces a clearer
+            // error before any wizard write hits the hub (the backup on disk is
+            // already taken by the outer dispatcher at this point; fail-fast here
+            // means RM's wizard state stays untouched). _rmAddRequiredExpression
+            // supports nested subExpression today; _rmAddAction's doActPage walker
+            // is flat-only.
+            exprConds.eachWithIndex { entry, idx ->
+                if (entry instanceof Map && (entry as Map).subExpression != null) {
+                    throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
+                }
+            }
+            // Normalize singular deviceId -> deviceIds before pre-validation **because**
+            // _rmBuildCondition's internal normalization runs too late to protect
+            // _rmValidateDeviceIdsExist; the validator below sees the raw deviceIds list
+            // and would silently skip a singular deviceId.
+            // Flat-only normalization; subExpression is rejected at the pre-pass above --
+            // if that gate is ever relaxed, restore a recursive walk-in here.
+            exprConds.each { entry ->
+                if (!(entry instanceof Map)) return
+                def em = entry as Map
+                if (em.deviceIds == null && em.deviceId != null) {
+                    em.deviceIds = [em.deviceId]
+                }
+            }
+            exprConds.eachWithIndex { c, cIdx ->
+                if (c instanceof Map) {
+                    _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
+                    // compareToDevice reference device: existence-validated up front, before
+                    // the walker opens the slot, so a nonexistent reference id fails loud.
+                    def cm = c as Map
+                    if (cm.compareToDevice instanceof Map && (cm.compareToDevice as Map).deviceId != null) {
+                        _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Extracted from _rmAddAction for the same bytecode budget. Returns the action index RM
+// actually allocated (its high-water mark), falling back to the caller's computed idx.
+private Integer _rmResolveAllocatedActionIdx(Integer appId, Integer idx, Long reqT0) {
+    // Re-read the index RM actually allocated. RM keeps a high-water mark
+    // (state.actNdx) — even after clearActions deletes all actions, the
+    // next "Create New Action" click allocates idx = high_water + 1,
+    // not idx = 1. Verified live: a rule that had actions
+    // 1/2/3 deleted then opens the wizard with actType.4 (not actType.1).
+    // Use the schema's freshly-exposed actType.<N> as ground truth.
+    def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
+    def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
+    def actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+    if (!actTypeField && doActPageCfg?.configPage?.error == null && !_timeBudgetExceeded(reqT0)) {
+        // RM occasionally renders doActPage EMPTY right after the "Create New Action" click
+        // (seen on the CI test hub under load: no actType.<N> in the schema, so every later
+        // write landed not_in_schema and the action came back partial). That is not an error
+        // page -- those carry configPage.error and are reported as they are -- so one re-read
+        // after a short pause; a second empty render flows into the schema-gated writes, which
+        // report it the way they always have.
+        mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
+        pauseExecution(_rmEmptyRenderPauseMs())
+        try {
+            // _rmFetchConfigJson THROWS on an empty body -- the very transient this block exists to
+            // survive -- so a failed re-read degrades to the original read (schema-gated writes then
+            // report it as they always have) instead of failing the add with "app N may not exist".
+            doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
+            doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
+            actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+        } catch (Exception rereadExc) {
+            mcpLog("debug", "rm-native", "addAction: doActPage re-read failed for app ${appId} (${rereadExc.message}); keeping the original read")
+        }
+    }
+    if (actTypeField) {
+        def m = (actTypeField.toString() =~ /^actType\.(\d+)$/)
+        if (m.matches()) {
+            def actualIdx = m[0][1] as Integer
+            if (actualIdx != idx) {
+                mcpLog("info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) -- using ${actualIdx}")
+                idx = actualIdx
+            }
+        }
+    }
+    return idx
+}
+
 Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
+    // Read the clock only AFTER the shape guard, and only when it is a positive Number: this key
+    // rides a client-supplied nested spec, where a string would surface as a bare parser message
+    // and a 0 would silently mark the budget spent.
+    Long reqT0 = (actionSpec.__reqT0 instanceof Number && ((Number) actionSpec.__reqT0).longValue() > 0) ?
+            ((Number) actionSpec.__reqT0).longValue() : null
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
     if (actionSpec.discover == true) {
@@ -5431,70 +5626,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
     }
 
-    // Pre-validate device IDs exist on the hub. RM 5.1 silently stores
-    // {<bogusId>: null} for unknown IDs in any device-bearing setting and
-    // the action renders as broken with no execution. Validate the top-
-    // level deviceIds list (used by switch / dimmer / lock / shade /
-    // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
-    _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
-    // Pre-validate a rule-targeting action's target rule id BEFORE any wizard write
-    // (including the selectActions page-init POST below), so a bogus target is
-    // refused with RM genuinely untouched. Capability-gated so only the rule-
-    // targeting subtypes pay the rule-list resolve; validRuleIds is threaded by
-    // bulk callers so a batch resolves the set once.
-    if (_rmSpecTargetsRule(actionSpec)) {
-        _rmValidateRuleTargetExists(cap, actionSpec.ruleIds ?: actionSpec.deviceIds, validRuleIds)
-    }
-    if (actionSpec.events instanceof List) {
-        (actionSpec.events as List).eachWithIndex { ev, evIdx ->
-            if (ev instanceof Map) {
-                _rmValidateDeviceIdsExist("addAction.events[${evIdx}].deviceIds", (ev as Map).deviceIds)
-            }
-        }
-    }
-    if (actionSpec.expression instanceof Map) {
-        def exprConds = (actionSpec.expression as Map).conditions
-        if (exprConds instanceof List) {
-            // Pre-pass: reject nested subExpression at the top level rather than
-            // recursing into a shape the doActPage walker does not yet support. The
-            // walker also rejects subExpression with a targeted message at the first
-            // condition site, but catching it here is cheaper and produces a clearer
-            // error before any wizard write hits the hub (the backup on disk is
-            // already taken by the outer dispatcher at this point; fail-fast here
-            // means RM's wizard state stays untouched). _rmAddRequiredExpression
-            // supports nested subExpression today; _rmAddAction's doActPage walker
-            // is flat-only.
-            exprConds.eachWithIndex { entry, idx ->
-                if (entry instanceof Map && (entry as Map).subExpression != null) {
-                    throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
-                }
-            }
-            // Normalize singular deviceId -> deviceIds before pre-validation **because**
-            // _rmBuildCondition's internal normalization runs too late to protect
-            // _rmValidateDeviceIdsExist; the validator below sees the raw deviceIds list
-            // and would silently skip a singular deviceId.
-            // Flat-only normalization; subExpression is rejected at the pre-pass above --
-            // if that gate is ever relaxed, restore a recursive walk-in here.
-            exprConds.each { entry ->
-                if (!(entry instanceof Map)) return
-                def em = entry as Map
-                if (em.deviceIds == null && em.deviceId != null) {
-                    em.deviceIds = [em.deviceId]
-                }
-            }
-            exprConds.eachWithIndex { c, cIdx ->
-                if (c instanceof Map) {
-                    _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
-                    // compareToDevice reference device: existence-validated up front, before
-                    // the walker opens the slot, so a nonexistent reference id fails loud.
-                    def cm = c as Map
-                    if (cm.compareToDevice instanceof Map && (cm.compareToDevice as Map).deviceId != null) {
-                        _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
-                    }
-                }
-            }
-        }
-    }
+    // Everything that must be refused with RM genuinely untouched, before any wizard write.
+    _rmPrevalidateActionSpec(actionSpec, cap, validRuleIds)
 
     // Initialize state.actNdx if this is the first action on the rule
     // — avoids the doActPage 'startsWith on null' error on empty rules.
@@ -6641,25 +6774,9 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // POSTing — so we mirror the post-concatenation form here.
     _rmClickAppButton(appId, "N", "doActN", "selectActions")
 
-    // Re-read the index RM actually allocated. RM keeps a high-water mark
-    // (state.actNdx) — even after clearActions deletes all actions, the
-    // next "Create New Action" click allocates idx = high_water + 1,
-    // not idx = 1. Verified live: a rule that had actions
-    // 1/2/3 deleted then opens the wizard with actType.4 (not actType.1).
-    // Use the schema's freshly-exposed actType.<N> as ground truth.
-    def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
-    def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
-    def actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
-    if (actTypeField) {
-        def m = (actTypeField.toString() =~ /^actType\.(\d+)$/)
-        if (m.matches()) {
-            def actualIdx = m[0][1] as Integer
-            if (actualIdx != idx) {
-                mcpLog("info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) -- using ${actualIdx}")
-                idx = actualIdx
-            }
-        }
-    }
+    // RM allocates the action index off its own high-water mark, so the slot the wizard just
+    // opened is read back from doActPage rather than assumed.
+    idx = _rmResolveAllocatedActionIdx(appId, idx, reqT0)
 
     // Set actType + actSubType. Each write re-fetches the schema, so the
     // subsequent fields appear as the wizard expands.
@@ -8380,13 +8497,15 @@ Map _rmWalkStep(Integer appId, Map spec) {
     // fetch through _rmNavigateToPage so state.<paramKey> is set; that
     // call's response IS the page rendered with state in scope.
     def beforeCfg
+    boolean navRetriedBefore = false
     if (hrefContext) {
         def hcName = hrefContext.hrefName?.toString() ?: "name"
         def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
         def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
             (hcParams?.n != null ? (hcParams.n as Integer) : 0)
         def fromPage = hrefContext.fromPage?.toString() ?: page
-        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams)
+        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long, true)
+        if (navResp?.navRetried == true) navRetriedBefore = true
         beforeCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
     } else {
         beforeCfg = _rmFetchConfigJson(appId, page)
@@ -8401,6 +8520,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
     def beforeTriggerCount = _rmCollectTriggerIndices(appId).size()
 
     def opResult = [:]
+    if (navRetriedBefore) opResult.navRetried = true
     def writtenKey = null
     def writtenValue = null
 
@@ -8539,7 +8659,11 @@ Map _rmWalkStep(Integer appId, Map spec) {
         // schema rendered WITH the href params in scope. Stash it as
         // `navResponseConfigPage` so the AFTER block can use it instead
         // of doing a separate GET that would lose the param state.
-        opResult.navResponseConfigPage = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams)?.configPage
+        // An empty render is recovered inside _rmNavigateToPage (one re-READ, never a second
+        // POST); navRetried is set only when that substitute render is what the caller sees.
+        def navResp = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams, null, spec?.__reqT0 as Long, true)
+        if (navResp?.navRetried == true) opResult.navRetried = true
+        opResult.navResponseConfigPage = navResp?.configPage
         opResult.navigated = [from: page, to: target, hrefName: hrefName, hrefIndex: hrefIndex, hrefParams: hrefParams]
         // After navigation the schema lives at the target page, not the source.
         page = target
@@ -8569,7 +8693,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
         def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
             (hcParams?.n != null ? (hcParams.n as Integer) : 0)
         def fromPage = hrefContext.fromPage?.toString() ?: page
-        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams)
+        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long, true)
+        if (navResp?.navRetried == true) opResult.navRetried = true
         afterCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
     } else {
         afterCfg = _rmFetchConfigJson(appId, page)
@@ -8651,8 +8776,12 @@ Map _rmWalkStep(Integer appId, Map spec) {
         appeared.isEmpty() && disappeared.isEmpty() &&
         valueEcho?.match == false
 
+    // The page the op landed on carried RM's own render error. That is a FAILED op, not an
+    // advisory: an agent branching on success must not go on writing into a page RM could not
+    // build.
+    def pageError = afterCfg?.configPage?.error
     def result = [
-        success: _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false)),
+        success: pageError == null && _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false)),
         page: page,
         operation: operation,
         before: beforeSchema,
@@ -8673,6 +8802,16 @@ Map _rmWalkStep(Integer appId, Map spec) {
         silentRejection: silentRejection,
         health: health
     ]
+    if (pageError != null) {
+        result.pageError = pageError.toString()
+        // An error page that still returned inputs is a different animal from one that returned
+        // nothing: only the second one explains an empty `after` schema.
+        def emptyAfter = afterSchema.inputs.isEmpty() && afterSchema.hrefs.isEmpty()
+        result.repairHints = (result.repairHints ?: []) + [((emptyAfter ?
+                "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, not because the op committed." :
+                "The page '${page}' rendered with an error (${pageError}) alongside its inputs, so what it shows may not reflect what RM stored.") +
+                " Enter the page the way the wizard does (the href or button on its parent page) rather than by name.").toString()]
+    }
     if (health.unreadable == true) {
         result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); the operation itself committed. Verify via hub_get_rule_health(${appId}).".toString()]
     }
@@ -9174,7 +9313,34 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
                                           thenNodes: vrb.data.thenNodes ?: [],
                                           elseNodes: vrb.data.elseNodes ?: []]
             } else {
-                snapshot.vrbRuleJson = vrb.data.ruleJson?.toString()
+                // Capture the document the read RESOLVED (the hub's own loader prefers the parsed
+                // graphDocument), not the raw bytes: a blank or {"nodes":[]} ruleJson beside a
+                // populated graphDocument would snapshot as unreadable or as an empty graph, and a
+                // restore would then replay the empty graph and verify zero against zero. The key
+                // keeps its name so existing backups still restore.
+                def doc = vrb.data.definition
+                // A rollback handle the reader ALREADY KNOWS is unreadable is worse than none: the
+                // file uploads, the manifest registers it, the delete envelope advertises it, and
+                // the restore that follows the delete answers "not parseable JSON" with the rule
+                // already gone. definitionParseError is exactly that knowledge, so refuse here --
+                // the caller gates its destructive op on this backup, and refusing the backup
+                // refuses the delete.
+                if (doc == null && vrb.data.definitionParseError) {
+                    throw new IllegalArgumentException(
+                            "Cannot back up Visual Rule ${ruleId}: its stored graph document is unreadable " +
+                            "(${vrb.data.definitionParseError}), so no restorable snapshot can be taken and " +
+                            "nothing was written. Inspect it with hub_get_visual_rule(appId=${ruleId}); a rule " +
+                            "whose document cannot be read can only be re-authored, not restored.")
+                }
+                snapshot.vrbRuleJson = (doc instanceof Map && doc.nodes instanceof List && !doc.nodes.isEmpty()) ?
+                        groovy.json.JsonOutput.toJson(doc) : vrb.data.ruleJson?.toString()
+                // An empty shell (no nodes, no raw bytes) is a legitimate thing to delete, so this
+                // is a marker rather than a refusal -- it lets restore say the rule HAD no graph
+                // instead of blaming the snapshot's age.
+                if (!snapshot.vrbRuleJson) {
+                    snapshot.vrbGraphEmpty = true
+                    mcpLog("warn", "vrb", "Backup for Visual Rule ${ruleId}: the rule has no stored graph document, so the snapshot carries no definition to restore")
+                }
             }
         }
     }
@@ -9535,6 +9701,9 @@ def toolSetRule(args) {
             }
         }
         def createArgs = [appType: "rule_machine", name: args?.name, confirm: args?.confirm] as LinkedHashMap
+        // The gateway stamps the request clock on the TOP-LEVEL args only; the bundled
+        // triggers/actions below budget-check against it, so it rides along.
+        if (args?.__reqT0 != null) createArgs.__reqT0 = args.__reqT0
         def trigs = []
         if (args?.addTriggers instanceof List) trigs.addAll(args.addTriggers)
         if (args?.addTrigger instanceof Map) trigs << args.addTrigger
@@ -9874,7 +10043,7 @@ def _createNativeAppShell(args) {
                     return
                 }
                 try {
-                    actionResults << _rmAddAction(newId, spec as Map, true, actionsValidRuleIds)
+                    actionResults << _rmAddAction(newId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, actionsValidRuleIds)
                 } catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                     mcpLog("warn", "rm-native", "hub_set_rule: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -13282,7 +13451,7 @@ def _applyNativeAppEdit(args) {
         return _rmAddTrigger(0, args.addTrigger as Map)
     }
     if (args?.addAction instanceof Map && args.addAction.discover == true) {
-        return _rmAddAction(0, args.addAction as Map)
+        return _rmAddAction(0, _rmWithClock(args.addAction as Map, args?.__reqT0 as Long))
     }
     // Guide short-circuit: {guide: true} returns the hub_set_rule capability
     // reference inline (same content as hub_get_tool_guide), with no hub interaction
@@ -13745,7 +13914,7 @@ def _applyNativeAppEdit(args) {
                         addedResults << [success: false, error: "replaceActions[${i}] is not a Map", spec: spec]
                         return
                     }
-                    try { addedResults << _rmAddAction(appId, spec as Map, true, replaceValidRuleIds) }
+                    try { addedResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, replaceValidRuleIds) }
                     catch (Exception ae) {
                         addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                         mcpLog("warn", "rm-native", "hub_set_rule: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -14142,7 +14311,7 @@ def _applyNativeAppEdit(args) {
         // click is issued or required for action bake.
         def actResult
         try {
-            actResult = _rmAddAction(appId, addActionSpec)
+            actResult = _rmAddAction(appId, _rmWithClock(addActionSpec, args?.__reqT0 as Long))
         } catch (Exception e) {
             mcpLogError("rm-native", "addAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
@@ -14292,7 +14461,7 @@ def _applyNativeAppEdit(args) {
                             return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                         }
                     } else if (pm.containsKey("addAction")) {
-                        patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map, true, patchValidRuleIds))
+                        patchResults << ([op: "addAction"] + _rmAddAction(appId, _rmWithClock(pm.addAction as Map, args?.__reqT0 as Long), true, patchValidRuleIds))
                     } else if (pm.containsKey("addActions")) {
                         // Same mid-op relay-budget checkpoint as the addTriggers inner loop above.
                         def innerList = (pm.addActions as List)
@@ -14305,7 +14474,7 @@ def _applyNativeAppEdit(args) {
                                 innerPaused = true
                                 break
                             }
-                            try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds) }
+                            try { innerResults << _rmAddAction(appId, _rmWithClock(aspec as Map, args?.__reqT0 as Long), true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
@@ -14467,7 +14636,7 @@ def _applyNativeAppEdit(args) {
                         }
                         def innerResults = []
                         (pm.replaceActions as List).each { aspec ->
-                            try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds) }
+                            try { innerResults << _rmAddAction(appId, _rmWithClock(aspec as Map, args?.__reqT0 as Long), true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
@@ -14804,7 +14973,7 @@ def _applyNativeAppEdit(args) {
                     actionResults << [success: false, error: "addActions[${ai}] is not a Map", spec: spec]
                     continue
                 }
-                try { actionResults << _rmAddAction(appId, spec as Map, true, addActionsValidRuleIds) }
+                try { actionResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, addActionsValidRuleIds) }
                 catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                     mcpLog("warn", "rm-native", "hub_set_rule: addActions[${ai}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")

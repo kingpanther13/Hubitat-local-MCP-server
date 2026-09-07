@@ -552,7 +552,7 @@ class ToolDashboardSpec extends ToolSpecBase {
     def "create returns the chainable id when the hub echoes a bare id (no installedAppId)"() {
         given:
         enableWrite()
-        // success absent + a bare `id` (not installedAppId) -> infer success and surface id (Codex P2).
+        // success absent + a bare `id` (not installedAppId) -> infer success and surface id.
         hubGet.register('/dashboard/create') { params -> '{"id":777,"name":"New Dash"}' }
 
         when:

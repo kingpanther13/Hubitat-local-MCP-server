@@ -3,7 +3,7 @@
 // given .groovy file, AFTER resolving its `#include` library bodies (so it sees exactly what the hub
 // compiles -- the inlined source, not the raw `#include` directive).
 //
-// Two gates, both things the Groovy 3.0 test harness misses but the hub enforces at parse time:
+// Gates for Groovy 2.4 syntax, closure parameters, and sandbox-blocked classes.
 //
 //  1. GROOVY 2.4 PARSE -- 3.0-only syntax/operators (e.g. null-safe indexing `?[`) that load fine on
 //     the Groovy 3.0 Spock harness but fail to load on the 2.4 hub runtime.
@@ -23,14 +23,16 @@
 //
 // If CANONICALIZATION can't resolve a class (e.g. a future file references a hub-only type by name),
 // the sandbox check is skipped for that file with a NOTICE and it falls back to the CONVERSION-phase
-// syntax gate -- never a false failure.
+// syntax gate. The closure-parameter check still runs on the CONVERSION AST.
 
 import org.codehaus.groovy.control.CompilationUnit
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.control.Phases
 import org.codehaus.groovy.control.SourceUnit
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
+import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.CastExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
@@ -47,6 +49,7 @@ def BLOCKED_EXACT = [
     'groovy.lang.GroovyShell', 'groovy.lang.GroovyClassLoader', 'groovy.util.Eval',
     'java.net.Socket', 'java.net.ServerSocket', 'java.net.DatagramSocket',
     'java.net.MulticastSocket', 'java.net.URLClassLoader',
+    'java.util.ArrayDeque',
 ] as Set
 def isBlocked = { String fqn ->
     if (!fqn) return false
@@ -54,15 +57,21 @@ def isBlocked = { String fqn ->
     return BLOCKED_PREFIXES.any { fqn.startsWith(it) }
 }
 
-int rc = 0
-if (!args) {
-    System.err.println "usage: parse_check.groovy <file.groovy> [<file.groovy> ...]"
+if (!args || (args[0] == '--self-test' && args.length != 2)) {
+    System.err.println "usage: parse_check.groovy <file.groovy> [...] | --self-test <repo-root>"
     System.exit(2)
 }
 
-// Load the shared include-resolver. Production files are passed by ABSOLUTE path and live at the
-// repo root, so the first file's parent is the repo root; the resolver is at a known path under it.
-File repoRoot = new File(args[0]).absoluteFile.parentFile
+// Inputs can be deployed fixtures below the root, including a missing expected file.
+boolean selfTest = args[0] == '--self-test'
+File repoRoot = new File(selfTest ? args[1] : args[0]).absoluteFile
+while (repoRoot != null && !new File(repoRoot, 'src/test/groovy/support/IncludeResolver.groovy').isFile()) {
+    repoRoot = repoRoot.parentFile
+}
+if (repoRoot == null) {
+    System.err.println "MISSING include-resolver above input: ${args[-1]}"
+    System.exit(1)
+}
 File resolverFile = new File(repoRoot, 'src/test/groovy/support/IncludeResolver.groovy')
 if (!resolverFile.exists()) {
     System.err.println "MISSING include-resolver: ${resolverFile}"
@@ -70,11 +79,37 @@ if (!resolverFile.exists()) {
 }
 def resolverClass = new GroovyClassLoader().parseClass(resolverFile)
 
+// Stock Groovy processes null closure parameters successfully. The hub-specific transform is
+// not exercised here; this guard excludes that AST shape without claiming it caused a hub 500.
+def collectNullParameters = { CompilationUnit cu, Map resolved ->
+    def findings = []
+    def seen = Collections.newSetFromMap(new IdentityHashMap())
+    for (Iterator it = cu.iterator(); it.hasNext();) {
+        SourceUnit su = it.next()
+        def visitor = new ClassCodeVisitorSupport() {
+            protected SourceUnit getSourceUnit() { su }
+            protected void visitConstructorOrMethod(MethodNode node, boolean constructor) {
+                node.parameters?.each { it.initialExpression?.visit(this) }
+                super.visitConstructorOrMethod(node, constructor)
+            }
+            void visitClosureExpression(ClosureExpression e) {
+                if (e.parameters == null && seen.add(e)) {
+                    findings << "${resolverClass.sourceLocation(resolved, e.lineNumber, e.columnNumber)}: closure parameters are null; use a named method or explicit parameters"
+                }
+                e.parameters?.each { it.initialExpression?.visit(this) }
+                super.visitClosureExpression(e)
+            }
+        }
+        su.AST.classes.each { visitor.visitClass(it) }
+    }
+    return findings
+}
+
 // Compile to CANONICALIZATION and collect blocked-class references. Returns a list of finding
 // strings, or null if CANONICALIZATION could not resolve some class (caller falls back to syntax).
-def collectBlocked = { String fileName, String src ->
+def collectBlocked = { String fileName, Map resolved ->
     def cu = new CompilationUnit(new CompilerConfiguration())
-    cu.addSource(fileName, src)
+    cu.addSource(fileName, resolved.source)
     try {
         cu.compile(Phases.CANONICALIZATION)
     } catch (Throwable e) {
@@ -90,15 +125,15 @@ def collectBlocked = { String fileName, String src ->
         su.AST?.classes?.each { cn ->
             def visitor = new ClassCodeVisitorSupport() {
                 protected SourceUnit getSourceUnit() { su }
-                private void check(type, int line) {
+                private void check(type, expression) {
                     def fqn = type?.name
-                    if (isBlocked(fqn)) findings << "line ${line > 0 ? line : '?'}: blocked class reference ${fqn}"
+                    if (isBlocked(fqn)) findings << "${resolverClass.sourceLocation(resolved, expression.lineNumber, expression.columnNumber)}: blocked class reference ${fqn}"
                 }
-                void visitClassExpression(ClassExpression e) { check(e.type, e.lineNumber); super.visitClassExpression(e) }
-                void visitCastExpression(CastExpression e) { check(e.type, e.lineNumber); super.visitCastExpression(e) }
-                void visitConstructorCallExpression(ConstructorCallExpression e) { check(e.type, e.lineNumber); super.visitConstructorCallExpression(e) }
+                void visitClassExpression(ClassExpression e) { check(e.type, e); super.visitClassExpression(e) }
+                void visitCastExpression(CastExpression e) { check(e.type, e); super.visitCastExpression(e) }
+                void visitConstructorCallExpression(ConstructorCallExpression e) { check(e.type, e); super.visitConstructorCallExpression(e) }
                 void visitDeclarationExpression(DeclarationExpression e) {
-                    if (e.leftExpression instanceof VariableExpression) check(e.leftExpression.type, e.lineNumber)
+                    if (e.leftExpression instanceof VariableExpression) check(e.leftExpression.type, e)
                     super.visitDeclarationExpression(e)
                 }
             }
@@ -108,21 +143,22 @@ def collectBlocked = { String fileName, String src ->
     return findings
 }
 
-for (String path : args) {
+def checkFile = { String path ->
+    int rc = 0
     def f = new File(path)
-    if (!f.exists()) {
+    if (!f.isFile()) {
         System.err.println "MISSING: ${path}"
-        rc = 1
-        continue
+        return 1
     }
+    Map mapped
     String resolved
     try {
-        resolved = resolverClass.resolve(f.getText('UTF-8'), new File(f.absoluteFile.parentFile, 'libraries'))
+        mapped = resolverClass.resolveWithOrigins(f.getText('UTF-8'), new File(f.absoluteFile.parentFile, 'libraries'), f)
+        resolved = mapped.source
     } catch (Throwable e) {
         System.err.println "FAIL (#include resolve): ${path}"
         System.err.println e.message
-        rc = 1
-        continue
+        return 1
     }
 
     // Gate 1: Groovy 2.4 syntax (CONVERSION).
@@ -133,19 +169,24 @@ for (String path : args) {
     } catch (Throwable e) {
         System.err.println "FAIL (Groovy ${GroovySystem.version} parse): ${path}"
         System.err.println e.message
-        rc = 1
-        continue
+        return 1
+    }
+
+    def closureFindings = collectNullParameters(cu, mapped)
+    if (closureFindings) {
+        System.err.println "FAIL (null closure parameters): ${path}"
+        closureFindings.each { System.err.println "  ${it}" }
+        return 1
     }
 
     // Gate 2: blocked-class / sandbox check (CANONICALIZATION + AST walk).
     def findings
     try {
-        findings = collectBlocked(f.name, resolved)
+        findings = collectBlocked(f.name, mapped)
     } catch (Throwable e) {
         System.err.println "FAIL (Groovy ${GroovySystem.version} compile): ${path}"
         System.err.println e.message
-        rc = 1
-        continue
+        return 1
     }
     if (findings == null) {
         println "OK   (Groovy ${GroovySystem.version} parse; sandbox check SKIPPED -- unresolved class refs): ${path}"
@@ -157,5 +198,13 @@ for (String path : args) {
     } else {
         println "OK   (Groovy ${GroovySystem.version} parse + sandbox class check): ${path}"
     }
+
+    return rc
 }
+if (selfTest) {
+    def binding = new Binding([checkFile: checkFile, repoRoot: repoRoot, resolverClass: resolverClass])
+    System.exit(new GroovyShell(binding).evaluate(new File(repoRoot, 'ci/groovy24-parse/fixtures.groovy')) as int)
+}
+int rc = 0
+args.each { rc |= checkFile(it) }
 System.exit(rc)

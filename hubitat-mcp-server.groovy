@@ -167,8 +167,9 @@ definition(
 #include mcp.McpAppClonerLib
 
 // Discovery tools (issue #209 modularization): BM25 tool search + the tool-guide
-// dispatcher. getToolGuideSections() content stays in this file (sandbox-lint's
-// guide-pointer/TOOL_GUIDE.md parity checks anchor on it).
+// dispatcher. getToolGuideSections() keeps the section MAP here (sandbox-lint's
+// guide-pointer/TOOL_GUIDE.md parity checks anchor on it); a section's text may
+// delegate to its domain library's method, which the lint follows to that file.
 #include mcp.McpDiscoveryLib
 // Native Rule Machine + classic-app tools (issue #209): the RM 5.1 wizard authoring
 // surface (hub_set_rule) + native-app CRUD. The shared classic-dynamicPage wizard
@@ -7484,86 +7485,6 @@ private Map _rmPagePostResponse(postResp) {
     return null
 }
 
-// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
-// as {key, data:{id,name,...}, children:[...]}. Flatten to the {id, label} shape the caller
-// expects; `name` there is the user-facing label (the driver name is `secondaryName`).
-private List _flattenHub2DeviceTree(nodes, List acc = null) {
-    // A non-List at the TOP level means the contract moved -- return null so the caller raises it,
-    // rather than an empty list that would read as "this hub has no devices". Nested `children`
-    // legitimately arrive absent, so those recurse into the accumulator.
-    if (!(nodes instanceof List)) return acc
-    if (acc == null) acc = []
-    // A node that is not a Map is contract drift. Skipping it would hand back a SHORTER inventory
-    // that reads as authoritative -- and since an empty inventory now means "this hub has no
-    // devices", devices:[null] would read as an empty hub. Fail the whole read instead; the caller
-    // reports "shape" and callers of THAT keep their existing behaviour for an unreadable source.
-    boolean malformed = false
-    nodes.each { node ->
-        if (!(node instanceof Map)) { malformed = true; return }
-        def data = node.data
-        if (data instanceof Map && data.id != null) {
-            acc << [id: data.id, label: data.name]
-        }
-        // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
-        // discarding that let a bad node nested under a valid parent produce a short list that
-        // still read as authoritative -- the exact failure the top-level check exists to stop.
-        // An absent `children` is not malformed: the recursion returns the accumulator unchanged.
-        if (_flattenHub2DeviceTree(node.children, acc) == null) malformed = true
-    }
-    if (malformed) {
-        mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a non-map node -- treating the inventory as unreadable rather than returning a short list")
-        return null
-    }
-    return acc
-}
-
-// Every hub device, authorized or not -- shared by hub_list_devices(scope='all') and the
-// selectedDevices validation, which is why it lives here and not in either library.
-// /device/listWithCapabilities/json carries capabilities but is gone as of platform 2.5.1.173 and
-// later (404; confirmed on .173 and .174). /hub2/devicesList survives and is still a superset of
-// the authorized set, but exposes no capabilities.
-// Returns [source, capabilities, records]. On failure records is null and `failure` is "fetch"
-// (with the exception message in fetchError) or "shape" -- which covers a missing body and a
-// missing `devices` key, both of which flatten to null. A well-formed inventory with no devices is
-// NOT a failure: it is a hub with no devices. The caller owns the wording.
-private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
-    try {
-        def txt = hubInternalGet("/device/listWithCapabilities/json")
-        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
-        // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
-        if (txt && parsed instanceof List && !parsed.isEmpty()) {
-            return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
-        }
-        // A 200 that is not a device list is contract drift; say so rather than fall through silently.
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- falling back to /hub2/devicesList")
-    } catch (Exception e) {
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
-    }
-    def records
-    try {
-        def txt = hubInternalGet("/hub2/devicesList")
-        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "{}")
-        records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
-    } catch (Exception e) {
-        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList fetch/parse failed: ${e.message}")
-        return [source: "/hub2/devicesList", capabilities: false, records: null,
-                failure: "fetch", fetchError: e.message]
-    }
-    if (!(records instanceof List)) {
-        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
-        return [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
-    }
-    // An empty list here is a hub with no devices, and is reported as one: the read failures are
-    // already separated above -- no body or a missing `devices` key flattens to null and returns
-    // "shape", so nothing ambiguous reaches this point. (The PRIMARY endpoint's empty answer is
-    // different: it is dead on 2.5.1.173+ and answers empty, so that path falls through to here
-    // rather than passing zero devices off as the truth.)
-    if (records.isEmpty()) {
-        mcpLog("debug", logCategory, "${logPrefix}: /hub2/devicesList reports no devices on this hub")
-    }
-    return [source: "/hub2/devicesList", capabilities: false, records: records]
-}
-
 /**
  * Fetch /installedapp/statusJson/<appId> — returns runtime state including
  * appSettings[] with marshal flags, eventSubscriptions[], scheduledJobs[],
@@ -9164,7 +9085,7 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 - **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
 - **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
 - **cursor** -- `nextCursor` is returned alongside `nextOffset`.
-- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized=false` means it must be added to this app's device list in the hub UI. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply.
+- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized=false` means it must be added to this app's device list in the hub UI. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply. Two honesty flags ride both shapes: `capabilitiesPartial` + `capabilitiesNote` when capabilities could not be established for every record (an empty list may mean unknown), and `idsComplete: false` (present only then) when the record SET itself could not be vouched for -- the hub's device tree could not be read, answered empty, or disagreed with the picker feed -- so branch on that field, not on the note's wording.
 
 ### hub_get_device
 
@@ -9625,7 +9546,7 @@ Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}
 - `navigate` -- forward into a sub-page via its href.
 - `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
 
-The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health` in each step's snapshot -- they are the fail-loud signals. On health: `skipped: true` means the probe was deliberately not run (time budget spent) and `unreadable: true` means it could not be read -- neither is evidence of breakage; only a checked verdict (broken/issues with unreadable false) is.
+The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health` in each step's snapshot -- they are the fail-loud signals. A page that rendered empty on a `navigate` (or on an `hrefContext` re-render) is re-read once and `opResult.navRetried: true` says the re-read supplied the page; if `after` is still empty the page really is (see `commitSignal`). A page RM could not build comes back with `pageError` (RM's own render text, e.g. a `doActPage` entered by name without the wizard state it expects) and a repair hint -- that empty schema has a stated cause and is never re-read. On health: `skipped: true` means the probe was deliberately not run (time budget spent) and `unreadable: true` means it could not be read -- neither is evidence of breakage; only a checked verdict (broken/issues with unreadable false) is.
 
 Worked `drive` example (a multi-device switch trigger committed in one call, the `steps[]` form of the raw-mode example below). The trailing `done` is what runs the mainPage Done finalize (raw-mode step 6, `updateRule`); without it the trigger is written to settings but never subscribed, so the rule looks created yet never fires:
 ```
@@ -9710,79 +9631,7 @@ The tool ALWAYS creates the rule shell (you get an `appId` back) even if some tr
 
 The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `hub_set_rule(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.''',
 
-        visual_rule_reference: '''## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
-
-Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations; each rule is stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events, an optional condition gate, and then/else action branches — if/then/else logic is fully supported (a condition node routes execution to thenNodes or elseNodes). Pretty much everything can be done with it; use `hub_set_rule` (Rule Machine) when something complex is needed — nested or multiple condition blocks, loops, variables and expressions, capture/restore, waiting on a device-state expression (VRB's `wait` waits a fixed duration), or device commands outside the action catalog below.
-
-### List mode (`hub_get_visual_rule` with no appId)
-
-Returns one entry per rule: `{appId, name, disabled, paused}`. `disabled` is the red-X flag; `paused` is detected from a "(Paused)" suffix on the rule's name (VRB has no RMUtils label to cross-check, so a rule literally named "... (Paused)" reads as paused). For the authoritative pause state, read the single rule with `hub_get_visual_rule(appId=N)` — its `rulePaused` comes straight from the builder JSON. An OMITTED `paused` or `disabled` on an entry means it was undeterminable from the node data (the stripped name was null, or the node had no `disabled` key) — it is never asserted false when it can't be read.
-
-### Two serializations (`format` in every single-rule success response)
-
-A VRB rule speaks exactly one of two wire formats, decided by the hub firmware at creation. `hub_get_visual_rule` reports which; an edit's `definition` must match it.
-
-**classic** — `{whenNodes: [...], thenNodes: [...], elseNodes: [...]}` (the when/then/else editor; what current firmware creates):
-- Every node: `triggerType` (or `actionType`), `deviceIds` (ALWAYS present; mirrors the per-type device array), `index` (int, 0-based per list), `type` ("when"/"then"/"else"), optional `description` (HTML label).
-- whenNode example (switch trigger): `{"triggerType": "switch", "switches": [59], "deviceIds": [59], "switchEvent": "Turns off", "index": 0, "type": "when"}`
-- thenNode example (turn off): `{"actionType": "turnOff", "switches": [122], "deviceIds": [122], "index": 0, "type": "then"}`
-- At least one whenNode must be a REAL trigger (the builder refuses rules whose only triggers are `timeIsBetween`/`daysOfWeek`).
-
-**graph** — `{version: 1, nodes: [...], edges: [...]}` (the VRB 2.0 graph editor -- live as of platform 2.5.1.138; new Visual Rules on such hubs are graph-format):
-- Node: `{id, kind, type, config}`. `kind` is the category — `trigger` | `merge` | `decision` | `action`; `type` is the variety within it (trigger `switch`, merge `triggerMerge`, decision `all`, action `turnOff`, ...). Per-node fields live INSIDE `config`, and device ids go in `config.switches` (a non-empty array).
-- A valid graph needs at least one `trigger`, EXACTLY ONE `merge`/`triggerMerge`, and EXACTLY ONE `decision`. A decision's `config.conditions` must be an array — empty means unconditional.
-- Edge: `{from, to, port}`. Ports: `next` (trigger/merge source), `true`/`false` (decision source). Triggers have no incoming edges. No cycles.
-- Minimal valid rule: trigger -> merge -> decision -> action, e.g. `{version:1, nodes:[{id:"t1",kind:"trigger",type:"switch",config:{switches:[7],switchEvent:"Turns off"}},{id:"tm",kind:"merge",type:"triggerMerge",config:{}},{id:"d1",kind:"decision",type:"all",config:{conditions:[]}},{id:"a1",kind:"action",type:"turnOff",config:{switches:[7]}}], edges:[{from:"t1",to:"tm",port:"next"},{from:"tm",to:"d1",port:"next"},{from:"d1",to:"a1",port:"true"}]}`. Read `hub_get_rule_health(appId)` after a write: the graph engine reports its own `validationErrors`, and they name the offending node and field.
-- On the wire the graph travels as a JSON STRING inside `{name, ruleJson}` — the tool handles the double-encoding for you; always pass `definition` as a normal JSON object.
-
-### Field catalog (classic + graph dialogs share these)
-
-Triggers (`triggerType` → device array + event field):
-- `switch` → `switches`, `switchEvent`: "Turns on" | "Turns off" | "Turns on and stays on for..." | "Turns off and stays off for..." (+ `switchStaysMinutes`/`switchStaysSeconds` on the stays variants)
-- `motion` → `motionSensors`, `motionSensorEvent`: "Motion starts" | "Motion stops" | "Motion stops and stays inactive for..." (+ `motionStaysMinutes`/`motionStaysSeconds`)
-- `contact` → `contactSensors`, `contactSensorEvent`: "Contact opens" | "Contact closes" | "...and stays open/closed for..." (+ `contactStaysMinutes`/`contactStaysSeconds`)
-- `presence` → `presenceSensors`, `presenceSensorEvent`: "Everyone leaves" | "Someone arrives"
-- `lock` → `locks`, `lockEvent`: "Locked" | "Unlocked"
-- `button` → `buttons`, `buttonEvent`: "Pushed" | "Held" | "Released" | "Double tapped", `buttonIndex` (int)
-- `temperature`/`humidity`/`illuminance` → `temperatureSensors`/`humiditySensors`/`illuminanceSensors`, `<type>SensorEvent`: "<Type> has risen above..." | "<Type> has fallen below...", value in `temperature`/`humidity`/`illuminance`
-- `power` → `powerMeters`, `powerMeterEvent` (risen above / fallen below / become and stayed above|below + `power`, `powerStaysMinutes`/`Seconds`)
-- `water`/`smoke`/`co`/`acceleration`/`shock` → `<type>Sensors` + `<type>SensorEvent` (exact English sentences from the builder UI)
-- `timeOfDay` → `timeOfDay`: "HHMM" colon-less string (e.g. "0730")
-- `sunriseSunset` → sub-condition beforeSunrise/sunrise/afterSunrise/beforeSunset/sunset/afterSunset + `minutesBefore/AfterSunrise|Sunset`
-- `systemMode` → `modes`: [mode ids from hub_list_modes]
-
-Conditions (classic: appear as whenNodes with condition `triggerType`s; graph: `type:"condition"` nodes): `switchCondition` (`switchState`: "Turned on"|"Turned off"), `motionCondition` (`motionSensorState`: "Motion is active"|"Motion is inactive"), `contactCondition`, `presenceCondition`, `lockCondition` (`lockState`), `temperatureCondition`/`humidityCondition`/`illuminanceCondition`/`powerCondition` ("... is above..."|"... is below..." + value), `systemModeCondition` (`modes`), `timeIsBetween` (specificTimes + `startTime`/`endTime` "HHMM", or sunriseToSunset/sunsetToSunrise), `daysOfWeek` (`daysOfWeek`: [0-6], 0=Sunday).
-
-Actions (`actionType`): `turnOn`/`turnOff`/`toggle` (`switches`), `setBrightness` (`dimmers`, `brightness` 0-100), `setColorTemp` (`colorTempBulbs`, `colorTemp` Kelvin), `setColor` (`colorBulbs`, `color` {h,s,b}), `lock`/`unlock` (`locks`), `openValve`/`closeValve`, `openGarageDoor`/`closeGarageDoor`, `openWindowShade`/`closeWindowShade`, `pushButton` (`button` single id, `buttonIndex`), `sendNotification` (`notificationDevices`, `notificationMessage`), `speakNotification` (`speechDevices`, `speakMessage`), `controlPlayer` (`musicPlayers`, `musicPlayerAction`), `controlThermostat` (`thermostats`, setMode/mode, setFanMode/fanMode, setHeatingSetpoint/heatingSetpoint, setCoolingSetpoint/coolingSetpoint), `setMode`/`setModeUnlessAway` (`mode` single id), `exitAwayMode`, `wait` (`minutes`, `seconds` — cancelable), `cancelWait`.
-
-Gotchas: event/state strings are EXACT English sentences including the trailing "..."; `deviceIds` must mirror the per-type device array; device ids are integers from hub_list_devices; times are colon-less "HHMM" strings.
-
-### Worked example (classic create)
-
-hub_set_visual_rule(name="Hallway motion light", confirm=true, definition={
-  "whenNodes": [{"triggerType": "motion", "motionSensors": [42], "deviceIds": [42], "motionSensorEvent": "Motion starts", "index": 0, "type": "when"}],
-  "thenNodes": [{"actionType": "turnOn", "switches": [17], "deviceIds": [17], "index": 0, "type": "then"}],
-  "elseNodes": []
-})
-
-Then verify with hub_get_visual_rule(appId=<returned appId>) — the response echoes the persisted definition. Pause/resume with hub_set_visual_rule(appId=N, paused=true|false, confirm=true).
-
-### hub_get_visual_rule
-
-VRB rules are much easier to author than Rule Machine (each rule is one clean JSON definition rather than Rule Machine's classic wizard/settings[] protocol).
-
-### hub_set_visual_rule
-
-Editing an existing rule (`appId` supplied):
-- The `definition` you pass replaces the rule **wholesale** (a full replacement of the whole rule, not a partial patch).
-- Passing `name` together with `appId` renames the rule.
-
-### hub_delete_visual_rule
-
-- TYPE-GATED: it refuses appIds that are not VRB rules and routes them to hub_delete_native_app (for RM rules / other classic apps).
-- The delete response RETURNS the pre-delete rule definition (`predeleteDefinition`) for recovery via hub_set_visual_rule.
-'''
-    ,
+        visual_rule_reference: _vrbGuideSection(),
         variables: '''## Hub Variables
 
 Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector). Per-tool details below.

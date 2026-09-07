@@ -521,7 +521,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.issues.every { !it.contains("nonexistent id") }   // must NOT misattribute to a missing rule
     }
 
-    def "source=ruleBuilderJson, a non-JSON 200 (login page) is a read failure, not a missing rule (codex review)"() {
+    def "source=ruleBuilderJson, a non-JSON 200 (login page) is a read failure, not a missing rule"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/app/ruleBuilderJson/100') { "<html><body>Please log in</body></html>" }   // bad 200, not JSON
@@ -551,7 +551,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.issues.every { !it.contains("nonexistent id") }
     }
 
-    def "auto: an app state with only one VRB node array (not both) is NOT classified as vrb-classic (codex review)"() {
+    def "auto: an app state with only one VRB node array (not both) is NOT classified as vrb-classic"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([whenNodes: [], somethingElse: true]) }  // lone key

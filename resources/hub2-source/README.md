@@ -9,15 +9,37 @@ with the hub's HTTP surface. Every file is downloaded verbatim from a hub at
 
 | File(s) | What it is |
 |---|---|
-| `vue-hub2.min.js` (~3.3 MB) | The modern **Vue 3 SPA** — Basic Rules, Visual Rules Builder, devices, dashboards, hub admin |
+| `vue-hub2.min.js` (~3.3 MB, platform 2.5.0.143) | The modern **Vue 3 SPA** as one MONOLITH — every component body inline, so this is the file whose string literals carry the **whole endpoint corpus** (`/hub2/appsList`, `/device/runmethod`, `/app/saveOrUpdateJson`, …). Kept deliberately: the 2.5.1 build is code-split and its shell no longer contains those literals |
+| `vue-hub2-shell-2.5.1.min.js` (~573 KB, platform 2.5.1.181) | The 2.5.1 **shell** — routes, the chunk-filename map (`.u=function(e)`) for every lazily-loaded chunk, and the components that were not split out. Grep it for routing; grep the monolith above for endpoints |
+| `vue-hub2-visual-rule-builder-20.min.js` (~583 KB, platform 2.5.1.181) | The **Visual Rule Builder 2.0** code-split chunk — the entire 2.0 editor: graph compose/decompose, dialogs, and its own endpoints |
 | `appUI.js`, `main.js`, `helpers.js`, `hub2utils.js`, `hubitat.min.js`, `success-compiled.js` | The **classic server-rendered `dynamicPage` engine** — the client side of the legacy app-config flow that Rule Machine and every other classic app still use |
 
-Classic-engine files + `success-compiled.js` captured **2026-06-08** from a
-Hubitat **C-8** on firmware **2.5.0.143**; `vue-hub2.min.js` was first captured
-2026-05-26. Hubitat ships no source maps and no unminified siblings, so these
-minified bundles are the only form available — but **string literals survive
-minification** (capability names, field keys, endpoint paths), so plain `grep`
-is the fastest way to find a feature's data shape.
+## Capture state
+
+`vue-hub2-shell-2.5.1.min.js`, `main.js` and `vue-hub2-visual-rule-builder-20.min.js`
+were captured **2026-09-03** from a Hubitat **C-8** on platform **2.5.1.181**.
+`vue-hub2.min.js` is still the **2.5.0.143 monolith** (captured 2026-05-26 / 2026-06-08),
+on purpose: the 2.5.1 SPA is code-split, so the shell that replaced it holds only a
+fraction of the endpoint literals (five of five sampled endpoints — `/hub2/appsList`,
+`/device/runmethod`, `/device/preference/save`, `/app/saveOrUpdateJson`, `/bundle2/uploadZip`
+— exist in the monolith and in NO 2.5.1 file vendored here). The monolith stays as the
+greppable corpus until every chunk that carries an endpoint is vendored.
+`hubitat.min.js` was re-fetched the same day and is byte-identical to the earlier
+capture, so it carries both dates.
+
+`appUI.js`, `helpers.js`, `hub2utils.js` and `success-compiled.js` are still the
+**2026-06-08 / firmware 2.5.0.143** captures, and that is deliberate: **2.5.1.181
+serves those four MINIFIED**, so re-capturing would replace the only readable
+copy of the classic engine that exists anywhere with a mangled one. Their
+contract has barely moved in the interim — the *only* endpoint-literal deltas
+between the two captures are `/installedapp/grouping/` (new in the 2.5.1.181
+`appUI.js`) and `/installedapp/configure/` + `/hub/edit` (no longer present as
+whole literals). If you do re-capture them, keep an unminified copy alongside.
+
+Hubitat ships no source maps, so for everything else these minified bundles are
+the only form available — but **string literals survive minification**
+(capability names, field keys, endpoint paths), so plain `grep` is the fastest
+way to find a feature's data shape.
 
 ## Why these live in the repo
 
@@ -25,8 +47,12 @@ Several issues need the MCP server wired to hub features whose contract is the
 JSON/form payload the browser sends, not something the server documents. The
 two UIs split the work:
 
-- **Vue SPA (`vue-hub2.min.js`)** — the contract for apps rewritten in Vue
-  (Basic Rules, Visual Rules Builder, …) is the JSON the Vue components POST.
+- **Vue SPA (`vue-hub2.min.js`, the 2.5.0.143 monolith, plus the 2.5.1 shell and
+  chunks)** — the contract for apps rewritten
+  in Vue (Basic Rules, Visual Rules Builder, …) is the JSON the Vue components
+  POST. The bundle is code-split, so a feature's body usually lives in a chunk,
+  not the shell — Visual Rule Builder 2.0 is in
+  `vue-hub2-visual-rule-builder-20.min.js`.
   (Hub variables and device swap are NOT on this list: their Vue components
   are stubs/iframes and the classic wizard is the real contract — see the
   `direct/*` endpoint rows below.)
@@ -107,13 +133,24 @@ per-action; `<N>` is the action index unless noted.
   with" — negation is the `not<N>` toggle + `*contains*`. A numeric variable
   gets numeric comparators instead.
 
-## Vue SPA (`vue-hub2.min.js`)
+## Vue SPA (`vue-hub2.min.js` monolith, plus the 2.5.1 shell and chunks)
 
-The production Vue 3 SPA — ~548 named components. Notable groups: app/driver/
-library editor, devices, **Visual Rules Builder** (`VisualRuleBuilder`,
-`VisualRuleBuilder20`, `VRB*Dialog`, `ConditionsController`, …), Basic Rules
-(`BasicRulesApp`), dashboards, Z-Wave/Zigbee admin, hub/system (backup, hub
-mesh, variables, modes, HSM, onboarding).
+The production Vue 3 SPA. Notable groups: app/driver/library editor, devices,
+**Visual Rules Builder** (`VisualRuleBuilder`, `VisualRuleBuilder20`,
+`VRB*Dialog`, `ConditionsController`, …), Basic Rules (`BasicRulesApp`),
+dashboards, Z-Wave/Zigbee admin, hub/system (backup, hub mesh, variables, modes,
+HSM, onboarding).
+
+**On 2.5.1 the SPA is code-split.** The file the hub serves as `vue-hub2.min.js`
+shrank from ~3.3 MB (2.5.0.143) to ~573 KB (2.5.1.181) because component bodies
+moved into lazily-loaded chunks; that shell keeps only the routes and the
+chunk-id → filename map (the `.u=function(e)` map, `"js/vue-hub2-" + {…}[e] +
+".min.js"`) and is vendored here as `vue-hub2-shell-2.5.1.min.js`. The
+`vue-hub2.min.js` in this folder is deliberately the 2.5.0.143 MONOLITH, because
+it still carries every endpoint literal inline. So: **grep the monolith for
+endpoints, the VRB 2.0 chunk for anything 2.0, the shell for routing** — none of
+the three `ruleBuilder20*` endpoints appear in the shell at all. Only the VRB 2.0
+chunk is vendored; fetch another from `/ui2/js/<name>` when you need it.
 
 **There are TWO Vue builder components with different wire formats** behind one
 user-facing app type ("Visual Rules Builder" parent; children are hidden type
@@ -124,48 +161,172 @@ user-facing app type ("Visual Rules Builder" parent; children are hidden type
   `GET/POST /app/ruleBuilderJson/<id>`, including the AI-generate flow
   (`/app/ruleBuilderGenerateRule`, Gemini cloud).
 - **`VisualRuleBuilder20`** — a graph editor (`nodes`/`edges`) backed by
-  `/app/ruleBuilder20Json/<id>`. **Dormant in fw 2.5.0.143**: the component is
-  registered in the bundle but has no PageSwitcher route, so the UI never
-  reaches it. Its endpoint is live, though — a graph-format rule answers on
-  `ruleBuilder20Json` and a classic rule does not, which is how the MCP VRB
-  tools detect a rule's serialization.
-  **LIVE as of 2.5.1.138** ("Added Visual Rule Builder 2.0 (beta)"), which also
-  makes it the format newly-created VRB rules speak on such a hub. The bundle is
-  now code-split: the shell (`vue-hub2.min.js`) only registers the route, and the
-  component body lives in the lazily-loaded chunk
-  `/ui2/js/vue-hub2-visual-rule-builder-20.min.js` — grep THAT file, not the
-  shell, for anything VRB 2.0. The chunk-id -> filename table is the `.u=function(e)`
-  map in the shell (`"js/vue-hub2-" + {…}[e] + ".min.js"`).
+  `/app/ruleBuilder20Json/<id>`. **Live and OUT OF BETA on the 2.5.1 stable
+  line** — it shipped 2.5.1.138 as "Visual Rule Builder 2.0 (beta)" and is now
+  the format newly-created VRB rules speak on such a hub. Its component body is
+  **not in the shell**: `vue-hub2-shell-2.5.1.min.js` registers only the route, so grep the
+  vendored chunk `vue-hub2-visual-rule-builder-20.min.js` for anything 2.0.
+  A graph-format rule answers on `ruleBuilder20Json` and a classic rule does
+  not, which is how the MCP VRB tools detect a rule's serialization; on 2.5.1
+  the hub additionally labels each child by version in `/hub2/appsList`
+  `data.type` — `"Visual Rule Builder 1.0"` / `"Visual Rule Builder 2.0"`.
 
-### VRB 2.0 graph schema (fw 2.5.1.173, read from the chunk + validator-confirmed)
+### VRB 2.0 graph schema (platform 2.5.1.181, read from the chunk + validator-confirmed)
+
+**Hubitat publishes its own authoring guide for this format, and it is vendored
+here as [`vrb2-authoring-guide.md`](vrb2-authoring-guide.md).** That file is the
+authoritative catalog — every trigger / condition / action type with its exact
+enum strings, required `config` keys, value formats, and the storage/activation
+lifecycle. Read it before deriving any of that by hand. The hub serves the same
+text over its built-in MCP server as the resource `hubitat://vrb2/schema`. What
+follows is the shape of the document plus what the *builder* and the *validator*
+do with it — the parts the guide does not cover.
+
+#### The graph document
 
 Every node is `{id, kind, type, config}` — `kind` is the CATEGORY, `type` the
-variety within it, and all per-node fields live inside `config` (device ids go in
-`config.switches`, not `deviceIds`). This is NOT the shape the older prose above
-implies, and a graph built the old way saves but fails validation.
+variety within it, and all per-node fields live inside `config`. Config keys are
+per-type and plural for device lists (`config.motionSensors`, `config.switches`),
+never a generic `deviceIds`. Store device and mode **ids**, not names. The
+document also carries a top-level `version`, which must be `1`.
 
 - `kind: "trigger"` — `type` is the trigger variety (e.g. `"switch"`).
 - `kind: "merge"`, `type: "triggerMerge"` — REQUIRED, exactly one. All triggers
   edge into it on port `next`.
 - `kind: "decision"`, `type: "all"|"any"` (null defaults to `all`; `any` is OR and
   must carry at least one condition) — REQUIRED, exactly one.
-  `config.conditions` must be an array; empty means unconditional.
-- `kind: "merge"`, `type: "branchMerge"` — present only when actions rejoin after
-  the if/else (the builder's `commonActions`).
+- `kind: "merge"`, `type: "branchMerge"` — optional, at most one. The builder emits it
+  only when `commonActions` is non-empty, but the hub ACCEPTS one with nothing after
+  it (live-verified 2.5.1.181: both branches → `branchMerge`, no tail, validates and
+  activates), which is why the MCP server keeps an explicit `structureIds.branchMerge`
+  across a read → edit → write even when the tail was emptied.
 - `kind: "action"` — `type` is the action variety (e.g. `"turnOff"`).
+
+**Conditions are not nodes.** They nest inside the decision as
+`decision.config.conditions`, an array of `{id, type, config}` — note there is
+**no `kind`** on a condition. An empty array means unconditional.
 
 Edges: `triggers -> triggerMerge (next)`, `triggerMerge -> decision (next)`,
 `decision -> then-chain (true)`, `decision -> else-chain (false)`, and each chain
-links onward on `next`, optionally terminating at the `branchMerge`.
+links onward on `next`, optionally terminating at the `branchMerge`. A
+`branchMerge`, when present, chains onward on `next` through the common actions.
 
-The engine rejects a non-conforming document with *"The rule is not a Visual Rule
-Builder 2.0 schema version 1 document."*; per-node problems come back in
-`validationErrors` naming the node and field, which makes that endpoint a usable
-oracle when the schema shifts again.
+#### The builder's editor model + compose/decompose
+
+The Vue builder does not edit the graph directly. It holds a flat **editor
+state** and converts in both directions with two pure functions in the chunk.
+Anchor them by content — the file is one minified line, so line numbers are
+meaningless; `grep -o` for the strings below:
+
+| Function | Direction | Grep anchor |
+|---|---|---|
+| `W(graph)` | decompose → editor | `The rule must contain a trigger merge and an AND/OR decision.` |
+| `U(editor)` | compose → graph | `function U(e){const t=H(e.triggers` |
+
+The editor state is
+`{triggers, conditions, decisionType, thenActions, elseActions, commonActions, structureIds:{triggerMerge, decision, branchMerge}}`.
+`U` emits nodes in the order `triggers`, `triggerMerge`, `decision` (carrying
+`config.conditions`), `thenActions`, `elseActions`, then — only when
+`commonActions` is non-empty — `branchMerge` and the common actions. Default
+structure ids are `trigger-merge`, `decision`, `branch-merge`, suffixed `-1`,
+`-2` on collision. A chain with an EMPTY list still emits its edge when there is
+a terminal, so an empty else-branch yields `decision -> branchMerge` on port
+`false`. `U` throws on an unsupported `decisionType`, and on `any` with zero
+conditions; `W` additionally throws on a missing merge/decision, a non-action
+node in an action chain, and an action cycle.
+
+**Dialog → config mapping.** A dialog node and a graph node are the same object
+minus five keys: `config` is the dialog node with `triggerType`/`actionType`
+(which becomes the node's `type`), `description`, `deviceIds` and
+`predefinedColor` removed. That is why a 1.0 dialog node maps 1:1 onto a 2.0
+node.
+
+#### What the validator rejects
+
+Every POST is answered `success:true` and the document is **stored** even when it
+fails validation — see *Save semantics* below. The errors come back in
+`validationErrors`, which makes the endpoint a usable oracle when the schema
+shifts again. Messages observed on 2.5.1.181 (scratch rule, deleted after):
+
+- Wrong enum value — *"Node 't1' config.triggerCondition must be one of
+  beforeSunrise, sunrise, afterSunrise, beforeSunset, sunset, afterSunset"*,
+  *"Node 't1' config.switchEvent must be one of Turns on, Turns off, …"*
+- Unknown type — *"Condition 'c1' has unsupported type 'bogusCondition'"*,
+  *"Action node 'a1' has unsupported type 'bogusAction'"*
+- A 1.0-shaped node inside a graph — *"Node 't1' config must be an object"*,
+  *"Node 't1' has unsupported kind 'null'"*
+- Topology — *"Rule must contain at least one trigger node"*, *"Rule must contain
+  exactly one triggerMerge node"*, *"Rule must contain exactly one decision
+  node"*
+- A wholly non-conforming document — *"The rule is not a Visual Rule Builder 2.0
+  schema version 1 document."*
+
+**Gotcha: `sunriseSunset` (trigger) and `timeIsBetween` (condition) key their
+choice on `triggerCondition`, not `condition`** — the dialog's key survived into
+the schema. Accepted `timeIsBetween` configs are
+`{triggerCondition:"specificTimes", startTime:"0700", endTime:"2200"}` and
+`{triggerCondition:"sunriseToSunset"|"sunsetToSunrise"}`.
+
+**Read shape, live-verified 2.5.1.181:** the loader prefers the hub's parsed
+`graphDocument` over re-parsing the `ruleJson` string
+(`n.graphDocument || this.parseRuleJson(n.ruleJson)`), and the MCP server reads
+the same way — so a rule can be read in full even when `ruleJson` is blank.
+
+#### Save semantics — stored vs activated
+
+Storage and activation are separate. The hub stores the submitted text in the
+app's `state.ruleJson`, then parses and validates it; subscriptions, schedules
+and the runtime graph are activated **only if validation succeeds**. So an
+invalid document is kept as an **inactive draft** — `storedSuccessfully:true`,
+`activatedSuccessfully:false` — and the rule stops running rather than
+continuing on an older graph. Device references are registered with Hubitat's
+"in use by" tracking even when another error blocks activation. The serialized
+document is capped at 100,000 UTF-8 bytes; an oversized one is rejected before
+any state changes.
+
+Treat `storedSuccessfully`, `activatedSuccessfully`, `validationIssues`
+(`[{nodeId, field, message}]`), `referencedDeviceIds`, `graphDocument` and
+`runtimeGraph` as **optional on the wire** — read them when present, never
+require them.
 
 Paused rules: the builder appends the literal constant
-`" <span class='text-red'>(Paused)</span>"` to the rule NAME, so any read-back
-name comparison must strip HTML and tolerate that suffix.
+`" <span class='text-red'>(Paused)</span>"` to the rule NAME (39 characters — the
+chunk strips it with `.slice(0, -39)`), so any read-back name comparison must
+strip HTML and tolerate that suffix.
+
+#### AI generate (2.0)
+
+The 2.0 dialog has its own AI path, distinct from the classic 1.0 one:
+`POST /app/ruleBuilder20GenerateRule` with a JSON body `{appId, prompt}` →
+`{success, graphDocument | ruleJson, message}`. The builder prefers
+`graphDocument` and falls back to `JSON.parse(ruleJson)`, then feeds the result
+straight through `W()` into the editor without saving. A failure surfaces as
+`success:false` plus `message`. Prompt suggestions come from
+`GET /app/ruleBuilder20Suggestions`.
+
+#### The hub's own MCP server — VRB 2.0 surface
+
+Hubitat's built-in **AI Connector Integration** app ships an MCP server at
+`/mcp` that authors VRB 2.0 by handing the LLM the raw graph document plus the
+authoring guide. Its surface (live-read on 2.5.1.181):
+
+| Tool | Arguments |
+|---|---|
+| `hubitat_vrb2_list_rules` | none — ids, state, and an optimistic revision token per rule |
+| `hubitat_vrb2_get_rule` | `ruleId` — full graph document, validation status, run-rule targets, revision token |
+| `hubitat_vrb2_validate_rule` | `ruleId`, `document` — validates without storing or activating |
+| `hubitat_vrb2_create_rule` | `name`, `document`, `allowSensitive` (all required) |
+| `hubitat_vrb2_update_rule` | `ruleId`, `document`, `expectedRevision`, `allowSensitive` required; `name` optional |
+
+Resource: **`hubitat://vrb2/schema`** (`text/markdown`) — the authoring guide,
+vendored here as `vrb2-authoring-guide.md`.
+
+Two behaviours worth copying. Writes are gated on an explicit
+`allowSensitive: true` rather than a bare call, and updates take an
+`expectedRevision` from the most recent `get_rule` for optimistic concurrency.
+Its own tool text tells the model that **invalid documents remain stored as
+inactive drafts** — the same draft semantics described above, surfaced to the
+caller rather than hidden.
 
 ## Endpoints discovered
 
@@ -173,13 +334,17 @@ name comparison must strip HTML and tolerate that suffix.
 |---|---|
 | `POST /app/saveOrUpdateJson` | `{id, source, version}` (app); same shape for `/driver/` and `/library/` |
 | `GET/POST /app/ruleBuilderJson/<id>` | Serializes the raw state of ANY installed app (classic RM rules return their compiled state: `broken` flag, `eval`/`parens`/`predCapabs`, rendered condition text) and returns `{}` for nonexistent ids. ALSO the **classic Visual Rule read+WRITE endpoint**: for a classic-format VRB rule, `GET` returns `{name, rulePaused, whenNodes, thenNodes, elseNodes, promptHistory}`; the builder's `POST` body is `{name, rulePaused, whenNodes, thenNodes, elseNodes}` (the UI never posts `promptHistory` back — the hub retains it). Only the `whenNodes`+`thenNodes` shape identifies a classic VRB rule. Used by `hub_get_visual_rule`/`hub_set_visual_rule`, and the classic-RM `broken` boolean is the preferred source for `hub_get_rule_health` (shape-check: a non-empty map that is not a VRB node shape and carries `broken`). **`broken` lag (verified fw 2.5.0.143):** deleting a rule's trigger device sets the rendered `*BROKEN*` label immediately, but the compiled `broken` boolean stays `false` until the rule re-validates (e.g. its config page is rendered), then flips `true` — so a consumer should cross-check `broken` against the HTML `*BROKEN*` markers rather than trust either alone. |
-| `GET/POST /app/ruleBuilder20Json/<id>` | Visual Rule Builder 2.0 (graph) rule — read+write. `ruleJson` is a **JSON STRING** (double-encoded graph). `GET` → `{name, rulePaused, ruleJson, validationErrors}`; `POST {name, ruleJson}` responds `{success?, name, ruleJson, validationErrors, errorMessage}` — treat the save as accepted unless `success === false`. Answers `{success:false, message:"Rule builder instance not found"}` (HTTP 200) for ANY non-graph id (nonexistent, RM, classic VRB alike). `validationErrors` is also the graph Visual Rule's health signal — `hub_get_rule_health` reports `broken=true` when it is non-empty (the VRB equivalent of RM's `broken` boolean). |
+| `GET/POST /app/ruleBuilder20Json/<id>` | Visual Rule Builder 2.0 (graph) rule — read+write. `ruleJson` is a **JSON STRING** (double-encoded graph); the builder posts it pretty-printed. `GET` → `{name, rulePaused, ruleJson, validationErrors}` plus, on 2.5.1, `ruleApps` (`[{id,label}]` — the `runRule` action's eligible targets) and `promptHistory` (last 5 AI prompts). `POST {name, ruleJson}` responds `{success?, name, ruleJson, validationErrors, errorMessage}` — treat the save as accepted unless `success === false`. **On 2.5.1 the POST response additionally carries `storedSuccessfully`, `activatedSuccessfully`, `storageError`, `activationError`, `validationIssues` (`[{nodeId, field, message}]`), `referencedDeviceIds`, `deviceTrackingError`, `graphDocument` and `revision`; the GET carries `revision`, `validationIssues`, `referencedDeviceIds`, `ruleApps`, `promptHistory`, `graphDocument` and `runtimeGraph` (null when nothing is active) — but NOT `storedSuccessfully`/`activatedSuccessfully` (live key list, 2.5.1.181). `revision` is the SHA-256 of the stored `ruleJson` (an empty rule reads back `e3b0c442…`, the empty-string digest) — the same optimistic token the hub's own MCP server takes as `expectedRevision`. All OPTIONAL on the wire; read them when present, never require them.** A POST answers `success:true` and STORES the document even when validation fails: that is the **inactive-draft** contract (`storedSuccessfully:true` + `activatedSuccessfully:false`), so a save succeeding does NOT mean the rule is running — see the VRB 2.0 schema section. Answers `{success:false, message:"Rule builder instance not found"}` (HTTP 200) for ANY non-graph id (nonexistent, RM, classic VRB alike). `validationErrors` is also the graph Visual Rule's health signal — `hub_get_rule_health` reports `broken=true` when it is non-empty (the VRB equivalent of RM's `broken` boolean). |
 | `GET  /app/createVisualRuleBuilderRule` | Navigation create: server-creates a new VRB child and returns (or redirects to) the builder page. The new appId travels ONLY as an injected window global in the HTML — `HubitatRuleBuilder20AppId` (graph editor) or `HubitatRuleBuilderAppId` (classic editor); which global is injected reveals the firmware's native format for new rules. |
-| `GET  /app/ruleBuilderPause/<id>/<true\|false>` | Pause/resume a Visual Rule — boolean rides in the path → `{success}` |
+| `GET  /app/ruleBuilderPause/<id>/<true\|false>` | Pause/resume a Visual Rule — boolean rides in the path → `{success}`. Shared by BOTH builders: the 2.0 chunk calls the same path |
+| `GET  /app/ruleBuilderRun/<id>` | Run a Visual Rule 2.0 now → `{success, message?}`. The builder's "run rule" button; conditions still select the action branch |
 | `GET  /app/ruleBuilderGenerateRule?appId=&prompt=` | VRB AI generate (Gemini cloud) → `{success, whenNodes, thenNodes, elseNodes}`. Query params `appId` + `prompt` (Vue `handleGeminiRule`: `URLSearchParams({appId, prompt})`). Returns `{success:false, message:null}` (HTTP 200) when cloud Gemini is unconfigured. NOT folded into an MCP tool (issue #257): the success body is the SAME classic node structure `hub_set_visual_rule` already accepts, so an MCP LLM authors those nodes directly — folding it would only add a fragile cloud-Gemini dependency for no new capability |
-| `GET  /app/ruleBuilderSuggestions` | Prompt suggestions for the VRB AI-generate dialog |
-| `GET  /device/listWithCapabilities/json` | **Removed in platform 2.5.1.173 and later (404; confirmed on .173 and .174).** Before that: all-hub device list with capabilities (`id`, `label`, `capabilities`) — fed the VRB device pickers AND `hub_list_devices` `scope='all'`. `hub_list_devices` tries it first and falls back to `/hub2/devicesList` below |
-| `GET  /hub2/devicesList` | All-hub device INVENTORY as a parent/child tree: `{devices: [{key, data: {id, name, secondaryName, ...}, children: [...]}]}` — `data.name` is the user-facing label, `secondaryName` the driver name; child devices nest under their parent's `children`. Carries NO capabilities. On 2.5.1.173+ this is the only way the app sees devices it isn't granted (the Groovy device model is authorization-scoped); `hub_list_devices scope='all'` flattens it and fills capabilities for authorized devices only, reporting `capabilitiesPartial` |
+| `GET  /app/ruleBuilderSuggestions` | Prompt suggestions for the classic (1.0) VRB AI-generate dialog |
+| `POST /app/ruleBuilder20GenerateRule` | VRB **2.0** AI generate — a JSON body `{appId, prompt}` (NOT the 1.0 query-string form) → `{success, graphDocument\|ruleJson, message}`. The builder prefers `graphDocument` and falls back to `JSON.parse(ruleJson)`, loads it into the editor, and does NOT save it; `success:false` carries `message` |
+| `GET  /app/ruleBuilder20Suggestions` | Prompt suggestions for the VRB **2.0** AI-generate dialog (the dialog's `suggestions-endpoint` prop) — a JSON array; live-probed `[]` on 2.5.1.181, as is the 1.0 endpoint |
+| `GET  /hub2/vrb/devices` | The VRB 2.0 device picker feed and the **successor to the removed `/device/listWithCapabilities/json`** — a flat JSON array of `{id, label, capabilities[], temperature, lightEffects, supportedFanSpeeds, buttonCount}` (the last four null unless the device has them; `lightEffects` is a JSON STRING of an id→name map). Live-probed on 2.5.1.181. Read-only and capability-bearing, and it returns the FULL flat inventory — 127 entries against 127 nodes in the `/hub2/devicesList` tree on the probed hub — so unlike the Groovy device model it is not authorization-scoped. **`hub_list_devices scope='all'` and the `hub_update_mcp_settings` `selectedDevices` validation union it with the `/hub2/devicesList` tree** (each record projected to the `{id, label, capabilities}` triple the removed endpoint returned); when the tree cannot be read the feed stands alone, flagged partial with `idsComplete:false`, and the validation declines rather than rejects an id it lacks |
+| `GET  /device/listWithCapabilities/json` | **Removed in platform 2.5.1.173 and later (404; confirmed on .173, .174 and .181).** Before that: all-hub device list with capabilities (`id`, `label`, `capabilities`) — fed the VRB device pickers AND `hub_list_devices` `scope='all'`. Still the first tier `hub_list_devices` tries, for hubs that predate the removal; on newer firmware it falls to `/hub2/vrb/devices` (above), which carries the same `id`/`label`/`capabilities` triple, and only then to the capability-less `/hub2/devicesList` below |
+| `GET  /hub2/devicesList` | All-hub device INVENTORY as a parent/child tree: `{devices: [{key, data: {id, name, secondaryName, ...}, children: [...]}]}` — `data.name` is the user-facing label, `secondaryName` the driver name; child devices nest under their parent's `children`. Carries NO capabilities. On 2.5.1.173+ it is the SPINE of `hub_list_devices scope='all'` (its ids first, in tree order) UNIONED with `/hub2/vrb/devices` for capabilities and for any device only the feed lists; either source's omission flags `capabilitiesPartial` with a counted note. Alone it flattens the tree and fills capabilities for authorized devices only; a node without a `data.id` fails the read as a shape error; an empty tree beside a populated feed is not trusted (the feed alone is returned, partial) |
 | `GET  /device/listJson?capability=<cap>` | Classic `dynamicPage` device-input picker feed (`appUI.js` line 209 `$.getJSON('/device/listJson?capability='…)`, `main.js`) — a capability-filtered device list. The MCP server reaches the same data via `/device/fullJson` + `hub_list_devices`; this is the older classic-engine path, distinct from the Vue `listWithCapabilities/json` above |
 | `GET  /hub/zwave/getChildAndRouteInfoJson` | Z-Wave mesh route map — `{nodes, connectors}` (per-node route/neighbor graph). Read-only. Feeds `hub_get_radio_details(include_topology=true)` |
 | `GET  /hub/zigbee/getChildAndRouteInfoJson` | Zigbee mesh route map — `{children, neighbors, routes}` (routes carry `status`/`age`/`nextHopId`). Read-only. Feeds `hub_get_radio_details(include_topology=true)` |
@@ -230,7 +395,7 @@ name comparison must strip HTML and tolerate that suffix.
 | `GET  /installedapp/statusJson/<id>` | App status JSON. For an RM rule, `appState.allLocalVars` carries the rule's local-variable map (`{<name>: {type, value}}`) — the read/verify source for `addLocalVariable` / `setLocalVariable` / `removeLocalVariable` and `hub_list_rule_local_variables` (NOT `appSettings`). Note `appState` is a **LIST** of `{name, value}` entries, so read it as `appState.find { it.name == "allLocalVars" }.value`; the entry is absent when the rule has no locals. The `setLocalVariable` action validates its target against this map (rule-local namespace), distinct from `setVariable`'s hub-global namespace. |
 | `GET  /installedapp/eventsJson/<id>` | Events history JSON |
 | `POST /installedapp/forcedelete/<id>/quiet` | Force-delete, no prompts |
-| `GET  /installedapp/createchild/<namespace>/<appName>/parent/<parentId>` | Server-creates a child app instance under a parent — a raw GET that 302-redirects to the new child's `configure/<id>` page. Used by the MCP server (`_rmCreateChildApp`) to instantiate classic child apps (Basic Rule, RM child, etc.) |
+| `GET  /installedapp/createchild/<namespace>/<appName>/parent/<parentId>` | Server-creates a child app instance under a parent — a raw GET that 302-redirects to the new child's `configure/<id>` page. Used by the MCP server (`_rmCreateChildApp`) to instantiate classic child apps (Basic Rule, RM child, etc.) AND, on 2.5.1, the two Visual Rules Builder children by version: `appName` = `Visual Rule Builder 1.0` / `Visual Rule Builder 2.0` (the parent's own "Build New Visual Rule 1.0 / 2.0" links; live-verified on 2.5.1.181 — a fresh 2.0 child answers `ruleBuilder20Json` immediately with an empty `ruleJson`, a fresh 1.0 child answers `ruleBuilderJson` with `{}` until its first save). CAVEAT: the platform HTTP client may auto-follow an ABSOLUTE `Location` and hand back 200 with no header — the child then exists but its id was lost, which is why `_vrbCreateChild` reconciles the parent's child list before ever creating again |
 | `POST /installedapp/disable` | Enable/disable an installed app — body `{id, disable:<bool>}` (`true` disables, `false` enables). Posted by `main.js` `enableApp()`/`disableApp()`. Used by `hub_set_app_disabled` (read-back verified via `/installedapp/json/<id>`) |
 | `GET  /installedapp/direct/<alias>` | NOT a Vue CRUD endpoint — a name-addressed 302 redirect chain: `direct/<alias>` → `create/<typeId>` → `configure/<instanceId>` (type ids vary per hub; the alias is the stable key). Get-or-create, so it doubles as a stable name→id resolver (fw 2.5.0.143) |
 | `GET  /installedapp/direct/hubVariables` | Singleton: the chain lands on the SAME instance every visit. The Vue `HubVariables` component is a non-functional stub — the classic `hubVar` wizard is the real variable-CRUD contract |
@@ -261,12 +426,25 @@ data shape. To read control flow:
 When Hubitat ships new firmware that updates the UI:
 
 ```bash
-for f in vue-hub2.min.js appUI.js main.js helpers.js hub2utils.js hubitat.min.js success-compiled.js; do
+for f in main.js hubitat.min.js vue-hub2-visual-rule-builder-20.min.js; do
   curl -s "http://<hub-ip>/ui2/js/$f" -o "$f"
 done
+curl -s "http://<hub-ip>/ui2/js/vue-hub2.min.js" -o vue-hub2-shell-<platform>.min.js   # the code-split SHELL -- never over the monolith
 ```
 
-Record the firmware version + capture date at the top of this README.
+**Do NOT blindly re-capture `appUI.js`, `helpers.js`, `hub2utils.js` or
+`success-compiled.js`** — platform 2.5.1.181 serves those four minified, so a
+plain overwrite destroys the unminified classic-engine source vendored here and
+available nowhere else. See *Capture state* at the top. If you need the current
+bytes, fetch them to a scratch path and diff the string literals rather than
+replacing the readable copies.
+
+To pick up another code-split chunk, read the chunk-id → filename map out of the
+shell (`grep -o '\.u=function(e)...' vue-hub2-shell-2.5.1.min.js`) and fetch
+`/ui2/js/vue-hub2-<name>.min.js` the same way.
+
+Record the platform version + capture date in *Capture state* at the top of this
+README, and update the per-file sizes in the table.
 
 ## License note
 

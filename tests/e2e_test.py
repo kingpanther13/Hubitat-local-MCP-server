@@ -2206,25 +2206,51 @@ class TestRunner:
 
     @test("devices")
     def test_list_devices_scope_all(self) -> None:
-        # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag,
-        # sourced from the hub-wide inventory (/device/listWithCapabilities/json, or /hub2/devicesList on
-        # platform 2.5.1.173 and later where that endpoint is gone), not the authorization-scoped Groovy model.
+        # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag, sourced from
+        # the hub-wide inventory, not the authorization-scoped Groovy model: from
+        # /device/listWithCapabilities/json where it exists, else (platform 2.5.1.173 and later)
+        # the /hub2/devicesList tree unioned with the /hub2/vrb/devices picker feed for capabilities.
         result = self.client.call_tool("hub_list_devices", {"scope": "all"})
         assert isinstance(result, dict), "scope='all' did not return an object"
         assert result.get("scope") == "all", f"scope='all' not echoed: {result}"
-        # The fallback contract: the response names its source, and when that source carries no
-        # capabilities it says so rather than letting an empty list read as "no capabilities".
-        assert result.get("source") in ("/device/listWithCapabilities/json", "/hub2/devicesList"), \
-            f"scope='all' must report which inventory endpoint answered: {result.get('source')!r}"
+        # The fallback contract: the response names its source, and only the capability-less last
+        # resort flags partial capabilities rather than letting an empty list read as "none".
+        assert result.get("source") in (
+            "/device/listWithCapabilities/json",
+            "/hub2/vrb/devices",
+            "/hub2/devicesList",
+        ), f"scope='all' must report which inventory endpoint answered: {result.get('source')!r}"
         if result.get("source") == "/hub2/devicesList":
             assert result.get("capabilitiesPartial") is True and result.get("capabilitiesNote"), \
                 f"the /hub2/devicesList fallback must flag partial capabilities: {result}"
+        elif result.get("source") == "/hub2/vrb/devices":
+            # The feed carries capabilities; partial is flagged when either source omitted a device
+            # the other lists, or when the tree could not be read (feed alone), and the note names
+            # the endpoint at fault and which of those it was.
+            if result.get("capabilitiesPartial"):
+                note = result.get("capabilitiesNote") or ""
+                assert "/hub2/devicesList" in note and "/hub2/vrb/devices" in note, \
+                    f"a partial /hub2/vrb/devices inventory must name both endpoints: {result}"
+                assert "omitted" in note or "could not be read" in note or "not trusted" in note, \
+                    f"a partial /hub2/vrb/devices inventory must say what was omitted or why the tree was not usable: {result}"
+            else:
+                assert result.get("capabilitiesPartial") is None, \
+                    f"/hub2/vrb/devices carries capabilities, so nothing may be flagged partial: {result}"
         devices = result.get("devices", [])
         assert isinstance(devices, list) and len(devices) > 0, "scope='all' returned no devices"
         assert all("mcpAuthorized" in d for d in devices), \
             "scope='all' devices missing the mcpAuthorized flag"
         assert "mcpAuthorizedCount" in result and "unauthorizedCount" in result, \
             "scope='all' missing mcpAuthorizedCount/unauthorizedCount"
+        # idsComplete is present ONLY to say the record SET could not be vouched for, and every
+        # inventory that cannot vouch for its ids also lacks capabilities -- so a response with no
+        # capabilitiesPartial must not carry the flag at all, and a present one is always false.
+        if result.get("capabilitiesPartial"):
+            assert result.get("idsComplete", False) is False, \
+                f"idsComplete may only ever be present as false: {result.get('idsComplete')!r}"
+        else:
+            assert "idsComplete" not in result, \
+                f"a complete inventory must omit idsComplete rather than assert it: {result}"
 
     @test("devices")
     def test_list_devices_context_format(self) -> None:
@@ -7983,16 +8009,21 @@ class TestRunner:
     # GROUP 4b2: visual_rules -- the Visual Rules Builder tools
     # (hub_get_visual_rule / hub_set_visual_rule / hub_delete_visual_rule).
     # VRB rules are Vue-JSON apps (NOT classic dynamicPage apps), saved over the
-    # /app/ruleBuilderJson endpoint family in one of two wire formats the hub
-    # FIRMWARE picks at creation: 'classic' ({whenNodes, thenNodes, elseNodes})
-    # or 'graph' ({version, nodes, edges}).
+    # /app/ruleBuilderJson endpoint family in one of two wire formats: 'classic'
+    # ({whenNodes, thenNodes, elseNodes}), which creates a Visual Rule Builder 1.0
+    # child, or 'graph' ({version, nodes, edges}), which creates a 2.0 child. The
+    # DEFINITION chooses; a hub too old for 2.0 can only host the classic one.
+    # hub_set_visual_rule also accepts the 2.0 EDITOR form
+    # ({triggers, conditions, decisionType, thenActions, elseActions, commonActions})
+    # and composes it into the graph document -- see the editor-form test below.
     # -----------------------------------------------------------------------
 
     def _vrb_definition(self, fmt: str, switch_id: int, switch_event: str) -> dict:
         """Equivalent VRB definition in either wire format: when the test switch
-        fires `switch_event`, re-assert that same state. The firmware (not the
-        caller) decides which format newly-created rules speak, so the lifecycle
-        test needs the same semantic rule expressible both ways.
+        fires `switch_event`, re-assert that same state. A classic definition creates
+        a Visual Rule Builder 1.0 child and a graph one a 2.0 child, so the lifecycle
+        test needs the same semantic rule expressible both ways -- it falls back to
+        the graph form on a hub that will not host a 1.0 rule at all.
 
         HARMLESS-STRAND INVARIANT: the action always MATCHES the trigger event
         ('Turns off' -> turnOff, 'Turns on' -> turnOn). These fixtures live on the
@@ -8071,29 +8102,23 @@ class TestRunner:
 
     @test("visual_rules")
     def test_visual_rule_classic_lifecycle(self) -> None:
-        # Full VRB round-trip: create (classic-first, one graph retry -- the hub
-        # firmware decides the native format), read back via the pure-read gateway,
-        # list, rename+pause, resume, wholesale replace, delete-with-verify.
+        # Full VRB round-trip: create from a classic definition (a 1.0 rule, or a translated
+        # 2.0 rule on a hub that only builds 2.0 children), read back via the pure-read
+        # gateway, list, rename+pause, resume, wholesale replace, delete-with-verify.
         switch_id = int(self.get_test_switch_id())
         name = f"{PREFIX}VisualRule"
 
-        def _create_with_retry() -> Any:
-            r = self.client.call_tool("hub_manage_rule_machine", {
+        def _create() -> Any:
+            # A classic definition creates a 1.0 rule where the hub offers that builder; on a
+            # 2.0-only hub the tool translates it up (format 'graph', translatedFrom 'classic')
+            # rather than refusing, so there is no retry branch -- every outcome is a rule.
+            return self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_visual_rule",
                 "args": {"name": name, "confirm": True,
                          "definition": self._vrb_definition("classic", switch_id, "Turns off")}})
-            if r.get("success") is False and r.get("hubNativeFormat") == "graph":
-                # This firmware's builder creates graph-format rules (the tool already
-                # force-deleted the orphan shell); retry once with the equivalent graph
-                # definition so the lifecycle still executes deterministically.
-                r = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_visual_rule",
-                    "args": {"name": name, "confirm": True,
-                             "definition": self._vrb_definition("graph", switch_id, "Turns off")}})
-            return r
 
         cw = self._soft_write(
-            _create_with_retry,
+            _create,
             lambda: self._find_visual_rule_id_by_name(name),
             "hub_set_visual_rule create",
         )
@@ -8125,6 +8150,53 @@ class TestRunner:
             assert got.get("name") == name, f"read-back name mismatch: {got.get('name')!r} != {name!r}"
             assert got.get("format") == fmt, f"read-back format {got.get('format')!r} != create format {fmt!r}"
             self._assert_trigger_device(got, fmt, switch_id)
+
+            if fmt == "classic":
+                # FORMAT MISMATCH on EDIT: a 2.0 editor definition aimed at this 1.0 rule is
+                # refused per-rule (no `hubNativeFormat` -- the hub's builders were not measured).
+                mismatch = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True, "definition": {
+                        "triggers": [{"type": "switch", "config": {"switches": [switch_id], "switchEvent": "Turns off"}}],
+                        "thenActions": [{"type": "turnOff", "config": {"switches": [switch_id]}}]}}})
+                assert mismatch.get("success") is False and mismatch.get("format") == "classic", \
+                    f"an editor definition on a 1.0 rule must be refused as a format mismatch: {mismatch}"
+                assert str(mismatch.get("error", "")).startswith(f"Rule {app_id} is a Visual Rule Builder 1.0 rule"), \
+                    f"the edit-path refusal must name the rule, not the hub: {mismatch}"
+                assert "hubNativeFormat" not in mismatch, \
+                    f"an edit did not measure the hub's builders, so it must not claim hubNativeFormat: {mismatch}"
+                unchanged = self._get_visual_rule(app_id)
+                assert unchanged.get("format") == "classic" and unchanged.get("whenNodes"), \
+                    f"the refused edit must have left the 1.0 rule untouched: {unchanged}"
+                # The refusal's own advice -- fetch the current shape and send it back -- must
+                # work verbatim: the read's envelope keys (success/appId/format/name/rawName/
+                # rulePaused) are ignored, not refused as unknown classic keys.
+                fb = self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_visual_rule",
+                        "args": {"appId": app_id, "confirm": True, "definition": unchanged}}),
+                    lambda: True,
+                    "hub_set_visual_rule edit (classic read fed back)",
+                )
+                if not fb["relayDropped"]:
+                    assert fb["response"].get("success") is True, \
+                        f"a classic read fed straight back must be accepted: {fb['response']}"
+                # A misspelled classic key is refused before any write (-32602), not read as "none".
+                typo = {"whenNodes": unchanged.get("whenNodes"), "thenNodez": unchanged.get("thenNodes"), "elseNodes": []}
+                try:
+                    refused = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_visual_rule",
+                        "args": {"appId": app_id, "confirm": True, "definition": typo}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    detail = str(exc)
+                    if "504" in detail:
+                        raise SkipTest("classic-key refusal lost to relay 504") from exc
+                    assert "thenNodez" in detail, f"the -32602 must name the unknown classic key: {detail}"
+                else:
+                    raise AssertionError(f"a misspelled classic key must be refused with -32602, got: {refused}")
+                still_classic = self._get_visual_rule(app_id)
+                assert still_classic.get("thenNodes"), \
+                    f"the refused classic edit must have left the actions in place: {still_classic}"
 
             # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
             # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
@@ -8257,22 +8329,16 @@ class TestRunner:
         switch_id = int(self.get_test_switch_id())
         name = f"{PREFIX}VrbRestore"
 
-        def _create_with_retry() -> Any:
-            r = self.client.call_tool("hub_manage_rule_machine", {
+        def _create() -> Any:
+            # Same contract as the lifecycle test: classic -> 1.0 rule, or translated to 2.0 on a
+            # hub that can only build 2.0 children. No retry branch exists.
+            return self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_visual_rule",
                 "args": {"name": name, "confirm": True,
                          "definition": self._vrb_definition("classic", switch_id, "Turns off")}})
-            if r.get("success") is False and r.get("hubNativeFormat") == "graph":
-                # Same firmware-decides-the-format adaptation as the lifecycle test
-                # (the tool already force-deleted the orphan classic shell).
-                r = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_visual_rule",
-                    "args": {"name": name, "confirm": True,
-                             "definition": self._vrb_definition("graph", switch_id, "Turns off")}})
-            return r
 
         cw = self._soft_write(
-            _create_with_retry,
+            _create,
             lambda: self._find_visual_rule_id_by_name(name),
             "hub_set_visual_rule create (backup-restore fixture)",
         )
@@ -8503,6 +8569,307 @@ class TestRunner:
         finally:
             self._delete_native(rm_id)
 
+    @test("visual_rules")
+    def test_visual_rule_editor_form_lifecycle(self) -> None:
+        # VRB 2.0 EDITOR form -- the recommended input. The caller sends
+        # {triggers, conditions, decisionType, thenActions, elseActions, commonActions} and the
+        # tool COMPOSES the graph document: triggers -> triggerMerge -> decision -> then/else ->
+        # branchMerge -> common tail. Three legs: the STRUCTURAL pre-flight (a graph with no
+        # triggerMerge is refused BEFORE any child app exists, so a malformed definition can
+        # never strand an empty shell), the editor create + decomposed read-back, and the
+        # documented edit flow (read `editor`, change it, send it back).
+        #
+        # HARMLESS-STRAND INVARIANT (see _vrb_definition): every trigger is 'Turns on' and every
+        # action a turnOn on the same switch, with the condition matching ('Turned on'), so a
+        # stranded copy can only re-assert the state the switch already reached -- it can never
+        # revert another test's command.
+        switch_id = int(self.get_test_switch_id())
+        name = f"{PREFIX}VrbEditor"
+        preflight_name = f"{PREFIX}VrbPreflight"
+
+        # (a) PRE-FLIGHT REFUSAL: no triggerMerge node -> a -32602 argument error BEFORE any create
+        # (nothing exists yet, so there is no envelope to return; the message lists the problems).
+        refused = None
+        try:
+            refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"name": preflight_name, "confirm": True, "definition": {
+                    "version": 1,
+                    "nodes": [
+                        {"id": "t1", "kind": "trigger", "type": "switch",
+                         "config": {"switches": [switch_id], "switchEvent": "Turns on"}},
+                        {"id": "d1", "kind": "decision", "type": "all", "config": {"conditions": []}},
+                        {"id": "a1", "kind": "action", "type": "turnOn",
+                         "config": {"switches": [switch_id]}},
+                    ],
+                    "edges": [{"from": "t1", "to": "d1", "port": "next"},
+                              {"from": "d1", "to": "a1", "port": "true"}],
+                }}})
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            detail = str(exc)
+            if "504" in detail:
+                # A relay 504 can't distinguish "refused" from "response dropped", so skip rather
+                # than soft-pass the contract.
+                raise SkipTest("pre-flight refusal contract lost to relay 504 -- cannot tell a "
+                               "refusal from a dropped response") from exc
+            assert "pre-flight validation" in detail and "triggerMerge" in detail, \
+                f"the -32602 must name the pre-flight failure and the missing triggerMerge node: {detail}"
+        else:
+            if isinstance(refused, dict) and refused.get("appId"):
+                # The pre-flight regressed and a rule exists -- track it for the cleanup sweep.
+                self.created_native_app_ids.append(str(refused["appId"]))
+            raise AssertionError(
+                f"a graph with no triggerMerge node must be refused with -32602 before any create, got: {refused}")
+        assert not any(r.get("name") == preflight_name
+                       for r in (self._get_visual_rule().get("rules") or [])), \
+            f"the refused create left an orphan shell named {preflight_name!r} behind"
+
+        # (b) CREATE from the editor form.
+        editor = {
+            "triggers": [{"type": "switch",
+                          "config": {"switches": [switch_id], "switchEvent": "Turns on"}}],
+            "conditions": [{"type": "switchCondition",
+                            "config": {"switches": [switch_id], "switchState": "Turned on"}}],
+            "decisionType": "any",
+            "thenActions": [{"type": "turnOn", "config": {"switches": [switch_id]}}],
+            "elseActions": [],
+            "commonActions": [{"type": "turnOn", "config": {"switches": [switch_id]}}],
+        }
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"name": name, "confirm": True, "definition": editor}}),
+            lambda: self._find_visual_rule_id_by_name(name),
+            "hub_set_visual_rule create (editor form)",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], \
+                f"editor-form create lost to relay 504 and never committed ({name})"
+            app_id = cw["evidence"]
+            self.created_native_app_ids.append(str(app_id))
+            print("    hub_set_visual_rule create (editor form): success/format/activated "
+                  f"assertions skipped (relay 504); adopted appId {app_id}")
+        else:
+            created = cw["response"]
+            if created.get("hubNativeFormat") == "classic":
+                # A hub too old for Visual Rules Builder 2.0 cannot host a composed graph at
+                # all (it answers with the format-mismatch envelope, its shell already
+                # force-deleted). A hub-vintage fact, not a regression.
+                raise SkipTest("this hub's Visual Rules Builder cannot create 2.0 (graph) "
+                               "rules -- the editor form does not apply")
+            app_id = created.get("appId")
+            assert app_id, f"editor-form create did not return an appId: {created}"
+            self.created_native_app_ids.append(str(app_id))
+            assert created.get("success") is True, f"editor-form create did not verify: {created}"
+            assert created.get("format") == "graph", \
+                f"an editor definition must compose to a graph document: {created}"
+            assert created.get("activated") is True, \
+                f"a valid editor definition must ACTIVATE, not land as an inactive draft: {created}"
+            assert not created.get("validationErrors"), \
+                f"a valid editor definition must come back with no validationErrors: {created}"
+            # The versioned child-create route is what a supported hub (platform 2.5.1+) answers;
+            # the legacy builder page is only reached when the parent REFUSES that route.
+            assert created.get("createRoute") == "createchild", \
+                f"a supported hub creates the child through the versioned route: {created}"
+            # The hub's own storage verdict rides the response when the firmware sends it, and a
+            # clean create must not carry a false one.
+            if "storedSuccessfully" in created:
+                assert created["storedSuccessfully"] is True, \
+                    f"a clean editor-form create must report storedSuccessfully true: {created}"
+            # validationIssues is optional on the wire (a pre-2.0 firmware answers without it, and
+            # both emitters gate on presence); when it IS answered, a clean save's list is empty
+            # and must survive as one.
+            if "validationIssues" in created:
+                assert created["validationIssues"] == [], \
+                    f"a clean save answers an EMPTY validationIssues list, and it must survive as one: {created}"
+            assert "preflightWarnings" not in created, \
+                f"every type in this definition is in the catalog, so no advisory may be raised: {created}"
+
+        try:
+            # READ BACK: the composed graph AND its decomposition.
+            got = self._get_visual_rule(app_id)
+            assert got.get("success") is True, \
+                f"read-back of editor-form rule {app_id} failed: {got}"
+            assert got.get("format") == "graph", \
+                f"editor-form rule did not store as a graph: {got}"
+            nodes = (got.get("definition") or {}).get("nodes") or []
+            merge_types = [n.get("type") for n in nodes if n.get("kind") == "merge"]
+            assert merge_types.count("triggerMerge") == 1, \
+                f"composed graph must carry exactly one triggerMerge node: {nodes}"
+            assert merge_types.count("branchMerge") == 1, \
+                f"commonActions must compose a branchMerge tail: {nodes}"
+            decisions = [n for n in nodes if n.get("kind") == "decision"]
+            assert len(decisions) == 1, \
+                f"composed graph must carry exactly one decision node: {nodes}"
+            assert decisions[0].get("type") == "any", \
+                f"decisionType 'any' (OR) must reach the decision node: {decisions[0]}"
+
+            ed = got.get("editor")
+            assert isinstance(ed, dict), \
+                f"a graph read must decompose into an `editor` block for round-trip edits: {got}"
+            assert ed.get("decisionType") == "any", f"decomposed decisionType mismatch: {ed}"
+            assert len(ed.get("commonActions") or []) == 1, \
+                f"decomposed editor lost the common tail action: {ed}"
+            assert len(ed.get("thenActions") or []) == 1, \
+                f"decomposed editor lost the THEN action: {ed}"
+            assert ed.get("elseActions") == [], \
+                f"an empty ELSE branch must decompose back to []: {ed}"
+
+            # LIST mode reports the builder VERSION parsed from the child's app type.
+            entry = next((r for r in (self._get_visual_rule().get("rules") or [])
+                          if str(r.get("appId")) == str(app_id)), None)
+            assert entry is not None, f"editor-form rule {app_id} missing from the listing"
+            # The version comes from the child's app TYPE suffix, which the versioned route
+            # asserted above guarantees.
+            assert entry.get("version") == "2.0", \
+                f"a rule created from the editor form must list as version 2.0: {entry}"
+
+            # (c) EDIT via the documented flow: send the read-back editor back with changes --
+            # OR decision -> AND, plus an ELSE action (same switch, same 'on' state, so the
+            # harmless-strand invariant holds on both branches).
+            edited = dict(ed)
+            edited["decisionType"] = "all"
+            edited["elseActions"] = [{"type": "turnOn", "config": {"switches": [switch_id]}}]
+            ew = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True, "definition": edited}}),
+                lambda: True,  # verified by the read-back below
+                "hub_set_visual_rule edit (editor form)",
+            )
+            if ew["relayDropped"]:
+                print("    hub_set_visual_rule edit (editor form): success assertion skipped "
+                      "(relay 504); verified via read-back")
+            else:
+                assert ew["response"].get("success") is True, \
+                    f"editor-form edit reported failure: {ew['response']}"
+            after = self._get_visual_rule(app_id)
+            after_editor = after.get("editor") or {}
+            assert after_editor.get("decisionType") == "all", \
+                f"the decisionType edit did not land: {after_editor}"
+            assert len(after_editor.get("elseActions") or []) == 1, \
+                f"the added ELSE action did not land: {after_editor}"
+            after_decisions = [n for n in ((after.get("definition") or {}).get("nodes") or [])
+                               if n.get("kind") == "decision"]
+            assert len(after_decisions) == 1 and after_decisions[0].get("type") == "all", \
+                f"the edited decision node did not recompose as 'all': {after_decisions}"
+
+            # (d) EMPTY-TAIL ROUND TRIP: send the read-back editor straight back with the common tail
+            # emptied but structureIds kept. The branchMerge must survive (the hub accepts one with
+            # nothing after it) and the rule must stay active -- identity, not a re-wiring.
+            emptied = dict(after_editor)
+            emptied["commonActions"] = []
+            rw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True, "definition": emptied}}),
+                lambda: True,
+                "hub_set_visual_rule edit (empty common tail)",
+            )
+            if not rw["relayDropped"]:
+                assert rw["response"].get("success") is True and rw["response"].get("activated") is True, \
+                    f"emptying the common tail must keep the rule active: {rw['response']}"
+            kept = self._get_visual_rule(app_id)
+            kept_nodes = (kept.get("definition") or {}).get("nodes") or []
+            assert any(n.get("type") == "branchMerge" for n in kept_nodes), \
+                f"an explicit structureIds.branchMerge must survive an emptied common tail: {kept_nodes}"
+            assert (kept.get("editor") or {}).get("commonActions") == [], \
+                f"the tail must read back empty: {kept.get('editor')}"
+
+            # (e) UNKNOWN TYPE ON EDIT is refused before any write: a typo must not stop a running
+            # rule by storing it as an inactive draft.
+            typo = dict(kept.get("editor") or {})
+            typo["thenActions"] = [{"type": "turnOF", "config": {"switches": [switch_id]}}]
+            try:
+                refused_edit = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True, "definition": typo}})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                detail = str(exc)
+                if "504" in detail:
+                    raise SkipTest("unknown-type edit refusal lost to relay 504") from exc
+                assert "turnOF" in detail and "does not use it today" in detail, \
+                    f"the -32602 must name the unknown type and explain the refusal: {detail}"
+            else:
+                raise AssertionError(
+                    f"an unknown action type on EDIT must be refused with -32602, got: {refused_edit}")
+            still = self._get_visual_rule(app_id)
+            assert still.get("activated") is True, \
+                f"the refused edit must have left the rule running: {still}"
+            # (f) UNKNOWN TYPE ON CREATE is advisory: the rule is created, preflightWarnings names
+            # the type, and the hub's verdict (an inactive draft) is reported as activated False.
+            warn_name = f"{PREFIX}VrbWarn"
+            ww = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"name": warn_name, "confirm": True, "definition": {
+                        "triggers": [{"type": "switch",
+                                      "config": {"switches": [switch_id], "switchEvent": "Turns on"}}],
+                        "thenActions": [{"type": "turnOn", "config": {"switches": [switch_id]}},
+                                        {"type": "brandNewAction", "config": {"switches": [switch_id]}}]}}}),
+                lambda: self._find_visual_rule_id_by_name(warn_name),
+                "hub_set_visual_rule create (unknown type -> advisory)",
+            )
+            warn_id = ww["evidence"] if ww["relayDropped"] else (ww["response"] or {}).get("appId")
+            if warn_id:
+                self.created_native_app_ids.append(str(warn_id))
+            if not ww["relayDropped"]:
+                wr = ww["response"]
+                assert wr.get("success") is True and wr.get("activated") is False, \
+                    f"an unknown type on CREATE must be stored as an inactive draft, not refused: {wr}"
+                assert any("brandNewAction" in w for w in (wr.get("preflightWarnings") or [])), \
+                    f"preflightWarnings must name the unknown type: {wr}"
+                assert any("brandNewAction" in e for e in (wr.get("validationErrors") or [])), \
+                    f"the hub's own verdict must be forwarded: {wr}"
+            if warn_id:
+                # (g) A RENAME re-saves the stored graph, so a graph the hub drafts comes back as the
+                # draft it is -- activated False with the hub's verdict -- never as a clean success
+                # that hides a stopped automation.
+                rn = self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_visual_rule",
+                        "args": {"appId": warn_id, "name": f"{warn_name}2", "confirm": True}}),
+                    lambda: True,
+                    "hub_set_visual_rule rename (drafted graph)",
+                )
+                if not rn["relayDropped"]:
+                    rr = rn["response"]
+                    assert rr.get("success") is True and rr.get("activated") is False, \
+                        f"renaming a drafted rule must report activated False: {rr}"
+                    assert any("brandNewAction" in e for e in (rr.get("validationErrors") or [])), \
+                        f"the rename must forward the hub's verdict on the re-saved graph: {rr}"
+                    assert "INACTIVE DRAFT" in str(rr.get("note") or ""), \
+                        f"the rename must say the rule is a draft: {rr}"
+            if warn_id:
+                self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_delete_visual_rule", "args": {"appId": warn_id, "confirm": True}}),
+                    lambda: self._get_visual_rule(warn_id).get("success") is False,
+                    "hub_delete_visual_rule (advisory fixture)",
+                )
+                if self._get_visual_rule(warn_id).get("success") is False:
+                    self._untrack_native_app(warn_id)
+        finally:
+            # DELETE, same contract the lifecycle test asserts: on a relay 504 the response is
+            # gone so absence is the evidence, and the id stays tracked until an independent
+            # gone-read passes (a false-verified delete is then reaped by the cleanup sweep).
+            dw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_delete_visual_rule", "args": {"appId": app_id, "confirm": True}}),
+                lambda: self._get_visual_rule(app_id).get("success") is False,
+                "hub_delete_visual_rule (editor form)",
+            )
+            if dw["relayDropped"]:
+                assert dw["committed"], \
+                    f"VRB rule {app_id} still readable after a relay-504 delete"
+            else:
+                assert dw["response"].get("success") is True, \
+                    f"hub_delete_visual_rule reported failure: {dw['response']}"
+            gone = self._get_visual_rule(app_id)
+            assert gone.get("success") is False, \
+                f"rule {app_id} still readable after delete: {gone}"
+            self._untrack_native_app(app_id)
+
     # -----------------------------------------------------------------------
     # GROUP 4c: deadman (1 test) -- the issue #243 install-commit fix, the exact
     # bug the E2E Dead-Man Watchdog tripped on. installAsUserApp must actually
@@ -8600,34 +8967,8 @@ class TestRunner:
         # Throwaway Apps Code class (code only, never installed as an instance). The name
         # deliberately starts with "Deadman Test Target" (namespace mcptest) so the cleanup
         # Layer 5 startswith sweep reclaims a stranded copy if a crash skips the finally below.
-        source_v1 = '''\
-definition(
-    name: "Deadman Test Target Update",
-    namespace: "mcptest",
-    author: "ci",
-    description: "Throwaway e2e app-code update-leg target",
-    category: "Utility",
-    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    oauth: true
-)
-
-preferences {
-    page(name: "p", title: "Update Leg Target", install: true, uninstall: true) {
-        section { paragraph "Throwaway update-leg target. Marker: ${updateLegMarker()}" }
-    }
-}
-
-mappings {
-    path("/ping") { action: [GET: "ping"] }
-}
-
-def installed() {}
-def updated() {}
-def ping() { render contentType: "text/plain", data: "ok" }
-
-def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
-'''
+        source_v1 = (Path(__file__).resolve().parent / "fixtures"
+                     / "app-code-update.groovy").read_text(encoding="utf-8")
         code_app_id = None
         try:
             created = self.client.call_tool("hub_manage_code", {
@@ -8799,38 +9140,8 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
         Needs a running INSTANCE (not just a code class), so it creates and cleans up both.
         Named "Deadman Test Target ..." in namespace mcptest so the Layer 5 sweep reclaims a
         stranded copy -- instance included -- if a crash skips the finally."""
-        source_v1 = '''\
-definition(
-    name: "Deadman Test Target Trigger",
-    namespace: "mcptest",
-    author: "ci",
-    description: "Throwaway e2e triggerUpdated target",
-    category: "Utility",
-    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
-)
-
-preferences {
-    page(name: "p", title: "Trigger Leg Target", install: true, uninstall: true) {
-        section {
-            input name: "refreshProbe", type: "bool", title: "Round-trip probe", defaultValue: false
-            input name: "probeSwitches", type: "capability.switch", title: "Round-trip devices", multiple: true, required: false
-            input name: "lifecycleStamp", type: "text", title: "Lifecycle stamp", required: false
-            paragraph "Throwaway triggerUpdated target. Marker: ${triggerLegMarker()}"
-        }
-    }
-}
-
-def installed() { updateStamp("installed") }
-def updated() { updateStamp("updated") }
-
-// The stamp goes into a SETTING, not state: hub_get_app_config(includeSettings) can read a
-// setting, which is what lets the test prove updated() actually RAN. updatedFired only proves
-// the hub accepted the Done POST.
-def updateStamp(String which) { app.updateSetting("lifecycleStamp", [type: "text", value: which]) }
-
-def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
-'''
+        source_v1 = (Path(__file__).resolve().parent / "fixtures"
+                     / "app-trigger-updated.groovy").read_text(encoding="utf-8")
 
         def probe_value(cfg: dict) -> str:
             """refreshProbe as read back. The hub may render a bool setting as a real boolean
@@ -8973,20 +9284,8 @@ def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
         # name deliberately starts with "Deadman Test Target" (namespace mcptest) so
         # the cleanup Layer 5 startswith sweep reclaims a stranded copy if a crash
         # skips the finally below.
-        source_v1 = '''\
-metadata {
-    definition(name: "Deadman Test Target Driver", namespace: "mcptest", author: "ci") {
-        capability "Switch"
-    }
-}
-
-def installed() {}
-def updated() {}
-def on() { sendEvent(name: "switch", value: "on") }
-def off() { sendEvent(name: "switch", value: "off") }
-
-def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
-'''
+        source_v1 = (Path(__file__).resolve().parent / "fixtures"
+                     / "driver-code-update.groovy").read_text(encoding="utf-8")
         driver_id = None
         try:
             created = self._write_once(
@@ -12537,7 +12836,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         7. Throwaway bundle + library (mcptest namespace)
         8. Easy Dashboards (tracked + prefix sweep)
         9. File Manager files (prefix sweep, originals then their _backup_ spawn)
+
+        Guarded here as well as in main(): the sweep is the thing that deletes, so the
+        CI-only refusal travels with it no matter who calls it.
         """
+        refuse_unless_ci_test_hub(self.client.hub_url)
+        refuse_unless_leased_test_hub(self.client, refuse_when_unreadable=False)
         print("\n--- Cleanup ---")
 
         # Layer 1: tracked artifacts
@@ -13227,6 +13531,97 @@ def _inject_device_id(obj: dict, dev_id: str) -> dict:
     return result
 
 
+TEST_HUB_LEASE_VARIABLE = "_TEST_HUB_LEASED_BY"
+
+
+def _refuse(reasons: list[str]) -> None:
+    print("REFUSED: tests/e2e_test.py runs ONLY in the GitHub Actions e2e job against the sacrificial test hub.")
+    for r in reasons:
+        print(f"  - {r}")
+    print("  Its cleanup sweep deletes every mcp-rm-backup-*.json rollback baseline and forces MCP settings;")
+    print("  on a personal hub that is data loss. Exercise a PR on a personal hub with the MCP tools directly")
+    print("  (the scenarios in tests/BAT-v2.md), never with this harness.")
+    sys.exit(2)
+
+
+def refuse_unless_ci_test_hub(hub_url: str) -> None:
+    """This runner executes in the GitHub Actions e2e job against the SACRIFICIAL test hub and
+    nowhere else. Every invocation -- a single --test, --cleanup-only, --setup-perm-fixtures --
+    runs the cleanup sweep and the settings pins, which on any other hub means: every
+    mcp-rm-backup-*.json rollback baseline in File Manager deleted, every mcptest-namespace
+    throwaway code class deleted, bypassDeviceAllowlist forced ON, enableMandatoryBPS forced OFF,
+    maxConcurrentWrites forced to 0, BAT_E2E_-prefixed devices/rules/rooms/dashboards swept.
+    That happened to a personal production hub on 2026-09-05.
+
+    Two transport tells, both required: the Actions runner's own GITHUB_ACTIONS marker, and the
+    cloud-relay URL shape the CI job parses MCP_URL into (a LAN address is a personal hub by
+    definition). Neither identifies the HUB -- every cloud-enabled hub has that URL shape -- so
+    refuse_unless_leased_test_hub() adds the one tell read from the hub itself. Called from
+    main() and again from TestRunner.cleanup() (so it travels with the thing that deletes); NOT
+    from load_config(), which tests/sdk_conformance_test.py shares and which never sweeps.
+    There is deliberately no override flag."""
+    reasons = []
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        reasons.append("GITHUB_ACTIONS is not 'true' (not running inside the GitHub Actions e2e job)")
+    if not re.match(r"^https://cloud\.hubitat\.com/api/[^/]+$", hub_url or ""):
+        reasons.append(f"hub_url {hub_url!r} is not the CI cloud-relay base (https://cloud.hubitat.com/api/<uuid>)")
+    if reasons:
+        _refuse(reasons)
+
+
+def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
+                                  refuse_when_unreadable: bool = True) -> None:
+    """The tell that identifies the hub rather than the transport: the CI lease protocol
+    (.github/scripts/lease_acquire.sh) writes the Hub Variable `_TEST_HUB_LEASED_BY` on the
+    sacrificial hub and nowhere else. A hub without it has never been leased for e2e and is
+    refused. One read, before the first sweep.
+
+    refuse_when_unreadable=False is the CLEANUP call: main() already proved this hub's identity
+    before the first write, so an unreadable variable at cleanup time is a fact about the relay,
+    not about the hub -- and refusing there strands every BAT_E2E_ artifact on the shared hub,
+    which is the failure the guard's retry loop was added for. A definitive answer still refuses
+    in both modes."""
+    # Three failure shapes, and only one of them is the hub speaking. A JSON-RPC error is the
+    # hub's own verdict (toolGetVariable throws IllegalArgumentException for an absent variable
+    # and handleToolsCall maps that to -32602); a lost response, an undecodable body, and an
+    # isError:true runtime fault inside the tool all leave the variable unknown and retry.
+    got = None
+    last_exc: Exception | None = None
+    last_kind = "the hub was not heard"
+    for attempt in range(4):
+        try:
+            got = client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": TEST_HUB_LEASE_VARIABLE}})
+            break
+        except RelayLostResponseError as exc:  # the response was lost; the hub said nothing
+            last_exc, last_kind = exc, "the response was lost in transport"
+        except McpToolError as exc:  # isError:true -- a runtime fault INSIDE the tool
+            last_exc, last_kind = exc, "the tool faulted at runtime (isError), which says nothing about the variable"
+        except McpError as exc:
+            if str(exc).startswith("JSON-RPC error:"):
+                _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
+                         f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
+            # The only other McpError is an exhausted-retry decode failure, i.e. transport.
+            last_exc, last_kind = exc, "the response could not be decoded"
+        except Exception as exc:
+            last_exc, last_kind = exc, "the hub was not heard"
+        if attempt < 3:
+            print(f"  lease-variable read attempt {attempt + 1}/4 failed "
+                  f"({type(last_exc).__name__}); retrying in 10s")
+            time.sleep(10)
+    if got is None:
+        reason = (f"hub variable {TEST_HUB_LEASE_VARIABLE!r} could not be read after 4 attempts -- "
+                  f"{last_kind} ({type(last_exc).__name__}: {str(last_exc)[:160]})")
+        if not refuse_when_unreadable:
+            print(f"  [WARN] lease variable unreadable ({reason}); identity was proven at start, sweeping")
+            return
+        _refuse([f"{reason}; an unreadable hub proves nothing"])
+    # Both of toolGetVariable's success branches echo the requested name back and carry a `value`
+    # key (null-valued or not), so either one missing means this is not that tool answering.
+    if not isinstance(got, dict) or got.get("name") != TEST_HUB_LEASE_VARIABLE or "value" not in got:
+        _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} is not present on this hub; only the sacrificial test hub carries the e2e lease variable"])
+
+
 def load_config() -> dict:
     """Load config from e2e_config.json, with env var overrides."""
     config_path = Path(__file__).resolve().parent / "e2e_config.json"
@@ -13278,6 +13673,9 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config()
+    # Refused before anything is built: this runner (every mode, --cleanup-only included) sweeps
+    # and pins settings, and it does that on the sacrificial test hub only.
+    refuse_unless_ci_test_hub(config["hub_url"])
     masked_token = config["access_token"][:4] + "..." \
         if len(config["access_token"]) > 4 else "****"
 
@@ -13297,6 +13695,13 @@ def main() -> None:
     )
 
     runner = TestRunner(client, verbose=args.verbose)
+
+    # The hub-side tell, read before the first write of any mode. --cleanup-only reads it below
+    # the restore-completion wait instead: that wait exists to ride out the documented 3-5 minute
+    # window in which every MCP call 504s, so a lease read taken above it can only report a
+    # transport failure. TestRunner's constructor touches no hub.
+    if not args.cleanup_only:
+        refuse_unless_leased_test_hub(client)
 
     if args.setup_perm_fixtures:
         # Bootstrap a test hub for the permanent-fixture model, WITHOUT running any test. Separated
@@ -13398,6 +13803,8 @@ def main() -> None:
                           "(failed restore, or a slow recompile); sweeping anyway.")
                 else:
                     time.sleep(_restore_backoff[min(attempt - 1, len(_restore_backoff) - 1)])
+        # Now that the recompile window is behind us, the hub-side identity tell.
+        refuse_unless_leased_test_hub(client)
         runner.cleanup()
         # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
         # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM

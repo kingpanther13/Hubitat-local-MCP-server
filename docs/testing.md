@@ -12,8 +12,15 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 Two standalone lanes complement the primary Groovy 3.0 lane without touching it — Hubitat's hub
 runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
 
-- **Groovy 2.4 Parse Check** (`ci/groovy24-parse/`) — parses the two production `.groovy` files under
-  stock Groovy 2.4.21 (antlr2), catching 3.0-only syntax that would fail to load on the hub (issue #227).
+- **Groovy 2.4 Parse Check** (`ci/groovy24-parse/`) — checks the apps, included libraries, watchdogs,
+  and deployed e2e fixtures under stock Groovy 2.4.21. After CONVERSION, its AST visitor rejects
+  closures with null parameters (`{ -> ... }`), including nested expressions and GString interpolation;
+  empty parameter arrays (implicit `it`) remain allowed. Findings retain original library locations.
+  This is the authoritative closure guard; `sandbox_lint.py` only points to this lane. Stock Groovy
+  processes the same AST successfully; a hub-specific transform is not exercised locally, and null
+  parameters have not been proven to cause the observed hub failure. The lane also checks syntax
+  and sandbox-blocked classes. `parse24` runs its positive/negative fixtures first;
+  they can also run directly via `parse_check.groovy --self-test <absolute-repo-root>`.
 - **Groovy 2.5 Spock** (`ci/groovy2x-spock/`) — runs this same spec corpus against a Groovy 2.5
   runtime via [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) (the biocomp-API fork
   the harness used before the eighty20results migration; Apache 2.0), catching 2.x-vs-3.0 **runtime**
@@ -441,7 +448,7 @@ The observer checks every real SDK POST, not reconstructed requests: each must c
 
 The script also **preflights the SDK surface it calls** for `@deprecated` markers and fails if any are found. It does not call the v2 legacy-only `Client.send_ping()` API.
 
-It shares config with `tests/e2e_test.py` (`tests/e2e_config.json` or `HUBITAT_HUB_URL`/`HUBITAT_APP_ID`/`HUBITAT_ACCESS_TOKEN`) and derives the endpoint path from `HubitatMcpClient`, so the cloud-vs-LAN path shapes can't drift between the two.
+It shares config with `tests/e2e_test.py` (`tests/e2e_config.json` or `HUBITAT_HUB_URL`/`HUBITAT_APP_ID`/`HUBITAT_ACCESS_TOKEN`) and derives the endpoint path from `HubitatMcpClient`, so the cloud-vs-LAN path shapes can't drift between the two. Sharing the config does not share the restriction: `tests/e2e_test.py` itself is CI-only (its `main()` and cleanup refuse any hub but the leased sacrificial test hub, because its cleanup sweep deletes rollback baselines and forces settings), while this script only reads `load_config()` and may be run locally against any hub.
 
 **This SDK harness requires the token in the URL query.** `HubitatMcpClient.endpoint` is the bare `<prefix>/mcp` — that client keeps `access_token` separate and attaches it per request as `params={"access_token": …}`. The SDK's transport is constructed from one URL and no separate auth configuration, so handing it `client.endpoint` sends an unauthenticated request and the hub answers a bare **401** that reads like a hub or permissions problem rather than a harness bug. Hubitat's OAuth layer also accepts `Authorization: Bearer` on both the LAN endpoint and cloud relay (the regular E2E suite proves that separately), but this SDK scenario intentionally uses the canonical query form. `_load_hub_config` appends it and asserts it is present.
 

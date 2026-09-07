@@ -34,8 +34,11 @@ FILE_GROUP_MAP = {
     "libraries/mcp-self-admin-lib.groovy":      ["developer_mode", "best_practice_gating"],
     # virtual_device_lifecycle: the command round-trip, waitFor and `commands` batch tests are
     # registered in that group, so a devices-lib-only change must not select a lane that skips them.
+    # developer_mode: the all-hub inventory (_fetchAllHubDeviceRecords) lives here with its primary
+    # consumer, and the selectedDevices validation of hub_update_mcp_settings -- guarded in that
+    # group -- calls it cross-library.
     "libraries/mcp-devices-lib.groovy":         ["devices", "poll_until_attribute", "device_swap", "device_replace",
-                                                 "virtual_device_lifecycle"],
+                                                 "virtual_device_lifecycle", "developer_mode"],
     "libraries/mcp-virtual-devices-lib.groovy": ["virtual_device_lifecycle", "devices"],
     "libraries/mcp-variables-lib.groovy":       ["hub_variables"],
     "libraries/mcp-code-management-lib.groovy": ["app_code_update", "driver_code_update", "installed_app_reads", "system_tools"],
