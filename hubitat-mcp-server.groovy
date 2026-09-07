@@ -5143,7 +5143,7 @@ def executeTool(toolName, args) {
         case "hub_clone_dashboard": return toolCloneDashboard(args)
 
         // Tool Guide
-        case "hub_get_tool_guide": return toolGetToolGuide(args.section)
+        case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor)
 
         // Tool Search (BM25)
         case "hub_search_tools": return toolSearchTools(args)
@@ -9894,6 +9894,35 @@ def guideSectionBlocks(text) {
     }
     blocks << cur.join("\n")
     return blocks
+}
+
+// Guide characters per hub_get_tool_guide response (issue #392). A tool result is JSON-encoded
+// TWICE on the wire -- serialized, embedded as a text content block, then serialized again -- which
+// costs ~6% over the raw markdown, so 90,000 chars lands near 95 KB against the 120,000-byte guard
+// with room for the response's own fields. Every section fits one page today; the full guide does not.
+def guidePageChars() { 90000 }
+
+// Page a guide payload so NO hub_get_tool_guide call can dead-end on the response-size guard
+// (issue #392: the documented no-section call returned 174 KB against a 120 KB cap, so it could
+// never return content -- and a size-guard envelope gives the caller nothing at all). Content that
+// fits one page comes back whole with no nextCursor, which is every section call today. Anything
+// larger pages AUTOMATICALLY, whether or not a cursor was passed: an unanswerable call is worse
+// than a first page. Pages break on a line boundary so no markdown line is ever split.
+def paginateGuideContent(content, cursor) {
+    String text = (content ?: '').toString()
+    int total = text.length()
+    int start = _parseListCursor(cursor, total, "hub_get_tool_guide")
+    int end = Math.min(start + guidePageChars(), total)
+    if (end < total) {
+        int nl = text.lastIndexOf("\n", end)
+        if (nl > start) end = nl + 1
+    }
+    return [
+        content: text.substring(start, end),
+        nextCursor: end < total ? end.toString() : null,
+        totalChars: total,
+        offset: start
+    ]
 }
 
 // Resolve a sub-section key to [parent, content], or null when the key is not one. Block 0 goes to

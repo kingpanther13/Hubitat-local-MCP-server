@@ -58,7 +58,7 @@ Every `tools/call` response is measured before send. If the wire-encoded respons
 
 The outer JSON-RPC envelope still reports success (this is not a tool error — the tool ran, the result just didn't fit). Treat `response_too_large=true` as a hint to either (a) narrow your query — the per-tool `suggestion` field names the specific knob — or (b) opt into pagination on tools that support it. The `tool` field reflects the actual sub-tool on gateway-routed calls so you can re-issue a narrower call directly.
 
-Opt-in cursor pagination is currently wired into the following read-only tools. All follow the same contract: omit `cursor` for the full list (backward-compatible, backstopped by the size guard), pass `cursor: ""` for the first page, then iterate `nextCursor` until absent. Cursor is opaque per the MCP convention; non-numeric / out-of-range values reject as `-32602`.
+Opt-in cursor pagination is currently wired into the following read-only tools. All follow the same contract: omit `cursor` for the full list (backward-compatible, backstopped by the size guard), pass `cursor: ""` for the first page, then iterate `nextCursor` until absent. The one exception is `hub_get_tool_guide`, whose full-guide payload cannot fit a single response at all: it pages whether or not a cursor was passed, because a size-guard envelope leaves the caller with nothing. Cursor is opaque per the MCP convention; non-numeric / out-of-range values reject as `-32602`.
 
 These tools follow an explicit opt-in convention so pre-`cursor` callers see no behaviour change — pagination is genuinely opt-in. (Pre-PR `tools/list` had its own different shape — unconditional pagination at 50/page — which is now removed; see the previous section.)
 
@@ -82,6 +82,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `hub_list_device_dependents` | 100 | Pages `appsUsing`. |
 | `hub_get_logs` | 100 | Filters + `limit` apply first; cursor pages within the filtered result. |
 | `hub_get_memory_history` | 100 | `limit=0` + cursor pages the full hub ring buffer (the only way to retrieve every entry without losing data). |
+| `hub_get_tool_guide` | 90,000 chars | The only tool that pages WITHOUT opting in: the no-section full-guide call is ~188 KB against the 120 KB cap, so it returns a first page plus `nextCursor` rather than a size-guard envelope. Every named section and sub-section still fits one response and carries no `nextCursor`. Pages break on line boundaries; `offset`/`totalChars` ride along on a split response. |
 | `hub_get_jobs` | 100 | Pages `scheduledJobs`; `runningJobs` and `hubActions` stay in full. Served from a 30 s cached `/logs/json` snapshot shared with `hub_get_performance_stats`, so a traversal is best-effort past that TTL. When the transport carries a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on LAN) the fetch runs in the background and the call continues via `requestState`; legacy clients repeat the identical call on `status: "in_progress"`. |
 
 Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hub_get_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `hub_list_files`/`hub_read_file` round-trip) plus the universal size guard as the backstop.

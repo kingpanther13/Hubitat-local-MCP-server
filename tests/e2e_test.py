@@ -12086,6 +12086,29 @@ class TestRunner:
             assert "##" in content and len(content) > 80, f"guide section {sec} returned trivial content: {content[:120]!r}"
 
     @test("best_practice_gating")
+    def test_guide_full_call_pages_instead_of_hitting_the_size_guard(self) -> None:
+        """Issue #392: the documented no-section call used to return the response_too_large
+        envelope and nothing else -- ~188 KB of guide against a 120 KB cap. It now pages."""
+        first = self.client.call_tool("hub_get_tool_guide", {})
+        assert isinstance(first, dict), f"unexpected shape: {first!r}"
+        assert not first.get("response_too_large"), f"full-guide call still trips the size guard: {first!r}"
+        assert first.get("success") is True, f"full-guide call failed: {first!r}"
+        assert len(first.get("content", "")) > 1000, "first page carried no real content"
+        # The point of the no-section call: discover the key space. Both levels, on page one.
+        assert "set_rule_reference" in (first.get("availableSections") or [])
+        sub_map = first.get("availableSubSections") or {}
+        assert "set_rule_reference_conditions" in (sub_map.get("set_rule_reference") or [])
+
+        cursor = first.get("nextCursor")
+        assert cursor, f"guide is larger than one page but no nextCursor was returned: {first.keys()}"
+        second = self.client.call_tool("hub_get_tool_guide", {"cursor": cursor})
+        assert second.get("success") is True, f"cursor page failed: {second!r}"
+        assert second.get("offset") == len(first.get("content", "")), (
+            f"page 2 offset {second.get('offset')} does not resume where page 1 ended"
+        )
+        assert len(second.get("content", "")) > 0, "cursor page carried no content"
+
+    @test("best_practice_gating")
     def test_guide_sub_section_is_a_cheap_slice_of_its_parent(self) -> None:
         """Issue #392: the four oversized sections split into sub-keys the same `section` parameter
         takes. Proven on the hub, not just in unit tests: the sub-key resolves, names its parent,

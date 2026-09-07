@@ -321,32 +321,28 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     return scores as List
 }
 
-def toolGetToolGuide(section) {
+def toolGetToolGuide(section, cursor = null) {
     def sections = getToolGuideSections()
     def subSections = getToolGuideSubSections()
 
     if (section) {
         def key = section.toLowerCase().replaceAll(/[^a-z_]/, "_")
         if (sections.containsKey(key)) {
-            def result = [
-                success: true,
-                section: key,
-                content: sections[key]
-            ]
+            def result = [success: true, section: key]
             // Sub-keys of an oversized parent (issue #392): advertise them on the parent's own
             // response so the next call can be the narrow one, without a trip to the schema.
             if (subSections.containsKey(key)) result.subSections = subSections[key].keySet().toList()
-            return result
+            return _withGuidePage(result, sections[key], cursor)
         }
         def sub = guideSubSectionLookup(key)
         if (sub) {
-            return [
+            def result = [
                 success: true,
                 section: key,
                 parentSection: sub.parent,
-                content: sub.content,
                 note: "Part of the '${sub.parent}' section; hub_get_tool_guide(section='${sub.parent}') returns all of it.".toString()
             ]
+            return _withGuidePage(result, sub.content, cursor)
         }
         return [
             success: false,
@@ -356,14 +352,32 @@ def toolGetToolGuide(section) {
         ]
     }
 
-    // Return full guide
+    // Full guide. It does not fit one response and never has (issue #392), so this pages instead
+    // of tripping the size guard -- the caller gets real content plus the whole key space to
+    // narrow with, and nextCursor when it wants the rest.
     def fullGuide = sections.collect { k, v -> v }.join("\n\n---\n\n")
-    return [
+    def result = [
         success: true,
         section: "full",
         availableSections: sections.keySet().toList(),
-        content: fullGuide
+        availableSubSections: subSections.collectEntries { k, v -> [(k): v.keySet().toList()] }
     ]
+    return _withGuidePage(result, fullGuide, cursor)
+}
+
+// Attach `content` to a guide result, paging it when it cannot fit one response. A payload that
+// fits comes back whole and keeps the shape every section call has today -- no nextCursor, no
+// offset. Only an actually-split payload gains the pagination fields.
+private Map _withGuidePage(Map result, content, cursor) {
+    def paged = paginateGuideContent(content, cursor)
+    result.content = paged.content
+    if (paged.nextCursor != null || paged.offset > 0) {
+        result.nextCursor = paged.nextCursor
+        result.offset = paged.offset
+        result.totalChars = paged.totalChars
+        result.truncated = paged.nextCursor != null
+    }
+    return result
 }
 
 def _getAllToolDefinitions_partDiscovery() {
@@ -371,11 +385,12 @@ def _getAllToolDefinitions_partDiscovery() {
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]] when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Always pass a section to minimize tokens -- the whole guide does not fit one response.",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]] when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section to minimize tokens; omitting it now returns the full section + sub-section key list plus the first page of the whole guide, and pages onward via nextCursor.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "REQUIRED: one section key from the enum.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]]
+                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
+                    cursor: [type: "string", description: "Page a payload too large for one response. Omit it normally; pass the prior call's nextCursor to continue. Only the no-section full-guide call pages today."]
                 ]
             ]
         ],
