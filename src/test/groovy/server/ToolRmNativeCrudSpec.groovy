@@ -10788,7 +10788,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.label == "Alert When Stopped (Stopped)"
     }
 
-    def "a plain (Stopped) suffix counts when the runtime status agrees"() {
+    def "a stopped rule can also have a literal (Stopped) name suffix"() {
         given:
         enableReadOnly()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light (Stopped)", []) }
@@ -10802,7 +10802,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         result.stopped == true
-        result.label == "Porch Light"
+        result.label == "Porch Light (Stopped)"
     }
 
     def "hub_get_rule_health reports 0 live counts when statusJson has no subscriptions section"() {
