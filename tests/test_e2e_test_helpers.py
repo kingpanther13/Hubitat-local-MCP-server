@@ -93,6 +93,15 @@ def test_partition_hub_errors_consumes_only_observed_validation_error_count():
     assert [entry["name"] for entry in unexpected] == ["12:00:03", "12:00:04"]
 
 
+def test_entries_new_since_snapshot_detects_identical_same_timestamp_duplicate():
+    old = {"timestamp": 1234, "level": "error", "message": "same refusal"}
+    unrelated = {"timestamp": 1235, "level": "error", "message": "other failure"}
+
+    fresh = et._entries_new_since_snapshot([old, dict(old), unrelated], [old])
+
+    assert fresh == [old, unrelated]
+
+
 def test_limiter_lines_falls_back_to_watchdog_and_filters_exact_device_method(monkeypatch):
     target = (
         "dev|5781|BAT_E2E_CmdRoundtrip|error|"

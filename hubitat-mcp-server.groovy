@@ -3770,18 +3770,18 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_devices: [
-            description: "Read-only device inspection: list devices with current states, get one device's full detail, read or block-poll a single attribute, read device/location event history, and search Hubitat's compatible-device catalog (models + pairing/reset instructions). All operations are read-only; device commands and updates live in hub_manage_devices.",
+            description: "Read-only device inspection: list devices with current states; inspect one device in summary, configuration, or sectioned details mode; read or block-poll an attribute; read device/location event history; and search Hubitat's compatible-device catalog. All operations are read-only; device commands and updates live in hub_manage_devices.",
             tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices"],
             summaries: [
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
-                hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
+                hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?"
             ],
             searchHints: [
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
-                hub_get_device: "device detail capabilities attributes commands info inspect one",
+                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch",
                 hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan"
@@ -3826,16 +3826,16 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_devices: [
-            description: "Control and inspect devices: send commands, update a device, create a device from a driver type, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
+            description: "Control and inspect devices: send commands; inspect configuration before changing identity, preferences, native properties, integration assignments, or driver; create a device from a driver type; and swap/replace a device across all referencing apps. Device reads are also in hub_read_devices.",
             tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
-                hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled, dataValues, preferences, showOnHome, defaultCurrentState (Status-column attribute), tags. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?, showOnHome?, defaultCurrentState?, tags?",
+                hub_update_device: "Update applicable device identity, configuration, driver, history, dashboard/mesh, retry, or assistant fields after hub_get_device(mode='configuration'). Args: deviceId plus one or more editable properties; confirm is required for high-impact fields.",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
-                hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
+                hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?"
             ],
@@ -3843,10 +3843,10 @@ def getGatewayConfig() {
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
                 hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
-                hub_update_device: "rename relabel move room device edit show on home status attribute default current state tags label preferences",
+                hub_update_device: "rename relabel move room device edit configuration preferences driver type zigbee history limits dashboard mesh retry homekit alexa google assistant tags",
                 hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
                 hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
-                hub_get_device: "device detail capabilities attributes commands info inspect one",
+                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch"
             ]
@@ -4531,8 +4531,8 @@ def getToolDefinitions() {
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
     boolean gatewayVisibilityNarrowed = settings.enableRead == false || settings.enableWrite == false ||
-        (settings.disabled_tools instanceof Collection && settings.disabled_tools) ||
-        (settings.disabled_gateways instanceof Collection && settings.disabled_gateways)
+        (settings.disabled_tools instanceof Collection && !settings.disabled_tools.isEmpty()) ||
+        (settings.disabled_gateways instanceof Collection && !settings.disabled_gateways.isEmpty())
 
     // Base tools: all tools NOT behind a gateway, minus any hidden by toggles.
     def baseTools = getAllToolDefinitions().findAll {
@@ -4755,7 +4755,7 @@ def executeTool(toolName, args) {
                 return toolListVirtualDevices(args)
             }
             return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
-        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections)
+        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.fields)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
@@ -8603,37 +8603,30 @@ MCP-managed virtual devices:
 `{success, deviceId, deviceNetworkId, deviceLabel, message}`
 ''',
 
-        update_device: '''## hub_update_device Properties
+        update_device: '''## Device inspection and updates
 
-| Property | Requires Write master |
-|----------|-------------------------|
-| label | No |
-| name | No |
-| deviceNetworkId | No |
-| dataValues | No |
-| preferences | No |
-| room | Yes |
-| enabled | Yes |
-| showOnHome | Yes |
-| defaultCurrentState | Yes |
-| tags | Yes |
+Call `hub_get_device(deviceId=..., mode="configuration")` before an update. It reports the fields that are applicable and writable for this device, declared preference types/options/ranges/defaults and current saved values, driver identity, and source/read status. A saved false, zero, empty string or null is distinct from an unset value; a driver default does not prove the setting was saved. Use `mode="details"` with optional `sections` for wider inspection.
+
+Every update requires the Write master and applicable tool permissions. When mandatory best-practice acknowledgment is enabled, put `bestPracticeKey` inside the gateway's `args` alongside the patch.
+
+| Properties | Behavior |
+|------------|----------|
+| `label`, `name`, `deviceNetworkId` | Device identity; network-ID changes require confirmation and backup. |
+| `dataValues`, `preferences` | Data-section values and declared driver preferences. Inspect configuration first. |
+| `room`, `enabled`, `showOnHome`, `defaultCurrentState`, `tags` | Room, availability, Home visibility, Status-column attribute, and replacement tag set. |
+| `deviceTypeId`, `zigbeeId` | Driver and radio identity where applicable; confirmation and backup required. |
+| `notes`, `defaultIcon` | Device note and icon override; empty string clears. |
+| `maxEvents`, `maxStates`, `spammyThreshold` | Native history limits (1-2000) and event-alert threshold (100-2000). |
+| `dashboardIds`, `meshEnabled`, `meshFullSync` | Applicable dashboard/mesh assignments; confirmation and backup required. |
+| `retryEnabled` | Command retry where the native device exposes it. |
+| `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` | Supported and installed assistant assignments; confirmation and backup required. |
+
+Omitted properties are preserved. The complete patch is validated before writes begin. A runtime partial failure reports per-property successes and errors; inspect the result before retrying.
 
 **Preferences format:**
-{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}
+`{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}`
 
-**Valid preference types:** bool, number, string, enum, decimal, text
-
-**Room assignment:** Use exact room name (case-sensitive)
-
-**showOnHome:** boolean — show the device on the hub Home page and count it in the quick status-bar summaries.
-
-**defaultCurrentState:** the attribute shown in the Status column on the Devices/Rooms pages. Use an attribute name from the device's current states (e.g. "switch", "temperature"); "" selects None.
-
-**tags:** array of strings; REPLACES the full tag set ([] clears all). Applied via the wholesale device-edit form, which preserves the device's other fields.
-
-### hub_update_device
-
-**showOnHome:** the quick status-bar summaries this device count feeds are the per-category counts (climate / lights / locks / etc.).
+Use the preference's declared type and constraints from configuration mode. Unknown names are refused. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names are exact and case-sensitive. `tags` replaces the full tag set; an empty array clears it.
 ''',
 
         rules: '''## Rule Structure Reference

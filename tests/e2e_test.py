@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
 import json
 import os
 import random
@@ -215,6 +216,80 @@ class McpToolError(McpError):
         super().__init__(f"Tool '{tool_name}' error: {message}")
 
 
+def _validation_log_expectation(
+    method: str, params: dict | None, error: Any,
+) -> str | None:
+    """Return the exact native-log message produced for a tools/call -32602.
+
+    The expectation is derived only from an error response the test client
+    actually observed. A gateway envelope records its reactive leaf name, which
+    is the name the server logs. Other JSON-RPC errors remain unclassified.
+    """
+    if method != "tools/call" or not isinstance(params, dict) or not isinstance(error, dict):
+        return None
+    if error.get("code") != -32602:
+        return None
+    message = error.get("message")
+    prefix = "Invalid params: "
+    if not isinstance(message, str) or not message.startswith(prefix):
+        return None
+    tool_name = params.get("name")
+    arguments = params.get("arguments")
+    if isinstance(arguments, dict) and isinstance(arguments.get("tool"), str):
+        tool_name = arguments["tool"]
+    if not isinstance(tool_name, str) or not tool_name:
+        return None
+    return f"Validation error in {tool_name}: {message[len(prefix):]}"
+
+
+def _partition_new_hub_errors(
+    logs: list, baseline: Counter[str] | set[str], expected_validation_logs: list[str],
+) -> tuple[list, list]:
+    """Split new native errors into counted expected validations and surprises.
+
+    Counts matter: observing one intentional -32602 permits one matching native
+    line. A second identical line remains unexpected, as does every unrelated
+    error. Baseline entries are excluded before classification.
+    """
+    remaining_baseline = Counter(baseline)
+    remaining = Counter(expected_validation_logs)
+    expected = []
+    unexpected = []
+    for entry in logs:
+        message = str(entry.get("message", entry.get("msg", "")))
+        key = f"{entry.get('name', '')}|{message}"
+        if remaining_baseline[key] > 0:
+            remaining_baseline[key] -= 1
+            continue
+        if remaining[message] > 0:
+            expected.append(entry)
+            remaining[message] -= 1
+        else:
+            unexpected.append(entry)
+    return expected, unexpected
+
+
+def _entries_new_since_snapshot(entries: list, baseline_entries: list) -> list:
+    """Return rows added after a snapshot, preserving duplicate multiplicity.
+
+    Hub timestamps can have coarse resolution, so set subtraction can hide a
+    second identical event in the same timestamp. A canonical-row Counter makes
+    that duplicate fresh while ignoring exactly the rows already observed.
+    """
+    def key(entry: Any) -> str:
+        return json.dumps(entry, sort_keys=True, separators=(",", ":"), default=str)
+
+    remaining_baseline = Counter(key(entry) for entry in baseline_entries)
+    fresh = []
+    for entry in entries:
+        entry_key = key(entry)
+        if remaining_baseline[entry_key] > 0:
+            remaining_baseline[entry_key] -= 1
+        else:
+            fresh.append(entry)
+    return fresh
+
+
 def _tool_error_payload(exc: McpError) -> dict:
     """The tool's structured envelope recovered from a raised isError.
 
@@ -394,6 +469,10 @@ class HubitatMcpClient:
         self._gateway_members: dict[str, set[str]] | None = None
         self._gateway_route: dict[str, str] | None = None
         self._read_only_catalog_tools: set[str] | None = None
+        # Exact native-log messages expected from -32602 responses this client
+        # actually observed. Kept as a list so repeated intentional refusals
+        # authorize the same number of matching log lines, no more.
+        self._expected_validation_logs: list[str] = []
         # Mask token for safe logging: show first 4 chars only
         self._masked_token = access_token[:4] + "..." if len(access_token) > 4 else "****"
 
@@ -599,6 +678,11 @@ class HubitatMcpClient:
         self._log(f"<< {json.dumps(data)[:500]}")
 
         if "error" in data:
+            expectation = _validation_log_expectation(method, params, data["error"])
+            if expectation is not None:
+                if not hasattr(self, "_expected_validation_logs"):
+                    self._expected_validation_logs = []
+                self._expected_validation_logs.append(expectation)
             raise McpError(f"JSON-RPC error: {data['error']}")
 
         return data.get("result", {})
@@ -876,6 +960,9 @@ class LegacyEraClient:
         self.verbose = verbose
         self.protocol_version: str | None = None
         self._request_id = 0
+        # Share the modern client's counted expectations because both clients
+        # exercise the same server app and test_no_hub_errors reads one native log.
+        self._expected_validation_logs = client._expected_validation_logs
 
     def _log(self, msg: str) -> None:
         if self.verbose:
@@ -957,6 +1044,9 @@ class LegacyEraClient:
             raise McpError(
                 f"legacy {method} returned an undecodable body: {resp.text[:200]!r}") from exc
         if "error" in data:
+            expectation = _validation_log_expectation(method, params, data["error"])
+            if expectation is not None:
+                self._expected_validation_logs.append(expectation)
             raise McpError(f"JSON-RPC error on legacy {method}: {data['error']}")
         return data.get("result", {})
 
@@ -1109,7 +1199,7 @@ class TestRunner:
         # Hub error-log snapshot taken at run start so test_no_hub_errors flags only NEW errors. The
         # hub logs local time in the entry's 'name' field and leaves 'time' empty, so a timestamp
         # compare against the UTC runner clock is unreliable -- a name+message set-delta needs no clock.
-        self._error_log_baseline: set = set()
+        self._error_log_baseline: Counter[str] = Counter()
 
     # -- Helpers -------------------------------------------------------------
 
@@ -2946,6 +3036,19 @@ class TestRunner:
                 "configuration", "identity", "attributes", "commands", "data", "state",
                 "relationships", "jobs", "integrations", "metadata",
             }, f"full details omitted a supported section: {all_details}"
+            field_index = self.client.call_tool("hub_get_device", {
+                "deviceId": device_id, "mode": "configuration", "fields": [],
+            })
+            assert field_index.get("preferences") == [] and field_index.get("editableFields") == [], \
+                f"configuration field index included unrequested values: {field_index}"
+            assert set(expected) <= set(field_index.get("availableFields", {}).get("preferences", [])), \
+                f"configuration index lost preference names: {field_index}"
+            selected_pref = self.client.call_tool("hub_get_device", {
+                "deviceId": device_id, "mode": "configuration", "fields": ["probeBool"],
+            })
+            assert [row["name"] for row in selected_pref.get("preferences", [])] == ["probeBool"], \
+                f"preference field selection failed: {selected_pref}"
+            assert_native_preferences(native, selected_pref, {"probeBool": expected["probeBool"]})
 
             for refused in ({"missingProbe": {"type": "bool", "value": True}},
                             {"probeBool": {"type": "bool", "value": "perhaps"}}):
@@ -2961,10 +3064,15 @@ class TestRunner:
 
             for name, value in (("probeBool", True), ("probeBool", False), ("probeNumber", 0),
                                 ("probeText", "literal & + = café"), ("probeEnum", "comfort"),
-                                ("probeMultiple", ["red", "blue"])):
+                                ("probeMultiple", ["red", "blue"]), ("probeMultiple", [])):
                 kind, original = expected[name]
                 desired = {**expected, name: (kind, value)}
                 try:
+                    if kind == "bool":
+                        # Each boolean case must cross a value boundary, including true -> false.
+                        update({"preferences": {name: {"type": kind, "value": not value}}})
+                        native, _ = capture()
+                        assert_native_preferences(native, configuration(), {**expected, name: (kind, not value)})
                     update({"preferences": {name: {"type": kind, "value": value}}})
                     native, info = capture()
                     assert_native_preferences(native, configuration(), desired)
@@ -4010,39 +4118,97 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices_honors_limit_offset_and_cursor(self) -> None:
-        full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
-        full_devices = full.get("devices", [])
-        assert len(full_devices) > 3, \
-            f"virtual pagination fixture needs more than three devices, got {len(full_devices)}"
-
-        limited = self.client.call_tool("hub_list_devices", {"filter": "virtual", "limit": 3})
-        assert limited.get("count") == 3, f"limit=3 was ignored: {limited}"
-        assert limited.get("total") == len(full_devices), f"virtual total mismatch: {limited}"
-        assert limited.get("hasMore") is True and limited.get("nextOffset") == 3, \
-            f"classic virtual pagination metadata missing: {limited}"
-        assert [d.get("id") for d in limited.get("devices", [])] == \
-            [d.get("id") for d in full_devices[:3]], f"limit page changed ordering: {limited}"
-
-        offset_page = self.client.call_tool(
-            "hub_list_devices", {"filter": "virtual", "offset": 1, "limit": 2})
-        assert [d.get("id") for d in offset_page.get("devices", [])] == \
-            [d.get("id") for d in full_devices[1:3]], f"offset was ignored: {offset_page}"
-
-        cursor_page = self.client.call_tool(
-            "hub_list_devices", {"filter": "virtual", "cursor": "", "limit": 3})
-        assert cursor_page.get("nextCursor") == "3", f"cursor metadata missing: {cursor_page}"
-        next_page = self.client.call_tool(
-            "hub_list_devices", {"filter": "virtual", "cursor": "3", "limit": 3})
-        assert [d.get("id") for d in next_page.get("devices", [])] == \
-            [d.get("id") for d in full_devices[3:6]], f"cursor page wrong: {next_page}"
-
+        suffix = f"{_run_artifact_suffix()}_{time.time_ns()}"
+        owned_labels = [f"{PREFIX}Virtual_Page_{suffix}_{index}" for index in range(4)]
+        owned_dnis: list[str] = []
+        cleanup_errors: list[str] = []
         try:
-            self.client.call_tool(
-                "hub_list_devices", {"filter": "virtual", "cursor": "1", "offset": 1, "limit": 2})
-            raise AssertionError("virtual listing accepted conflicting cursor and offset")
-        except McpError as exc:
-            assert "cursor and offset are mutually exclusive" in str(exc), \
-                f"conflict error was not actionable: {exc}"
+            # Provision the page prerequisite inside this scenario. A clean hub or a
+            # focused --test run must not depend on ambient MCP child devices.
+            for label in owned_labels:
+                created = self._soft_write(
+                    lambda label=label: self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "create", "deviceType": "Virtual Switch",
+                        "deviceLabel": label, "confirm": True}),
+                    lambda label=label: self._find_device_dni_by_label(label),
+                    f"create virtual pagination fixture {label}",
+                )
+                if created["relayDropped"]:
+                    assert created["committed"], f"pagination fixture {label} did not commit"
+                    dni = str(created["evidence"])
+                else:
+                    response = created["response"]
+                    device = response.get("device") or {}
+                    dni = str(response.get("deviceNetworkId") or response.get("dni") or
+                              device.get("deviceNetworkId") or
+                              self._find_device_dni_by_label(label) or "")
+                    assert response.get("success") is True and dni, \
+                        f"pagination fixture create failed: {response}"
+                owned_dnis.append(dni)
+                self.created_device_dnis.append(dni)
+
+            full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+            full_devices = full.get("devices", [])
+            assert len(full_devices) >= 4, \
+                f"virtual pagination fixtures missing, got {len(full_devices)} devices"
+
+            limited = self.client.call_tool("hub_list_devices", {"filter": "virtual", "limit": 3})
+            assert limited.get("count") == 3, f"limit=3 was ignored: {limited}"
+            assert limited.get("total") == len(full_devices), f"virtual total mismatch: {limited}"
+            assert limited.get("hasMore") is True and limited.get("nextOffset") == 3, \
+                f"classic virtual pagination metadata missing: {limited}"
+            assert [d.get("id") for d in limited.get("devices", [])] == \
+                [d.get("id") for d in full_devices[:3]], f"limit page changed ordering: {limited}"
+
+            offset_page = self.client.call_tool(
+                "hub_list_devices", {"filter": "virtual", "offset": 1, "limit": 2})
+            assert [d.get("id") for d in offset_page.get("devices", [])] == \
+                [d.get("id") for d in full_devices[1:3]], f"offset was ignored: {offset_page}"
+
+            cursor_page = self.client.call_tool(
+                "hub_list_devices", {"filter": "virtual", "cursor": "", "limit": 3})
+            assert cursor_page.get("nextCursor") == "3", f"cursor metadata missing: {cursor_page}"
+            next_page = self.client.call_tool(
+                "hub_list_devices", {"filter": "virtual", "cursor": "3", "limit": 3})
+            assert [d.get("id") for d in next_page.get("devices", [])] == \
+                [d.get("id") for d in full_devices[3:6]], f"cursor page wrong: {next_page}"
+
+            try:
+                self.client.call_tool(
+                    "hub_list_devices", {"filter": "virtual", "cursor": "1", "offset": 1, "limit": 2})
+                raise AssertionError("virtual listing accepted conflicting cursor and offset")
+            except McpError as exc:
+                assert "cursor and offset are mutually exclusive" in str(exc), \
+                    f"conflict error was not actionable: {exc}"
+        finally:
+            # Recover any committed create whose response/DNI lookup failed, then remove
+            # every fixture this scenario can identify. Global cleanup retains the DNIs
+            # until each deletion is verified.
+            for label in owned_labels:
+                recovered = self._find_device_dni_by_label(label)
+                if recovered and recovered not in owned_dnis:
+                    owned_dnis.append(recovered)
+                    self.created_device_dnis.append(recovered)
+            for dni in reversed(owned_dnis):
+                try:
+                    deleted = self._soft_write(
+                        lambda dni=dni: self.client.call_tool("hub_manage_virtual_device", {
+                            "action": "delete", "deviceNetworkId": dni, "confirm": True}),
+                        lambda dni=dni: not self._device_dni_present(dni),
+                        f"delete virtual pagination fixture {dni}",
+                    )
+                    if deleted["relayDropped"]:
+                        assert deleted["committed"], f"pagination fixture {dni} remains after delete"
+                    else:
+                        assert deleted["response"].get("success") is True, \
+                            f"pagination fixture delete failed: {deleted['response']}"
+                    assert not self._device_dni_present(dni), \
+                        f"pagination fixture {dni} remains after successful delete"
+                    while dni in self.created_device_dnis:
+                        self.created_device_dnis.remove(dni)
+                except Exception as exc:
+                    cleanup_errors.append(f"{dni}: {exc}")
+            assert not cleanup_errors, "Virtual pagination fixture cleanup failed: " + "; ".join(cleanup_errors)
 
     @test("virtual_device_lifecycle")
     def test_delete_virtual_switch(self) -> None:
@@ -12345,6 +12511,11 @@ class TestRunner:
         try:
             for threshold in ("error", "debug"):
                 self._set_bps(enableMandatoryBPS=True, mcpLogLevel=threshold)
+                mcp_before = self.client.call_tool("hub_get_logs", {
+                    "mode": "mcp", "level": "error", "component": "server", "limit": 50})
+                native_before = self.client.call_tool("hub_get_logs", {
+                    "mode": "hub", "level": "ERROR",
+                    "pattern": "Mandatory best-practice acknowledgment", "limit": 50})
                 try:
                     self.client.call_tool("hub_manage_variables", {
                         "tool": "hub_create_variable",
@@ -12359,20 +12530,24 @@ class TestRunner:
 
                 mcp_logs = self.client.call_tool("hub_get_logs", {
                     "mode": "mcp", "level": "error", "component": "server", "limit": 50})
+                fresh_mcp = _entries_new_since_snapshot(
+                    mcp_logs.get("entries", []), mcp_before.get("entries", []))
                 assert any(
                     entry.get("level") == "error" and
                     "Validation error in hub_create_variable" in entry.get("message", "") and
                     "Mandatory best-practice acknowledgment" in entry.get("message", "")
-                    for entry in mcp_logs.get("entries", [])
-                ), f"{threshold} threshold did not retain the refusal in MCP logs: {mcp_logs}"
+                    for entry in fresh_mcp
+                ), f"{threshold} threshold did not retain a fresh refusal in MCP logs: {fresh_mcp}"
 
                 native_logs = self.client.call_tool("hub_get_logs", {
                     "mode": "hub", "level": "ERROR",
                     "pattern": "Mandatory best-practice acknowledgment", "limit": 50})
+                fresh_native = _entries_new_since_snapshot(
+                    native_logs.get("logs", []), native_before.get("logs", []))
                 assert any(
                     "Mandatory best-practice acknowledgment" in entry.get("message", "")
-                    for entry in native_logs.get("logs", [])
-                ), f"{threshold} threshold did not emit the refusal to native logs: {native_logs}"
+                    for entry in fresh_native
+                ), f"{threshold} threshold did not emit a fresh refusal to native logs: {fresh_native}"
         finally:
             self._set_bps(enableMandatoryBPS=False, mcpLogLevel="error")
 
@@ -12840,14 +13015,19 @@ class TestRunner:
                 "args": {"level": "error"},
             })
             logs = result if isinstance(result, list) else result.get("logs", [])
-            # New errors = entries whose name+message key was not present at run start. (The old
-            # implementation compared entry["time"] -- always "" on this hub -- against a UTC ISO
-            # marker, so the window never matched and this check silently flagged nothing.)
-            recent = [e for e in logs
-                      if f"{e.get('name', '')}|{e.get('message', e.get('msg', ''))}" not in self._error_log_baseline]
-            if recent:
-                print(f"    [WARN] {len(recent)} hub error(s) logged during the run:")
-                for e in recent[:5]:
+            # New errors = entries whose name+message key was not present at run start. Counted
+            # exact messages derived from observed -32602 responses are intentional negative-test
+            # evidence. Consume only those lines; an extra duplicate or unrelated error remains.
+            expected, unexpected = _partition_new_hub_errors(
+                logs,
+                self._error_log_baseline,
+                getattr(self.client, "_expected_validation_logs", []),
+            )
+            if expected:
+                print(f"    Accounted for {len(expected)} intentional validation error log(s)")
+            if unexpected:
+                print(f"    [WARN] {len(unexpected)} unexpected hub error(s) logged during the run:")
+                for e in unexpected[:5]:
                     msg = str(e.get("message", e.get("msg", str(e))))[:120]
                     print(f"           - {msg}")
                 # Soft check: warn but don't fail
@@ -13881,11 +14061,11 @@ class TestRunner:
         try:
             _base = self.client.call_tool("hub_manage_logs", {"tool": "hub_get_logs", "args": {"level": "error"}})
             _blogs = _base if isinstance(_base, list) else _base.get("logs", [])
-            self._error_log_baseline = {
-                f"{e.get('name', '')}|{e.get('message', e.get('msg', ''))}" for e in _blogs}
+            self._error_log_baseline = Counter(
+                f"{e.get('name', '')}|{e.get('message', e.get('msg', ''))}" for e in _blogs)
         except Exception as exc:
             print(f"  [WARN] could not snapshot the hub error log at run start: {exc}")
-            self._error_log_baseline = set()
+            self._error_log_baseline = Counter()
 
         groups_set = set(filter_groups or [])
         if filter_group:

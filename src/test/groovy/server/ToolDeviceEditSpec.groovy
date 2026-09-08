@@ -30,6 +30,20 @@ import support.ToolSpecBase
  */
 class ToolDeviceEditSpec extends ToolSpecBase {
 
+    private static String completeDeviceFormJson(String text) {
+        def full = new groovy.json.JsonSlurper().parseText(text)
+        def defaults = [id: 10, version: 0, controllerType: 'LAN', name: 'Fixture', label: '',
+            zigbeeId: null, maxEvents: 10, maxStates: 10, spammyThreshold: 100,
+            deviceNetworkId: 'fixture-10', deviceTypeId: 100, deviceTypeReadableType: 'User',
+            roomId: null, meshEnabled: false, retryEnabled: false, meshFullSync: false,
+            locationId: 1, hubId: 1, groupId: null, tags: '', defaultIcon: null, notes: null]
+        full.device = defaults + full.device
+        full.homeKitEnabled = false
+        full.dashboards = []
+        groovy.json.JsonOutput.toJson(full)
+    }
+
+
     // ============================================================
     // hub_update_device : showOnHome
     // ============================================================
@@ -230,9 +244,10 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> 'true' }
         // Read-back confirms the attribute landed.
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":"temperature"}}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":"temperature"}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
@@ -247,9 +262,10 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=') { params -> 'true' }
         // Read-back: None reads back as null (the empty-string request is a clear).
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":null}}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":null}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: ''])
@@ -266,8 +282,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { params -> 'true' }
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":"switch"}}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":"switch"}}' }
 
         when:
         def response = mcpDriver.callTool('hub_update_device', [deviceId: '10', defaultCurrentState: 'switch'])
@@ -284,13 +301,14 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     }
 
     def "toolUpdateDevice defaultCurrentState records an error when the hub body is not true"() {
-        given: 'the endpoint returns a non-true body (e.g. an unknown attribute name)'
+        given: 'the native setter rejects an attribute that was present in discovery'
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=bogus') { params -> 'false' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> 'false' }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'bogus'])
+        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
 
         then: 'no phantom change is recorded; an actionable error is returned instead'
         result.success == false
@@ -303,6 +321,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'switch'])
@@ -317,8 +336,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the dedicated setDefaultCurrentState endpoint 404s (older firmware) -- the GET throws'
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> throw new RuntimeException('Not Found (404)') }
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":"temperature"}}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":"temperature"}}' }
         def posted = null
         script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
             posted = [path: path, body: jsonBody]; return [status: 200]
@@ -340,14 +360,15 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the dedicated endpoint EXISTS (200) but rejects the value (body != "true") -- no fallback'
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=bogus') { params -> 'false' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> 'false' }
         def postCalled = false
         script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
             postCalled = true; return [status: 200]
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'bogus'])
+        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
 
         then: 'an error is recorded for defaultCurrentState and the Preferences-pane fallback was NOT attempted'
         result.success == false
@@ -360,8 +381,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the dedicated GET returns true, but the FRESH fullJson re-read shows a DIFFERENT attribute -- the value did not actually land'
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> 'true' }
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":"humidity"}}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":"humidity"}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
@@ -376,8 +398,10 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the dedicated GET returns true but the confirming fullJson fetch yields nothing'
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { params -> 'true' }
-        hubGet.register('/device/fullJson/10') { params -> '' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
+        def accepted = false
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { params -> accepted = true; 'true' }
+        hubGet.register('/device/fullJson/10') { params -> accepted ? '' : '{"device":{"id":10,"currentStates":{"switch":{}}}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'switch'])
@@ -470,13 +494,13 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
         childDevicesList << device
-        // First fullJson read returns the pre-edit model; the verify read returns the post-edit model.
-        def reads = 0
-        def preModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}'
-        def postModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"kitchen,downstairs","version":4,"controllerType":"LAN"}}'
-        hubGet.register('/device/fullJson/10') { params -> (++reads == 1) ? preModel : postModel }
+        // Only an actual form POST changes the fixture; preflight reads preserve its original state.
+        def formApplied = false
+        def preModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}')
+        def postModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"kitchen,downstairs","version":4,"controllerType":"LAN"}}')
+        hubGet.register('/device/fullJson/10') { params -> formApplied ? postModel : preModel }
         def postedBody = null
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> postedBody = [path: path, body: body]; '' }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> formApplied = true; postedBody = [path: path, body: body]; '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen', 'downstairs']])
@@ -500,12 +524,12 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         device.metaClass.setName = { String v -> restored.name = v }
         device.metaClass.setDeviceNetworkId = { String v -> restored.dni = v }
         childDevicesList << device
-        def reads = 0
-        def preModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}'
+        def formApplied = false
+        def preModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}')
         // Verify read: tags applied but identity fields BLANKED by the wholesale form.
-        def postModel = '{"device":{"id":10,"name":"","label":"","deviceNetworkId":"","tags":"kitchen","version":4,"controllerType":"LAN"}}'
-        hubGet.register('/device/fullJson/10') { params -> (++reads == 1) ? preModel : postModel }
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> '' }
+        def postModel = completeDeviceFormJson('{"device":{"id":10,"name":"","label":"","deviceNetworkId":"","tags":"kitchen","version":4,"controllerType":"LAN"}}')
+        hubGet.register('/device/fullJson/10') { params -> formApplied ? postModel : preModel }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> formApplied = true; '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
@@ -521,12 +545,12 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
         childDevicesList << device
-        def reads = 0
-        def preModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}'
+        def formApplied = false
+        def preModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}')
         // Verify read: tags did NOT take.
-        def postModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}'
-        hubGet.register('/device/fullJson/10') { params -> (++reads == 1) ? preModel : postModel }
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> '' }
+        def postModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}')
+        hubGet.register('/device/fullJson/10') { params -> formApplied ? postModel : preModel }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> formApplied = true; '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
@@ -540,12 +564,12 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the verify read shows tags cleared to ""'
         def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
         childDevicesList << device
-        def reads = 0
-        def preModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"kitchen","version":3,"controllerType":"LAN"}}'
-        def postModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}'
-        hubGet.register('/device/fullJson/10') { params -> (++reads == 1) ? preModel : postModel }
+        def formApplied = false
+        def preModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"kitchen","version":3,"controllerType":"LAN"}}')
+        def postModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}')
+        hubGet.register('/device/fullJson/10') { params -> formApplied ? postModel : preModel }
         def postedBody = null
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> postedBody = body; '' }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> formApplied = true; postedBody = body; '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', tags: []])
@@ -562,12 +586,12 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
         device.metaClass.setLabel = { String v -> restored.label = v }
         childDevicesList << device
-        def reads = 0
-        def preModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}'
+        def formApplied = false
+        def preModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}')
         // Verify read: label blanked AND tags wrong (still empty, expected "kitchen").
-        def postModel = '{"device":{"id":10,"name":"Generic Switch","label":"","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}'
-        hubGet.register('/device/fullJson/10') { params -> (++reads == 1) ? preModel : postModel }
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> '' }
+        def postModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}')
+        hubGet.register('/device/fullJson/10') { params -> formApplied ? postModel : preModel }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> formApplied = true; '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
@@ -599,11 +623,11 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
         childDevicesList << device
-        def reads = 0
-        def preModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}'
-        def postModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"patio","version":4,"controllerType":"LAN"}}'
-        hubGet.register('/device/fullJson/10') { params -> (++reads == 1) ? preModel : postModel }
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> '' }
+        def formApplied = false
+        def preModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}')
+        def postModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"patio","version":4,"controllerType":"LAN"}}')
+        hubGet.register('/device/fullJson/10') { params -> formApplied ? postModel : preModel }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> formApplied = true; '' }
 
         when:
         def response = mcpDriver.callTool('hub_update_device', [deviceId: '10', tags: ['patio']])
@@ -649,7 +673,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def fjLabel = 'My LAN Device'
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
-            groovy.json.JsonOutput.toJson([device: [id: 777, label: fjLabel, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
+            completeDeviceFormJson(groovy.json.JsonOutput.toJson([device: [id: 777, label: fjLabel, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]]))
         }
         hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { params ->
             if (scenario == 'throws') throw new RuntimeException('status code: 404, reason phrase: Not Found')
@@ -741,7 +765,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def fjLabel = 'My LAN Device'   // the hub applies the label on neither path
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
-            groovy.json.JsonOutput.toJson([device: [id: 777, label: fjLabel, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
+            completeDeviceFormJson(groovy.json.JsonOutput.toJson([device: [id: 777, label: fjLabel, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]]))
         }
         hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { params -> 'false' }
         // The form POST is 'accepted' but a no-op, so the read-back still shows the original label.

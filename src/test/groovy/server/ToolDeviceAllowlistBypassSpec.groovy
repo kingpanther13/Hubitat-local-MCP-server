@@ -28,6 +28,11 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         [
             device: [
                 id: 555, name: 'Unlisted Switch', label: 'Unlisted Switch',
+                version: 0, controllerType: 'ZWV', zigbeeId: null,
+                maxEvents: 10, maxStates: 10, spammyThreshold: 100,
+                deviceTypeId: 100, deviceTypeReadableType: 'System', roomId: 7,
+                meshEnabled: false, retryEnabled: false, meshFullSync: false,
+                locationId: 1, hubId: 1, groupId: null, tags: '', defaultIcon: null, notes: null,
                 roomName: 'Garage', deviceNetworkId: 'ABCD', capabilities: ['Switch', 'SwitchLevel'],
                 disabled: false, typeName: 'Generic Z-Wave Switch',
                 currentStates: [
@@ -48,6 +53,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             settings: [[name: 'logEnable', type: 'bool', value: 'false'],
                        [name: 'tempOffset', type: 'number', value: '0']],
             inputValues: [],
+            homeKitEnabled: false,
             dashboards: []
         ]
     }

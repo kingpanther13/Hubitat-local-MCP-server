@@ -441,4 +441,68 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         JsonOutput.toJson(part).getBytes('UTF-8').length < 100000
         JsonOutput.toJson(configuration).getBytes('UTF-8').length < 100000
     }
+
+    def "native string dashboard availability remains an editable control"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.hasDashboards = 'true'
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+
+        then:
+        result.editableFields.find { it.name == 'dashboardIds' }.applicable
+        result.editableFields.find { it.name == 'dashboardIds' }.writable
+    }
+
+    def "oversized single values are completely reachable through bounded JSON fragment cursors"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: ('quote \" slash \\ newline\n caf\u00e9 ' * 12000)]
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+        def chunks = []
+        def pages = []
+        int pageCount = 0
+        while (true) {
+            pages << result
+            chunks << result.content
+            if (!result.nextCursor || ++pageCount > 100) break
+            result = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], result.nextCursor)
+        }
+        def assembled = new JsonSlurper().parseText(chunks.join(''))
+
+        then:
+        pages.size() > 1
+        pages.every { it.contentFormat == 'json-fragment' }
+        pages.every { page ->
+            def envelope = [jsonrpc: '2.0', id: 1, result: [content: [[type: 'text', text: JsonOutput.toJson(page)]]]]
+            JsonOutput.toJson(envelope).getBytes('UTF-8').length < 100000
+        }
+        !result.nextCursor
+        assembled.sections.state.large == full.deviceState.large
+    }
+
+    def "fragment cursor refuses changed native content instead of joining different snapshots"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 180000]
+        registerFixture(DEVICE_ID, full)
+        def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+        assert first.nextCursor
+        full.deviceState.large = 'y' * 180000
+
+        when:
+        script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], first.nextCursor)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('changed')
+    }
 }

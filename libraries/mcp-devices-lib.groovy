@@ -1103,20 +1103,15 @@ private List _fullJsonCommandNames(Map fullJson) {
     return (cmds instanceof List) ? cmds.collect { it?.name }.findAll { it != null } : []
 }
 
-// Read a device PREFERENCE/setting value from a fullJson device model. fullJson `settings` is an
-// ARRAY of {name, type, value}; returns the named setting's value (or null when absent). Used by
-// the bypass preference read-back to confirm a /device/preference/save actually landed.
-private _fullJsonSettingValue(fullJson, name) {
-    return _lookupDevicePreference(_readDevicePreferenceModel(fullJson), name)?.value
-}
-
 private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple = false) {
-    if (raw == null || raw == '') return [valid: true, value: raw]
+    if (raw == null) return [valid: true, value: null]
     if (multiple) {
+        if (raw == '') return [valid: true, value: []]
         if (raw instanceof List) return [valid: true, value: raw.collect { it?.toString() }]
         if (raw instanceof String) return [valid: true, value: raw.split(',').collect { it.trim() }]
         return [valid: false, value: null]
     }
+    if (raw == '') return [valid: true, value: raw]
     if (type in ['bool', 'boolean']) {
         if (raw == true || raw?.toString() == 'true') return [valid: true, value: true]
         if (raw == false || raw?.toString() == 'false') return [valid: true, value: false]
@@ -1296,7 +1291,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
     def applicable = [
         label: d.linkedAndDisabled != true,
         name: d.isComponent != true && !d.linkedDevice,
-        deviceNetworkId: d.isComponent != true && d.linkedLocally != true,
+        deviceNetworkId: (!d.isComponent || !!d.linkedDevice) && d.linkedLocally != true,
         dataValues: listed,
         deviceTypeId: d.isComponent != true && !d.linkedDevice,
         zigbeeId: d.isComponent != true && !d.linkedDevice && d.zigbeeId != null,
@@ -1387,14 +1382,14 @@ private Map _deviceConfigurationInfo(Map fj) {
     return info
 }
 
-private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean listed) {
+private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean listed, fields = null) {
     def model = _readDevicePreferenceModel(fj)
     def read = [status: model.status, source: "/device/fullJson/${deviceId}".toString()]
     if (model.reason) read.reason = model.reason
     boolean available = fj?.device instanceof Map && !fj.device.isEmpty()
     def infoRead = [status: available ? 'complete' : 'unavailable', source: "/device/fullJson/${deviceId}".toString()]
     if (!available) infoRead.reason = 'Native device information could not be fetched or recognized.'
-    return [id: deviceId.toString(), name: identity.name, label: identity.label, mode: 'configuration',
+    def result = [id: deviceId.toString(), name: identity.name, label: identity.label, mode: 'configuration',
             editableFields: _deviceConfigurationEditableFields(fj, model, listed),
             preferences: model.entries.collect {
                 def entry = _publicDevicePreference(it)
@@ -1403,6 +1398,15 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean l
             }, preferenceRead: read,
             deviceInfo: _deviceConfigurationInfo(fj), deviceInfoRead: infoRead,
             driverSource: _deviceConfigurationDriverSource(available ? fj.device : [:], deviceId)]
+    if (fields != null) {
+        result.availableFields = [editableFields: result.editableFields.collect { it.name },
+                                  preferences: result.preferences.collect { it.name },
+                                  deviceInfo: result.deviceInfo.keySet().toList()]
+        result.editableFields = result.editableFields.findAll { fields.contains(it.name) }
+        result.preferences = result.preferences.findAll { fields.contains(it.name) }
+        result.deviceInfo = _deviceConfigurationProjection(result.deviceInfo, fields)
+    }
+    return result
 }
 
 // Infer the /device/preference/save `type` token when the caller did not supply one: a Boolean
@@ -1504,16 +1508,89 @@ private Map _deviceDetailSourceCoverage(Map fj) {
         'icon', 'showOnHome', 'deviceTypeClassLocation', 'deviceTypePopulated', 'deviceTypeSingleThreaded',
         'deviceTypeReadableType', 'deviceTypeType', 'driverType', 'systemDeviceType', 'deviceTypeId',
         'deviceTypeName', 'deviceTypeNamespace']
-    def unknownRoot = fj?.keySet()?.findAll { !rootKeys.contains(it) } ?: []
-    def unknownDevice = fj?.device instanceof Map ? fj.device.keySet().findAll { !deviceKeys.contains(it) } : []
+    def unknownRoot = fj?.keySet()?.findAll { !rootKeys.contains(it) }?.toList() ?: []
+    def unknownDevice = fj?.device instanceof Map ? fj.device.keySet().findAll { !deviceKeys.contains(it) }.toList() : []
     return [status: fj?.device instanceof Map ? (unknownRoot || unknownDevice ? 'partial' : 'complete') : 'unavailable',
             unmappedRootFields: unknownRoot, unmappedDeviceFields: unknownDevice,
             representedSeparately: [settings: 'configuration.preferences', inputValues: 'configuration.preferences',
                                    'device.dataJson': 'data (parsed native data map; raw duplicate omitted)']]
 }
 
-private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed, String mode, sections) {
-    if (mode == 'configuration') return _deviceConfigurationResult(deviceId, identity, fj, listed)
+private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, deviceId) {
+    def status = [status: 'complete', source: "/device/fullJson/${deviceId}".toString()]
+    if (d.isEmpty()) return status + [status: 'unavailable', reason: 'Native device details could not be fetched or recognized.']
+    if (section == 'configuration') {
+        return status + [status: value.preferenceRead.status] + (value.preferenceRead.reason ? [reason: value.preferenceRead.reason] : [:])
+    }
+    def contracts = [
+        identity: [device: [id: 'scalar', name: 'scalar', label: 'scalar', deviceTypeId: 'scalar']],
+        attributes: [device: [capabilities: 'list', currentStates: 'map', displayAttributes: 'list', defaultCurrentState: 'scalar']],
+        commands: [root: [commands: 'list']], data: [device: [data: 'map']],
+        state: [root: [deviceState: 'map']], jobs: [root: [scheduledJobs: 'list']],
+        relationships: [root: [parentApp: 'map', childDevices: 'map', hasChildren: 'scalar',
+            appsUsing: 'list', appsUsingCount: 'scalar', appsUsingForDialog: 'list', appsUsingForDialogMore: 'scalar']],
+        integrations: [root: [amazonAlexaEnabled: 'scalar', amazonAlexaInstalled: 'scalar', amazonAlexaSupported: 'scalar',
+            googleHomeEnabled: 'scalar', googleHomeInstalled: 'scalar', googleHomeSupported: 'scalar',
+            homeKitEnabled: 'scalar', homeKitSelectionEnabled: 'scalar', dashboards: 'list', hasDashboards: 'scalar',
+            dashboardTypes: 'list', commandRetrySelectionEnabled: 'scalar', hubMeshRefreshEnabled: 'scalar']],
+        metadata: [device: [notes: 'scalar', tags: 'stringOrList', maxEvents: 'scalar', maxStates: 'scalar',
+            spammyThreshold: 'scalar', defaultIcon: 'scalar', showOnHome: 'scalar']]
+    ]
+    def problems = []
+    contracts.get(section)?.each { scope, definitions ->
+        Map source = scope == 'device' ? d : fj
+        definitions.each { key, shape ->
+            def nativeValue = source.get(key)
+            boolean valid = nativeValue == null || (shape == 'map' ? nativeValue instanceof Map :
+                shape == 'list' ? nativeValue instanceof List : shape == 'stringOrList' ? nativeValue instanceof String || nativeValue instanceof List :
+                !(nativeValue instanceof Map || nativeValue instanceof List))
+            if (!source.containsKey(key) || !valid) problems << "${scope}.${key}".toString()
+        }
+    }
+    if (problems) return status + [status: 'partial', reason: 'Native section fields are missing or malformed.', incompleteFields: problems]
+    return status
+}
+
+private List _deviceDetailFieldNames(String section, value) {
+    if (value instanceof Map) {
+        def names = value.keySet().toList()
+        if (section == 'attributes' && value.currentStates instanceof Map) names.addAll(value.currentStates.keySet())
+        if (section == 'attributes' && value.declaredAttributes instanceof List) names.addAll(value.declaredAttributes.collect { it.name })
+        return names.findAll { it != null }.unique()
+    }
+    if (value instanceof List) {
+        def names = []
+        value.eachWithIndex { row, index -> names << index.toString() }
+        return names
+    }
+    return []
+}
+
+private _deviceDetailSelectedFields(String section, value, List fields) {
+    if (value instanceof Map) {
+        def selected = _deviceConfigurationProjection(value, fields)
+        if (section == 'attributes') {
+            if (value.currentStates instanceof Map && !fields.contains('currentStates')) {
+                def states = _deviceConfigurationProjection(value.currentStates, fields)
+                if (states) selected.currentStates = states
+            }
+            if (value.declaredAttributes instanceof List && !fields.contains('declaredAttributes')) {
+                def attributes = value.declaredAttributes.findAll { fields.contains(it.name) }
+                if (attributes) selected.declaredAttributes = attributes
+            }
+        }
+        return selected
+    }
+    if (value instanceof List) {
+        def selected = []
+        value.eachWithIndex { row, index -> if (fields.contains(index.toString())) selected << row }
+        return selected
+    }
+    return value
+}
+
+private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed, String mode, sections, fields = null) {
+    if (mode == 'configuration') return _deviceConfigurationResult(deviceId, identity, fj, listed, fields)
     Map d = fj?.device instanceof Map ? fj.device : [:]
     def selected = sections == null ? _deviceDetailSections() : sections
     def result = [id: deviceId.toString(), name: identity.name, label: identity.label, mode: 'details',
@@ -1528,7 +1605,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed
         def keys = []
         switch (section) {
             case 'configuration':
-                value = _deviceConfigurationResult(deviceId, identity, fj, listed)
+                value = _deviceConfigurationResult(deviceId, identity, fj, listed, fields)
                 break
             case 'identity':
                 value = _deviceConfigurationProjection(d, ['id', 'deviceId', 'name', 'label', 'displayName',
@@ -1540,7 +1617,13 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed
                 break
             case 'attributes':
                 value = _deviceConfigurationProjection(d, ['capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState'])
-                if (identity.containsKey('attributes')) value.declaredAttributes = identity.attributes
+                if (identity.attributes instanceof List) value.declaredAttributes = identity.attributes.collect { row ->
+                    def attribute = _deviceConfigurationPublicValue(row)
+                    if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
+                        attribute.value = '***redacted (password)***'
+                    }
+                    attribute
+                }
                 break
             case 'commands':
                 value = _deviceConfigurationPublicValue(fj?.commands)
@@ -1576,24 +1659,18 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed
                 value.ui = _deviceConfigurationProjection(fj, ['showInstructionSearchLink', 'extraBreadcrumb', 'virtualFirst', 'tags'])
                 break
         }
-        result.sections.put(section, value)
-        def status = [status: d.isEmpty() ? 'unavailable' : 'complete', source: "/device/fullJson/${deviceId}".toString()]
-        if (d.isEmpty()) status.reason = 'Native device details could not be fetched or recognized.'
-        else if (section == 'configuration') status.status = value.preferenceRead.status
-        else if (value == null) {
-            boolean knownEmpty = (section == 'jobs' && fj.containsKey('scheduledJobs')) ||
-                (section == 'state' && fj.containsKey('deviceState')) || (section == 'data' && d.containsKey('data'))
-            if (!knownEmpty) {
-                status.status = 'unavailable'
-                status.reason = 'The native response did not provide this section.'
-            }
+        result.sectionRead.put(section, _deviceDetailReadStatus(section, fj, d, value, deviceId))
+        if (fields != null && section != 'configuration') {
+            if (!result.containsKey('availableFields')) result.availableFields = [:]
+            result.availableFields.put(section, _deviceDetailFieldNames(section, value))
+            value = _deviceDetailSelectedFields(section, value, fields)
         }
-        result.sectionRead.put(section, status)
+        result.sections.put(section, value)
     }
     return result
 }
 
-def toolGetDevice(deviceId, mode = 'summary', sections = null) {
+def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null) {
     String selectedMode = mode == null ? 'summary' : mode.toString()
     if (!(selectedMode in ['summary', 'configuration', 'details'])) {
         throw new IllegalArgumentException("mode must be summary, configuration, or details.")
@@ -1602,13 +1679,16 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null) {
         sections.any { !(it instanceof String) || !_deviceDetailSections().contains(it) })) {
         throw new IllegalArgumentException("sections is a non-empty array for mode=details; use ${_deviceDetailSections().join(', ')}.")
     }
+    if (fields != null && (selectedMode == 'summary' || !(fields instanceof List) || fields.any { !(it instanceof String) })) {
+        throw new IllegalArgumentException('fields is an array of field names for configuration/details; use [] to discover names.')
+    }
     def device = findDevice(deviceId)
     if (!device) {
         if (_bypassEnabled()) {
             def fj = _fetchDeviceFullJson(deviceId)
             if (fj?.device instanceof Map) {
                 def identity = _getDeviceFromFullJson(deviceId, fj)
-                return selectedMode == 'summary' ? identity : _deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections)
+                return selectedMode == 'summary' ? identity : _deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections, fields)
             }
         }
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -1616,7 +1696,7 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null) {
 
     if (selectedMode == 'configuration') {
         return _deviceExpandedResult(deviceId, [name: device.name, label: device.label ?: device.name],
-                                     _fetchDeviceFullJson(deviceId), true, selectedMode, sections)
+                                     _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields)
     }
 
     def attributes = []
@@ -1661,7 +1741,7 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null) {
         commands: commands
     ]
     return selectedMode == 'summary' ? summary : _deviceExpandedResult(deviceId, summary,
-        _fetchDeviceFullJson(deviceId), true, selectedMode, sections)
+        _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields)
 }
 
 def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
@@ -3565,13 +3645,18 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     def nativeFields = _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList() + ["deviceNetworkId"]
     def needModel = args.preferences || nativeFields.any { args.containsKey(it) }
     def full = suppliedFull
-    if (full == null) full = _fetchDeviceFullJson(deviceId)
+    if (full == null && settings.enableWrite != false) full = _fetchDeviceFullJson(deviceId)
     if (needModel && !(full?.device instanceof Map)) throw new IllegalArgumentException("Unable to read device configuration before updating; use hub_get_device(mode='configuration') and retry")
     def d = full?.device
-    if (args.defaultCurrentState && d?.currentStates instanceof Map && !d.currentStates.containsKey(args.defaultCurrentState)) throw new IllegalArgumentException("defaultCurrentState must name one of the device's current-state attributes")
+    if (args.defaultCurrentState && settings.enableWrite != false) {
+        if (!(d?.currentStates instanceof Map)) throw new IllegalArgumentException("Unable to read authoritative current-state attributes before updating defaultCurrentState; refresh device configuration first")
+        if (!d.currentStates.containsKey(args.defaultCurrentState)) throw new IllegalArgumentException("defaultCurrentState must name one of the device's current-state attributes")
+    }
     if (d instanceof Map) {
         if (_deviceFlag(d.linkedAndDisabled) && args.containsKey("label")) throw new IllegalArgumentException("label cannot be edited on a disabled linked device")
-        if (_deviceFlag(d.isComponent) && ["name", "deviceNetworkId", "deviceTypeId", "zigbeeId"].any { args.containsKey(it) }) throw new IllegalArgumentException("This component device cannot have its identity or driver edited independently from its parent")
+        def componentIdentityFields = ["name", "deviceTypeId", "zigbeeId"]
+        if (!_deviceFlag(d.linkedDevice)) componentIdentityFields << "deviceNetworkId"
+        if (_deviceFlag(d.isComponent) && componentIdentityFields.any { args.containsKey(it) }) throw new IllegalArgumentException("This component device cannot have its identity or driver edited independently from its parent")
         if (_deviceFlag(d.linkedDevice) && ["name", "deviceTypeId", "zigbeeId"].any { args.containsKey(it) }) throw new IllegalArgumentException("A linked device cannot have its source name, Zigbee ID or driver edited locally")
         if (args.containsKey("zigbeeId") && !d.zigbeeId) throw new IllegalArgumentException("zigbeeId is not editable on a device without a Zigbee ID")
         if (args.containsKey("meshEnabled") && !_deviceFlag(d.meshSelectionEnabled)) throw new IllegalArgumentException("meshEnabled is unavailable: Hub Mesh selection is disabled for this device")
@@ -3642,7 +3727,7 @@ private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, Li
     }
     def model = _readDevicePreferenceModel(full)
     def entry = _lookupDevicePreference(model, name)
-    if (model.status == "unavailable" || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
+    if (model.status != "complete" || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
         errors << [property: "preference.${name}", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Update accepted but could not confirm the preference -- saved-value storage is unavailable or invalid."]
         return
     }
@@ -4184,6 +4269,7 @@ def toolUpdateDevice(args) {
                 def full = fjText ? new groovy.json.JsonSlurper().parseText(fjText) : null
                 def d = full?.device
                 if (!d) throw new RuntimeException("Could not read the device model from /device/fullJson to preserve fields")
+                _requireCompleteDeviceFormSource(full, deviceId)
                 def oldLabel = d.label; def oldName = d.name; def oldDni = d.deviceNetworkId
                 def dashIds = (full.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
                 // Faithful copy of the Vue device-edit form (deviceModel); omitting a field blanks it.
@@ -4444,6 +4530,24 @@ private Map _postBypassDeviceModel(deviceId, Map fieldOverrides) {
     return _postDeviceConfigurationForm(deviceId, fieldOverrides)?.device
 }
 
+private void _requireCompleteDeviceFormSource(Map full, deviceId) {
+    if (!(full?.device instanceof Map)) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device model; no form update sent")
+    def d = full.device
+    // All three current-firmware captures contain these keys, including nullable fields.
+    def required = ["id", "version", "controllerType", "name", "label", "zigbeeId", "maxEvents", "maxStates",
+        "spammyThreshold", "deviceNetworkId", "deviceTypeId", "deviceTypeReadableType", "roomId",
+        "meshEnabled", "retryEnabled", "meshFullSync", "locationId", "hubId", "groupId", "tags", "defaultIcon", "notes"]
+    def missing = required.findAll { !d.containsKey(it) }
+    if (missing) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device fields ${missing.join(', ')}; no form update sent")
+    if (d.id == null || d.id.toString() != deviceId.toString()) throw new RuntimeException("Invalid /device/fullJson preservation source: device id does not match; no form update sent")
+    if (d.version == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
+    if (!(full.get("homeKitEnabled") instanceof Boolean)) throw new RuntimeException("Incomplete /device/fullJson preservation source: homeKitEnabled is unavailable or invalid; no form update sent")
+    def dashboards = full.get("dashboards")
+    if (!(dashboards instanceof List) || dashboards.any { !(it instanceof Map) || it.get("id") == null || !(it.get("selected") instanceof Boolean) }) {
+        throw new RuntimeException("Incomplete /device/fullJson preservation source: dashboards assignments are unavailable or invalid; no form update sent")
+    }
+}
+
 private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
     def fj = _fetchDeviceFullJson(deviceId)
     if (fj?.device == null) {
@@ -4451,6 +4555,7 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
         // the post-write read-back legs, so the diagnostic says model-read, not confirm.
         throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form")
     }
+    _requireCompleteDeviceFormSource(fj, deviceId)
     def d = fj.device
     def dashIds = (fj.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
     def model = [
@@ -5170,7 +5275,8 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     mode: [type: "string", enum: ["summary", "configuration", "details"], default: "summary",
                            description: "summary: concise capabilities/attributes/commands; configuration: valid editable fields and preference definitions/current values; details: all available information in selectable sections."],
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
-                               description: "details mode only: non-empty section selection. Omit for all sections. Large histories remain reachable through read-tool references."]
+                               description: "details mode only: non-empty section selection. Omit for all sections. Large histories remain reachable through read-tool references."],
+                    fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names. For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names."]
                 ],
                 required: ["deviceId"]
             ]

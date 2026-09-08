@@ -280,6 +280,15 @@ the linked read tools instead of inflating every device response. Missing or
 unrecognized native data is reported as partial/unavailable, never as proof
 that the device has no settings. Sensitive values are redacted.
 
+For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then
+select exact names, for example `fields=["txtEnable"]` in configuration mode or
+`sections=["state"], fields=["lastRefresh"]` in details mode. Configuration
+selection applies to preference names, editable property names and device-info
+keys. Details selection applies to section keys; attributes also accepts an
+individual attribute name. Commands and jobs use the row indices returned by
+`availableFields`, so duplicate or unnamed rows remain selectable. Omitting
+`fields` retains the full selected sections.
+
 The actual driver name is separate from the device's mutable name. `driverSource`
 provides a verified source call when a user driver can be resolved, or a driver
 catalog lookup and the reason source is unavailable. Built-in source is not

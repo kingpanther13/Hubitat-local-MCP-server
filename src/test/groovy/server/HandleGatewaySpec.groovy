@@ -206,24 +206,27 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.count == 2
     }
 
-    def "hub_get_device dispatch forwards mode and sections to the reader"() {
+    def "hub_get_device dispatch forwards mode sections and fields to the reader"() {
         given:
         def captured = [:]
-        script.metaClass.toolGetDevice = { deviceId, mode = 'summary', sections = null ->
+        script.metaClass.toolGetDevice = { deviceId, mode = 'summary', sections = null, fields = null ->
             captured.put('deviceId', deviceId)
             captured.put('mode', mode)
             captured.put('sections', sections)
+            captured.put('fields', fields)
             [success: true]
         }
 
         when:
         def result = script.executeTool('hub_get_device', [
-            deviceId: '42', mode: 'configuration', sections: ['preferences', 'driver']
+            deviceId: '42', mode: 'configuration', sections: ['preferences', 'driver'],
+            fields: ['probeBool', 'maxEvents']
         ])
 
         then:
         result.success == true
-        captured == [deviceId: '42', mode: 'configuration', sections: ['preferences', 'driver']]
+        captured == [deviceId: '42', mode: 'configuration', sections: ['preferences', 'driver'],
+                     fields: ['probeBool', 'maxEvents']]
     }
 
     // ---- Defensive JSON-string parse for inner args ----
