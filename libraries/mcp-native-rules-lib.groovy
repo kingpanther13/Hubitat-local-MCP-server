@@ -8944,6 +8944,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             opResult: r?.opResult,
             health: r?.health
         ]
+        if (r?.error != null) stepResults[-1].error = r.error
         if (r?.success == false) {
             allOk = false
             if (stopOnError) break
