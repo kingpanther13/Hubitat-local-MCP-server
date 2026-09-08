@@ -51,6 +51,13 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
 
     private Map leafArgs(Map args, boolean gateway) { gateway ? args.args as Map : args }
 
+    private Object workerClock() {
+        def field = script.getClass().declaredFields.find { it.name == 'mrtrWorkerSliceStartedAt' }
+        if (field == null) return null
+        field.accessible = true
+        return field.get(script)
+    }
+
     private void assertPause(Map response, String stateId, String leaf) {
         assert response.error == null
         assert response.result == [resultType: 'input_required', requestState: stateId]
@@ -96,6 +103,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         leafArgs(record.nextArguments as Map, gateway).addActions == specs.drop(1)
         leafArgs(record.nextArguments as Map, gateway).addTriggers == []
         record.aggregate.actions*.deviceIds == [[11]]
+        workerClock() == null
 
         when: 'a duplicate callback is harmless; a later client request starts a fresh worker clock'
         script.runMrtrSlice(new LinkedHashMap(runInMillisCalls[0][2].data as Map))
@@ -114,6 +122,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         runInMillisCalls.size() == 2
         mcpDriver.parseInner(replay) == terminal
         script._activeWrites().isEmpty()
+        workerClock() == null
         !JsonOutput.toJson([actions, record.nextArguments, terminal]).contains('__reqT0')
 
         where:
@@ -159,6 +168,8 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         then:
         complete.result.resultType == 'complete'
         terminal.success == true
+        terminal.partial != true
+        terminal.patchResults.every { it.partial != true }
         terminal.patchResults.findAll { it.op == operation }.collectMany { it.results }.size() == 3
         terminal.patchResults.count { it.op == 'addAction' } == 1
         actions*.deviceIds == (operation == 'addActions' ? [[11], [12], [13], [99]] : [[99]])
@@ -170,6 +181,73 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
 
         where:
         operation << ['addActions', 'addTriggers']
+    }
+
+    @Unroll
+    def "continued inner action batch retains its #outcome first-item outcome"() {
+        given:
+        settingsMap.useGateways = false
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->
+            actions << new LinkedHashMap(spec)
+            clock.addAndGet(actions.size() == 1 ? 120001L : 10L)
+            [success: true, deviceIds: spec.deviceIds] + (actions.size() == 1 ? firstResult : [:])
+        }
+        def specs = actionSpecs()
+        def args = [appId: 1, confirm: true, patches: [[addActions: specs]]]
+        String stateId = modernCall('hub_set_rule', args).result.requestState
+
+        when:
+        def paused = modernCall('hub_set_rule', args, stateId)
+
+        then:
+        assertPause(paused, stateId, 'hub_set_rule')
+        actions == specs.take(1)
+
+        when:
+        def complete = modernCall('hub_set_rule', args, stateId)
+        def terminal = mcpDriver.parseInner(complete)
+        def rows = terminal.patchResults.collectMany { it.results }
+
+        then:
+        complete.result.resultType == 'complete'
+        terminal.success == false
+        terminal.partial == true
+        rows*.deviceIds == [[11], [12], [13]]
+        firstResult.every { key, value -> rows[0][key] == value }
+        rows.drop(1).every { it.success == true && it.partial != true }
+        actions == specs
+        clicks.count('updateRule') == 1
+        runInMillisCalls.size() == 2
+        mcpDriver.parseInner(modernCall('hub_set_rule', args, stateId)) == terminal
+
+        where:
+        outcome   | firstResult
+        'failed'  | [success: false, error: 'action refused']
+        'partial' | [success: true, partial: true, repairHints: ['one requested setting did not land']]
+    }
+
+    def "worker clears its clock when the native backup throws before an edit"() {
+        given:
+        settingsMap.useGateways = false
+        Long duringBackup = null
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+            duringBackup = workerClock() as Long
+            throw new IllegalStateException('backup storage unavailable')
+        }
+        def args = [appId: 1, confirm: true, addActions: actionSpecs()]
+        String stateId = modernCall('hub_set_rule', args).result.requestState
+
+        when:
+        def failed = modernCall('hub_set_rule', args, stateId)
+
+        then:
+        failed.result.resultType == 'complete'
+        failed.result.isError == true
+        mcpDriver.parseInner(failed).error.contains('backup storage unavailable')
+        duringBackup == clock.get()
+        workerClock() == null
+        actions.isEmpty()
+        script._activeWrites().isEmpty()
     }
 
     // _rmAddTrigger is private; exercise its real wizard using schema reads and primitive writes.
@@ -209,6 +287,51 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         }
         // Trigger commits consume the long first item; the later action patch is short.
         itemElapsed = { int index -> 10L }
+    }
+
+    @Unroll
+    def "an over-budget #leadingOp before replacement keeps the original batch and duplicate fence"() {
+        given:
+        settingsMap.useGateways = false
+        def triggers = []
+        if (leadingOp == 'addTriggers') installTriggerWizard(triggers)
+        hubGet.register('/installedapp/configure/json/1/STPage') {
+            JsonOutput.toJson([app: [id: 1],
+                configPage: [name: 'STPage', sections: [[input: [[name: 'doneST', type: 'button']]]]]])
+        }
+        hubGet.register('/device/fullJson/8') { '{"id":"8","name":"Switch"}' }
+        def replacement = [replaceRequiredExpression:
+            [conditions: [[capability: 'Switch', deviceIds: [8], state: 'on']]]]
+        def leading = leadingOp == 'addAction' ? [addAction: actionSpecs(1)[0]] :
+            (leadingOp == 'addActions' ? [addActions: actionSpecs()] :
+                [addTriggers: (1..3).collect { [capability: 'Switch', state: 'on'] }])
+        def args = [appId: 1, confirm: true, patches: [leading, replacement, replacement]]
+        String stateId = modernCall('hub_set_rule', args).result.requestState
+
+        when:
+        def complete = modernCall('hub_set_rule', args, stateId)
+        def terminal = mcpDriver.parseInner(complete)
+        def replay = modernCall('hub_set_rule', args, stateId)
+
+        then: 'the failed first replacement still owns the one-replacement fence for this batch'
+        complete.result.resultType == 'complete'
+        def entries = (terminal.patchResults ?: terminal.patches).findAll { it.op == 'replaceRequiredExpression' }
+        entries.size() == 2
+        entries[0].requiredExpressionMissing == true
+        entries[1].success == false
+        entries[1].error.contains('only one replaceRequiredExpression is valid')
+        terminal.success == false
+        terminal.partial == true
+        actions.size() == (leadingOp == 'addAction' ? 1 : leadingOp == 'addActions' ? 3 : 0)
+        triggers.size() == (leadingOp == 'addTriggers' ? 3 : 0)
+        runInMillisCalls.size() == 1
+        clicks.count('updateRule') == 1
+        !clicks.contains('cancelST')
+        script._activeWrites().isEmpty()
+        mcpDriver.parseInner(replay) == terminal
+
+        where:
+        leadingOp << ['addAction', 'addActions', 'addTriggers']
     }
 
     def "walk drive retains inherited page and defers mainPage Done across worker slices"() {
