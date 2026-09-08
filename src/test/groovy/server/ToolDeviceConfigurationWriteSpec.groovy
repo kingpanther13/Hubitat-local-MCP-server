@@ -375,6 +375,55 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         result.changes.find { it.property == 'preference.modes' }
     }
 
+    def 'bypass empty multiple enum uses the native JSON-array string without losing pane or storage metadata'() {
+        given:
+        def model = fixture()
+        model.device.showOnHome = true
+        model.device.retryEnabled = true
+        model.device.defaultCurrentState = 'temperature'
+        def sent
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            sent = [path: path, body: new JsonSlurper().parseText(body)]
+            def row = model.settings.find { it.name == 'modes' }
+            def wireValue = sent.body.preferences[0].value
+            if (wireValue instanceof List && wireValue.isEmpty()) {
+                // Live firmware deletes the stored row for a native JSON [], which also
+                // changes the declared multi-select flag exposed by fullJson to false.
+                row.multiple = false
+                row.deviceId = null
+                row.id = null
+                row.value = null
+            } else {
+                row.multiple = true
+                row.deviceId = 10
+                row.id = 99
+                row.value = wireValue
+            }
+            [success: true]
+        }
+        registerFixture(model, true)
+
+        when:
+        def result = script.toolUpdateDevice([
+            deviceId: '10', preferences: [modes: [type: 'enum', value: []]]
+        ])
+
+        then:
+        sent == [path: '/device/preference/save', body: [
+            deviceId: 10, defaultCurrentState: 'temperature', commandRetry: true, showOnHome: true,
+            preferences: [[name: 'modes', type: 'enum', value: '[]']]
+        ]]
+        with(model.settings.find { it.name == 'modes' }) {
+            multiple == true
+            deviceId == 10
+            id == 99
+            value == '[]'
+        }
+        result.success == true
+        result.changes.find { it.property == 'preference.modes' }?.newValue == [type: 'enum', value: []]
+        !result.errors
+    }
+
     @Unroll
     def 'new form #property cannot claim success on an HTTP-success no-op'() {
         given:
