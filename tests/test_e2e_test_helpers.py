@@ -250,7 +250,7 @@ def test_watchdog_hub_logs_fails_closed_on_unusable_payload(monkeypatch, respons
     runner.watchdog_url = "https://watchdog.invalid/mcp"
     monkeypatch.setattr(et.requests, "post", lambda *args, **kwargs: response)
 
-    with pytest.raises(RuntimeError, match="watchdog.*logs"):
+    with pytest.raises(RuntimeError, match=r"watchdog.*logs"):
         runner._watchdog_hub_logs(level="ERROR", limit=100)
 
 
