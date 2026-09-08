@@ -3045,6 +3045,12 @@ def runMrtrSlice(Map job = [:]) {
         mcpLog("error", "mrtr", "Detached write worker failed for ${rec.leafTool}: ${workerErr.message}")
         def failure = [success: false, isError: true, tool: rec.leafTool,
                        error: "Tool error: ${workerErr.message}"]
+        if (rec.aggregate instanceof Map && !rec.aggregate.isEmpty()) {
+            failure.aggregate = _mrtrCopyMap(rec.aggregate as Map)
+            failure.note = "aggregate records earlier checkpointed slices. The failing slice may " +
+                "also have changed the hub before the error; inspect the target and deferred " +
+                "finalization before deciding on a follow-up. Do not repeat the whole operation."
+        }
         _mrtrCleanupRecord(rec)
         _mrtrStoreTerminal(stateId, rec, claim, failure, true)
     } finally {

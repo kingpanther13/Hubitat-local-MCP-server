@@ -86,7 +86,8 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         Map remainingArgs = gateway ? record.nextArguments?.args : record.nextArguments
 
         then:
-        paused.result == [resultType: 'input_required', requestState: stateId]
+        paused.result.findAll { key, value -> key != '_meta' } ==
+            [resultType: 'input_required', requestState: stateId]
         saves*.source == items.take(1)*.source
         remainingArgs[field] == items.drop(1)
         record.aggregate[field].size() == 1

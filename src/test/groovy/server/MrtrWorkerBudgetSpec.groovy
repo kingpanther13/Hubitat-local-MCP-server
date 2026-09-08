@@ -60,7 +60,8 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
 
     private void assertPause(Map response, String stateId, String leaf) {
         assert response.error == null
-        assert response.result == [resultType: 'input_required', requestState: stateId]
+        assert response.result.findAll { key, value -> key != '_meta' } ==
+            [resultType: 'input_required', requestState: stateId]
         assert atomicStateMap.mrtrRequests[stateId].status == 'active'
         assert script._activeWrites()*.tool == [leaf]
         assert !clicks.contains('updateRule')
@@ -248,6 +249,53 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         workerClock() == null
         actions.isEmpty()
         script._activeWrites().isEmpty()
+    }
+
+    def "a resumed backup failure retains completed work without claiming the remaining slice is safe to repeat"() {
+        given:
+        settingsMap.useGateways = false
+        settingsMap.backupEveryRuleWrite = true
+        int backups = 0
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+            backups++
+            if (backups > 1) throw new IllegalStateException('backup storage unavailable')
+            [key: 'baseline']
+        }
+        def specs = actionSpecs()
+        def args = [appId: 1, confirm: true, addActions: specs]
+        String stateId = modernCall('hub_set_rule', args).result.requestState
+
+        when:
+        def paused = modernCall('hub_set_rule', args, stateId)
+
+        then:
+        assertPause(paused, stateId, 'hub_set_rule')
+        actions == specs.take(1)
+        backups == 1
+
+        when: 'the next worker fails before it can run another item'
+        def failed = modernCall('hub_set_rule', args, stateId)
+        def terminal = mcpDriver.parseInner(failed)
+        def replay = modernCall('hub_set_rule', args, stateId)
+
+        then:
+        failed.result.resultType == 'complete'
+        failed.result.isError == true
+        terminal.success == false
+        terminal.error.contains('backup storage unavailable')
+        terminal.aggregate.kind == 'bulk_edit'
+        terminal.aggregate.actions*.deviceIds == [[11]]
+        terminal.aggregate.actions.every { it.success == true }
+        terminal.note.toLowerCase().contains('inspect')
+        terminal.note.toLowerCase().contains('slice')
+        !terminal.containsKey('addActionsRemaining')
+        actions == specs.take(1)
+        backups == 2
+        !clicks.contains('updateRule')
+        runInMillisCalls.size() == 2
+        script._activeWrites().isEmpty()
+        workerClock() == null
+        mcpDriver.parseInner(replay) == terminal
     }
 
     // _rmAddTrigger is private; exercise its real wizard using schema reads and primitive writes.
