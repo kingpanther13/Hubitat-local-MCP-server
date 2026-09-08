@@ -1,0 +1,252 @@
+package server
+
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import spock.lang.Unroll
+import support.TestDevice
+import support.ToolSpecBase
+
+class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
+    private static Map fixture() {
+        [device: [id: 10, version: 0, name: 'Fixture', label: 'Fixture', deviceNetworkId: 'fixture-10',
+                  deviceTypeId: 100, deviceTypeReadableType: 'User', controllerType: 'VIRTUAL',
+                  zigbeeId: '0011223344556677', roomId: 0, locationId: 1, hubId: 1, groupId: 0,
+                  maxEvents: 10, maxStates: 20, spammyThreshold: 100, notes: '', tags: '',
+                  defaultIcon: '', icon: 'fa-lightbulb', meshEnabled: false, retryEnabled: false,
+                  meshFullSync: false, meshSelectionEnabled: true, linkedDevice: false,
+                  showOnHome: false, defaultCurrentState: '', isComponent: false,
+                  data: [integrationToken: 'fixture-token']],
+         settings: [[name: 'logEnable', type: 'bool', value: 'true', defaultValue: 'false', required: false],
+                    [name: 'offset', type: 'number', value: '0', range: '-10..10', required: false],
+                    [name: 'modes', type: 'enum', multiple: true, options: [a: 'A', b: 'B'], value: 'a']],
+         inputValues: [], dashboards: [[id: 1, name: 'One', selected: true], [id: 2, name: 'Two', selected: false]],
+         hasDashboards: true, commandRetrySelectionEnabled: true, hubMeshRefreshEnabled: true,
+         homeKitSelectionEnabled: true, homeKitEnabled: true,
+         amazonAlexaInstalled: true, amazonAlexaSupported: true, amazonAlexaEnabled: false,
+         googleHomeInstalled: true, googleHomeSupported: true, googleHomeEnabled: true]
+    }
+
+    private void registerFixture(Map model, boolean bypass) {
+        settingsMap.bypassDeviceAllowlist = bypass
+        if (!bypass) childDevicesList << new TestDevice(id: 10, name: 'Fixture', label: 'Fixture', deviceNetworkId: 'fixture-10')
+        hubGet.register('/device/fullJson/10') { JsonOutput.toJson(model) }
+        hubGet.register('/device/drivers') { JsonOutput.toJson([drivers: [[id: 100, name: 'Fixture', type: 'usr'], [id: 101, name: 'Other', type: 'usr']]]) }
+        stateMap.lastBackupTimestamp = System.currentTimeMillis()
+    }
+
+    private static Map decodeForm(String body) {
+        def result = [:]
+        body.split('&').each { pair ->
+            def parts = pair.split('=', 2)
+            result.put(URLDecoder.decode(parts[0], 'UTF-8'), URLDecoder.decode(parts.length > 1 ? parts[1] : '', 'UTF-8'))
+        }
+        result
+    }
+
+    @Unroll
+    def 'configuration form writes #property with Vue encoding in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        if (property == 'meshFullSync') model.device.linkedDevice = true
+        registerFixture(model, bypass)
+        def posts = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 30, boolean retry = false ->
+            posts << [path: path, form: decodeForm(body)]
+            if (property == 'dashboardIds') model.dashboards.each { it.selected = target.contains(it.id) }
+            else model.device.put(property, target)
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', confirm: true] + [(property): target])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == property }?.newValue == target
+        posts.size() == 1
+        posts[0].path == '/device/update'
+        posts[0].form.get(property) == wire
+        posts[0].form.version == '0'
+        posts[0].form.groupId == '0'
+        posts[0].form.deviceNetworkId == 'fixture-10'
+        posts[0].form.homeKitEnabled == 'on'
+        posts[0].form.notes == (property == 'notes' ? target : '')
+        model.device.data.integrationToken == 'fixture-token'
+
+        where:
+        [bypass, row] << [ [false, true], [
+            ['notes', 'A & B\nC', 'A & B\nC'], ['notes', '', ''],
+            ['maxEvents', 1, '1'], ['maxStates', 2000, '2000'], ['spammyThreshold', 2000, '2000'],
+            ['defaultIcon', '', ''], ['deviceTypeId', 101, '101'],
+            ['zigbeeId', '8899AABBCCDDEEFF', '8899AABBCCDDEEFF'],
+            ['meshEnabled', true, 'on'], ['meshEnabled', false, 'false'],
+            ['retryEnabled', true, 'on'], ['meshFullSync', true, 'on'],
+            ['dashboardIds', [2], '2'], ['dashboardIds', [], '']
+        ] ].combinations()
+        property = row[0]
+        target = row[1]
+        wire = row[2]
+    }
+
+    @Unroll
+    def 'invalid #property is rejected before an earlier label write in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        registerFixture(model, bypass)
+        def posts = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false -> posts << path; '' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> posts << path; [success: true] }
+        def device = childDevicesList.find { it.id == 10 }
+        if (device) device.metaClass.setLabel = { String value -> posts << 'setLabel' }
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', label: 'Must remain unchanged', confirm: true] + [(property): target])
+
+        then:
+        thrown(IllegalArgumentException)
+        posts.empty
+
+        where:
+        [bypass, row] << [[false, true], [
+            ['maxEvents', 0], ['maxStates', 2001], ['maxStates', 1.5], ['spammyThreshold', 99],
+            ['meshEnabled', 'false'], ['dashboardIds', [999]], ['deviceTypeId', 999],
+            ['preferences', [doesNotExist: [type: 'bool', value: true]]],
+            ['preferences', [logEnable: [type: 'bool', value: 'perhaps']]],
+            ['preferences', [offset: [type: 'number', value: 11]]]
+        ]].combinations()
+        property = row[0]
+        target = row[1]
+    }
+
+    @Unroll
+    def 'sensitive #property requires confirmation before mutation'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        def posts = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false -> posts << path; '' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> posts << path; [success: true] }
+
+        when:
+        script.toolUpdateDevice([deviceId: '10'] + [(property): target])
+
+        then:
+        thrown(IllegalArgumentException)
+        posts.empty
+
+        where:
+        property             | target
+        'deviceTypeId'       | 101
+        'deviceNetworkId'    | 'new-identity'
+        'zigbeeId'           | '8899AABBCCDDEEFF'
+        'meshEnabled'        | true
+        'dashboardIds'       | [2]
+        'homeKitEnabled'     | false
+        'amazonAlexaEnabled' | true
+        'googleHomeEnabled'  | false
+    }
+
+    @Unroll
+    def 'native assistant #property write preserves other assignments in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        registerFixture(model, bypass)
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            def decoded = new JsonSlurper().parseText(body)
+            posts << [path: path, body: decoded]
+            model.put(property, target)
+            [success: true, assistants: [(assistant): [success: true, enabled: target]]]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', confirm: true] + [(property): target])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == property }?.newValue == target
+        posts.size() == 1
+        posts[0].path == '/device/updateAssistants'
+        posts[0].body == ([deviceId: 10, homeKitEnabled: true, amazonAlexaEnabled: false, googleHomeEnabled: true] + [(property): target])
+
+        where:
+        [bypass, row] << [[false, true], [['homeKitEnabled', false, 'homeKit'], ['amazonAlexaEnabled', true, 'amazonAlexa'], ['googleHomeEnabled', false, 'googleHome']]].combinations()
+        property = row[0]
+        target = row[1]
+        assistant = row[2]
+    }
+
+    def 'assistant partial failure preserves confirmed changes and native reason'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            model.homeKitEnabled = false
+            [success: false, assistants: [homeKit: [success: true, enabled: false], amazonAlexa: [success: false, reason: 'integrationError']]]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', confirm: true, homeKitEnabled: false, amazonAlexaEnabled: true])
+
+        then:
+        result.success == false
+        result.changes.find { it.property == 'homeKitEnabled' }
+        result.errors.find { it.property == 'amazonAlexaEnabled' }?.error?.contains('integrationError')
+    }
+
+    @Unroll
+    def 'preference root settings readback confirms #target for bypass=#bypass'() {
+        given:
+        def model = fixture()
+        registerFixture(model, bypass)
+        def applyPreference = { String key, setting ->
+            def value = setting instanceof Map ? setting.value : setting
+            model.settings.find { it.name == key }.value = value == null ? null : value.toString()
+        }
+        if (!bypass) childDevicesList[0].metaClass.updateSetting = applyPreference
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            new JsonSlurper().parseText(body).preferences.each { applyPreference(it.name, it) }
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: [type: 'bool', value: target]]])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == 'preference.logEnable' }
+        model.settings.find { it.name == 'logEnable' }.value in [target?.toString(), target == null ? '' : target.toString()]
+
+        where:
+        [bypass, target] << [[false, true], [false, true, null]].combinations()
+    }
+
+    def 'clear cannot be confirmed after storage disappears from a successful fullJson fetch'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            model.remove('settings')
+            model.remove('inputValues')
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: [type: 'bool', value: null]]])
+
+        then:
+        result.success == false
+        !result.changes.find { it.property == 'preference.logEnable' }
+        result.errors.find { it.property == 'preference.logEnable' }?.error?.toLowerCase()?.contains('confirm')
+    }
+
+    def 'all added device configuration properties are discoverable in the write schema'() {
+        when:
+        def definition = script.getAllToolDefinitions().find { it.name == 'hub_update_device' }
+
+        then:
+        definition.inputSchema.properties.keySet().containsAll(['deviceTypeId', 'zigbeeId', 'notes', 'maxEvents', 'maxStates',
+            'spammyThreshold', 'defaultIcon', 'dashboardIds', 'meshEnabled', 'retryEnabled', 'meshFullSync',
+            'homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled', 'confirm'])
+    }
+}
