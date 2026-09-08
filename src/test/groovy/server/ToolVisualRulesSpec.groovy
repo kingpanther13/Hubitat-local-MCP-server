@@ -822,14 +822,18 @@ class ToolVisualRulesSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "rename verification compares the already-decoded own name (#requested)"() {
+    def "rename preserves builder name strings (#format, paused=#paused, #requested)"() {
         given:
         enableWrite()
-        def wireState = [name: 'Old name', rulePaused: true, promptHistory: []] + classicDefinition()
-        hubGet.register('/app/ruleBuilder20Json/46') { GRAPH_NOT_FOUND }
-        hubGet.register('/app/ruleBuilderJson/46') { json(wireState) }
+        def wireState = [name: 'Old name', rulePaused: paused, promptHistory: []]
+        hubGet.register('/app/ruleBuilder20Json/46') {
+            format == 'classic' ? GRAPH_NOT_FOUND : json(wireState + [
+                name: wireState.name + (paused ? " <span class='text-red'>(Paused)</span>" : ''),
+                ruleJson: json(graphDefinition()), validationErrors: []])
+        }
+        hubGet.register('/app/ruleBuilderJson/46') { json(wireState + classicDefinition()) }
         stubPostJson { path, body ->
-            wireState.name = encoded
+            wireState.name = new JsonSlurper().parseText(body).name
             null
         }
 
@@ -842,9 +846,11 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.name == requested
 
         where:
-        requested                       | encoded
-        'Literal <span>(Paused)</span>'  | 'Literal &lt;span&gt;(Paused)&lt;/span&gt;'
-        'Literal &amp; (Paused)'         | 'Literal &amp;amp; (Paused)'
+        [format, paused, requested] << [
+            ['classic', 'graph'], [false, true],
+            ['Literal <span>(Paused)</span>', 'Literal &amp; (Paused)',
+             "Literal <span class='text-red'>(Paused)</span>"]
+        ].combinations()
     }
 
     def "rename-only on an ALREADY-paused rule verifies past the standing decoration"() {

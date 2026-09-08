@@ -112,6 +112,38 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "public Visual Rule health preserves raw own names (#format, paused=#paused, #name)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') {
+            JsonOutput.toJson(format == 'vrb-classic' ?
+                [name: name, rulePaused: paused, whenNodes: [], thenNodes: []] : [:])
+        }
+        hubGet.register('/app/ruleBuilder20Json/100') {
+            JsonOutput.toJson([name: name + (paused ? " <span class='text-red'>(Paused)</span>" : ''),
+                              rulePaused: paused, ruleJson: [:], validationErrors: []])
+        }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
+        def health = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        health.ruleFormat == format
+        health.paused == paused
+        health.label == name
+
+        where:
+        [format, paused, name] << [
+            ['vrb-classic', 'vrb-graph'], [false, true],
+            ['Literal <span>(Paused)</span>', 'Literal &amp; (Paused)',
+             "Literal <span class='text-red'>(Paused)</span>"]
+        ].combinations()
+    }
+
+    @spock.lang.Unroll
     def "public health uses compiled RM paused=#paused with source=#source"() {
         given:
         seedHealthy(100, [paused: paused])

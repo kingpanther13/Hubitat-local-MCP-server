@@ -462,8 +462,8 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "restore preserves literal suffixes and strips only tagged pause decoration (#label)"() {
-        given: 'a paused snapshot may carry an own name or a tagged runtime decoration'
+    def "restore preserves the own name captured in a paused snapshot (#label)"() {
+        given: 'snapshot appLabel already came from the dedicated own-name reader'
         enableWrite()
         def snapshot = vrbSnapshot(500, [appLabel: label, vrbFormat: 'classic',
                                          vrbRulePaused: true, vrbDefinition: classicDefinition()])
@@ -491,8 +491,9 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         where:
         label                                                   | expected
         'Hall light (Paused)'                                    | 'Hall light (Paused)'
-        "Hall light <span class='text-red'>(Paused)</span>"       | 'Hall light'
-        "Hall light (Paused) <span>(Paused)</span>"              | 'Hall light (Paused)'
+        "Hall light <span class='text-red'>(Paused)</span>"       | "Hall light <span class='text-red'>(Paused)</span>"
+        "Hall light (Paused) <span>(Paused)</span>"              | "Hall light (Paused) <span>(Paused)</span>"
+        'Hall light &amp; (Paused)'                              | 'Hall light &amp; (Paused)'
     }
 
     @Unroll
