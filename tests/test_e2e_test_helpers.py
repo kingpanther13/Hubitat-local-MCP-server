@@ -40,6 +40,59 @@ def _watchdog_response(logs):
     )
 
 
+def test_validation_log_expectation_uses_reactive_gateway_tool_and_exact_reason():
+    params = {
+        "name": "hub_manage_variables",
+        "arguments": {
+            "tool": "hub_create_variable",
+            "args": {"name": "probe"},
+        },
+    }
+    error = {
+        "code": -32602,
+        "message": "Invalid params: Mandatory best-practice acknowledgment required",
+    }
+
+    assert et._validation_log_expectation("tools/call", params, error) == (
+        "Validation error in hub_create_variable: "
+        "Mandatory best-practice acknowledgment required"
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "error"),
+    [
+        ("tools/list", {}, {"code": -32602, "message": "Invalid params: bad"}),
+        ("tools/call", {"name": "hub_get_info", "arguments": {}},
+         {"code": -32601, "message": "Method not found"}),
+        ("tools/call", {"name": "hub_get_info", "arguments": {}},
+         {"code": -32602, "message": "different error shape"}),
+    ],
+)
+def test_validation_log_expectation_rejects_unrelated_rpc_errors(method, params, error):
+    assert et._validation_log_expectation(method, params, error) is None
+
+
+def test_partition_hub_errors_consumes_only_observed_validation_error_count():
+    intentional = "Validation error in hub_create_variable: missing bestPracticeKey"
+    stale = {"name": "12:00:00", "message": "pre-existing failure"}
+    logs = [
+        stale,
+        {"name": "12:00:01", "message": intentional},
+        {"name": "12:00:02", "message": intentional},
+        {"name": "12:00:03", "message": intentional},
+        {"name": "12:00:04", "message": "unexpected runtime failure"},
+    ]
+    baseline = {"12:00:00|pre-existing failure"}
+
+    expected, unexpected = et._partition_new_hub_errors(
+        logs, baseline, [intentional, intentional]
+    )
+
+    assert [entry["name"] for entry in expected] == ["12:00:01", "12:00:02"]
+    assert [entry["name"] for entry in unexpected] == ["12:00:03", "12:00:04"]
+
+
 def test_limiter_lines_falls_back_to_watchdog_and_filters_exact_device_method(monkeypatch):
     target = (
         "dev|5781|BAT_E2E_CmdRoundtrip|error|"

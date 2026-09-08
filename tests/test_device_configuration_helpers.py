@@ -3,7 +3,6 @@
 from copy import deepcopy
 
 import pytest
-
 from device_configuration_helpers import assert_native_preferences
 
 
@@ -18,9 +17,9 @@ def fixture():
     wire = ["false", "0", "literal & + = café", "eco", "red,blue"]
     native = {
         "settings": [{"name": name, "type": kind, "value": value}
-                     for (name, (kind, _)), value in zip(expected.items(), wire)],
+                     for (name, (kind, _)), value in zip(expected.items(), wire, strict=True)],
         "inputValues": [{"name": name, "inputValue": value}
-                        for name, value in zip(expected, wire)],
+                        for name, value in zip(expected, wire, strict=True)],
     }
     configuration = {"preferences": [
         {"name": name, "type": kind, "value": value,
@@ -85,7 +84,7 @@ def test_nested_settings_cannot_substitute_for_native_root():
 def test_duplicate_native_names_fail_instead_of_overwriting_evidence():
     native, configuration, expected = fixture()
     native["inputValues"].append(deepcopy(native["inputValues"][0]))
-    with pytest.raises(AssertionError, match="duplicate.*probeBool"):
+    with pytest.raises(AssertionError, match=r"duplicate.*probeBool"):
         assert_native_preferences(native, configuration, expected)
 
 
