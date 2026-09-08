@@ -1,0 +1,321 @@
+package server
+
+import groovy.json.JsonOutput
+import java.util.concurrent.atomic.AtomicLong
+import spock.lang.Unroll
+import support.ToolSpecBase
+
+class MrtrWorkerBudgetSpec extends ToolSpecBase {
+    private final AtomicLong clock = new AtomicLong(1234567890000L)
+    private final List<Map> actions = []
+    private final List<String> clicks = []
+    private Closure itemElapsed = { int index -> index == 1 ? 120001L : 10L }
+
+    def setup() {
+        NOW_OVERRIDE.set({ -> clock.get() })
+        settingsMap.enableWrite = true
+        settingsMap.enableRead = true
+        settingsMap.maxConcurrentWrites = 1
+        settingsMap.relayBudgetMs = 0
+        settingsMap.lanBudgetMs = 0
+        stateMap.lastBackupTimestamp = clock.get()
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'baseline'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->
+            actions << new LinkedHashMap(spec)
+            clock.addAndGet(itemElapsed.call(actions.size()) as Long)
+            [success: true, deviceIds: spec.deviceIds]
+        }
+        script.metaClass._rmClickAppButton = { Integer id, String name, String attr = null,
+                                               String page = null, Map cache = null -> clicks << name }
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+    }
+
+    private Map modernCall(String tool, Map args, String stateId = null) {
+        def params = [name: tool, arguments: args]
+        if (stateId != null) params.requestState = stateId
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28',
+                              'Mcp-Method': 'tools/call', 'Mcp-Name': tool])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: ++mcpDriver.lastSentId,
+                            method: 'tools/call', params: params])
+        script.handleMcpRequest()
+        return mcpDriver.parseResponseJson() as Map
+    }
+
+    private List<Map> actionSpecs(int count = 3) {
+        (1..count).collect { [capability: 'switch', action: 'on', deviceIds: [it + 10]] }
+    }
+
+    private Map leafArgs(Map args, boolean gateway) { gateway ? args.args as Map : args }
+
+    private void assertPause(Map response, String stateId, String leaf) {
+        assert response.error == null
+        assert response.result == [resultType: 'input_required', requestState: stateId]
+        assert atomicStateMap.mrtrRequests[stateId].status == 'active'
+        assert script._activeWrites()*.tool == [leaf]
+        assert !clicks.contains('updateRule')
+    }
+
+    @Unroll
+    def "#leaf bulk checkpoints through #route with #transport request budget #requestBudget"() {
+        given:
+        settingsMap.useGateways = gateway
+        settingsMap.relayBudgetMs = requestBudget
+        settingsMap.lanBudgetMs = requestBudget
+        script.metaClass._isCloudRequest = { -> cloud }
+        String outer = gateway ? (leaf == 'hub_set_rule' ? 'hub_manage_rule_machine' :
+            'hub_manage_native_rules_and_apps') : leaf
+        def specs = actionSpecs()
+        def edit = [appId: 1, confirm: true, addActions: specs]
+        def args = gateway ? [tool: leaf, args: edit] : edit
+
+        when:
+        def preflight = modernCall(outer, args)
+        String stateId = preflight.result.requestState
+
+        then:
+        preflight.result.resultType == 'input_required'
+        actions.isEmpty()
+        runInMillisCalls.isEmpty()
+
+        when:
+        def paused = modernCall(outer, args, stateId)
+        Map record = atomicStateMap.mrtrRequests[stateId] as Map
+
+        then: 'the first completed action crosses the worker target, independent of transport'
+        actions == specs.take(1)
+        assertPause(paused, stateId, leaf)
+        runInMillisCalls.size() == 1
+        record.rounds == 1
+        record.generation == 1
+        !record.containsKey('claimId')
+        record.expiresAt == clock.get() + 180000L
+        leafArgs(record.nextArguments as Map, gateway).addActions == specs.drop(1)
+        leafArgs(record.nextArguments as Map, gateway).addTriggers == []
+        record.aggregate.actions*.deviceIds == [[11]]
+
+        when: 'a duplicate callback is harmless; a later client request starts a fresh worker clock'
+        script.runMrtrSlice(new LinkedHashMap(runInMillisCalls[0][2].data as Map))
+        clock.addAndGet(60000L)
+        def complete = modernCall(outer, args, stateId)
+        def terminal = mcpDriver.parseInner(complete)
+        def replay = modernCall(outer, args, stateId)
+
+        then: 'both short remaining items fit in the new slice, with one finalization and ledger'
+        complete.result.resultType == 'complete'
+        terminal.success == true
+        terminal.actions*.deviceIds == [[11], [12], [13]]
+        terminal.mrtr.rounds == 2
+        actions == specs
+        clicks.count('updateRule') == 1
+        runInMillisCalls.size() == 2
+        mcpDriver.parseInner(replay) == terminal
+        script._activeWrites().isEmpty()
+        !JsonOutput.toJson([actions, record.nextArguments, terminal]).contains('__reqT0')
+
+        where:
+        leaf                 | gateway | cloud | requestBudget | route     | transport
+        'hub_set_rule'       | false   | false | 0             | 'flat'    | 'LAN'
+        'hub_set_rule'       | true    | true  | 1             | 'gateway' | 'cloud'
+        'hub_set_native_app' | false   | true  | 0             | 'flat'    | 'cloud'
+        'hub_set_native_app' | true    | false | 1             | 'gateway' | 'LAN'
+    }
+
+    @Unroll
+    def "nested #operation preserves its unprocessed inner items and following patch"() {
+        given:
+        settingsMap.useGateways = true
+        def triggers = []
+        if (operation == 'addTriggers') installTriggerWizard(triggers)
+        def specs = operation == 'addActions' ? actionSpecs() :
+            (1..3).collect { [capability: 'Switch', state: it == 2 ? 'off' : 'on'] }
+        def tail = [addAction: [capability: 'switch', action: 'off', deviceIds: [99]]]
+        def patches = [[(operation): specs], tail]
+        def args = [tool: 'hub_set_rule', args: [appId: 1, confirm: true, patches: patches]]
+        String stateId = modernCall('hub_manage_rule_machine', args).result.requestState
+
+        when:
+        def paused = modernCall('hub_manage_rule_machine', args, stateId)
+        Map record = atomicStateMap.mrtrRequests[stateId] as Map
+
+        then:
+        (operation == 'addActions' ? actions.size() : triggers.size()) == 1
+        assertPause(paused, stateId, 'hub_set_rule')
+        record.nextArguments.args.patches == [[(operation): specs.drop(1)], tail]
+        record.aggregate.patchResults.size() == 1
+        record.aggregate.patchResults[0].results.size() == 1
+        record.aggregate.patchResults[0].results[0].success == true
+        runInMillisCalls.size() == 1
+
+        when:
+        clock.addAndGet(60000L)
+        def complete = modernCall('hub_manage_rule_machine', args, stateId)
+        def terminal = mcpDriver.parseInner(complete)
+        def replay = modernCall('hub_manage_rule_machine', args, stateId)
+
+        then:
+        complete.result.resultType == 'complete'
+        terminal.success == true
+        terminal.patchResults.findAll { it.op == operation }.collectMany { it.results }.size() == 3
+        terminal.patchResults.count { it.op == 'addAction' } == 1
+        actions*.deviceIds == (operation == 'addActions' ? [[11], [12], [13], [99]] : [[99]])
+        triggers.size() == (operation == 'addTriggers' ? 3 : 0)
+        clicks.count('updateRule') == 1
+        runInMillisCalls.size() == 2
+        mcpDriver.parseInner(replay) == terminal
+        !JsonOutput.toJson([actions, record.nextArguments, terminal]).contains('__reqT0')
+
+        where:
+        operation << ['addActions', 'addTriggers']
+    }
+
+    // _rmAddTrigger is private; exercise its real wizard using schema reads and primitive writes.
+    private void installTriggerWizard(List triggers) {
+        int editorIndex = 0
+        Map written = [:]
+        Closure config = { String page ->
+            JsonOutput.toJson([app: [id: 1, installed: true, name: 'Rule-5.1'],
+                configPage: [name: page, error: null, sections: [[input: [
+                    [name: "tCapab${editorIndex}".toString(), type: 'enum', options: ['Switch']],
+                    [name: "tstate${editorIndex}".toString(), type: 'enum', options: ['on', 'off']],
+                    [name: "isCondTrig.${editorIndex}".toString(), type: 'bool']]]]], settings: [:]])
+        }
+        hubGet.register('/installedapp/configure/json/1/selectTriggers') { config('selectTriggers') }
+        hubGet.register('/installedapp/configure/json/1/mainPage') { config('mainPage') }
+        hubGet.register('/installedapp/statusJson/1') {
+            JsonOutput.toJson([appSettings: (0..<triggers.size())
+                .collect { [name: "tCapab${it + 1}".toString(), value: 'Switch'] }])
+        }
+        script.metaClass._rmWriteSettingOnPage = { Integer id, String page, String key, Object value,
+                                                  List applied, String hint = null, List skipped = null,
+                                                  Map cache = null ->
+            written[key] = value
+            applied << [key: key, value: value]
+        }
+        script.metaClass._rmClickAppButton = { Integer id, String name, String attr = null,
+                                               String page = null, Map cache = null ->
+            clicks << name
+            if (attr == 'moreCond') editorIndex++
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            if (body.currentPage == 'selectTriggers' && body.containsKey('_action_href_name|mainPage|0')) {
+                triggers << [state: written["tstate${editorIndex}".toString()]]
+                clock.addAndGet(triggers.size() == 1 ? 120001L : 10L)
+            }
+            [status: 200, data: config('mainPage')]
+        }
+        // Trigger commits consume the long first item; the later action patch is short.
+        itemElapsed = { int index -> 10L }
+    }
+
+    def "walk drive retains inherited page and defers mainPage Done across worker slices"() {
+        given:
+        settingsMap.useGateways = false
+        def walked = []
+        int finalized = 0
+        script.metaClass._rmWalkStep = { Integer id, Map spec ->
+            if (spec.operation == 'drive') return script._rmDriveWalkSteps(id, spec)
+            walked << new LinkedHashMap(spec)
+            clock.addAndGet(walked.size() == 1 ? 120001L : 10L)
+            [success: true, page: spec.page]
+        }
+        hubGet.register('/installedapp/configure/json/1/mainPage') {
+            JsonOutput.toJson([app: [id: 1], configPage: [name: 'mainPage', sections: []]])
+        }
+        hubGet.register('/installedapp/statusJson/1') { JsonOutput.toJson([appSettings: []]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            if (path == '/installedapp/update/json' && body._action_update == 'Done') finalized++
+            [status: 200, data: '{}']
+        }
+        def steps = [[page: 'selectActions', operation: 'done'],
+                     [operation: 'introspect'], [operation: 'done']]
+        def args = [appId: 1, confirm: true, walkStep: [operation: 'drive', steps: steps]]
+        String stateId = modernCall('hub_set_native_app', args).result.requestState
+
+        when:
+        def paused = modernCall('hub_set_native_app', args, stateId)
+        Map record = atomicStateMap.mrtrRequests[stateId] as Map
+
+        then:
+        walked.size() == 1
+        assertPause(paused, stateId, 'hub_set_native_app')
+        record.nextArguments.walkStep.steps == steps.drop(1)
+        record.nextArguments.walkStep.page == 'selectActions'
+        finalized == 0
+
+        when:
+        clock.addAndGet(60000L)
+        def complete = modernCall('hub_set_native_app', args, stateId)
+        def terminal = mcpDriver.parseInner(complete)
+        def replay = modernCall('hub_set_native_app', args, stateId)
+
+        then:
+        complete.result.resultType == 'complete'
+        terminal.success == true
+        terminal.steps.size() == 3
+        terminal.stepsRun == 3
+        walked*.page == ['selectActions', 'selectActions', 'selectActions']
+        finalized == 1
+        runInMillisCalls.size() == 2
+        mcpDriver.parseInner(replay) == terminal
+        !JsonOutput.toJson(walked).contains('__reqT0')
+    }
+
+    @Unroll
+    def "the eight-slice #shape cap retains exact remaining work and deferred finalization guidance"() {
+        given:
+        settingsMap.useGateways = false
+        itemElapsed = { int index -> 120001L }
+        // Force the existing safe checkpoint too, so this isolates cap data loss on older code.
+        script.metaClass._timeBudgetExceeded = { Long requestT0 -> true }
+        def specs = actionSpecs(10)
+        def edit = shape == 'bulk' ? [addActions: specs] : [patches: specs.collect { [addAction: it] }]
+        def args = [appId: 1, confirm: true] + edit
+        String stateId = modernCall('hub_set_rule', args).result.requestState
+
+        when:
+        Map response
+        for (int slice = 1; slice <= 8; slice++) {
+            response = modernCall('hub_set_rule', args, stateId)
+            if (slice < 8) assert response.result.resultType == 'input_required'
+        }
+        def terminal = mcpDriver.parseInner(response)
+        def replay = modernCall('hub_set_rule', args, stateId)
+
+        then:
+        response.result.resultType == 'complete'
+        response.result.isError == true
+        terminal.status == 'continuation_limit'
+        terminal.mrtr.rounds == 8
+        actions == specs.take(8)
+        runInMillisCalls.size() == 8
+        clicks.count('updateRule') == 0
+        terminal[remainingField] == (shape == 'bulk' ? specs.drop(8) : specs.drop(8).collect { [addAction: it] })
+        terminal.resume.note.contains('updateRule')
+        terminal.resume.note.contains('remaining')
+        (shape == 'bulk' ? terminal.aggregate.actions : terminal.aggregate.patchResults).size() == 8
+        mcpDriver.parseInner(replay) == terminal
+        script._activeWrites().isEmpty()
+
+        when: 'an explicit follow-up submits only the exact unprocessed work'
+        def remainingEdit = [(shape == 'bulk' ? 'addActions' : 'patches'): terminal[remainingField]]
+        def followup = [appId: 1, confirm: true] + remainingEdit
+        String nextId = modernCall('hub_set_rule', followup).result.requestState
+        modernCall('hub_set_rule', followup, nextId)
+        def finished = modernCall('hub_set_rule', followup, nextId)
+
+        then:
+        finished.result.resultType == 'complete'
+        mcpDriver.parseInner(finished).success == true
+        actions == specs
+        clicks.count('updateRule') == 1
+
+        where:
+        shape     | remainingField
+        'bulk'    | 'addActionsRemaining'
+        'patches' | 'patchesRemaining'
+    }
+}
