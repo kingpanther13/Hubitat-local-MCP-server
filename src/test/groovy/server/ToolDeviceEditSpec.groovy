@@ -761,6 +761,64 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('No such driver type')
         result.note.contains('hub_list_drivers')
+        !hubGet.calls.any { it.path == '/device/createVirtual' }
+    }
+
+    def "toolCreateDevice retries an exact Driver not found refusal through the current Vue createVirtual path"() {
+        given: 'the compatible-catalog installer refuses a user driver, while the manual add-by-driver endpoint accepts it'
+        hubGet.register('/device/sysDriverByIdJson/500') { params ->
+            '{"success":false,"errorMessage":"Driver not found"}'
+        }
+        hubGet.register('/device/createVirtual?deviceTypeId=500') { params ->
+            // Current Vue treats a returned deviceId as success; this response has no success flag.
+            '{"deviceId":777}'
+        }
+        hubGet.register('/device/fullJson/777') { params ->
+            '{"device":{"id":777,"label":"Custom Software Device","name":"Custom Software Driver","deviceTypeName":"Custom Software Driver","virtual":true,"capabilities":["Switch"]}}'
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '777'
+        result.deviceTypeId == '500'
+        hubGet.calls*.key == [
+            '/device/sysDriverByIdJson/500',
+            '/device/createVirtual?deviceTypeId=500',
+            '/device/fullJson/777'
+        ]
+    }
+
+    def "toolCreateDevice does not retry after an ambiguous primary create exception"() {
+        given:
+        hubGet.register('/device/sysDriverByIdJson/500') { params ->
+            throw new RuntimeException('connection dropped after request')
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('Hub call failed')
+        !hubGet.calls.any { it.path == '/device/createVirtual' }
+    }
+
+    def "toolCreateDevice does not retry an explicit refusal that carries a possible created device id"() {
+        given:
+        hubGet.register('/device/sysDriverByIdJson/500') { params ->
+            '{"success":false,"errorMessage":"Driver not found","deviceId":777}'
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'Driver not found'
+        !hubGet.calls.any { it.path == '/device/createVirtual' }
     }
 
     def "toolCreateDevice returns a structured error (not a thrown error) when the create body is not JSON"() {
@@ -774,6 +832,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('Hub call failed')
         result.note.contains('hub_list_drivers')
+        !hubGet.calls.any { it.path == '/device/createVirtual' }
     }
 
     def "toolCreateDevice surfaces a non-fatal warning when BOTH updateLabel AND the wholesale fallback fail"() {
