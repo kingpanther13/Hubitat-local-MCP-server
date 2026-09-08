@@ -82,6 +82,50 @@ class AppClonerDiscoverySafetySpec extends ToolSpecBase {
     }
 
     @Unroll
+    def "#era clone refuses a #scenario parent identity before any wizard request"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        def rawRequests = []
+        def posts = []
+        def disabled = []
+        int parentReads = 0
+        Map sourceApp = [id: 100, label: 'Source Rule']
+        if (scenario != 'missing') sourceApp.parentAppId = parentValue
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson([app: sourceApp, childApps: []])
+        }
+        hubGet.register('/installedapp/configure/json/21') {
+            parentReads++
+            JsonOutput.toJson([app: [id: 21], childApps: []])
+        }
+        stubClonerWizard(rawRequests, posts, disabled)
+        Map args = [sourceAppId: 100, confirm: true, stageDisabled: true, newName: 'Requested Copy']
+        Map rec = [outerTool: 'hub_clone_native_app', leafTool: 'hub_clone_native_app']
+
+        when:
+        if (era == 'modern') script._mrtrCloneNativeAppSlice(rec, args)
+        else script.toolCloneNativeApp(args)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('no numeric parentAppId')
+        parentReads == 0
+        rawRequests == []
+        posts == []
+        disabled == []
+        !rec.containsKey('continuation')
+
+        where:
+        [era, scenario, parentValue] << ['legacy', 'modern'].collectMany { mode ->
+            [['missing', null], ['null', null], ['nonnumeric', 'unknown'],
+             ['empty', ''], ['fractional', 21.5], ['overflowing', '2147483648']].collect {
+                [mode, it[0], it[1]]
+            }
+        }
+    }
+
+    @Unroll
     def "#era #operation accepts a verified empty parent child list"() {
         given:
         settingsMap.enableWrite = true
