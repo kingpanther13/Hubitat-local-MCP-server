@@ -252,7 +252,9 @@ def toolListVirtualDevices(args) {
     }
 
     int startIndex = Math.min(offset, devices.size())
-    int endIndex = limit > 0 ? Math.min(startIndex + limit, devices.size()) : devices.size()
+    int endIndex = limit > 0
+        ? (int) Math.min(((long) startIndex) + limit, devices.size())
+        : devices.size()
     def page = devices.subList(startIndex, endIndex)
     def result = [
         devices: page,

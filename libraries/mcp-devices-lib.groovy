@@ -1108,7 +1108,17 @@ private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple =
     if (multiple) {
         if (raw == '') return [valid: true, value: []]
         if (raw instanceof List) return [valid: true, value: raw.collect { it?.toString() }]
-        if (raw instanceof String) return [valid: true, value: raw.split(',').collect { it.trim() }]
+        if (raw instanceof String) {
+            if (raw.trim().startsWith('[')) {
+                try {
+                    def selection = new groovy.json.JsonSlurper().parseText(raw)
+                    if (selection instanceof List) return [valid: true, value: selection.collect { it?.toString() }]
+                } catch (Exception ignored) {
+                    // Non-JSON option names still use the native comma-separated representation.
+                }
+            }
+            return [valid: true, value: raw.split(',').collect { it.trim() }]
+        }
         return [valid: false, value: null]
     }
     if (raw == '') return [valid: true, value: raw]

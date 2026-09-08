@@ -3005,10 +3005,28 @@ class TestRunner:
                 })
                 matches = [row for row in catalog.get("drivers", []) if row.get("name") == driver_name]
                 assert len(matches) == 1, f"fixture driver type missing or ambiguous: {matches}"
+                custom_type = int(matches[0]["id"])
+                # Hubitat's system-device creator does not consistently accept freshly installed
+                # user-driver type IDs. Allocate with a built-in, then use the native edit path.
                 created = self._write_once("hub_manage_devices", "hub_create_device", {
-                    "deviceTypeId": str(matches[0]["id"]), "label": label, "confirm": True,
+                    "deviceTypeId": self._driver_type_id("Virtual Switch"),
+                    "label": label, "confirm": True,
                 }, "unlisted configuration device create")
                 device_id = created.get("deviceId")
+                assert created.get("success") is True and device_id, f"fixture device create failed: {created}"
+                assigned = self._write_once("hub_manage_devices", "hub_update_device", {
+                    "deviceId": device_id, "deviceTypeId": custom_type, "confirm": True,
+                }, "unlisted configuration fixture driver assignment")
+                assert assigned.get("success") is True, f"fixture driver assignment failed: {assigned}"
+                initialized = self._write_once("hub_manage_devices", "hub_update_device", {
+                    "deviceId": device_id,
+                    "preferences": {
+                        name: {"type": kind, "value": value}
+                        for name, (kind, value) in expected.items()
+                    },
+                }, "unlisted configuration fixture preference initialization")
+                assert initialized.get("success") is True, \
+                    f"fixture preference initialization failed: {initialized}"
             else:
                 dni = label
                 self.created_device_dnis.append(dni)
@@ -12585,14 +12603,26 @@ class TestRunner:
         """A rejected write is recoverable in the response, native logs, and MCP logs
         even at the default error threshold. The deliberately invalid variable type
         guarantees no mutation if the acknowledgment gate itself regresses."""
+        # Modern native-log reads use a 30-second MRTR snapshot cache keyed only
+        # by app/type, so an immediate before/after pair can return the same
+        # payload. A legacy-era read bypasses that continuation cache and fetches
+        # /logs/past/json directly; the exact row-delta assertions remain unchanged.
+        native_reader = LegacyEraClient(self.client, verbose=self.client.verbose)
+        native_args = {
+            "mode": "hub", "level": "ERROR",
+            "pattern": "Mandatory best-practice acknowledgment", "limit": 50,
+        }
+        if self.server_app_id:
+            native_args["appId"] = self.server_app_id
+
         try:
             for threshold in ("error", "debug"):
                 self._set_bps(enableMandatoryBPS=True, mcpLogLevel=threshold)
                 mcp_before = self.client.call_tool("hub_get_logs", {
                     "mode": "mcp", "level": "error", "component": "server", "limit": 50})
-                native_before = self.client.call_tool("hub_get_logs", {
-                    "mode": "hub", "level": "ERROR",
-                    "pattern": "Mandatory best-practice acknowledgment", "limit": 50})
+                native_before = native_reader.call_tool("hub_manage_logs", {
+                    "tool": "hub_get_logs", "args": native_args,
+                }, replay_safe=True)
                 try:
                     self.client.call_tool("hub_manage_variables", {
                         "tool": "hub_create_variable",
@@ -12616,11 +12646,17 @@ class TestRunner:
                     for entry in fresh_mcp
                 ), f"{threshold} threshold did not retain a fresh refusal in MCP logs: {fresh_mcp}"
 
-                native_logs = self.client.call_tool("hub_get_logs", {
-                    "mode": "hub", "level": "ERROR",
-                    "pattern": "Mandatory best-practice acknowledgment", "limit": 50})
-                fresh_native = _entries_new_since_snapshot(
-                    native_logs.get("logs", []), native_before.get("logs", []))
+                fresh_native = []
+                for attempt in range(4):
+                    native_logs = native_reader.call_tool("hub_manage_logs", {
+                        "tool": "hub_get_logs", "args": native_args,
+                    }, replay_safe=True)
+                    fresh_native = _entries_new_since_snapshot(
+                        native_logs.get("logs", []), native_before.get("logs", []))
+                    if fresh_native:
+                        break
+                    if attempt < 3:
+                        time.sleep(0.25)
                 assert any(
                     "Mandatory best-practice acknowledgment" in entry.get("message", "")
                     for entry in fresh_native

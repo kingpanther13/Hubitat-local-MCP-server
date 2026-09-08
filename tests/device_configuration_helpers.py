@@ -1,5 +1,7 @@
 """Assertions for the test driver's independent, bounded native snapshots."""
 
+import json
+
 
 def _rows_by_name(document, surface):
     rows = document.get(surface)
@@ -39,7 +41,10 @@ def assert_native_preferences(native, configuration, expected):
         assert settings[name].get("type") == kind, f"native {name} type differs: {settings[name]}"
         for surface, row, key in (("settings", settings[name], "value"), ("inputValues", inputs[name], "inputValue")):
             assert key in row, f"native {surface} {name} is missing {key}"
-            assert _native_wire(row[key]) == _native_wire(value), \
+            expected_wire = [_native_wire(value)]
+            if isinstance(value, list):
+                expected_wire.extend((json.dumps(value), json.dumps(value, separators=(",", ":"))))
+            assert _native_wire(row[key]) in expected_wire, \
                 f"native {surface} {name} saved {row[key]!r}, expected {value!r}"
         pref = preferences[name]
         assert pref.get("type") == kind, f"configuration {name} type differs: {pref}"

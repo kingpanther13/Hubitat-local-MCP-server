@@ -49,7 +49,8 @@ The linked-device DNI selector reads `/device/accessibleLinkedDevices`, takes
 `.devices`, and offers `${hubId}-${deviceId}` with `linkedLocally` entries disabled.
 The special value `0` keeps the current device link; it must not be mistaken for
 an actual new identity. Preferences use native booleans/numbers/arrays in their
-JSON values. Multiple-enum stored input values are comma-separated strings. All
+JSON values. Multiple-enum storage can use JSON-array strings or comma-separated
+strings; the first live configuration E2E observed JSON-array strings. All
 three captured device models put settings at the root; nested `device.settings`
 is not an evidenced compatibility source.
 
@@ -60,7 +61,7 @@ to comma-separated strings through `URLSearchParams`. The merged form preserves
 deviceTypeId,deviceTypeReadableType,roomId,meshEnabled,retryEnabled,meshFullSync,
 homeKitEnabled,locationId,hubId,groupId,dashboardIds,tags,defaultIcon,notes` plus
 existing `id,version,controllerType`. `homeKitEnabled` comes from the root;
-`dashboardIds` comes from root selected dashboard rows. False, zero, empty string
+`dashboardIds` comes from selected dashboard rows at the root. False, zero, empty string
 and version zero must survive merge and encoding. Other native device data stays
 outside the form and must survive independent readback.
 

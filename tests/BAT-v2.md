@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-### Device configuration inspection and restoration
+## Device configuration inspection and restoration
 
 **Read-only prompt:** "Show the logging preferences and their current saved values for this device, identify its actual driver, and explain which preference controls descriptive logging. Show the available settings and the other device information I can inspect. Distinguish saved values from defaults, and leave everything unchanged."
 

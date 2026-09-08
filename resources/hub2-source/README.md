@@ -28,6 +28,10 @@ using the filenames mapped by the live shell. Their source paths are
 These are the primary device interoperability reference. The current UI reads
 `/device/fullJson/<id>` and consumes `settings`, `inputValues`, and `device`
 separately. Driver declarations/defaults and saved device values are distinct.
+The independent E2E observer on firmware 2.5.1.174 returned a multiple-enum
+saved value as a JSON-array string (`["red"]`). Device reads accept that encoding
+as well as comma-separated selections; do not infer a firmware boundary from
+the different read-only capture and E2E hub versions.
 The shared component supplies the current `/device/update` form and
 `/device/updateAssistants` JSON contracts. The old monolith remains historical
 reference for components whose current chunks have not been captured.
