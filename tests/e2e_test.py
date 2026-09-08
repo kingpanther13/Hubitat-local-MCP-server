@@ -14378,8 +14378,8 @@ class TestRunner:
                 print(f"  - {r['name']}: {r['message']}")
 
         print("=" * 60)
-        # Green ONLY when every test ran AND passed -- zero failures and zero skips.
-        return total_fail == 0 and total_skip == 0
+        # A passing run must also leave the permanent fixtures ready for the next run.
+        return total_fail == 0 and total_skip == 0 and not self._fixture_reset_failures
 
 
 # ---------------------------------------------------------------------------
