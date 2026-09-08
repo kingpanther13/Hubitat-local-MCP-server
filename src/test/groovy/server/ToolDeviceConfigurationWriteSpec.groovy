@@ -368,21 +368,21 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             sent = [path: path, body: new JsonSlurper().parseText(body)]
             def row = model.settings.find { it.name == 'modes' }
-            def wireValue = sent.body.preferences[0].value
-            if (wireValue instanceof List) {
+            def postedValue = sent.body.preferences[0].value
+            if (postedValue instanceof List) {
                 // Live firmware collapses raw arrays into scalar storage/runtime values;
                 // an empty raw array also drops the stored row's multiple declaration.
-                runtimeValue = wireValue.join(',')
-                row.multiple = !wireValue.isEmpty()
-                row.deviceId = wireValue.isEmpty() ? null : 10
-                row.id = wireValue.isEmpty() ? null : 99
-                row.value = wireValue.isEmpty() ? null : runtimeValue
+                runtimeValue = postedValue.join(',')
+                row.multiple = !postedValue.isEmpty()
+                row.deviceId = postedValue.isEmpty() ? null : 10
+                row.id = postedValue.isEmpty() ? null : 99
+                row.value = postedValue.isEmpty() ? null : runtimeValue
             } else {
-                runtimeValue = new JsonSlurper().parseText(wireValue)
+                runtimeValue = new JsonSlurper().parseText(postedValue)
                 row.multiple = true
                 row.deviceId = 10
                 row.id = 99
-                row.value = wireValue
+                row.value = postedValue
             }
             [success: true]
         }
