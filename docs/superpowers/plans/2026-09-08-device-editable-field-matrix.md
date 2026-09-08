@@ -50,7 +50,10 @@ The linked-device DNI selector reads `/device/accessibleLinkedDevices`, takes
 The special value `0` keeps the current device link; it must not be mistaken for
 an actual new identity. Preferences use native booleans/numbers/arrays in their
 JSON values. Multiple-enum storage can use JSON-array strings or comma-separated
-strings; the first live configuration E2E observed JSON-array strings. All
+strings; the first live configuration E2E observed JSON-array strings. A native
+empty array deletes the preference row and loses its multi-select flag. Native
+empty multi-select saves therefore send the SDK JSON-array string `"[]"`; live
+verification confirms retained metadata and an actual empty List in the driver. All
 three captured device models put settings at the root; nested `device.settings`
 is not an evidenced compatibility source.
 

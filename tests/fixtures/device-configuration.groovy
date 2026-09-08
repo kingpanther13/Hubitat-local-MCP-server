@@ -50,7 +50,8 @@ def captureConfiguration(String nonce) {
         def values = nativePage.inputValues instanceof List ? nativePage.inputValues.findAll { names.contains(it.name) }.collect {
             [name: it.name, inputValue: it.inputValue]
         } : null
-        def snapshot = [nonce: nonce, deviceId: device.id.toString(), settings: rows, inputValues: values]
+        def snapshot = [nonce: nonce, deviceId: device.id.toString(), settings: rows, inputValues: values,
+                        runtimeMultiple: settings.probeMultiple, runtimeMultipleIsList: settings.probeMultiple instanceof List]
         def info = [nonce: nonce, deviceId: device.id.toString()]
         ["name", "label", "deviceNetworkId", "deviceTypeId", "notes", "maxEvents", "maxStates",
          "spammyThreshold", "tags", "defaultIcon", "showOnHome", "defaultCurrentState",

@@ -3201,12 +3201,20 @@ class TestRunner:
                     update({"preferences": {name: {"type": kind, "value": value}}})
                     native, info = capture()
                     assert_native_preferences(native, configuration(), desired)
+                    if name == "probeMultiple":
+                        assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == value, \
+                            f"driver did not receive the requested multi-selection: {native}"
+                        multiple_row = next(row for row in native["settings"] if row["name"] == name)
+                        assert multiple_row.get("multiple") in (True, "true"), \
+                            f"multi-selection edit lost its native declaration: {multiple_row}"
                     assert_preference_pane_preserved(info)
                 finally:
                     update({"preferences": {name: {"type": kind, "value": original}}})
                     native, info = capture()
                     assert_preference_pane_preserved(info)
                     assert_native_preferences(native, configuration(), expected)
+                    assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == expected["probeMultiple"][1], \
+                        f"driver multi-selection was not restored: {native}"
 
             try:
                 update({"preferences": {"probeText": {"type": "text", "value": None}}})
