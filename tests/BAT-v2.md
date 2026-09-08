@@ -3057,7 +3057,8 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 #### Metadata cache regression after the mode switch
 
-On an authorized test hub, list tools in flat mode, return to gateway mode, and refresh the client.
+On an authorized test hub, switch to flat mode and call `hub_list_rooms` directly; a gateway call must be refused.
+Return to gateway mode and verify `hub_read_rooms(tool='hub_list_rooms')` works. Avoid the full flat tools/list fetch.
 Call `hub_read_rooms(tool='hub_get_room', args={})` twice, then search for `get room`.
 Both invalid calls must identify `room` as required without `FLAT_TRIM` text; search must still find
 `hub_get_room`. Repeat the existing Read/Write, Advanced override, and BPS gate scenarios after warming

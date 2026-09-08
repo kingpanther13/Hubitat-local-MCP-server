@@ -29,6 +29,57 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
+@pytest.mark.parametrize("failure", [None, "flip", "read", "restore"])
+def test_metadata_mode_switch_is_registered_and_restores_without_catalog(monkeypatch, failure):
+    name = "test_metadata_after_mode_switch"
+    assert ("infrastructure", name, name) in et.TEST_REGISTRY
+    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
+    gateway, restores, missing, searches = True, 0, 0, 0
+
+    def send(method, params=None, **_kwargs):
+        nonlocal gateway, restores, missing, searches
+        assert method == "tools/call", "mode regression must not fetch tools/list"
+        tool, args = params["name"], params["arguments"]
+        if tool == "hub_update_mcp_settings":
+            wanted = args["settings"]["useGateways"]
+            if wanted:
+                restores += 1
+                if failure == "restore" and restores == 1:
+                    raise et.McpError("temporary restore failure")
+            gateway = wanted
+            if not wanted and failure == "flip":
+                raise et.McpError("lost mode-change response")
+            return _raw_tool_body({"success": True})
+        if tool == "hub_list_rooms":
+            assert not gateway
+            if failure == "read":
+                raise et.McpError("flat read failure")
+            return _raw_tool_body({"rooms": []})
+        if tool == "hub_read_rooms":
+            if not gateway:
+                raise et.McpError("Gateway is disabled - useGateways is OFF")
+            if args["tool"] == "hub_get_room":
+                missing += 1
+                raise et.McpError("Missing required parameter for hub_get_room: room")
+            return _raw_tool_body({"rooms": []})
+        assert tool == "hub_search_tools" and gateway
+        searches += 1
+        return _raw_tool_body({"results": [{"tool": "hub_get_room"}]})
+
+    monkeypatch.setattr(client, "_send", send)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    if failure in {"flip", "read"}:
+        with pytest.raises(et.McpError, match="lost mode-change response|flat read failure"):
+            getattr(runner, name)()
+    else:
+        getattr(runner, name)()
+        assert (missing, searches) == (2, 1)
+    assert gateway
+    assert restores == (2 if failure == "restore" else 1)
+
+
 def _watchdog_response(logs):
     return SimpleNamespace(
         raise_for_status=lambda: None,
