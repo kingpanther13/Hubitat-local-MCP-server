@@ -473,3 +473,13 @@ one appended span using the graph pause state; do not strip tags or decode entit
 from either builder's own name. The classic builder adds no decoration even when
 paused. This differs from HTML/config-page labels and exposed false save-verification
 failures that the earlier encoded-name test fixtures did not represent.
+
+The exact trailing ` <span class='text-red'>(Paused)</span>` is a native graph
+builder collision, not a supported literal-name round trip. Direct HTTP save,
+pause, and resume calls on a device-free scratch rule confirmed that a save while
+unpaused preserves this suffix, pausing leaves only one copy, and resuming removes
+it from the stored name. The paused response cannot distinguish this literal suffix
+from runtime decoration. The regression cases therefore exercise ordinary literal
+markup and entities, with the exact marker inside (rather than at the end of) a
+name in synthetic reader coverage. They do not claim to repair Hubitat's native
+pause/resume naming collision.

@@ -846,7 +846,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         [format, paused, requested] << [
             ['classic', 'graph'], [false, true],
             ['Literal <span>(Paused)</span>', 'Literal &amp; (Paused)',
-             "Literal <span class='text-red'>(Paused)</span>"]
+             "Literal <span class='text-red'>(Paused)</span> inside name"]
         ].combinations()
     }
 

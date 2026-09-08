@@ -1080,8 +1080,8 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
 }
 
 private String _vrbBareName(Object raw, boolean paused) {
-    // Remove exactly the graph endpoint's appended span. The own name can itself
-    // contain identical markup or literal entity spellings; it is not HTML-encoded.
+    // Remove the graph endpoint's runtime suffix without decoding raw name text.
+    // Hubitat itself conflates an identical literal suffix with its pause marker.
     def s = raw?.toString()
     if (s != null && paused) {
         s = s.replaceFirst(/ <span class=['"]text-red['"]>\(Paused\)<\/span>$/, "")

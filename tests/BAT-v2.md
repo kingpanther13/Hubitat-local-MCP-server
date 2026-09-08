@@ -4929,6 +4929,11 @@ Set `DEVICE_ID=<id>` to override the default switch device ID (1063).
 
 **Expected**: Health reports `paused:true` after pause and `paused:false` after resume, with the same literal name both times. A dedicated Visual Rule read and rename verification preserve that name too, including literal markup and entity spellings. Backup and restore of a scratch Visual Rule preserve its own name and pause state. If neither compiled nor status pause evidence is readable and no tagged pause decoration exists, health returns `paused:null` instead of guessing from a bare suffix. Use single-rule reads for state verification; the lightweight Visual Rule list has its own suffix-based detection. No existing automation is modified.
 
+The graph builder's exact trailing ` <span class='text-red'>(Paused)</span>` is
+reserved in practice: native pause/resume conflates it with runtime decoration
+and removes it on resume. Do not interpret that platform collision as evidence
+that ordinary literal markup or a bare `(Paused)` suffix is a pause signal.
+
 ### T709 - Clone and import report whether inactive staging actually landed
 
 **Prompt**: "Create an empty throwaway rule and make an inactive clone and an inactive import of its export. Verify that both new apps are disabled and the source is unchanged. If staging fails after creation, identify the created app and disable it without creating another copy. Clean up all test apps."

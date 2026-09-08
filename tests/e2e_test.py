@@ -8144,7 +8144,7 @@ class TestRunner:
         return None
 
     def _check_visual_literal_pause_name(self, app_id: Any, name: str) -> None:
-        names = (name, name + " &amp; <span>(Paused)</span> <span class='text-red'>(Paused)</span>")
+        names = (name, name + " &amp; <span>(Paused)</span>")
         for expected_name in names:
             for paused in (True, False):
                 changed = self.client.call_tool("hub_manage_rule_machine", {
