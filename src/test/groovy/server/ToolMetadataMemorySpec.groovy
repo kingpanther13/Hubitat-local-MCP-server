@@ -23,6 +23,13 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         builds == 1
         !atomicStateMap.containsKey('requiredParamsByTool')
         !atomicStateMap.containsKey('requiredParamsByToolFingerprint')
+
+        when: 'another execution has no reason to read persisted metadata on the warm path'
+        def peer = newCompiledScriptInstance(app: new TestChildApp(id: 402L), state: [:],
+            atomicState: { throw new IllegalStateException('unexpected durable read') })
+
+        then:
+        peer.requiredParamsByTool().hub_example == ['value']
     }
 
     @Unroll
@@ -39,6 +46,7 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         'getToolDisplayMeta'         | { it.hub_get_room.title = 'poisoned' }
         'getReadOnlyToolNames'        | { it.clear() }
         'getIdempotentWriteToolNames' | { it.clear() }
+        'getIdempotentToolNames'      | { it.clear() }
         'getOpenWorldToolNames'       | { it.clear() }
         'getDeveloperModeOnlyToolNames' | { it.clear() }
         'requiredParamsByTool'       | { it.hub_get_room.clear() }

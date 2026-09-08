@@ -3055,6 +3055,15 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 **Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{useGateways:<flipped>}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — this is the regression guard for the dev-mode gateway self-switch), result `{success:true, updated:{useGateways:<flipped>}, message:"...may need to reconnect to refresh cached tool schemas..."}`. The WARN `[developer-mode]` audit line fires. AI explains the client must reconnect (`/mcp refresh`) before tools/list reflects the new gateway-vs-flat surface. Teardown restores the original value.
 
+#### Metadata cache regression after the mode switch
+
+On an authorized test hub, list tools in flat mode, return to gateway mode, and refresh the client.
+Call `hub_read_rooms(tool='hub_get_room', args={})` twice, then search for `get room`.
+Both invalid calls must identify `room` as required without `FLAT_TRIM` text; search must still find
+`hub_get_room`. Repeat the existing Read/Write, Advanced override, and BPS gate scenarios after warming
+the catalog: settings must take effect immediately despite cached metadata. Preserve the original settings.
+This scenario requires no room creation or device command.
+
 ### T223c — Recent rule baseline reuse and strict per-write opt-in
 
 ```json

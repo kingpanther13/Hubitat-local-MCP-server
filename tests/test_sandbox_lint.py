@@ -1037,6 +1037,11 @@ def test_retired_persisted_key_guard_flags_dot_writes(store, key):
     assert findings[0]["line"] == 1
 
 
+def test_scan_source_integrates_retired_persisted_key_guard():
+    """The repository scan path reports retired persisted writes, not only the helper API."""
+    assert "PERSISTED_DERIVED_KEY" in hits("state.toolSearchTokens = tokenize(defs)")
+
+
 @pytest.mark.parametrize("store", ("state", "atomicState"))
 @pytest.mark.parametrize("quote", ("'", '\"'))
 @pytest.mark.parametrize("key", _RETIRED_DERIVED_KEYS)

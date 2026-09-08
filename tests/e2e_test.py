@@ -2123,6 +2123,19 @@ class TestRunner:
                 time.sleep(1.0)
             assert restored, f"CRITICAL: could not restore gateway mode after the flat-mode test: {last}"
 
+        # A flat listing must not poison the shared metadata used by a later gateway call.
+        missing = []
+        for _ in range(2):
+            try:
+                self.client.call_tool("hub_read_rooms", {"tool": "hub_get_room", "args": {}})
+                raise AssertionError("gateway accepted a missing required room")
+            except McpError as exc:
+                missing.append(str(exc))
+        assert all("Missing required parameter" in msg and "room" in msg for msg in missing), missing
+        assert all("FLAT_TRIM" not in msg for msg in missing), missing
+        found = self.client.call_tool("hub_search_tools", {"query": "get room", "maxResults": 10})
+        assert any(row.get("tool") == "hub_get_room" for row in found.get("results", [])), found
+
     @test("infrastructure")
     def test_search_tools_counts_distinct_not_gateway_rows(self) -> None:
         # hub_search_tools builds its BM25 corpus with one row per (gateway, tool)

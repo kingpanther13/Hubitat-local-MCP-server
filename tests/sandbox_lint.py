@@ -464,6 +464,56 @@ def _scrub_gstring_body(body: str) -> str:
 # Scanning
 # ---------------------------------------------------------------------------
 
+RETIRED_PERSISTED_DERIVED_KEYS = (
+    "toolSearchCorpus",
+    "toolSearchTokens",
+    "toolSearchCorpusVersion",
+    "toolSearchCorpusFingerprint",
+    "requiredParamsByTool",
+    "requiredParamsByToolFingerprint",
+)
+_RETIRED_KEY_PATTERN = "|".join(map(re.escape, RETIRED_PERSISTED_DERIVED_KEYS))
+_RETIRED_DOT_WRITE = re.compile(
+    rf"\b(?:atomicState|state)\s*\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
+    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*\s*=(?!=)"
+)
+_RETIRED_BRACKET_WRITE = re.compile(
+    r"\b(?:atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
+    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*\s*=(?!=)"
+)
+_RETIRED_BRACKET_LITERAL = re.compile(
+    rf"\s*(?P<quote>['\"])(?P<key>{_RETIRED_KEY_PATTERN})(?P=quote)\s*"
+)
+
+
+def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[dict]:
+    """Reject assignments that put retired code-derived caches back in app state."""
+    findings = []
+    source_lines = source.split("\n")
+    for line_num, (line, original) in enumerate(
+        zip(strip_comments_and_strings(source), source_lines), start=1
+    ):
+        keys = [m.group("key") for m in _RETIRED_DOT_WRITE.finditer(line)]
+        for match in _RETIRED_BRACKET_WRITE.finditer(line):
+            start, end = match.span("literal")
+            literal = _RETIRED_BRACKET_LITERAL.fullmatch(original[start:end])
+            if literal:
+                keys.append(literal.group("key"))
+        for key in keys:
+            findings.append({
+                "file": display_path,
+                "line": line_num,
+                "rule": "PERSISTED_DERIVED_KEY",
+                "message": (
+                    f"Do not persist retired code-derived cache `{key}` in state/atomicState; "
+                    "keep derived metadata in class memory. Reads and remove-based migration "
+                    "cleanup remain allowed."
+                ),
+                "severity": "error",
+                "source": original.strip(),
+            })
+    return findings
+
 
 def _strip_line_comment(line: str) -> str:
     """Drop a trailing `//` line comment, leaving `://` (a URL) alone.
@@ -537,6 +587,7 @@ def scan_source(source: str, display_path: str) -> list[dict]:
                     }
                 )
 
+    findings.extend(_scan_retired_persisted_key_writes(display_path, source))
     return findings
 
 
@@ -2848,6 +2899,21 @@ def format_annotation(f: dict) -> str:
 
 SELF_TEST_CASES = [
     # (description, groovy source, list of (rule_id, should_match))
+    (
+        "a retired derived cache dot write is flagged",
+        "atomicState.requiredParamsByTool = built",
+        [("PERSISTED_DERIVED_KEY", True)],
+    ),
+    (
+        "a retired derived cache bracket write is flagged",
+        "state['toolSearchCorpus'] = built",
+        [("PERSISTED_DERIVED_KEY", True)],
+    ),
+    (
+        "remove-based retired cache cleanup is NOT flagged",
+        "atomicState.remove('toolSearchTokens')",
+        [("PERSISTED_DERIVED_KEY", False)],
+    ),
     (
         "querystring embedded in a hubInternalGet path is flagged",
         'def r = hubInternalGet("/device/updateLabel?deviceId=${id}&label=${name}")',
