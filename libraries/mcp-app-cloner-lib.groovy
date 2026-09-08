@@ -320,12 +320,12 @@ def toolCloneNativeApp(args) {
         mcpLog("warn", "rm-native", "hub_clone_native_app: source ${sourceAppId} parentAppId not numeric: ${sourceCfg.app.parentAppId}")
     }
 
-    def preIds = [] as Set
-    if (parentAppId != null) {
-        Map snapshot = _appClonerSnapshotChildren(parentAppId)
-        if (snapshot.isError == true) return snapshot
-        preIds = snapshot.ids as Set
+    if (parentAppId == null) {
+        throw new IllegalArgumentException("Source app ${sourceAppId} has no numeric parentAppId. MCP cannot safely discover its clone; pass a child of the target parent app.")
     }
+    Map snapshot = _appClonerSnapshotChildren(parentAppId)
+    if (snapshot.isError == true) return snapshot
+    def preIds = snapshot.ids as Set
 
     def initRes = _appClonerInit(sourceAppId)
     Integer clonerAppId = initRes.clonerAppId
@@ -1028,12 +1028,12 @@ private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
         } catch (NumberFormatException ignored) {
             mcpLog("warn", "rm-native", "hub_clone_native_app: source ${sourceAppId} parentAppId not numeric: ${sourceCfg.app.parentAppId}")
         }
-        def preIds = []
-        if (parentAppId != null) {
-            Map snapshot = _appClonerSnapshotChildren(parentAppId)
-            if (snapshot.isError == true) return snapshot
-            preIds = snapshot.ids
+        if (parentAppId == null) {
+            throw new IllegalArgumentException("Source app ${sourceAppId} has no numeric parentAppId. MCP cannot safely discover its clone; pass a child of the target parent app.")
         }
+        Map snapshot = _appClonerSnapshotChildren(parentAppId)
+        if (snapshot.isError == true) return snapshot
+        def preIds = snapshot.ids
         def initRes = _appClonerInit(sourceAppId)
         cp = [phase: "clone_clicks", clonerAppId: initRes.clonerAppId,
               referrer: initRes.referrer, configUrl: initRes.configUrl,
