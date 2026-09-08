@@ -300,7 +300,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         preferences.declarationOnly.valueStatus == 'unset'
         preferences.declarationOnly.defaultValue == 'factory-default'
         preferences.values().every {
-            !it.applicable && !it.writable &&
+            it.applicable == false && it.writable == false &&
                 it.reason == 'Driver preferences cannot be saved on a linked device; edit the source device.'
         }
     }

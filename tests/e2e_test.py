@@ -12827,6 +12827,13 @@ class TestRunner:
             res = self.client.call_tool("hub_read_devices", {"tool": "hub_list_devices", "args": {}})
             blob = res if isinstance(res, str) else json.dumps(res)
             assert "Mandatory best-practice" not in blob, f"read-only tool blocked under the gate: {blob[:200]}"
+            device_id = self.get_first_device_id()
+            for mode in ("configuration", "details"):
+                args = {"deviceId": device_id, "mode": mode}
+                if mode == "details":
+                    args["sections"] = ["identity"]
+                detail = self.client.call_tool("hub_read_devices", {"tool": "hub_get_device", "args": args})
+                assert detail.get("mode") == mode, f"keyless {mode} read failed under the BPS gate: {detail}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 

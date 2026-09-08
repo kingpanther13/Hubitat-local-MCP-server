@@ -1320,9 +1320,11 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
             field.valueReference = 'preferences'
             field.readStatus = preferences.status
             field.valuePresent = preferences.status != 'unavailable'
-            field.writable = preferences.status == 'complete'
+            field.applicable = !_deviceFlag(d.linkedDevice)
+            field.writable = field.applicable && preferences.status == 'complete'
             field.remove('reason')
-            if (preferences.reason) field.reason = preferences.reason
+            if (!field.applicable) field.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
+            else if (preferences.reason) field.reason = preferences.reason
         }
         if (name == 'room') field.optionsReference = [gateway: 'hub_read_rooms', tool: 'hub_list_rooms', args: [:]]
         if (name == 'deviceTypeId') field.optionsReference = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'all']]
@@ -1334,7 +1336,8 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
                 if (!(available?.devices instanceof List)) throw new IllegalStateException('Unrecognized linked-device choices')
                 available.devices.each { row ->
                     if (row instanceof Map && row.hubId != null && row.deviceId != null) {
-                        field.options << [value: "${row.hubId}-${row.deviceId}".toString(), label: row.label ?: row.name ?: row.deviceId.toString()]
+                        field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
+                            label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
                     }
                 }
             } catch (Exception ignored) {
@@ -1384,6 +1387,7 @@ private Map _deviceConfigurationInfo(Map fj) {
 
 private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean listed, fields = null) {
     def model = _readDevicePreferenceModel(fj)
+    boolean linkedDevice = (fj?.device instanceof Map) && _deviceFlag(fj.device.linkedDevice)
     def read = [status: model.status, source: "/device/fullJson/${deviceId}".toString()]
     if (model.reason) read.reason = model.reason
     boolean available = fj?.device instanceof Map && !fj.device.isEmpty()
@@ -1393,7 +1397,11 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean l
             editableFields: _deviceConfigurationEditableFields(fj, model, listed),
             preferences: model.entries.collect {
                 def entry = _publicDevicePreference(it)
-                entry.writable = model.status == 'complete' && entry.writable
+                entry.writable = !linkedDevice && model.status == 'complete' && entry.writable
+                if (linkedDevice) {
+                    entry.applicable = false
+                    entry.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
+                }
                 entry
             }, preferenceRead: read,
             deviceInfo: _deviceConfigurationInfo(fj), deviceInfoRead: infoRead,
