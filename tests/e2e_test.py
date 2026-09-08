@@ -2032,13 +2032,22 @@ class TestRunner:
         # visibility filtering) on a deterministic exemplar gateway, so the cheaper
         # enum derivation is sound.
         tools = self.client.list_tools().get("tools", [])
-        entry = next((t for t in tools if t.get("name") == "hub_read_rooms"), None)
-        assert entry is not None, "hub_read_rooms gateway missing from tools/list"
-        enum = (((entry.get("inputSchema") or {}).get("properties") or {}).get("tool") or {}).get("enum") or []
-        catalog = self._get_rooms_catalog()
-        catalog_names = [e.get("name") for e in catalog.get("tools", [])]
-        assert sorted(enum) == sorted(catalog_names), \
-            f"tools/list enum and no-args catalog disagree: {sorted(enum)} vs {sorted(catalog_names)}"
+        for gateway_name in ("hub_read_rooms", "hub_read_devices", "hub_manage_devices"):
+            entry = next((t for t in tools if t.get("name") == gateway_name), None)
+            assert entry is not None, f"{gateway_name} gateway missing from tools/list"
+            enum = (((entry.get("inputSchema") or {}).get("properties") or {}).get("tool") or {}).get("enum") or []
+            catalog = (self._get_rooms_catalog() if gateway_name == "hub_read_rooms"
+                       else self.client.call_tool(gateway_name, {}))
+            assert catalog.get("mode") == "catalog", \
+                f"{gateway_name} no-args call did not return catalog mode: {catalog!r}"
+            catalog_names = [e.get("name") for e in catalog.get("tools", [])]
+            assert sorted(enum) == sorted(catalog_names), \
+                f"{gateway_name} tools/list enum and no-args catalog disagree: " \
+                f"{sorted(enum)} vs {sorted(catalog_names)}"
+            schemas = {item["name"]: item for item in catalog.get("tools", [])}
+            if gateway_name in ("hub_read_devices", "hub_manage_devices"):
+                assert "fields" in schemas["hub_list_devices"]["inputSchema"]["properties"], \
+                    f"{gateway_name} lost the device projection schema during sandbox serialization"
 
     @test("infrastructure")
     def test_flat_leaf_dispatch_still_works(self) -> None:
