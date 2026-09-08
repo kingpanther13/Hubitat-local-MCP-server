@@ -266,14 +266,32 @@ def _partition_new_hub_errors(
     expected = []
     unexpected = []
     for entry in logs:
-        message = str(entry.get("message", entry.get("msg", "")))
-        key = f"{entry.get('name', '')}|{message}"
+        raw_message = str(entry.get("message", entry.get("msg", "")))
+        key = f"{entry.get('name', '')}|{raw_message}"
         if remaining_baseline[key] > 0:
             remaining_baseline[key] -= 1
             continue
-        if remaining[message] > 0:
+
+        # Native mcpLog rows are JSON envelopes prefixed by [MCP1], sometimes
+        # after the hub parser's app|id|name| prefix. Decode only that exact
+        # marker position and complete object shape. A malformed/truncated row
+        # keeps its raw text and therefore cannot be broadly ignored.
+        comparable_message = raw_message
+        marker = "[MCP1] "
+        marker_index = raw_message.find(marker)
+        if marker_index == 0 or (marker_index > 0 and raw_message[:marker_index].endswith("|")):
+            try:
+                envelope = json.loads(raw_message[marker_index + len(marker):])
+                nested = envelope.get("entry") if isinstance(envelope, dict) else None
+                nested_message = nested.get("message") if isinstance(nested, dict) else None
+                if isinstance(nested_message, str):
+                    comparable_message = nested_message
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        if remaining[comparable_message] > 0:
             expected.append(entry)
-            remaining[message] -= 1
+            remaining[comparable_message] -= 1
         else:
             unexpected.append(entry)
     return expected, unexpected
