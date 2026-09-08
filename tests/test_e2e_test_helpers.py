@@ -155,6 +155,68 @@ def test_entries_new_since_snapshot_detects_identical_same_timestamp_duplicate()
     assert fresh == [old, unrelated]
 
 
+def test_watchdog_hub_logs_reads_direct_native_history_without_main_client(monkeypatch):
+    class MainClientMustNotBeUsed:
+        def call_tool(self, _name, _arguments):
+            raise AssertionError("direct native-history proof consulted the main MCP app")
+
+    logs = [
+        {"name": "12:00:01", "level": "ERROR", "message": "first"},
+        {"name": "12:00:02", "level": "ERROR", "message": "second"},
+    ]
+    posted = []
+
+    def post(*args, **kwargs):
+        posted.append((args, kwargs))
+        return _watchdog_response(logs)
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = MainClientMustNotBeUsed()
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", post)
+
+    assert runner._watchdog_hub_logs(level="ERROR", limit=100) == logs
+    assert posted == [((), {
+        "url": "https://watchdog.invalid/mcp",
+        "json": {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "hub_get_hub_logs",
+                "arguments": {"level": "ERROR", "limit": 100},
+            },
+        },
+        "timeout": 30,
+    })]
+
+
+@pytest.mark.parametrize(
+    "response_json",
+    [
+        {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "failed"}},
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body({"success": False, "error": "native logs unavailable"}),
+        },
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body({"success": True, "logs": "not-a-list"}),
+        },
+    ],
+)
+def test_watchdog_hub_logs_fails_closed_on_unusable_payload(monkeypatch, response_json):
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: response_json,
+    )
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace()
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", lambda *args, **kwargs: response)
+
+    with pytest.raises(RuntimeError, match="watchdog.*logs"):
+        runner._watchdog_hub_logs(level="ERROR", limit=100)
+
+
 @pytest.mark.parametrize(
     ("test_status", "reset_failures", "expected"),
     [
