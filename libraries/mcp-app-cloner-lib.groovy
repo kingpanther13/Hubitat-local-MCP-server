@@ -229,6 +229,22 @@ private void _appClonerCommitImportRule(Integer clonerAppId, Integer sourceAppId
     }
 }
 
+private Map _appClonerSnapshotChildren(Integer parentAppId) {
+    // A missing baseline makes existing siblings look newly created. Never start
+    // the wizard unless discovery can exclude every app already under the parent.
+    try {
+        def cfg = _rmFetchConfigJson(parentAppId)
+        if (!(cfg.childApps instanceof List)) {
+            throw new IllegalStateException("missing childApps list")
+        }
+        return [ids: cfg.childApps.collect { it?.id?.toString() }.findAll { it }]
+    } catch (Exception e) {
+        return [success: false, isError: true,
+                error: "Cannot read the child-app snapshot for parent ${parentAppId}: ${e.message}".toString(),
+                note: "Nothing was created. Restore access to the parent app and retry the clone/import."]
+    }
+}
+
 private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preCloneIds, String sourceLabel, String hint) {
     if (parentAppId == null) return null
     def afterCfg
@@ -242,16 +258,13 @@ private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preC
     def added = afterIds.findAll { !preCloneIds.contains(it) }
     if (added.isEmpty()) return null
     if (added.size() == 1) return added[0] as Integer
-    // Multiple new children: prefer hint match, then "<label> clone/import" prefix, else max id.
+    // Concurrent creations can appear in the same diff. Only an unambiguous
+    // requested name identifies our result; a prefix or largest ID is a guess.
     def candidates = (afterCfg.childApps as List).findAll { added.contains(it?.id?.toString()) }
-    def hintMatch = hint ? candidates.find { (it.label?.toString() ?: "") == hint } : null
-    if (hintMatch) return hintMatch.id as Integer
-    def labelMatch = sourceLabel ? candidates.find {
-        def lbl = it.label?.toString() ?: ""
-        lbl.startsWith("${sourceLabel} clone") || lbl.startsWith("${sourceLabel} import") || lbl.startsWith("Clone of ${sourceLabel}")
-    } : null
-    if (labelMatch) return labelMatch.id as Integer
-    return (candidates.collect { it.id as Integer }.max()) as Integer
+    def hintMatches = hint ? candidates.findAll { (it.label?.toString() ?: "") == hint } : []
+    if (hintMatches.size() == 1) return hintMatches[0].id as Integer
+    mcpLog("warn", "rm-native", "appCloner: ambiguous new children ${added} for '${hint ?: sourceLabel}'; no app selected")
+    return null
 }
 
 private boolean _appClonerCleanup(Integer clonerAppId) {
@@ -309,12 +322,9 @@ def toolCloneNativeApp(args) {
 
     def preIds = [] as Set
     if (parentAppId != null) {
-        try {
-            def pc = _rmFetchConfigJson(parentAppId)
-            preIds = ((pc?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it } as Set
-        } catch (Exception preErr) {
-            mcpLog("warn", "rm-native", "hub_clone_native_app: pre-clone parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may misidentify a pre-existing app")
-        }
+        Map snapshot = _appClonerSnapshotChildren(parentAppId)
+        if (snapshot.isError == true) return snapshot
+        preIds = snapshot.ids as Set
     }
 
     def initRes = _appClonerInit(sourceAppId)
@@ -560,13 +570,9 @@ def toolImportNativeApp(args) {
         // Refuse rather than firing the wizard and reporting a false failure.
         throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} has no numeric parentAppId — pass a hint that's a child of the target parent app (e.g. an existing RM rule for an RM import).")
     }
-    def preIds = [] as Set
-    try {
-        def pc = _rmFetchConfigJson(parentAppId)
-        preIds = ((pc?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it } as Set
-    } catch (Exception preErr) {
-        mcpLog("warn", "rm-native", "hub_import_native_app: pre-import parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may misidentify a pre-existing app")
-    }
+    Map snapshot = _appClonerSnapshotChildren(parentAppId)
+    if (snapshot.isError == true) return snapshot
+    def preIds = snapshot.ids as Set
 
     def initRes = _appClonerInit(parentHintAppId)
     Integer clonerAppId = initRes.clonerAppId
@@ -740,7 +746,19 @@ private void _appClonerStagingDiscoveryMiss(Map result, String operationLabel) {
     result.stagedDisabled = []
     result.success = false
     result.isError = true
-    result.error = "${result.error ?: ''} stageDisabled was requested but could NOT run: no newAppId was discovered. If the ${operationLabel} did land, it is ENABLED and live -- find it via hub_list_apps (scope='instances') and disable it with hub_set_app_disabled.".toString().trim()
+    result.error = "${result.error ?: ''} stageDisabled was requested but could NOT run: no newAppId was discovered. If the ${operationLabel} did land, it is ENABLED and live -- find it via hub_list_apps (scope='instances') and disable it with hub_set_app_disabled. Do NOT re-issue creation: it may already have committed.".toString().trim()
+}
+
+private Map _appClonerCappedStaging(Map cp) {
+    // The latest returned checkpoint includes the final slice's disables. The
+    // generic MRTR aggregate has no cloner ledger, and terminal storage drops cp.
+    Map result = (cp.baseResult instanceof Map) ? ([:] + cp.baseResult) : [:]
+    _appClonerFinishStaging(result, cp.newAppId as Integer, [
+        staged: (cp.stagedDisabled ?: []) as List,
+        failures: (cp.stageFailures ?: []) as List,
+        remaining: (cp.stageTargets ?: []) as List
+    ])
+    return result
 }
 
 private Map _rmRestoreFromBackup(Map entry) {
@@ -1012,12 +1030,9 @@ private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
         }
         def preIds = []
         if (parentAppId != null) {
-            try {
-                def parentCfg = _rmFetchConfigJson(parentAppId)
-                preIds = ((parentCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
-            } catch (Exception preErr) {
-                mcpLog("warn", "rm-native", "hub_clone_native_app: pre-clone parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may be less precise")
-            }
+            Map snapshot = _appClonerSnapshotChildren(parentAppId)
+            if (snapshot.isError == true) return snapshot
+            preIds = snapshot.ids
         }
         def initRes = _appClonerInit(sourceAppId)
         cp = [phase: "clone_clicks", clonerAppId: initRes.clonerAppId,
@@ -1118,13 +1133,9 @@ private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
         if (parentAppId == null) {
             throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} has no numeric parentAppId — pass a child of the target parent app")
         }
-        def preIds = []
-        try {
-            def parentCfg = _rmFetchConfigJson(parentAppId)
-            preIds = ((parentCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
-        } catch (Exception preErr) {
-            mcpLog("warn", "rm-native", "hub_import_native_app: pre-import parent ${parentAppId} fetch failed: ${preErr.message}")
-        }
+        Map snapshot = _appClonerSnapshotChildren(parentAppId)
+        if (snapshot.isError == true) return snapshot
+        def preIds = snapshot.ids
         def initRes = _appClonerInit(parentHintAppId)
         Integer clonerAppId = initRes.clonerAppId as Integer
         try {

@@ -4936,6 +4936,8 @@ that ordinary literal markup or a bare `(Paused)` suffix is a pause signal.
 
 ### T709 - Clone and import report whether inactive staging actually landed
 
-**Prompt**: "Create an empty throwaway rule and make an inactive clone and an inactive import of its export. Verify that both new apps are disabled and the source is unchanged. If staging fails after creation, identify the created app and disable it without creating another copy. Clean up all test apps."
+**Prompt**: "Create an empty throwaway rule and make an inactive clone and an inactive import of its export. Give the copies the same name as the source so name collisions cannot substitute for checking identities. Verify that both new apps are disabled and the source is unchanged. If staging fails after creation, identify the created app and disable it without creating another copy. Clean up all test apps."
 
 **Expected**: Both operations return the discovered new app ID and list it in `stagedDisabled`; independent reads show disabled. Any failed disable produces `success:false`, `isError:true`, the affected IDs and a targeted disable remedy, warning against repeating clone/import. If discovery fails, the response warns that staging could not run and any created app may still be enabled. Failure paths are deterministic unit-test cases; do not inject production-hub failures to force them.
+
+An unreadable parent snapshot must refuse before creation and allow a safe retry. Ambiguous new-child discovery must not guess an app ID. At the modern continuation limit, the terminal error must retain `newAppId`, `stagedDisabled`, `stageFailures` and `stageRemaining`, including the final slice's progress; replay must not repeat writes. These fault and limit cases are covered through injected unit/integration fixtures, not production-hub fault injection.
