@@ -1241,6 +1241,36 @@ class TestRunner:
             self._first_device_id = str(devices[0]["id"])
         return self._first_device_id
 
+    def _watchdog_hub_logs(self, *, level: str, limit: int) -> list:
+        """Read native Past Logs through the watchdog, independently of the main app cache."""
+        if not self.watchdog_url:
+            raise RuntimeError("watchdog native logs endpoint is not configured")
+        try:
+            response = requests.post(url=self.watchdog_url, json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {
+                    "name": "hub_get_hub_logs",
+                    "arguments": {"level": level, "limit": limit},
+                },
+            }, timeout=30)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or payload.get("error") is not None:
+                raise ValueError("watchdog returned a JSON-RPC error")
+            result = payload.get("result")
+            content = result.get("content") if isinstance(result, dict) else None
+            text = content[0].get("text") if isinstance(content, list) and content \
+                and isinstance(content[0], dict) else None
+            decoded = json.loads(text) if isinstance(text, str) and text else None
+            if not isinstance(decoded, dict) or decoded.get("success") is False:
+                raise ValueError("watchdog log tool reported failure")
+            logs = decoded.get("logs")
+            if not isinstance(logs, list):
+                raise ValueError("watchdog returned no usable logs list")
+            return logs
+        except Exception as exc:
+            raise RuntimeError(f"watchdog native logs read failed: {exc}") from exc
+
     def _limiter_lines(self, device_id: Any, method: str | None = None) -> set:
         """The set of hub ERROR-log keys ("time|message") proving the platform's per-app load
         limiter aborted delivery for device_id (and, if given, command method). Keyed by time+message
@@ -1264,20 +1294,7 @@ class TestRunner:
         logs = _usable_logs(res)
         if logs is None and self.watchdog_url:
             try:
-                response = requests.post(url=self.watchdog_url, json={
-                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                    "params": {
-                        "name": "hub_get_hub_logs",
-                        "arguments": {"level": "ERROR", "limit": 40},
-                    },
-                }, timeout=30)
-                response.raise_for_status()
-                result = response.json().get("result", {})
-                content = result.get("content") if isinstance(result, dict) else None
-                text = content[0].get("text", "") if isinstance(content, list) and content else ""
-                logs = _usable_logs(json.loads(text) if text else None)
-                if logs is None:
-                    raise ValueError("watchdog returned no usable logs list")
+                logs = self._watchdog_hub_logs(level="ERROR", limit=40)
                 print("    [LIMITER] main server log read unavailable -- using watchdog log endpoint")
             except Exception as exc:
                 detail = f"main={main_failure}; " if main_failure else ""
@@ -3021,7 +3038,13 @@ class TestRunner:
                 }, "listed configuration device create")
                 device_id = (created.get("device") or {}).get("id")
             assert created.get("success") is True and device_id, f"fixture device create failed: {created}"
-            _, before_pane = capture()
+            before_preferences, before_pane = capture()
+            initial_configuration = configuration()
+            initial_multiple = next((row for row in initial_configuration.get("preferences", [])
+                                     if row.get("name") == "probeMultiple"), None)
+            assert initial_multiple and initial_multiple.get("multiple") is True, \
+                f"created fixture lost multi-select declaration: native={before_preferences}; " \
+                f"driver={initial_configuration.get('deviceInfo', {}).get('driver')}; preference={initial_multiple}"
             update({"showOnHome": True, "defaultCurrentState": "switch"})
             _, original_info = capture()
             assert original_info["showOnHome"] is True and original_info["defaultCurrentState"] == "switch", \
@@ -3029,6 +3052,11 @@ class TestRunner:
             assert original_info["retryEnabled"] == before_pane["retryEnabled"], \
                 f"setting pane sentinels changed command retry: {original_info}"
             if unlisted:
+                pane_preferences, _ = capture()
+                pane_configuration = configuration()
+                pane_multiple = next(row for row in pane_configuration["preferences"] if row["name"] == "probeMultiple")
+                assert pane_multiple.get("multiple") is True, \
+                    f"pane save changed multi-select declaration: native={pane_preferences}; preference={pane_multiple}"
                 initialized = self._write_once("hub_manage_devices", "hub_update_device", {
                     "deviceId": device_id,
                     "preferences": {
@@ -12640,26 +12668,45 @@ class TestRunner:
         """A rejected write is recoverable in the response, native logs, and MCP logs
         even at the default error threshold. The deliberately invalid variable type
         guarantees no mutation if the acknowledgment gate itself regresses."""
-        # Modern native-log reads use a 30-second MRTR snapshot cache keyed only
-        # by app/type, so an immediate before/after pair can return the same
-        # payload. A legacy-era read bypasses that continuation cache and fetches
-        # /logs/past/json directly; the exact row-delta assertions remain unchanged.
-        native_reader = LegacyEraClient(self.client, verbose=self.client.verbose)
-        native_args = {
-            "mode": "hub", "level": "ERROR",
-            "pattern": "Mandatory best-practice acknowledgment", "limit": 50,
-        }
-        if self.server_app_id:
-            native_args["appId"] = self.server_app_id
+        # Main-app native-log reads use a 30-second MRTR snapshot cache. Protocol-era
+        # headers do not control that cache, so a LegacyEraClient before/after pair
+        # can still return the same payload. The watchdog reads /logs/past/json
+        # directly and gives this proof an independent native-history observer.
+        def bps_native_rows(logs: list) -> list:
+            expected = "Validation error in hub_create_variable"
+            acknowledgment = "Mandatory best-practice acknowledgment"
+            server_id = str(self.server_app_id) if self.server_app_id is not None else None
+            rows = []
+            for entry in logs:
+                if not isinstance(entry, dict):
+                    continue
+                raw_message = str(entry.get("message", ""))
+                if expected not in raw_message or acknowledgment not in raw_message:
+                    continue
+                if server_id is None or raw_message.startswith(f"app|{server_id}|"):
+                    rows.append(entry)
+                    continue
+                marker = "[MCP1] "
+                marker_index = raw_message.find(marker)
+                if marker_index != 0 and not (
+                    marker_index > 0 and raw_message[:marker_index].endswith("|")
+                ):
+                    continue
+                try:
+                    envelope = json.loads(raw_message[marker_index + len(marker):])
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+                if isinstance(envelope, dict) and str(envelope.get("appId")) == server_id:
+                    rows.append(entry)
+            return rows
 
         try:
             for threshold in ("error", "debug"):
                 self._set_bps(enableMandatoryBPS=True, mcpLogLevel=threshold)
                 mcp_before = self.client.call_tool("hub_get_logs", {
                     "mode": "mcp", "level": "error", "component": "server", "limit": 50})
-                native_before = native_reader.call_tool("hub_manage_logs", {
-                    "tool": "hub_get_logs", "args": native_args,
-                }, replay_safe=True)
+                native_before = bps_native_rows(
+                    self._watchdog_hub_logs(level="ERROR", limit=100))
                 try:
                     self.client.call_tool("hub_manage_variables", {
                         "tool": "hub_create_variable",
@@ -12684,16 +12731,15 @@ class TestRunner:
                 ), f"{threshold} threshold did not retain a fresh refusal in MCP logs: {fresh_mcp}"
 
                 fresh_native = []
-                for attempt in range(4):
-                    native_logs = native_reader.call_tool("hub_manage_logs", {
-                        "tool": "hub_get_logs", "args": native_args,
-                    }, replay_safe=True)
+                for attempt in range(8):
+                    native_logs = bps_native_rows(
+                        self._watchdog_hub_logs(level="ERROR", limit=100))
                     fresh_native = _entries_new_since_snapshot(
-                        native_logs.get("logs", []), native_before.get("logs", []))
+                        native_logs, native_before)
                     if fresh_native:
                         break
-                    if attempt < 3:
-                        time.sleep(0.25)
+                    if attempt < 7:
+                        time.sleep(0.5)
                 assert any(
                     "Mandatory best-practice acknowledgment" in entry.get("message", "")
                     for entry in fresh_native

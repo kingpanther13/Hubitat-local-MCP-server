@@ -42,7 +42,8 @@ def captureConfiguration(String nonce) {
         }
         def names = ["probeBool", "probeNumber", "probeText", "probeEnum", "probeMultiple"]
         def rows = nativePage.settings instanceof List ? nativePage.settings.findAll { names.contains(it.name) }.collect {
-            [name: it.name, type: it.type, value: it.value, valuePresent: it.containsKey("value"),
+            [name: it.name, type: it.type, multiple: it.multiple, multiplePresent: it.containsKey("multiple"),
+             value: it.value, valuePresent: it.containsKey("value"),
              storageId: it.id, storageIdPresent: it.containsKey("id"),
              storageDeviceId: it.deviceId, storageDeviceIdPresent: it.containsKey("deviceId"), defaultValue: it.defaultValue]
         } : null
