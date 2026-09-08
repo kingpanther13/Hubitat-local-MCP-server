@@ -119,6 +119,26 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def 'Write off rejects a listed #kind update before native model preparation'() {
+        given:
+        settingsMap.enableWrite = false
+        registerFixture(fixture(), false)
+
+        when:
+        script.toolUpdateDevice([deviceId: '10'] + patch)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message == "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"
+        !hubGet.calls.any { it.path == '/device/fullJson/10' }
+
+        where:
+        kind             | patch
+        'form-property'  | [notes: 'New note']
+        'assistant'      | [homeKitEnabled: false, confirm: true]
+    }
+
+    @Unroll
     def 'sensitive #property requires confirmation before mutation'() {
         given:
         def model = fixture()

@@ -19,7 +19,7 @@
     {"capability": "Configuration", "name": "configure", "arguments": [], "parameters": [], "relatedAttribute": null}
   ],
   "dashboards": [
-    {"id": 61, "name": "Synthetic Overview"}
+    {"id": 61, "name": "Synthetic Overview", "selected": true}
   ],
   "dashboardTypes": ["device"],
   "device": {
@@ -102,7 +102,7 @@
     "spammyThreshold": 0,
     "status": "ACTIVE",
     "systemDeviceType": false,
-    "tags": [],
+    "tags": "",
     "updateTime": "2026-09-08T09:00:00.000-0400",
     "version": 12,
     "virtual": true,

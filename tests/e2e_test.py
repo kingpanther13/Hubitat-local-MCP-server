@@ -4231,6 +4231,17 @@ class TestRunner:
             assert [d.get("id") for d in offset_page.get("devices", [])] == \
                 [d.get("id") for d in full_devices[1:3]], f"offset was ignored: {offset_page}"
 
+            maximum_limit_page = self.client.call_tool(
+                "hub_list_devices", {
+                    "filter": "virtual", "offset": 1, "limit": 2147483647,
+                })
+            assert [d.get("id") for d in maximum_limit_page.get("devices", [])] == \
+                [d.get("id") for d in full_devices[1:]], \
+                f"maximum integer limit overflowed instead of clamping: {maximum_limit_page}"
+            assert maximum_limit_page.get("hasMore") is False and \
+                "nextOffset" not in maximum_limit_page, \
+                f"maximum integer terminal page advertised a continuation: {maximum_limit_page}"
+
             cursor_page = self.client.call_tool(
                 "hub_list_devices", {"filter": "virtual", "cursor": "", "limit": 3})
             assert cursor_page.get("nextCursor") == "3", f"cursor metadata missing: {cursor_page}"

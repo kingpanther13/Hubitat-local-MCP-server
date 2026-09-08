@@ -922,6 +922,17 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         offsetPage.devices*.id == ['202', '203']
         offsetPage.nextOffset == 4
 
+        when: 'the maximum declared integer limit would overflow startIndex plus limit'
+        def maximumLimitPage = script.toolListVirtualDevices([offset: 1, limit: Integer.MAX_VALUE])
+
+        then: 'the end is clamped to the inventory without wrapping negative'
+        maximumLimitPage.devices*.id == ['201', '202', '203', '204', '205']
+        maximumLimitPage.count == 5
+        maximumLimitPage.offset == 1
+        maximumLimitPage.limit == Integer.MAX_VALUE
+        maximumLimitPage.hasMore == false
+        !maximumLimitPage.containsKey('nextOffset')
+
         when: 'cursor selects the same page and emits the next cursor'
         def cursorPage = script.toolListVirtualDevices([cursor: '2', limit: 2])
 

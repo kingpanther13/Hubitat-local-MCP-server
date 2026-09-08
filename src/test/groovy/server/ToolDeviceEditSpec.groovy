@@ -244,10 +244,13 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
-        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> 'true' }
+        def currentState = 'humidity'
+        hubGet.register('/device/fullJson/10') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Thermostat',
+                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState]])
+        }
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> currentState = 'temperature'; 'true' }
         // Read-back confirms the attribute landed.
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":"temperature"}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
@@ -262,10 +265,13 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
-        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=') { params -> 'true' }
+        def currentState = 'temperature'
+        hubGet.register('/device/fullJson/10') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Thermostat',
+                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState]])
+        }
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=') { params -> currentState = null; 'true' }
         // Read-back: None reads back as null (the empty-string request is a clear).
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":null}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: ''])
@@ -282,9 +288,12 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
-        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { params -> 'true' }
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":"switch"}}' }
+        def currentState = 'temperature'
+        hubGet.register('/device/fullJson/10') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Thermostat',
+                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState]])
+        }
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { params -> currentState = 'switch'; 'true' }
 
         when:
         def response = mcpDriver.callTool('hub_update_device', [deviceId: '10', defaultCurrentState: 'switch'])
@@ -336,12 +345,17 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the dedicated setDefaultCurrentState endpoint 404s (older firmware) -- the GET throws'
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
+        def currentState = 'switch'
+        hubGet.register('/device/fullJson/10') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Thermostat',
+                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState]])
+        }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> throw new RuntimeException('Not Found (404)') }
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":"temperature"}}' }
         def posted = null
         script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
-            posted = [path: path, body: jsonBody]; return [status: 200]
+            posted = [path: path, body: jsonBody]
+            currentState = new groovy.json.JsonSlurper().parseText(jsonBody).defaultCurrentState
+            return [status: 200]
         }
 
         when:
@@ -381,9 +395,12 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the dedicated GET returns true, but the FRESH fullJson re-read shows a DIFFERENT attribute -- the value did not actually land'
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
-        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> 'true' }
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","currentStates":{"temperature":{},"humidity":{},"switch":{}},"defaultCurrentState":"humidity"}}' }
+        def currentState = 'switch'
+        hubGet.register('/device/fullJson/10') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Thermostat',
+                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState]])
+        }
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> currentState = 'humidity'; 'true' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
@@ -398,7 +415,6 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the dedicated GET returns true but the confirming fullJson fetch yields nothing'
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
         def accepted = false
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { params -> accepted = true; 'true' }
         hubGet.register('/device/fullJson/10') { params -> accepted ? '' : '{"device":{"id":10,"currentStates":{"switch":{}}}}' }

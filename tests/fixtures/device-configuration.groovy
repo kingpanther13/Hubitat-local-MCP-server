@@ -37,6 +37,9 @@ def captureConfiguration(String nonce) {
     // This test-only observer reads its own native page, independent of the MCP parser.
     httpGet([uri: "http://127.0.0.1:8080", path: "/device/fullJson/${device.id}", timeout: 5]) { response ->
         def nativePage = response.data
+        if (!(nativePage instanceof Map) || !(nativePage.device instanceof Map)) {
+            throw new IllegalStateException("Native fixture page has no device object; check Hub Security and /device/fullJson access")
+        }
         def names = ["probeBool", "probeNumber", "probeText", "probeEnum", "probeMultiple"]
         def rows = nativePage.settings instanceof List ? nativePage.settings.findAll { names.contains(it.name) }.collect {
             [name: it.name, type: it.type, value: it.value, valuePresent: it.containsKey("value")]
