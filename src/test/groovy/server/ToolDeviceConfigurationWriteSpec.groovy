@@ -355,45 +355,30 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         'googleHomeEnabled'  | false  | 'root'   | 'googleHomeSupported'
     }
 
-    def 'multiple enum preferences use native JSON arrays and verify comma-separated saved values'() {
-        given:
-        def model = fixture()
-        registerFixture(model, true)
-        def sent
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
-            sent = new JsonSlurper().parseText(body)
-            model.settings.find { it.name == 'modes' }.value = sent.preferences[0].value.join(',')
-            [success: true]
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: '10', preferences: [modes: [type: 'enum', value: ['a', 'b']]]])
-
-        then:
-        sent.preferences[0].value == ['a', 'b']
-        result.success == true
-        result.changes.find { it.property == 'preference.modes' }
-    }
-
-    def 'bypass empty multiple enum uses the native JSON-array string without losing pane or storage metadata'() {
+    @Unroll
+    def 'bypass multiple enum #selection uses JSON-array string storage and runtime List'() {
         given:
         def model = fixture()
         model.device.showOnHome = true
         model.device.retryEnabled = true
         model.device.defaultCurrentState = 'temperature'
+        registerFixture(model, true)
         def sent
+        def runtimeValue
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             sent = [path: path, body: new JsonSlurper().parseText(body)]
             def row = model.settings.find { it.name == 'modes' }
             def wireValue = sent.body.preferences[0].value
-            if (wireValue instanceof List && wireValue.isEmpty()) {
-                // Live firmware deletes the stored row for a native JSON [], which also
-                // changes the declared multi-select flag exposed by fullJson to false.
-                row.multiple = false
-                row.deviceId = null
-                row.id = null
-                row.value = null
+            if (wireValue instanceof List) {
+                // Live firmware collapses raw arrays into scalar storage/runtime values;
+                // an empty raw array also drops the stored row's multiple declaration.
+                runtimeValue = wireValue.join(',')
+                row.multiple = !wireValue.isEmpty()
+                row.deviceId = wireValue.isEmpty() ? null : 10
+                row.id = wireValue.isEmpty() ? null : 99
+                row.value = wireValue.isEmpty() ? null : runtimeValue
             } else {
+                runtimeValue = new JsonSlurper().parseText(wireValue)
                 row.multiple = true
                 row.deviceId = 10
                 row.id = 99
@@ -401,26 +386,61 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
             }
             [success: true]
         }
-        registerFixture(model, true)
 
         when:
         def result = script.toolUpdateDevice([
-            deviceId: '10', preferences: [modes: [type: 'enum', value: []]]
+            deviceId: '10', preferences: [modes: [type: 'enum', value: selection]]
         ])
 
         then:
         sent == [path: '/device/preference/save', body: [
             deviceId: 10, defaultCurrentState: 'temperature', commandRetry: true, showOnHome: true,
-            preferences: [[name: 'modes', type: 'enum', value: '[]']]
+            preferences: [[name: 'modes', type: 'enum', value: wireValue]]
         ]]
+        runtimeValue == selection
         with(model.settings.find { it.name == 'modes' }) {
             multiple == true
             deviceId == 10
             id == 99
-            value == '[]'
+            value == wireValue
         }
         result.success == true
-        result.changes.find { it.property == 'preference.modes' }?.newValue == [type: 'enum', value: []]
+        result.changes.find { it.property == 'preference.modes' }?.newValue ==
+            [type: 'enum', value: selection]
+        !result.errors
+
+        where:
+        selection  | wireValue
+        []         | '[]'
+        ['a']      | '["a"]'
+        ['a', 'b'] | '["a","b"]'
+    }
+
+    def 'bypass single enum keeps its scalar native wire value'() {
+        given:
+        def model = fixture()
+        model.settings << [name: 'profile', type: 'enum', multiple: false,
+                           options: [a: 'A', b: 'B'], value: 'a']
+        registerFixture(model, true)
+        def sent
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            sent = [path: path, body: new JsonSlurper().parseText(body)]
+            model.settings.find { it.name == 'profile' }.value = sent.body.preferences[0].value
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([
+            deviceId: '10', preferences: [profile: [type: 'enum', value: 'b']]
+        ])
+
+        then:
+        sent == [path: '/device/preference/save', body: [
+            deviceId: 10, defaultCurrentState: '', commandRetry: false, showOnHome: false,
+            preferences: [[name: 'profile', type: 'enum', value: 'b']]
+        ]]
+        result.success == true
+        result.changes.find { it.property == 'preference.profile' }?.newValue == [type: 'enum', value: 'b']
         !result.errors
     }
 
