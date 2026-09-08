@@ -4200,6 +4200,123 @@ def check_bm25_key_subscripts() -> list[dict]:
         flag(0, "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed.")
     return findings
 
+
+def check_sandbox_map_subscripts(
+    src_override: dict[str, str] | None = None,
+) -> list[dict]:
+    """Guard the verified SandboxSubscriptGuard failure class.
+
+    Hubitat rejects a bracket subscript when a runtime Map key collides with a
+    protected/reflection-like property (the device catalog's ``fields`` key is
+    the reproduced case). Plain Groovy accepts the same source, so this check
+    holds two narrow invariants that ordinary Spock cannot prove:
+
+    * structural-copy helpers use ``Map.get/put`` for arbitrary caller or
+      driver-controlled keys rather than ``copy[key]``;
+    * the reproduced literal collision keys are not accessed with bracket
+      syntax in shipped app/library code.
+
+    This is deliberately a source guard, not a claim that regex can model every
+    Hubitat sandbox key. Live catalog coverage remains the final proof.
+    """
+    if src_override is None:
+        sources: dict[str, str] = {}
+        candidates = [
+            REPO_ROOT / "hubitat-mcp-server.groovy",
+            REPO_ROOT / "hubitat-mcp-rule.groovy",
+        ]
+        libraries = REPO_ROOT / "libraries"
+        if libraries.is_dir():
+            candidates.extend(sorted(libraries.glob("*.groovy")))
+        for path in candidates:
+            if path.is_file():
+                sources[str(path.relative_to(REPO_ROOT))] = path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+    else:
+        sources = src_override
+
+    findings: list[dict] = []
+    declaration = re.compile(
+        r"^\s*(?:private\s+|protected\s+|public\s+)?"
+        r"(?:static\s+)?(?:def|[A-Za-z_][A-Za-z0-9_<>, ?]*)\s+"
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*\("
+    )
+    dynamic_assignment = re.compile(
+        r"\b([A-Za-z_][A-Za-z0-9_.]*)\s*\[\s*"
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*="
+    )
+    literal_collision = re.compile(
+        r"\b[A-Za-z_][A-Za-z0-9_.]*\s*\[\s*"
+        r"(?P<quote>['\"])(?:fields|getClass)(?P=quote)\s*\]"
+    )
+
+    def add(path: str, line_no: int, source_line: str, message: str) -> None:
+        findings.append({
+            "file": path,
+            "line": line_no,
+            "severity": "error",
+            "rule": "sandbox-map-key-subscript",
+            "message": message,
+            "source": source_line.strip(),
+        })
+
+    for path, source in sources.items():
+        original_lines = source.split("\n")
+        stripped_lines = strip_comments_and_strings(source)
+
+        # Literal strings are blanked by strip_comments_and_strings. Correlate
+        # each raw match with the same source offsets in the stripped line: a
+        # match embedded in a comment/string has a blanked receiver and is
+        # ignored, while executable ``map['fields']`` retains its receiver and
+        # opening bracket at those positions.
+        for index, raw_line in enumerate(original_lines):
+            stripped = stripped_lines[index]
+            for match in literal_collision.finditer(raw_line):
+                code_prefix = stripped[match.start():match.end()]
+                if "[" not in code_prefix or not re.search(r"[A-Za-z_]", code_prefix):
+                    continue
+                key_match = re.search(r"['\"](fields|getClass)['\"]", match.group(0))
+                key = key_match.group(1) if key_match else "protected key"
+                add(path, index + 1, raw_line,
+                    f"Map bracket access with sandbox-colliding literal key '{key}'; use Map.get/put.")
+
+        # Dynamic subscripts are only banned in the structural-copy helpers
+        # that carry arbitrary external keys. A repository-wide ``map[key]``
+        # ban would wrongly flag indexed lists and bounded internal registries.
+        depth = 0
+        in_target = False
+        target_name = None
+        for index, line in enumerate(stripped_lines):
+            if not in_target:
+                match = declaration.match(line)
+                if match:
+                    name = match.group(1)
+                    if ("copy" in name.lower() or
+                            name in {"_mrtrCanonicalArgs", "_publicToolResultValue"}):
+                        in_target = True
+                        target_name = name
+                        depth = line.count("{") - line.count("}")
+                        # A declaration whose brace starts on the next line is
+                        # still active; depth becomes positive when it arrives.
+                    else:
+                        continue
+                else:
+                    continue
+            else:
+                depth += line.count("{") - line.count("}")
+
+            for match in dynamic_assignment.finditer(line):
+                receiver, key = match.groups()
+                add(path, index + 1, original_lines[index],
+                    f"Arbitrary key '{key}' assigned through {receiver}[{key}] in {target_name}; use Map.put.")
+
+            if in_target and depth == 0 and "}" in line:
+                in_target = False
+                target_name = None
+
+    return findings
+
 def check_logs_json_snapshot_guard() -> list[dict]:
     """Slow-read guard for the hub's /logs/json page. That one document carries every device and
     app stat plus the job tables, so its fetch time grows with hub size and a synchronous read
@@ -4540,6 +4657,10 @@ def main() -> int:
 
     # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
     all_findings.extend(check_bm25_key_subscripts())
+
+    # Device-catalog renderer regression: arbitrary external Map keys and the
+    # verified `fields` collision must use sandbox-safe Map.get/put operations.
+    all_findings.extend(check_sandbox_map_subscripts())
 
 
     # /logs/json grows with hub size: its only fetch is the worker-run one behind the JVM

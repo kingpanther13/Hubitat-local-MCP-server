@@ -397,7 +397,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Sensor')
         device.metaClass.updateSetting = { String k, v -> }
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Sensor","settings":[{"name":"tempOffset","type":"number","value":"3"}]}}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"3"}],"inputValues":[]}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', preferences: [tempOffset: [type: 'number', value: 3]]])
@@ -413,7 +413,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Sensor')
         device.metaClass.updateSetting = { String k, v -> }
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Sensor","settings":[]}}' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"0"}],"inputValues":[]}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', preferences: [tempOffset: [type: 'number', value: 3]]])
@@ -429,7 +429,10 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Sensor')
         device.metaClass.updateSetting = { String k, v -> }
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":null}' }
+        def reads = 0
+        hubGet.register('/device/fullJson/10') { params ->
+            ++reads == 1 ? '{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"0"}],"inputValues":[]}' : '{"device":null}'
+        }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', preferences: [tempOffset: [type: 'number', value: 3]]])

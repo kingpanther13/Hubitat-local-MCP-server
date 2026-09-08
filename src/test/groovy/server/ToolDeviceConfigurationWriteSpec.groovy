@@ -249,4 +249,149 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
             'spammyThreshold', 'defaultIcon', 'dashboardIds', 'meshEnabled', 'retryEnabled', 'meshFullSync',
             'homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled', 'confirm'])
     }
+
+    @Unroll
+    def 'unavailable #property is rejected before any mixed-patch write'() {
+        given:
+        def model = fixture()
+        if (scope == 'device') model.device.put(flag, false)
+        else model.put(flag, false)
+        registerFixture(model, true)
+        def posts = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false -> posts << path; '' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> posts << path; [success: true] }
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', label: 'Must not apply', confirm: true] + [(property): target])
+
+        then:
+        thrown(IllegalArgumentException)
+        posts.empty
+
+        where:
+        property             | target | scope    | flag
+        'meshEnabled'        | true   | 'device' | 'meshSelectionEnabled'
+        'meshFullSync'       | true   | 'root'   | 'hubMeshRefreshEnabled'
+        'retryEnabled'       | true   | 'root'   | 'commandRetrySelectionEnabled'
+        'dashboardIds'       | [2]    | 'root'   | 'hasDashboards'
+        'homeKitEnabled'     | false  | 'root'   | 'homeKitSelectionEnabled'
+        'amazonAlexaEnabled' | true   | 'root'   | 'amazonAlexaInstalled'
+        'googleHomeEnabled'  | false  | 'root'   | 'googleHomeSupported'
+    }
+
+    def 'multiple enum preferences use native JSON arrays and verify comma-separated saved values'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        def sent
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            sent = new JsonSlurper().parseText(body)
+            model.settings.find { it.name == 'modes' }.value = sent.preferences[0].value.join(',')
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [modes: [type: 'enum', value: ['a', 'b']]]])
+
+        then:
+        sent.preferences[0].value == ['a', 'b']
+        result.success == true
+        result.changes.find { it.property == 'preference.modes' }
+    }
+
+    @Unroll
+    def 'new form #property cannot claim success on an HTTP-success no-op'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false -> '' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', confirm: true] + [(property): target])
+
+        then:
+        result.success == false
+        !result.changes.find { it.property == property }
+        result.errors.find { it.property == property }?.error?.contains('read back')
+
+        where:
+        property        | target
+        'notes'         | 'New note'
+        'maxEvents'     | 100
+        'maxStates'     | 100
+        'spammyThreshold' | 200
+        'deviceTypeId'  | 101
+        'defaultIcon'   | 'fa-star'
+        'meshEnabled'   | true
+        'retryEnabled'  | true
+        'dashboardIds'  | [2]
+    }
+
+    @Unroll
+    def 'bypass supports preference-pane #property with independent readback'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        def sent
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            sent = new JsonSlurper().parseText(body)
+            model.device.put(property, target)
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10'] + [(property): target])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == property }?.newValue == target
+        sent.get(property) == target
+
+        where:
+        property              | target
+        'showOnHome'          | true
+        'defaultCurrentState' | ''
+    }
+
+    def 'preference-only native retry availability uses commandRetry JSON key'() {
+        given:
+        def model = fixture()
+        model.commandRetrySelectionEnabled = false
+        model.device.retryAvailable = true
+        registerFixture(model, true)
+        def sent
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            sent = new JsonSlurper().parseText(body)
+            model.device.retryEnabled = sent.commandRetry
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', retryEnabled: true])
+
+        then:
+        sent == [deviceId: 10, commandRetry: true]
+        result.success == true
+        result.changes.find { it.property == 'retryEnabled' }
+    }
+
+    def 'secret preference saved value is never echoed in the changes response'() {
+        given:
+        def model = fixture()
+        model.settings << [name: 'apiToken', type: 'password', value: 'old-fixture-secret']
+        registerFixture(model, true)
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            model.settings.find { it.name == 'apiToken' }.value = 'new-fixture-secret'
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [apiToken: [type: 'password', value: 'new-fixture-secret']]])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == 'preference.apiToken' }
+        !JsonOutput.toJson(result).contains('new-fixture-secret')
+        !JsonOutput.toJson(result).contains('old-fixture-secret')
+    }
 }

@@ -1,5 +1,13 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
+### Device configuration inspection and restoration
+
+**Read-only prompt:** "Show the logging preferences and their current saved values for this device, identify its actual driver, and explain which preference controls descriptive logging. Show the available settings and the other device information I can inspect. Distinguish saved values from defaults, and leave everything unchanged."
+
+**Expected:** The ordinary device read remains concise. Expanded inspection discovers all applicable preference names, types, options and defaults, current values (including false and zero), editable configuration and non-editable metadata. Missing or unreadable information is identified explicitly. Driver source is discoverable when available; a source-code default is never presented as a saved value.
+
+**Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
+
 Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 116 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.

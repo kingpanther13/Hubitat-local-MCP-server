@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import requests
+from device_configuration_helpers import assert_native_preferences
 from sdk_conformance_helpers import assert_exact_rule_log_messages
 
 # ---------------------------------------------------------------------------
@@ -2823,6 +2824,372 @@ class TestRunner:
             "hub_get_device response missing attributes"
 
     @test("devices")
+    def test_device_configuration_listed_lifecycle(self) -> None:
+        self._device_configuration_lifecycle(unlisted=False)
+
+    @test("devices")
+    def test_device_configuration_bypass_lifecycle(self) -> None:
+        self._device_configuration_lifecycle(unlisted=True)
+
+    def _device_configuration_lifecycle(self, *, unlisted: bool) -> None:
+        suffix = f"{_run_artifact_suffix()}_{time.time_ns()}"
+        driver_name = f"Deadman Test Target Configuration {suffix}"
+        label = f"{PREFIX}Configuration_{suffix}"
+        source = (Path(__file__).resolve().parent / "fixtures" / "device-configuration.groovy").read_text(
+            encoding="utf-8").replace("RUN_TOKEN", suffix)
+        driver_id = device_id = dni = replacement_driver_id = None
+        replacement_name = None
+        expected = {
+            "probeBool": ("bool", False), "probeNumber": ("number", 3),
+            "probeText": ("text", "original saved text"), "probeEnum": ("enum", "eco"),
+            "probeMultiple": ("enum", ["red"]),
+        }
+
+        def configuration():
+            return self.client.call_tool("hub_read_devices", {
+                "tool": "hub_get_device", "args": {"deviceId": device_id, "mode": "configuration"},
+            })
+
+        def capture():
+            nonce = str(time.time_ns())
+            result = self._write_once(None, "hub_call_device_command", {
+                "deviceId": device_id, "command": "captureConfiguration", "parameters": [nonce],
+                "includeState": False,
+            }, "native device configuration snapshot")
+            assert result.get("success") is True, f"native observer command failed: {result}"
+            snapshots = []
+            for attribute in ("nativeConfiguration", "nativeDeviceInfo"):
+                result = self.client.call_tool("hub_get_device_attribute", {
+                    "deviceId": device_id, "attribute": attribute,
+                })
+                snapshot = json.loads(result["value"])
+                assert snapshot.get("nonce") == nonce, f"stale native {attribute} snapshot: {snapshot}"
+                assert str(snapshot.get("deviceId")) == str(device_id), f"wrong native observer: {snapshot}"
+                snapshots.append(snapshot)
+            return snapshots
+
+        def update(patch):
+            result = self._write_once("hub_manage_devices", "hub_update_device", {
+                "deviceId": device_id, **patch,
+            }, "fixture device edit")
+            assert result.get("success") is True, f"device edit failed: {result}"
+            return result
+
+        try:
+            created = self._write_once("hub_manage_code", "hub_create_driver", {
+                "source": source, "confirm": True,
+            }, "configuration fixture driver create")
+            driver_id = created.get("driverId")
+            assert created.get("success") is True and driver_id, f"fixture driver create failed: {created}"
+            if unlisted:
+                catalog = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_list_drivers", "args": {"include": "all"},
+                })
+                matches = [row for row in catalog.get("drivers", []) if row.get("name") == driver_name]
+                assert len(matches) == 1, f"fixture driver type missing or ambiguous: {matches}"
+                created = self._write_once("hub_manage_devices", "hub_create_device", {
+                    "deviceTypeId": str(matches[0]["id"]), "label": label, "confirm": True,
+                }, "unlisted configuration device create")
+                device_id = created.get("deviceId")
+            else:
+                dni = label
+                self.created_device_dnis.append(dni)
+                created = self._write_once(None, "hub_manage_virtual_device", {
+                    "action": "create", "customDriver": {"namespace": "mcptest", "name": driver_name},
+                    "deviceLabel": label, "deviceNetworkId": dni, "confirm": True,
+                }, "listed configuration device create")
+                device_id = (created.get("device") or {}).get("id")
+            assert created.get("success") is True and device_id, f"fixture device create failed: {created}"
+            inventory = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
+            rows = [row for row in inventory.get("devices", []) if str(row.get("id")) == str(device_id)]
+            assert len(rows) == 1 and rows[0].get("mcpAuthorized") is (not unlisted), \
+                f"fixture does not exercise the intended {'bypass' if unlisted else 'listed'} path: {rows}"
+
+            for args in ({"deviceId": device_id}, {"deviceId": device_id, "mode": "summary"}):
+                summary = self.client.call_tool("hub_get_device", args)
+                assert set(summary) == {"id", "name", "label", "room", "capabilities", "attributes", "commands"}, \
+                    f"summary contract expanded: {summary.keys()}"
+            cfg = configuration()
+            native, original_info = capture()
+            assert_native_preferences(native, cfg, expected)
+            assert cfg.get("preferenceRead", {}).get("status") == "complete", f"preference discovery incomplete: {cfg}"
+            assert cfg.get("deviceInfo", {}).get("driver", {}).get("name") == driver_name, \
+                f"device name substituted for driver identity: {cfg.get('deviceInfo')}"
+            reference = cfg.get("driverSource") or {}
+            assert reference.get("status") == "available", f"custom source reference missing: {reference}"
+            assert reference.get("gateway") == "hub_read_apps_code" and reference.get("tool") == "hub_get_source", \
+                f"source reference is not actionable: {reference}"
+            assert reference.get("args") == {"type": "driver", "id": str(driver_id)}, \
+                f"driver source reference points at the wrong code class: {reference}"
+            read_source = self.client.call_tool(reference["gateway"], {
+                "tool": reference["tool"], "args": reference["args"],
+            })
+            assert driver_name in read_source.get("source", ""), f"source is not fixture driver: {read_source}"
+            assert 'defaultValue: true' in read_source["source"], "source lost its declared bool default"
+            prefs = {entry["name"]: entry for entry in cfg["preferences"]}
+            assert prefs["probeBool"]["value"] is False and prefs["probeBool"]["defaultValue"] in (True, "true"), \
+                f"saved false conflated with declared true default: {prefs['probeBool']}"
+            assert prefs["probeNumber"].get("range") == "0..20", f"numeric range missing: {prefs['probeNumber']}"
+            assert prefs["probeMultiple"].get("multiple") is True, f"multiple enum metadata missing: {prefs['probeMultiple']}"
+            assert prefs["probeEnum"].get("options"), f"enum options missing: {prefs['probeEnum']}"
+            details = self.client.call_tool("hub_get_device", {
+                "deviceId": device_id, "mode": "details", "sections": ["configuration", "identity", "commands"],
+            })
+            assert set(details.get("sections", {})) == {"configuration", "identity", "commands"}, \
+                f"details section selection failed: {details}"
+            assert "preferences" not in details, f"details duplicated configuration at top level: {details}"
+            assert_native_preferences(native, details["sections"]["configuration"], expected)
+            all_details = self.client.call_tool("hub_get_device", {"deviceId": device_id, "mode": "details"})
+            assert all_details.get("sourceCoverage", {}).get("status") == "complete", \
+                f"native device information contains unmapped fields: {all_details.get('sourceCoverage')}"
+            assert set(all_details.get("sections", {})) == {
+                "configuration", "identity", "attributes", "commands", "data", "state",
+                "relationships", "jobs", "integrations", "metadata",
+            }, f"full details omitted a supported section: {all_details}"
+
+            for refused in ({"missingProbe": {"type": "bool", "value": True}},
+                            {"probeBool": {"type": "bool", "value": "perhaps"}}):
+                try:
+                    result = self._write_once("hub_manage_devices", "hub_update_device", {
+                        "deviceId": device_id, "preferences": refused,
+                    }, "invalid fixture preference refusal")
+                    assert result.get("success") is False, f"invalid preference write succeeded: {result}"
+                except (McpToolError, McpError) as exc:
+                    assert next(iter(refused)) in str(exc), f"preference refusal lost the affected name: {exc}"
+                native, _ = capture()
+                assert_native_preferences(native, configuration(), expected)
+
+            for name, value in (("probeBool", True), ("probeBool", False), ("probeNumber", 0),
+                                ("probeText", "literal & + = café"), ("probeEnum", "comfort"),
+                                ("probeMultiple", ["red", "blue"])):
+                kind, original = expected[name]
+                desired = {**expected, name: (kind, value)}
+                try:
+                    update({"preferences": {name: {"type": kind, "value": value}}})
+                    native, info = capture()
+                    assert_native_preferences(native, configuration(), desired)
+                    for key in ("name", "label", "deviceNetworkId", "deviceTypeId"):
+                        assert info[key] == original_info[key], f"preference edit changed {key}: {info}"
+                finally:
+                    update({"preferences": {name: {"type": kind, "value": original}}})
+                    native, _ = capture()
+                    assert_native_preferences(native, configuration(), expected)
+
+            try:
+                update({"preferences": {"probeText": {"type": "text", "value": None}}})
+                native, _ = capture()
+                assert isinstance(native.get("settings"), list) and isinstance(native.get("inputValues"), list), \
+                    f"clear cannot be verified against unavailable native storage: {native}"
+                input_rows = [row for row in native["inputValues"] if row.get("name") == "probeText"]
+                setting_rows = [row for row in native["settings"] if row.get("name") == "probeText"]
+                assert len(setting_rows) == 1 and len(input_rows) <= 1, f"clear lost preference definition: {native}"
+                cleared = next(row for row in configuration()["preferences"] if row["name"] == "probeText")
+                if input_rows:
+                    saved = input_rows[0]["inputValue"]
+                    assert saved in (None, ""), f"native text clear retained a saved value: {saved!r}"
+                    assert cleared["valuePresent"] is True and cleared["valueStatus"] == "stored", \
+                        f"explicit native cleared value lost presence: {cleared}"
+                    assert cleared["value"] == saved, f"cleared native and configuration values disagree: {cleared}"
+                else:
+                    row = setting_rows[0]
+                    assert row["value"] in (None, ""), f"native text clear retained a settings value: {row}"
+                    present = row["valuePresent"]
+                    assert cleared["valuePresent"] is present, f"native clear presence differs: {cleared}"
+                    assert cleared["valueStatus"] == ("stored" if present else "unset"), \
+                        f"missing native value conflated with explicit null: {cleared}"
+            finally:
+                update({"preferences": {"probeText": {"type": "text", "value": expected["probeText"][1]}}})
+                native, _ = capture()
+                assert_native_preferences(native, configuration(), expected)
+
+            edits = {
+                "notes": "Native persistence: café & + =", "tags": ["configuration-probe"],
+                "maxEvents": 47, "maxStates": 31, "spammyThreshold": 321,
+                "showOnHome": not original_info["showOnHome"], "defaultCurrentState": "switch",
+                "defaultIcon": "he-switch_1", "name": f"{label}_name", "label": f"{label}_label",
+            }
+            editable = {entry["name"]: entry for entry in cfg.get("editableFields", [])}
+            native_defaults = {}
+            for key, lower in (("maxEvents", 1), ("maxStates", 1), ("spammyThreshold", 100)):
+                original = original_info.get(key)
+                if not isinstance(original, int) or isinstance(original, bool) or not lower <= original <= 2000:
+                    # Native defaults can be zero even when the UI only permits positive edits.
+                    # Exercise these last, then delete the owned fixture instead of forging a restore.
+                    native_defaults[key] = edits.pop(key)
+            for key, value in edits.items():
+                assert key in original_info and key in editable, f"native/editable field missing: {key}"
+                assert editable[key].get("writable") is True, f"disposable fixture field not writable: {editable[key]}"
+                original = original_info[key]
+                restore = original if original is not None else ""
+                try:
+                    update({key: value})
+                    native, info = capture()
+                    assert info[key] == value, f"native {key} did not persist: {info[key]!r} != {value!r}"
+                    current_configuration = configuration()
+                    current = {row["name"]: row for row in current_configuration["editableFields"]}
+                    assert current[key]["value"] == value, f"configuration {key} disagrees with native page: {current[key]}"
+                    assert_native_preferences(native, current_configuration, expected)
+                    for preserved in ("deviceNetworkId", "deviceTypeId"):
+                        assert info[preserved] == original_info[preserved], f"form edit changed {preserved}: {info}"
+                finally:
+                    update({key: restore})
+                    native, info = capture()
+                    assert info[key] == original or (original is None and info[key] == ""), \
+                        f"native restoration failed for {key}: {info[key]!r} != {original!r}"
+                    assert_native_preferences(native, configuration(), expected)
+
+            rooms = self.client.call_tool("hub_read_rooms", {"tool": "hub_list_rooms"})
+            room_name = f"{SCAFFOLD_PREFIX}Room"
+            assert any(row.get("name") == room_name for row in rooms.get("rooms", [])), \
+                f"standing test room missing: {room_name}"
+            original_room = original_info.get("roomName") or ""
+            try:
+                update({"room": room_name})
+                _, info = capture()
+                assert info.get("roomName") == room_name, f"native room assignment did not persist: {info}"
+                update({"room": ""})
+                _, info = capture()
+                assert not info.get("roomName"), f"native room unassign did not persist: {info}"
+            finally:
+                update({"room": original_room})
+                _, info = capture()
+                assert (info.get("roomName") or "") == original_room, f"native room restoration failed: {info}"
+
+            if unlisted:
+                original_dni = original_info["deviceNetworkId"]
+                try:
+                    update({"deviceNetworkId": f"{label}_retarget", "confirm": True})
+                    _, info = capture()
+                    assert info["deviceNetworkId"] == f"{label}_retarget", f"native DNI edit failed: {info}"
+                finally:
+                    update({"deviceNetworkId": original_dni, "confirm": True})
+                    _, info = capture()
+                    assert info["deviceNetworkId"] == original_dni, f"native DNI restoration failed: {info}"
+                replacement_name = f"{driver_name} Replacement"
+                created = self._write_once("hub_manage_code", "hub_create_driver", {
+                    "source": source.replace(driver_name, replacement_name), "confirm": True,
+                }, "replacement configuration fixture driver create")
+                replacement_driver_id = created.get("driverId")
+                assert created.get("success") is True and replacement_driver_id, f"replacement driver create failed: {created}"
+                catalog = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_list_drivers", "args": {"include": "all"},
+                })
+                matches = [row for row in catalog.get("drivers", []) if row.get("name") == replacement_name]
+                assert len(matches) == 1, f"replacement type ID unavailable or ambiguous: {matches}"
+                replacement_type = int(matches[0]["id"])
+                try:
+                    update({"deviceTypeId": replacement_type, "confirm": True})
+                    native, info = capture()
+                    assert int(info["deviceTypeId"]) == replacement_type, f"native driver switch failed: {info}"
+                    assert_native_preferences(native, configuration(), expected)
+                finally:
+                    update({"deviceTypeId": int(original_info["deviceTypeId"]), "confirm": True})
+                    native, info = capture()
+                    assert info["deviceTypeId"] == original_info["deviceTypeId"], f"native driver restoration failed: {info}"
+                    assert_native_preferences(native, configuration(), expected)
+            if native_defaults:
+                for key in native_defaults:
+                    assert key in original_info and key in editable, f"native/editable field missing: {key}"
+                    assert editable[key].get("writable") is True, f"fixture field not writable: {editable[key]}"
+                update(native_defaults)
+                native, info = capture()
+                current_configuration = configuration()
+                current = {row["name"]: row for row in current_configuration["editableFields"]}
+                for key, value in native_defaults.items():
+                    assert info[key] == value and current[key]["value"] == value, \
+                        f"native default field edit failed: {key}: {info[key]!r}"
+                assert_native_preferences(native, current_configuration, expected)
+                print("    Native defaults outside accepted edit bounds: "
+                      + repr({key: original_info[key] for key in native_defaults})
+                      + "; their writes were verified; owned fixture deletion is the cleanup for these fields")
+            print(f"    DEVICE_CONFIGURATION {'bypass' if unlisted else 'listed'}: typed preferences, source, "
+                  "selected details and reversible edits independently persisted and restored")
+            print("    [COVERAGE GAP] radio, mesh, retry, dashboards and assistant fields need dedicated fixtures; "
+                  "linked identity needs a dedicated mesh fixture")
+        finally:
+            cleanup_errors = []
+            # A transport-lost create may have committed. Resolve only run-owned names
+            # before deciding whether it is safe to remove the fixture's code class.
+            if driver_id is None or (replacement_name and replacement_driver_id is None):
+                try:
+                    catalog = self.client.call_tool("hub_read_apps_code", {
+                        "tool": "hub_list_drivers", "args": {"include": "user"},
+                    })
+                    owned = [row for row in catalog.get("drivers", []) if row.get("name") == driver_name]
+                    assert len(owned) <= 1, f"ambiguous run-owned driver recovery: {owned}"
+                    if driver_id is None and owned:
+                        driver_id = owned[0]["id"]
+                    if replacement_name and replacement_driver_id is None:
+                        owned = [row for row in catalog.get("drivers", []) if row.get("name") == replacement_name]
+                        assert len(owned) <= 1, f"ambiguous replacement driver recovery: {owned}"
+                        if owned:
+                            replacement_driver_id = owned[0]["id"]
+                except Exception as exc:
+                    cleanup_errors.append(f"driver creation recovery: {exc}")
+            recovery_failed = False
+            if device_id is None and driver_id:
+                try:
+                    candidates = {}
+                    for owned_label in (label, driver_name):
+                        inventory = self.client.call_tool("hub_list_devices", {
+                            "scope": "all", "labelFilter": owned_label,
+                        })
+                        for row in inventory.get("devices", []):
+                            if row.get("label") == owned_label or row.get("name") == owned_label:
+                                candidates[str(row["id"])] = row
+                    assert len(candidates) <= 1, f"ambiguous run-owned device recovery: {candidates}"
+                    if candidates:
+                        device_id = next(iter(candidates))
+                    elif dni:
+                        if dni in self.created_device_dnis:
+                            self.created_device_dnis.remove(dni)
+                        dni = None
+                except Exception as exc:
+                    recovery_failed = True
+                    cleanup_errors.append(f"device creation recovery: {exc}")
+            device_deleted = device_id is None and dni is None
+            if recovery_failed:
+                device_deleted = False
+            if device_id is not None or dni is not None:
+                try:
+                    if unlisted:
+                        result = self._write_once("hub_manage_destructive_ops", "hub_delete_device", {
+                            "deviceId": device_id, "confirm": True,
+                        }, "configuration device cleanup")
+                    else:
+                        result = self._write_once(None, "hub_manage_virtual_device", {
+                            "action": "delete", "deviceNetworkId": dni, "confirm": True,
+                        }, "configuration child cleanup")
+                    assert result.get("success") is True, f"device cleanup failed: {result}"
+                    remaining = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
+                    assert not any(str(row.get("id")) == str(device_id) for row in remaining.get("devices", [])), \
+                        f"fixture device remains after deletion: {remaining}"
+                    device_deleted = True
+                    if dni in self.created_device_dnis:
+                        self.created_device_dnis.remove(dni)
+                except Exception as exc:
+                    cleanup_errors.append(f"device {device_id or dni}: {exc}")
+            for cleanup_driver_id in (replacement_driver_id, driver_id):
+                if not cleanup_driver_id:
+                    continue
+                if not device_deleted:
+                    cleanup_errors.append(f"driver {cleanup_driver_id} retained because its device was not confirmed deleted")
+                    continue
+                try:
+                    result = self._write_once("hub_manage_code", "hub_delete_item", {
+                        "type": "driver", "item_id": cleanup_driver_id, "confirm": True,
+                    }, "configuration driver cleanup")
+                    assert result.get("success") is True, f"driver cleanup failed: {result}"
+                    catalog = self.client.call_tool("hub_read_apps_code", {
+                        "tool": "hub_list_drivers", "args": {"include": "user"},
+                    })
+                    assert not any(str(row.get("id")) == str(cleanup_driver_id) for row in catalog.get("drivers", [])), \
+                        f"fixture driver remains after deletion: {catalog}"
+                except Exception as exc:
+                    cleanup_errors.append(f"driver {cleanup_driver_id}: {exc}")
+            assert not cleanup_errors, "Configuration fixture cleanup failed: " + "; ".join(cleanup_errors)
+
+    @test("devices")
     def test_get_attribute(self) -> None:
         # Read the attribute off the persistent BAT_E2E_ scaffold switch (find-or-reuse, always exposes
         # `switch`) -- the assertion below is existence-only and device-identity-irrelevant, so the
@@ -3640,6 +4007,42 @@ class TestRunner:
             for d in dev_list
         )
         assert found, f"{self.virtual_switch_label} not found in virtual device list"
+
+    @test("virtual_device_lifecycle")
+    def test_list_virtual_devices_honors_limit_offset_and_cursor(self) -> None:
+        full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+        full_devices = full.get("devices", [])
+        assert len(full_devices) > 3, \
+            f"virtual pagination fixture needs more than three devices, got {len(full_devices)}"
+
+        limited = self.client.call_tool("hub_list_devices", {"filter": "virtual", "limit": 3})
+        assert limited.get("count") == 3, f"limit=3 was ignored: {limited}"
+        assert limited.get("total") == len(full_devices), f"virtual total mismatch: {limited}"
+        assert limited.get("hasMore") is True and limited.get("nextOffset") == 3, \
+            f"classic virtual pagination metadata missing: {limited}"
+        assert [d.get("id") for d in limited.get("devices", [])] == \
+            [d.get("id") for d in full_devices[:3]], f"limit page changed ordering: {limited}"
+
+        offset_page = self.client.call_tool(
+            "hub_list_devices", {"filter": "virtual", "offset": 1, "limit": 2})
+        assert [d.get("id") for d in offset_page.get("devices", [])] == \
+            [d.get("id") for d in full_devices[1:3]], f"offset was ignored: {offset_page}"
+
+        cursor_page = self.client.call_tool(
+            "hub_list_devices", {"filter": "virtual", "cursor": "", "limit": 3})
+        assert cursor_page.get("nextCursor") == "3", f"cursor metadata missing: {cursor_page}"
+        next_page = self.client.call_tool(
+            "hub_list_devices", {"filter": "virtual", "cursor": "3", "limit": 3})
+        assert [d.get("id") for d in next_page.get("devices", [])] == \
+            [d.get("id") for d in full_devices[3:6]], f"cursor page wrong: {next_page}"
+
+        try:
+            self.client.call_tool(
+                "hub_list_devices", {"filter": "virtual", "cursor": "1", "offset": 1, "limit": 2})
+            raise AssertionError("virtual listing accepted conflicting cursor and offset")
+        except McpError as exc:
+            assert "cursor and offset are mutually exclusive" in str(exc), \
+                f"conflict error was not actionable: {exc}"
 
     @test("virtual_device_lifecycle")
     def test_delete_virtual_switch(self) -> None:
@@ -11933,6 +12336,45 @@ class TestRunner:
                 self.created_variable_names.remove(var_name)
         finally:
             self._set_bps(enableMandatoryBPS=False)
+
+    @test("best_practice_gating")
+    def test_bps_refusal_is_error_logged_at_error_and_debug_thresholds(self) -> None:
+        """A rejected write is recoverable in the response, native logs, and MCP logs
+        even at the default error threshold. The deliberately invalid variable type
+        guarantees no mutation if the acknowledgment gate itself regresses."""
+        try:
+            for threshold in ("error", "debug"):
+                self._set_bps(enableMandatoryBPS=True, mcpLogLevel=threshold)
+                try:
+                    self.client.call_tool("hub_manage_variables", {
+                        "tool": "hub_create_variable",
+                        "args": {"name": f"{PREFIX}BPS_Log_Probe",
+                                 "type": "DefinitelyNotAVariableType",
+                                 "value": "never-written", "confirm": True},
+                    })
+                    raise AssertionError("BPS log probe unexpectedly passed its refusal gate")
+                except McpError as exc:
+                    assert "Mandatory best-practice acknowledgment" in str(exc), \
+                        f"BPS refusal response lost its actionable reason: {exc}"
+
+                mcp_logs = self.client.call_tool("hub_get_logs", {
+                    "mode": "mcp", "level": "error", "component": "server", "limit": 50})
+                assert any(
+                    entry.get("level") == "error" and
+                    "Validation error in hub_create_variable" in entry.get("message", "") and
+                    "Mandatory best-practice acknowledgment" in entry.get("message", "")
+                    for entry in mcp_logs.get("entries", [])
+                ), f"{threshold} threshold did not retain the refusal in MCP logs: {mcp_logs}"
+
+                native_logs = self.client.call_tool("hub_get_logs", {
+                    "mode": "hub", "level": "ERROR",
+                    "pattern": "Mandatory best-practice acknowledgment", "limit": 50})
+                assert any(
+                    "Mandatory best-practice acknowledgment" in entry.get("message", "")
+                    for entry in native_logs.get("logs", [])
+                ), f"{threshold} threshold did not emit the refusal to native logs: {native_logs}"
+        finally:
+            self._set_bps(enableMandatoryBPS=False, mcpLogLevel="error")
 
     @test("best_practice_gating")
     def test_bps_gate_disabled_allows_keyless_write(self) -> None:

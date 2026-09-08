@@ -185,13 +185,31 @@ def toolCreateVirtualDevice(args) {
 
 def toolListVirtualDevices(args) {
     def childDevs = getChildDevices() ?: []
+    def cursor = args?.cursor
+    int offset = args?.offset != null ? (args.offset as Integer) : 0
+    int limit = args?.limit != null ? (args.limit as Integer) : 0
+    if (cursor != null) {
+        if (offset > 0) {
+            throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
+        }
+        offset = _parseListCursor(cursor, childDevs.size(), "hub_list_devices(filter='virtual')")
+        if (limit <= 0) limit = 50
+    }
+    if (offset < 0) offset = 0
 
     if (!childDevs) {
-        return [
+        def empty = [
             devices: [],
             count: 0,
+            total: 0,
             message: "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one."
         ]
+        if (limit > 0) {
+            empty.offset = 0
+            empty.limit = limit
+            empty.hasMore = false
+        }
+        return empty
     }
 
     def devices = childDevs.collect { device ->
@@ -233,16 +251,23 @@ def toolListVirtualDevices(args) {
         return info
     }
 
-    def cursor = args?.cursor
-    def paged = _paginateList(devices, cursor, 50, "list_devices_virtual")
+    int startIndex = Math.min(offset, devices.size())
+    int endIndex = limit > 0 ? Math.min(startIndex + limit, devices.size()) : devices.size()
+    def page = devices.subList(startIndex, endIndex)
     def result = [
-        devices: paged.page,
-        count: paged.page.size(),
+        devices: page,
+        count: page.size(),
+        total: devices.size(),
         message: "Found ${devices.size()} MCP-managed virtual ${devices.size() == 1 ? 'device' : 'devices'}. These are automatically accessible to all MCP device tools."
     ]
-    if (cursor != null) {
-        result.total = devices.size()
-        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    if (limit > 0) {
+        result.offset = startIndex
+        result.limit = limit
+        result.hasMore = endIndex < devices.size()
+        if (endIndex < devices.size()) {
+            result.nextOffset = endIndex
+            if (cursor != null) result.nextCursor = endIndex.toString()
+        }
     }
     return result
 }

@@ -245,4 +245,126 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         !result.sections.containsKey('commands')
         hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
     }
+
+    def "every writable property has explicit read coverage without losing false empty or redacted values"() {
+        given:
+        addListedDevice()
+        registerFixture()
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+        def schema = script.getAllToolDefinitions().find { it.name == 'hub_update_device' }.inputSchema.properties
+        def fields = result.editableFields.collectEntries { [(it.name): it] }
+
+        then:
+        fields.keySet() == (schema.keySet() - ['deviceId', 'confirm', 'bestPracticeKey']) as Set
+        fields.label.value == 'Synthetic Hall Climate'
+        fields.deviceNetworkId.value == 'SYNTHETIC-DNI-901'
+        fields.room.value == 'Synthetic Hall'
+        fields.enabled.value == true
+        fields.showOnHome.value == false
+        fields.defaultCurrentState.value == ''
+        fields.tags.value == []
+        fields.preferences.valueReference == 'preferences'
+        fields.deviceTypeId.optionsReference.args.include == 'all'
+        fields.deviceTypeId.requiresConfirmation == true
+        fields.meshEnabled.value == false
+        fields.googleHomeEnabled.value == false
+        !result.toString().contains('synthetic-device-data-secret')
+    }
+
+    def "native fetch failure preserves useful identity and explicitly unavailable discovery"() {
+        given:
+        addListedDevice()
+        hubGet.register("/device/fullJson/${DEVICE_ID}") { throw new RuntimeException('offline') }
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+
+        then:
+        result.id == DEVICE_ID
+        result.label == 'Synthetic Hall Climate'
+        result.preferenceRead.status == 'unavailable'
+        result.preferenceRead.reason
+        result.deviceInfoRead.status == 'unavailable'
+        result.editableFields.every { !it.writable }
+    }
+
+    def "input values match by name and conflicting malformed storage never reports complete"() {
+        given:
+        def full = [device: [id: 1], settings: [
+            [name: 'number', type: 'number', value: '9.5'], [name: 'boolean', type: 'bool', value: 'true']],
+            inputValues: [[name: 'boolean', inputValue: 'false'], [name: 'number', inputValue: '0']]]
+
+        when:
+        def model = script._readDevicePreferenceModel(full)
+        full.inputValues << [name: 'boolean', inputValue: 'true']
+        def ambiguous = script._readDevicePreferenceModel(full)
+
+        then:
+        model.status == 'complete'
+        script._lookupDevicePreference(model, 'number').value == 0
+        script._lookupDevicePreference(model, 'boolean').value == false
+        ambiguous.status == 'partial'
+        script._lookupDevicePreference(ambiguous, 'boolean').valueStatus == 'unknown'
+    }
+
+    def "details exposes non-editable metadata and a verified source ID distinct from the device type ID"() {
+        given:
+        addListedDevice()
+        registerFixture()
+        hubGet.register('/hub2/userDeviceTypes') {
+            '[{"id":808,"name":"Synthetic Environmental Driver","namespace":"synthetic.example"}]'
+        }
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'details')
+
+        then:
+        result.sections.identity.driver.deviceTypeId == 77
+        result.sections.configuration.driverSource == [status: 'available', gateway: 'hub_read_apps_code',
+            tool: 'hub_get_source', args: [type: 'driver', id: '808']]
+        result.sections.identity.lastActivityTime == '2026-09-08T09:00:00.000-0400'
+        result.sections.attributes.currentStates.temperature.unit == 'C'
+        result.sections.attributes.declaredAttributes[0].name == 'temperature'
+        result.sections.relationships.parentApp.id == 301
+        result.sections.relationships.appsUsing[0].id == 501
+        result.sections.state.health == 'online'
+        result.sections.jobs[0].name == 'syntheticRefresh'
+        result.references.events.args.deviceId == DEVICE_ID
+        !result.toString().contains('synthetic-device-data-secret')
+    }
+
+    def "ambiguous user driver identity does not invent a source reference"() {
+        given:
+        addListedDevice()
+        registerFixture()
+        hubGet.register('/hub2/userDeviceTypes') {
+            '[{"id":808,"name":"Synthetic Environmental Driver","namespace":"synthetic.example"},' +
+            '{"id":809,"name":"Synthetic Environmental Driver","namespace":"synthetic.example"}]'
+        }
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+
+        then:
+        result.driverSource.status == 'unresolved'
+        !result.driverSource.containsKey('args')
+        result.driverSource.lookup.tool == 'hub_list_drivers'
+    }
+
+    def "new native device fields make incomplete details coverage visible"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.device.futureFirmwareField = 'new information'
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'details')
+
+        then:
+        result.sourceCoverage.status == 'partial'
+        result.sourceCoverage.unmappedDeviceFields == ['futureFirmwareField']
+    }
 }

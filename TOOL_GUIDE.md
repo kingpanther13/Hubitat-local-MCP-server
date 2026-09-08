@@ -264,17 +264,58 @@ MCP-managed virtual devices:
 
 ---
 
+## Device inspection
+
+`hub_get_device(deviceId=...)` keeps its concise summary of capabilities,
+attributes and commands. Use `mode="configuration"` before updating a device:
+it returns `editableFields`, all available preference declarations and current
+values, actual driver identity, and source/read-status information. A saved
+`false`, zero, empty string or null is distinct from an unset value. Defaults
+describe the driver declaration; they do not prove a setting was saved.
+
+Use `mode="details"` for comprehensive inspection. Optional `sections` select
+`configuration`, `identity`, `attributes`, `commands`, `data`, `state`,
+`relationships`, `jobs`, `integrations`, or `metadata`. Event/log histories use
+the linked read tools instead of inflating every device response. Missing or
+unrecognized native data is reported as partial/unavailable, never as proof
+that the device has no settings. Sensitive values are redacted.
+
+The actual driver name is separate from the device's mutable name. `driverSource`
+provides a verified source call when a user driver can be resolved, or a driver
+catalog lookup and the reason source is unavailable. Built-in source is not
+promised. Source code can supply further declarations, but cannot establish
+the device's current saved preferences.
+
+All modes are reachable through `hub_read_devices` with the Write master off;
+device authorization still applies. For example:
+
+```json
+{"tool":"hub_get_device","args":{"deviceId":"42","mode":"configuration"}}
+```
+
 ## hub_update_device Properties
 
-| Property | API Used | Requires Write master |
-|----------|----------|-------------------------|
-| label | setLabel (official) | No |
-| name | setName (official) | No |
-| deviceNetworkId | setDeviceNetworkId (official) | No |
-| dataValues | updateDataValue (official) | No |
-| preferences | updateSetting (official) | No |
-| room | hub internal API | **Yes** |
-| enabled | hub internal API | **Yes** |
+Every update requires the Write master and applicable tool permissions. When
+mandatory best-practice acknowledgment is enabled, read the guide first and put
+`bestPracticeKey` inside the gateway's `args` alongside the patch.
+
+| Properties | Read/write behavior |
+|------------|---------------------|
+| `label`, `name`, `deviceNetworkId` | Device identity; network-ID changes require confirmation and backup. |
+| `dataValues`, `preferences` | Data-section values and declared driver preferences; inspect configuration first. |
+| `room`, `enabled`, `showOnHome`, `defaultCurrentState`, `tags` | Room, device availability, Home visibility, status attribute and replacement tag set. |
+| `deviceTypeId`, `zigbeeId` | Driver and radio identity; applicable devices only, confirmation and backup required. |
+| `notes`, `defaultIcon` | Device note and icon override; empty string clears. |
+| `maxEvents`, `maxStates`, `spammyThreshold` | Native history limits (1–2000) and event-alert threshold (100–2000). |
+| `dashboardIds`, `meshEnabled`, `meshFullSync` | Applicable dashboard/mesh assignments; confirmation and backup required. |
+| `retryEnabled` | Command retry, only where the native device exposes it. |
+| `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` | Supported and installed assistant assignments; confirmation and backup required. |
+
+Configuration mode identifies each field's applicability and readback source.
+The [editable-field inventory](docs/superpowers/plans/2026-09-08-device-editable-field-matrix.md)
+records the current Vue controls and native payloads. Omitted properties are
+preserved. The complete patch is validated before writes begin; runtime failures
+report per-property successes and errors, so inspect the result before retrying.
 
 **Preferences format:**
 ```json
@@ -284,7 +325,9 @@ MCP-managed virtual devices:
 }
 ```
 
-**Valid preference types:** bool, number, string, enum, decimal, text
+Use the preference's declared type, allowed values and range from configuration
+mode. Unknown names are refused. An unreadable schema/readback is reported
+separately from an unknown name or a value that did not persist.
 
 **Room assignment:** Use exact room name as it appears in Hubitat (case-sensitive)
 

@@ -12,9 +12,25 @@ with the hub's HTTP surface. Every file is downloaded verbatim from a hub at
 | `vue-hub2.min.js` (~3.3 MB, platform 2.5.0.143) | The modern **Vue 3 SPA** as one MONOLITH — every component body inline, so this is the file whose string literals carry the **whole endpoint corpus** (`/hub2/appsList`, `/device/runmethod`, `/app/saveOrUpdateJson`, …). Kept deliberately: the 2.5.1 build is code-split and its shell no longer contains those literals |
 | `vue-hub2-shell-2.5.1.min.js` (~573 KB, platform 2.5.1.181) | The 2.5.1 **shell** — routes, the chunk-filename map (`.u=function(e)`) for every lazily-loaded chunk, and the components that were not split out. Grep it for routing; grep the monolith above for endpoints |
 | `vue-hub2-visual-rule-builder-20.min.js` (~583 KB, platform 2.5.1.181) | The **Visual Rule Builder 2.0** code-split chunk — the entire 2.0 editor: graph compose/decompose, dialogs, and its own endpoints |
+| `vue-hub2-device-details.min.js`, `vue-hub2-device-details-shared.min.js` (platform 2.5.1.181) | Current device details and shared configuration components; use these for device read/write contracts, including preferences and Assistants |
 | `appUI.js`, `main.js`, `helpers.js`, `hub2utils.js`, `hubitat.min.js`, `success-compiled.js` | The **classic server-rendered `dynamicPage` engine** — the client side of the legacy app-config flow that Rule Machine and every other classic app still use |
 
 ## Capture state
+
+The two device chunks were captured **2026-09-08** from platform **2.5.1.181**,
+using the filenames mapped by the live shell. Their source paths are
+`/ui2/js/vue-hub2-device-details.min.js` and
+`/ui2/js/vue-hub2-device-details-shared.min.js`. SHA-256:
+
+- Device details: `8c2ca8dc92e8b0c322fcd1ec249900136b4db67dc822c4287015e7b8bff02546`
+- Shared device details: `ee7272d1bcd6a411fd937d3b23c71286696ce2cd7ac6841033c2e2a9bc3d8aba`
+
+These are the primary device interoperability reference. The current UI reads
+`/device/fullJson/<id>` and consumes `settings`, `inputValues`, and `device`
+separately. Driver declarations/defaults and saved device values are distinct.
+The shared component supplies the current `/device/update` form and
+`/device/updateAssistants` JSON contracts. The old monolith remains historical
+reference for components whose current chunks have not been captured.
 
 `vue-hub2-shell-2.5.1.min.js`, `main.js` and `vue-hub2-visual-rule-builder-20.min.js`
 were captured **2026-09-03** from a Hubitat **C-8** on platform **2.5.1.181**.
@@ -22,7 +38,8 @@ were captured **2026-09-03** from a Hubitat **C-8** on platform **2.5.1.181**.
 on purpose: the 2.5.1 SPA is code-split, so the shell that replaced it holds only a
 fraction of the endpoint literals (five of five sampled endpoints — `/hub2/appsList`,
 `/device/runmethod`, `/device/preference/save`, `/app/saveOrUpdateJson`, `/bundle2/uploadZip`
-— exist in the monolith and in NO 2.5.1 file vendored here). The monolith stays as the
+— were then present only in the monolith; the device chunks above now supply the
+current device endpoints). The monolith stays as the
 greppable corpus until every chunk that carries an endpoint is vendored.
 `hubitat.min.js` was re-fetched the same day and is byte-identical to the earlier
 capture, so it carries both dates.

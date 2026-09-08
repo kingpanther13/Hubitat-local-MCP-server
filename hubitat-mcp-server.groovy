@@ -1653,7 +1653,7 @@ def handleToolsCall(msg) {
         if (rec instanceof Map && claim?.outcome == "claimed") {
             _mrtrAbandon(stateId, rec, claim, "validation_error")
         }
-        mcpLog("warn", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
+        mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
                        error: e.message]])
         return jsonRpcError(msg.id, -32602, "Invalid params: ${e.message}")
@@ -1711,7 +1711,7 @@ def handleToolsCallLegacy(msg) {
         return _renderToolResult(msg.id, toolName, reactiveToolName, args, result,
             result instanceof Map && result.isError == true)
     } catch (IllegalArgumentException e) {
-        mcpLog("warn", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
+        mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
             details: [tool: reactiveToolName,
                       gateway: (reactiveToolName != toolName) ? toolName : null,
                       error: e.message]
@@ -2194,7 +2194,7 @@ private def _mrtrCanonicalArgs(value) {
         def canonical = [:]
         value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }.each { entry ->
             String key = entry.key.toString()
-            canonical[key] = _mrtrCanonicalArgs(entry.value)
+            canonical.put(key, _mrtrCanonicalArgs(entry.value))
         }
         return canonical
     }
@@ -3262,7 +3262,7 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
         def copy = new LinkedHashMap()
         (value as Map).each { key, child ->
             if (backupMetadata && key?.toString() == "brokenBefore") return
-            copy[key] = _publicToolResultValue(child, key?.toString() == "backup")
+            copy.put(key, _publicToolResultValue(child, key?.toString() == "backup"))
         }
         return copy
     }
@@ -4530,6 +4530,9 @@ def getToolDefinitions() {
 
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
+    boolean gatewayVisibilityNarrowed = settings.enableRead == false || settings.enableWrite == false ||
+        (settings.disabled_tools instanceof Collection && settings.disabled_tools) ||
+        (settings.disabled_gateways instanceof Collection && settings.disabled_gateways)
 
     // Base tools: all tools NOT behind a gateway, minus any hidden by toggles.
     def baseTools = getAllToolDefinitions().findAll {
@@ -4547,9 +4550,12 @@ def getToolDefinitions() {
         def catalog = visibleSubTools.collect { toolName ->
             "- ${toolName}: ${config.summaries[toolName]}"
         }.join("\n")
+        def intro = gatewayVisibilityNarrowed
+            ? "${displayMeta[gwName]?.title ?: gwName} gateway. Its currently available operations are listed below."
+            : config.description
         [[
             name: gwName,
-            description: "${config.description}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
+            description: "${intro}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4749,7 +4755,7 @@ def executeTool(toolName, args) {
                 return toolListVirtualDevices(args)
             }
             return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
-        case "hub_get_device": return toolGetDevice(args.deviceId)
+        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
