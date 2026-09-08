@@ -359,7 +359,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def currentState = 'switch'
         hubGet.register('/device/fullJson/10') { params ->
             groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Thermostat',
-                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState]])
+                currentStates: [temperature: [:], humidity: [:], switch: [:]],
+                showOnHome: false, retryEnabled: false, defaultCurrentState: currentState]])
         }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> throw new RuntimeException('Not Found (404)') }
         def posted = null
