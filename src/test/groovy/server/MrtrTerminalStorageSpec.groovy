@@ -16,6 +16,21 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
 
     @Shared private TestChildApp lifecycleApp = new TestChildApp(id: 1L, label: 'MCP')
 
+    private static class FailOnceAtomicState extends LinkedHashMap {
+        int failuresRemaining
+        int mrtrWrites
+        Object put(Object key, Object value) {
+            if (key?.toString() == 'mrtrRequests') {
+                mrtrWrites++
+                if (failuresRemaining > 0) {
+                    failuresRemaining--
+                    throw new IllegalStateException('injected state write failure')
+                }
+            }
+            return super.put(key, value)
+        }
+    }
+
     def setupSpec() {
         appExecutor.getApp() >> lifecycleApp
     }
@@ -105,7 +120,7 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
 
         then: 'the public requestState path replays the complete durable result without leaf execution'
         replay.result.resultType == 'complete'
-        replay.result.isError == false
+        !replay.result.isError
         mcpDriver.parseInner(replay) == result
     }
 
@@ -258,5 +273,49 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
 
         and: 'the compact UTF-8 payload saves exactly the duplicate property bytes'
         legacyBytes - compactBytes == redundantPropertyBytes
+    }
+
+    def "a failed legacy compaction never blocks replay and is retried on the next request"() {
+        given:
+        long at = script.now() as Long
+        String stateId = 'mrtr-legacy-retry-0000001'
+        Map args = [ruleId: [41, 42], action: 'stop']
+        Map result = [success: true, results: [[ruleId: 41, success: true]], ruleIds: [41, 42]]
+        Map legacy = [
+            schemaVersion: 1, status: 'terminal', outerTool: 'hub_call_rule', leafTool: 'hub_call_rule',
+            argDigest: script._mrtrBinding('hub_call_rule', 'hub_call_rule', args).argDigest,
+            startedAt: at, updatedAt: at, finishedAt: at, expiresAt: at + 60000L,
+            rounds: 1, generation: 1, aggregate: [kind: 'call_rule', results: result.results],
+            terminalResult: result, terminalIsError: false
+        ]
+        def backing = new FailOnceAtomicState()
+        backing['mrtrRequests'] = [(stateId): legacy]
+        backing.@mrtrWrites = 0
+        backing.@failuresRemaining = 1
+        def peer = newCompiledScriptInstance([app: lifecycleApp, state: stateMap, atomicState: backing])
+        peer._writeStateCacheInvalidate()
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28'])
+        def replay = { int id ->
+            mcpDriver.decodeToolCallResponse(peer.handleToolsCall([jsonrpc: '2.0', id: id,
+                method: 'tools/call', params: [name: 'hub_call_rule', arguments: args, requestState: stateId]]) as Map)
+        }
+
+        when: 'the first opportunistic compacting write fails'
+        Map first = replay(1) as Map
+
+        then: 'the durable legacy record remains usable and replay still succeeds'
+        first.result.resultType == 'complete'
+        mcpDriver.parseInner(first) == result
+        backing['mrtrRequests'][stateId].containsKey('aggregate')
+        backing.@mrtrWrites == 1
+
+        when: 'the same terminal state is replayed again'
+        Map second = replay(2) as Map
+
+        then: 'compaction retries and publishes the smaller durable record'
+        second.result.resultType == 'complete'
+        mcpDriver.parseInner(second) == result
+        !backing['mrtrRequests'][stateId].containsKey('aggregate')
+        backing.@mrtrWrites == 2
     }
 }

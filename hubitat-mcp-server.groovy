@@ -2386,8 +2386,17 @@ private List _mrtrSweepLocked() {
         }
         removable.take(Math.min(removable.size(), sameClass.size() - cap)).each { kept.remove(it.key) }
     }
-    if (compactedTerminal || kept.size() != stored.size()) {
+    if (kept.size() != stored.size()) {
         _writeStateSetLocked("mrtrRequests", kept)
+    } else if (compactedTerminal) {
+        try {
+            _writeStateSetLocked("mrtrRequests", kept)
+        } catch (Exception compactErr) {
+            // Compaction is opportunistic. Reload the durable legacy shape and retry on a
+            // later request rather than turning an otherwise valid replay into a failure.
+            _writeStateCacheInvalidate()
+            mcpLog("debug", "mrtr", "Terminal record compaction deferred: ${compactErr.message}")
+        }
     }
     _mrtrSweepWorkItemsLocked()
     return cleanup

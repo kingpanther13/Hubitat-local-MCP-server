@@ -491,7 +491,7 @@ def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[d
     findings = []
     source_lines = source.split("\n")
     for line_num, (line, original) in enumerate(
-        zip(strip_comments_and_strings(source), source_lines), start=1
+        zip(strip_comments_and_strings(source), source_lines, strict=True), start=1
     ):
         keys = [m.group("key") for m in _RETIRED_DOT_WRITE.finditer(line)]
         for match in _RETIRED_BRACKET_WRITE.finditer(line):

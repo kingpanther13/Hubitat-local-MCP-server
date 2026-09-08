@@ -140,9 +140,7 @@ def toolSearchTools(args) {
 // param keys, friendly titles, gateway summaries and search hints. Walks the same three
 // sources buildToolSearchCorpus does, folding each field into a 64-bit rolling hash rather
 // than materializing the ~98 KB concatenation of this catalog, and skipping the per-entry
-// regex tokenize and corpus map allocation. Unlike requiredParamsCatalogFingerprint, which
-// touches only inputSchema.required and stays small enough to keep as a raw string, this
-// one returns the hash as a decimal String.
+// regex tokenize and corpus map allocation. Returns the hash as a decimal String.
 //
 // A hash admits collisions that exact string equality would not: two different catalogs can
 // in principle fold to the same value, and no field framing changes that. Accepted here --
@@ -151,7 +149,7 @@ def toolSearchTools(args) {
 // separate concern: it stops adjacent fields from being reordered or re-split into the same
 // input, which is a structural ambiguity rather than a hash property.
 //
-// NOT pure, unlike requiredParamsCatalogFingerprint: applyDescriptionTransform rewrites the
+// NOT pure: applyDescriptionTransform rewrites the
 // descriptions of the defs list IN PLACE. A caller that passes its own list gets it back
 // already stripped, and a later applyDescriptionTransform(defs, true) on that same list is a
 // no-op -- which would ship every [[FLAT_TRIM]] block inline and blow the flat catalog's
