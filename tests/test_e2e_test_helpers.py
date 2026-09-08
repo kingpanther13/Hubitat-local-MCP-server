@@ -189,6 +189,25 @@ def test_watchdog_hub_logs_reads_direct_native_history_without_main_client(monke
     })]
 
 
+def test_watchdog_hub_logs_accepts_successful_empty_native_history(monkeypatch):
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body({
+                "logs": [], "count": 0, "totalParsed": 0,
+                "appliedFilters": {"level": "error", "limit": 100},
+            }),
+        },
+    )
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace()
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", lambda *args, **kwargs: response)
+
+    assert runner._watchdog_hub_logs(level="ERROR", limit=100) == []
+
+
 @pytest.mark.parametrize(
     "response_json",
     [
@@ -196,6 +215,24 @@ def test_watchdog_hub_logs_reads_direct_native_history_without_main_client(monke
         {
             "jsonrpc": "2.0", "id": 1,
             "result": _raw_tool_body({"success": False, "error": "native logs unavailable"}),
+        },
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body(
+                {"logs": [], "count": 0, "error": "unparseable /logs/past/json"}
+            ),
+        },
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body(
+                {"logs": [], "count": 0, "message": "No log data returned from hub"}
+            ),
+        },
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body(
+                {"success": True, "logs": []}, is_error=True
+            ),
         },
         {
             "jsonrpc": "2.0", "id": 1,

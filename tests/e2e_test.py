@@ -1258,11 +1258,15 @@ class TestRunner:
             if not isinstance(payload, dict) or payload.get("error") is not None:
                 raise ValueError("watchdog returned a JSON-RPC error")
             result = payload.get("result")
+            if not isinstance(result, dict) or result.get("isError") is True:
+                raise ValueError("watchdog log tool returned an error")
             content = result.get("content") if isinstance(result, dict) else None
             text = content[0].get("text") if isinstance(content, list) and content \
                 and isinstance(content[0], dict) else None
             decoded = json.loads(text) if isinstance(text, str) and text else None
-            if not isinstance(decoded, dict) or decoded.get("success") is False:
+            if not isinstance(decoded, dict) or decoded.get("success") is False \
+                    or decoded.get("error") is not None \
+                    or decoded.get("message") == "No log data returned from hub":
                 raise ValueError("watchdog log tool reported failure")
             logs = decoded.get("logs")
             if not isinstance(logs, list):
