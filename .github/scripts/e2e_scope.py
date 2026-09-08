@@ -47,14 +47,18 @@ FILE_GROUP_MAP = {
     "libraries/mcp-files-lib.groovy":           ["system_tools"],
     "libraries/mcp-item-backups-lib.groovy":    ["system_tools"],
     "libraries/mcp-rooms-lib.groovy":           ["infrastructure"],
-    "libraries/mcp-discovery-lib.groovy":       ["infrastructure", "protocol"],
+    # best_practice_gating: the hub_get_tool_guide coverage (section reachability, the paged
+    # full-guide call, the sub-section keys) is registered in that group. Without it a PR that
+    # changes the guide surface but adds no new test gets a lane that never exercises it.
+    "libraries/mcp-discovery-lib.groovy":       ["infrastructure", "protocol", "best_practice_gating"],
     "libraries/mcp-app-cloner-lib.groovy":      ["native_apps", "rule_crud", "mrtr"],
     "libraries/mcp-dashboards-lib.groovy":      ["dashboards"],
     # native_apps: the MRTR continuation aggregator lives here, and its client-visible
     # guard (test_call_rule_multi_id_aggregates_per_rule) is registered in that group. Without
     # it, a PR editing the aggregation but no test file selects a lane that never runs it.
+    # best_practice_gating: getToolGuideSections() / getToolGuideSubSections() live in this file.
     "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
-                                                 "native_apps"],
+                                                 "native_apps", "best_practice_gating"],
 }
 
 

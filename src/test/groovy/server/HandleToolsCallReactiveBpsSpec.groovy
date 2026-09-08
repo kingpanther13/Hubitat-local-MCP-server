@@ -55,9 +55,9 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_manage_native_rules_and_apps',
             [tool: 'hub_set_app_disabled', args: [appId: 'x']])
 
-        then: "the hint maps to the SUB-TOOL's section (builtin_app_tools), since the gateway has none"
+        then: "the hint maps to the SUB-TOOL's own sub-section (builtin_app_tools_rules), since the gateway has none"
         response.error.code == -32602
-        response.error.message.contains('hub_get_tool_guide(section="builtin_app_tools")')
+        response.error.message.contains('hub_get_tool_guide(section="builtin_app_tools_rules")')
         response.error.message.contains('hub_set_app_disabled')
     }
 

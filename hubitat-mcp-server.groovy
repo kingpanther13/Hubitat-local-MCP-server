@@ -8356,8 +8356,11 @@ def hubBpsGuideKey() { 'bps-ack-299' }
 
 // Map a (write) tool to the hub_get_tool_guide section that documents IT (issue #299). This is the
 // reactive hint's whole point: on an error, point the LLM at the FAILING tool's own reference, not
-// a generic page. Sections are the real keys in getToolGuideSections(); the groupings mirror where
-// each family already cites hub_get_tool_guide(section=...) in its descriptions/errors. Returns null
+// a generic page -- so where a section splits into sub-keys, the hint names the SUB-key that holds
+// the failing tool's own block, not the parent. hub_set_rule is the exception: at hint time the
+// failing shortcut is unknown, and the parent response lists its sub-keys anyway. Keys are real
+// keys in getToolGuideSections() / getToolGuideSubSections(); the groupings mirror where each
+// family already cites hub_get_tool_guide(section=...) in its descriptions/errors. Returns null
 // for tools with no dedicated section -- those get NO reactive hint (a generic pointer is exactly
 // what this feature must avoid).
 def _guideSectionForTool(toolName) {
@@ -8366,16 +8369,18 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
     if (t in ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
-              'hub_export_native_app', 'hub_import_native_app', 'hub_set_app_disabled',
-              'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean']) return 'builtin_app_tools'
+              'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
+    if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
+              'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
     if (t == 'hub_update_device') return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
+    if (t in ['hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter']) return 'hub_admin_write_radios'
+    if (t in ['hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write_devices'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
-              'hub_update_firmware', 'hub_call_destructive_ops', 'hub_call_zwave', 'hub_call_zigbee',
-              'hub_call_matter', 'hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write'
+              'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
     if (t in ['hub_call_device_command', 'hub_get_device_attribute']) return 'device_authorization'
     return null
 }

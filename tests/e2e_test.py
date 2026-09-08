@@ -11971,14 +11971,15 @@ class TestRunner:
     def test_reactive_bps_gateway_returned_map_carries_bp_warning_field(self) -> None:
         """Gateway-routed RETURNED-[success:false] path: hub_set_app_disabled via its gateway with a
         numeric-but-nonexistent appId RETURNS a success:false Map (no throw); the bp_warning FIELD rides
-        the result and names the sub-tool's section (builtin_app_tools). Proves the returned-Map path."""
+        the result and names the sub-tool's own sub-section (builtin_app_tools_rules). Proves the
+        returned-Map path."""
         self._set_bps(enableMandatoryBPS=False)
         res = self.client.call_tool("hub_manage_native_rules_and_apps", {
             "tool": "hub_set_app_disabled", "args": {"appId": "999999999", "disabled": True}})
         assert isinstance(res, dict), f"expected a returned result map, got: {res!r}"
         assert res.get("success") is False, f"expected success:false for a nonexistent appId, got: {res}"
         assert "bp_warning" in res, f"returned-error result missing the bp_warning field: {res}"
-        assert 'section="builtin_app_tools"' in res["bp_warning"], f"bp_warning wrong section: {res.get('bp_warning')}"
+        assert 'section="builtin_app_tools_rules"' in res["bp_warning"], f"bp_warning wrong section: {res.get('bp_warning')}"
         assert "hub_set_app_disabled" in res["bp_warning"], f"bp_warning should name the sub-tool: {res.get('bp_warning')}"
 
     @test("best_practice_gating")
