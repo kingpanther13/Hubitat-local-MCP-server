@@ -1295,7 +1295,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
         dataValues: listed,
         deviceTypeId: d.isComponent != true && !d.linkedDevice,
         zigbeeId: d.isComponent != true && !d.linkedDevice && d.zigbeeId != null,
-        dashboardIds: fj?.hasDashboards == true,
+        dashboardIds: _deviceFlag(fj?.hasDashboards),
         meshEnabled: d.meshSelectionEnabled == true,
         retryEnabled: fj?.commandRetrySelectionEnabled == true || d.retryAvailable == true,
         meshFullSync: !!d.linkedDevice && fj?.hubMeshRefreshEnabled == true,
@@ -1670,7 +1670,32 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed
     return result
 }
 
-def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null) {
+private Map _deviceReadPage(Map result, cursor) {
+    // Size the actual text-content envelope, including escaped JSON, before the shared guard.
+    String serialized = groovy.json.JsonOutput.toJson(result)
+    def envelope = [jsonrpc: '2.0', id: 1, result: [content: [[type: 'text', text: serialized]]]]
+    if (cursor == null && groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length < 95000) return result
+    // Only large expanded reads use fragments. No hub state is persisted for this continuation.
+    // The digest prevents assembling pages from different native snapshots or selections.
+    String digest = _mrtrSha256(serialized)
+    int start = 0
+    if (cursor != null && cursor != '') {
+        String token = cursor.toString()
+        if (!(token ==~ /v1:[a-f0-9]{64}:[0-9]+/)) throw new IllegalArgumentException('cursor must be a prior hub_get_device nextCursor; keep the same mode, sections and fields.')
+        def parts = token.split(':')
+        if (parts[1] != digest) throw new IllegalArgumentException('Device information or selection changed during pagination. Restart without cursor, or select fewer fields.')
+        start = _parseListCursor(parts[2], serialized.length(), 'hub_get_device')
+    }
+    // JsonOutput escapes Unicode; this conservative fragment bound includes double escaping
+    // when the fragment is placed inside the MCP text-content JSON envelope.
+    int end = Math.min(start + 18000, serialized.length())
+    return [id: result.id, mode: result.mode, contentFormat: 'json-fragment',
+            content: serialized.substring(start, end), offset: start, totalCharacters: serialized.length(),
+            nextCursor: end < serialized.length() ? "v1:${digest}:${end}".toString() : null,
+            note: 'Concatenate content fragments in order, then parse the joined JSON. Repeat this call with nextCursor and unchanged arguments; fields=[] discovers smaller selections.']
+}
+
+def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cursor = null) {
     String selectedMode = mode == null ? 'summary' : mode.toString()
     if (!(selectedMode in ['summary', 'configuration', 'details'])) {
         throw new IllegalArgumentException("mode must be summary, configuration, or details.")
@@ -1682,21 +1707,24 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null) {
     if (fields != null && (selectedMode == 'summary' || !(fields instanceof List) || fields.any { !(it instanceof String) })) {
         throw new IllegalArgumentException('fields is an array of field names for configuration/details; use [] to discover names.')
     }
+    if (cursor != null && (selectedMode == 'summary' || !(cursor instanceof String))) {
+        throw new IllegalArgumentException('cursor is a string continuation for configuration/details mode only.')
+    }
     def device = findDevice(deviceId)
     if (!device) {
         if (_bypassEnabled()) {
             def fj = _fetchDeviceFullJson(deviceId)
             if (fj?.device instanceof Map) {
                 def identity = _getDeviceFromFullJson(deviceId, fj)
-                return selectedMode == 'summary' ? identity : _deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections, fields)
+                return selectedMode == 'summary' ? identity : _deviceReadPage(_deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections, fields), cursor)
             }
         }
         throw new IllegalArgumentException("Device not found: ${deviceId}")
     }
 
     if (selectedMode == 'configuration') {
-        return _deviceExpandedResult(deviceId, [name: device.name, label: device.label ?: device.name],
-                                     _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields)
+        return _deviceReadPage(_deviceExpandedResult(deviceId, [name: device.name, label: device.label ?: device.name],
+                                     _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), cursor)
     }
 
     def attributes = []
@@ -1740,8 +1768,8 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null) {
         attributes: attributes,
         commands: commands
     ]
-    return selectedMode == 'summary' ? summary : _deviceExpandedResult(deviceId, summary,
-        _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields)
+    return selectedMode == 'summary' ? summary : _deviceReadPage(_deviceExpandedResult(deviceId, summary,
+        _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), cursor)
 }
 
 def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
@@ -4543,7 +4571,11 @@ private void _requireCompleteDeviceFormSource(Map full, deviceId) {
     if (d.version == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
     if (!(full.get("homeKitEnabled") instanceof Boolean)) throw new RuntimeException("Incomplete /device/fullJson preservation source: homeKitEnabled is unavailable or invalid; no form update sent")
     def dashboards = full.get("dashboards")
-    if (!(dashboards instanceof List) || dashboards.any { !(it instanceof Map) || it.get("id") == null || !(it.get("selected") instanceof Boolean) }) {
+    if (!(dashboards instanceof List) || dashboards.any { row ->
+        if (!(row instanceof Map) || !(row.get("selected") instanceof Boolean)) return true
+        def dashboardId = row.get("id")
+        return !(dashboardId instanceof Number) || dashboardId <= 0 || new BigDecimal(dashboardId.toString()).stripTrailingZeros().scale() > 0
+    }) {
         throw new RuntimeException("Incomplete /device/fullJson preservation source: dashboards assignments are unavailable or invalid; no form update sent")
     }
 }
@@ -5276,7 +5308,8 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                            description: "summary: concise capabilities/attributes/commands; configuration: valid editable fields and preference definitions/current values; details: all available information in selectable sections."],
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
                                description: "details mode only: non-empty section selection. Omit for all sections. Large histories remain reachable through read-tool references."],
-                    fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names. For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names."]
+                    fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names. For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names."],
+                    cursor: [type: "string", description: "Oversized configuration/details return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments, concatenate content fragments, then parse JSON. Changed data requires restarting. Prefer fields/sections for smaller reads."]
                 ],
                 required: ["deviceId"]
             ]

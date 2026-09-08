@@ -289,6 +289,14 @@ individual attribute name. Commands and jobs use the row indices returned by
 `availableFields`, so duplicate or unnamed rows remain selectable. Omitting
 `fields` retains the full selected sections.
 
+If even one selected value exceeds the response budget, the tool returns
+`contentFormat="json-fragment"`, a `content` string and `nextCursor`. Repeat the
+same read with that cursor, concatenate the fragments in order, then parse the
+joined JSON. This also handles large field-name indexes. The cursor is bound to
+the redacted response: if data changes between pages, restart or narrow the
+selection instead of joining different snapshots. Ordinary reads keep their
+structured response.
+
 The actual driver name is separate from the device's mutable name. `driverSource`
 provides a verified source call when a user driver can be resolved, or a driver
 catalog lookup and the reason source is unavailable. Built-in source is not

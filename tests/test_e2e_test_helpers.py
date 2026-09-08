@@ -8,6 +8,7 @@ actually runs there.
 import json
 import os
 import sys
+from collections import Counter
 from types import SimpleNamespace
 
 # tests/ is already on sys.path conceptually, but be explicit for safety.
@@ -114,6 +115,35 @@ def test_partition_hub_errors_consumes_only_observed_validation_error_count():
 
     assert [entry["name"] for entry in expected] == ["12:00:01", "12:00:02"]
     assert [entry["name"] for entry in unexpected] == ["12:00:03", "12:00:04"]
+
+
+def test_partition_hub_errors_decodes_exact_mcp1_envelope_without_broad_ignores():
+    intentional = "Validation error in hub_update_device: invalid preference"
+
+    def native_line(message):
+        envelope = {
+            "appId": "38", "generation": "g1", "id": "row-1",
+            "entry": {"level": "error", "component": "server", "message": message},
+        }
+        return "app|38|MCP Rule Server|[MCP1] " + json.dumps(envelope)
+
+    expected_row = {"name": "12:00:01", "message": native_line(intentional)}
+    malformed = {"name": "12:00:02", "message": "app|38|MCP Rule Server|[MCP1] {truncated"}
+    unrelated = {"name": "12:00:03", "message": native_line("unrelated runtime failure")}
+
+    expected, unexpected = et._partition_new_hub_errors(
+        [expected_row, malformed, unrelated], Counter(), [intentional]
+    )
+
+    assert expected == [expected_row]
+    assert unexpected == [malformed, unrelated]
+
+    # Baseline identity is the original raw line plus name, before nested-message
+    # decoding, so an already-present envelope is never reclassified as fresh.
+    baseline = Counter({f"{expected_row['name']}|{expected_row['message']}": 1})
+    assert et._partition_new_hub_errors(
+        [expected_row], baseline, [intentional]
+    ) == ([], [])
 
 
 def test_entries_new_since_snapshot_detects_identical_same_timestamp_duplicate():

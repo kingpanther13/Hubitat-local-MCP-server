@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections import Counter
 import json
 import os
 import random
@@ -28,6 +27,7 @@ import re
 import sys
 import threading
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
@@ -239,7 +239,17 @@ def _validation_log_expectation(
         tool_name = arguments["tool"]
     if not isinstance(tool_name, str) or not tool_name:
         return None
-    return f"Validation error in {tool_name}: {message[len(prefix):]}"
+    reason = message[len(prefix):]
+    # Legacy dispatch appends this one generated recovery hint after logging
+    # e.message. Strip only the exact same-tool suffix so the expectation matches
+    # the raw native line; caller-authored guide text remains part of the reason.
+    legacy_hint = re.compile(
+        r' See hub_get_tool_guide\(section="[A-Za-z0-9_]+"\) for '
+        + re.escape(tool_name)
+        + r"'s reference and best practices\.$"
+    )
+    reason = legacy_hint.sub("", reason)
+    return f"Validation error in {tool_name}: {reason}"
 
 
 def _partition_new_hub_errors(
@@ -3050,6 +3060,39 @@ class TestRunner:
                 f"preference field selection failed: {selected_pref}"
             assert_native_preferences(native, selected_pref, {"probeBool": expected["probeBool"]})
 
+            try:
+                seeded = self._write_once(None, "hub_call_device_command", {
+                    "deviceId": device_id, "command": "seedLargeReadProbe", "includeState": False,
+                }, "owned fixture large read seed")
+                assert seeded.get("success") is True, f"large read seed failed: {seeded}"
+                read_args = {"deviceId": device_id, "mode": "details", "sections": ["state"],
+                             "fields": ["largeReadProbe"]}
+                fragments = []
+                cursor = None
+                for _ in range(30):
+                    page = self.client.call_tool("hub_get_device", {
+                        **read_args, **({"cursor": cursor} if cursor else {}),
+                    })
+                    assert page.get("contentFormat") == "json-fragment", f"large read was not paged: {page.keys()}"
+                    fragments.append(page["content"])
+                    cursor = page.get("nextCursor")
+                    if not cursor:
+                        break
+                assert not cursor and len(fragments) > 1, "large read continuation failed to terminate"
+                assembled = json.loads("".join(fragments))
+                assert assembled["sections"]["state"]["largeReadProbe"] == "x" * 180000, \
+                    "large native state was truncated or changed across pages"
+            finally:
+                cleared = self._write_once(None, "hub_call_device_command", {
+                    "deviceId": device_id, "command": "clearLargeReadProbe", "includeState": False,
+                }, "owned fixture large read cleanup")
+                assert cleared.get("success") is True, f"large read cleanup failed: {cleared}"
+                state_index = self.client.call_tool("hub_get_device", {
+                    "deviceId": device_id, "mode": "details", "sections": ["state"], "fields": [],
+                })
+                assert "largeReadProbe" not in state_index.get("availableFields", {}).get("state", []), \
+                    f"large read state was not removed: {state_index}"
+
             for refused in ({"missingProbe": {"type": "bool", "value": True}},
                             {"probeBool": {"type": "bool", "value": "perhaps"}}):
                 try:
@@ -3129,10 +3172,15 @@ class TestRunner:
                 assert editable[key].get("writable") is True, f"disposable fixture field not writable: {editable[key]}"
                 original = original_info[key]
                 restore = original if original is not None else ""
+                native_value = value
+                if key == "tags":
+                    # Native fullJson stores comma-separated tags; the public patch uses an array.
+                    native_value = ",".join(value)
+                    restore = [tag.strip() for tag in (original or "").split(",") if tag.strip()]
                 try:
                     update({key: value})
                     native, info = capture()
-                    assert info[key] == value, f"native {key} did not persist: {info[key]!r} != {value!r}"
+                    assert info[key] == native_value, f"native {key} did not persist: {info[key]!r} != {native_value!r}"
                     current_configuration = configuration()
                     current = {row["name"]: row for row in current_configuration["editableFields"]}
                     assert current[key]["value"] == value, f"configuration {key} disagrees with native page: {current[key]}"

@@ -6,6 +6,8 @@ metadata {
         attribute "nativeConfiguration", "string"
         attribute "nativeDeviceInfo", "string"
         command "captureConfiguration", [[name: "nonce", type: "STRING"]]
+        command "seedLargeReadProbe"
+        command "clearLargeReadProbe"
     }
     preferences {
         input name: "probeBool", type: "bool", title: "Description logging", defaultValue: true
@@ -28,6 +30,8 @@ def installed() {
 def updated() {}
 def on() { sendEvent(name: "switch", value: "on") }
 def off() { sendEvent(name: "switch", value: "off") }
+def seedLargeReadProbe() { state.largeReadProbe = 'x' * 180000 }
+def clearLargeReadProbe() { state.remove('largeReadProbe') }
 
 def captureConfiguration(String nonce) {
     // This test-only observer reads its own native page, independent of the MCP parser.
