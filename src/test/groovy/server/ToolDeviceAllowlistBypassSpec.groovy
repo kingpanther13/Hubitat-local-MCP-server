@@ -32,6 +32,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
                 maxEvents: 10, maxStates: 10, spammyThreshold: 100,
                 deviceTypeId: 100, deviceTypeReadableType: 'System', roomId: 7,
                 meshEnabled: false, retryEnabled: false, meshFullSync: false,
+                showOnHome: false, defaultCurrentState: '',
                 locationId: 1, hubId: 1, groupId: null, tags: '', defaultIcon: null, notes: null,
                 roomName: 'Garage', deviceNetworkId: 'ABCD', capabilities: ['Switch', 'SwitchLevel'],
                 disabled: false, typeName: 'Generic Z-Wave Switch',
@@ -1230,10 +1231,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         settingsMap.bypassDeviceAllowlist = true
         def calls = 0
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            // 1st fetch (bypass entry) resolves the device; the 2nd (pref read-back) returns no device.
+            // 1st fetch resolves the device; the 2nd preserves the preference pane; the 3rd verifies.
             // A FAILED re-fetch must NOT read as a confirmed clear -- that is the bug this pin guards.
             calls++
-            (calls >= 2) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
+            (calls >= 3) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
         }
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: true] }
 

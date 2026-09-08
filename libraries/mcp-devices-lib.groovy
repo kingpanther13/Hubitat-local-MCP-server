@@ -1179,8 +1179,11 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         names << name
         if (type in ['paragraph', 'hidden', 'button', 'image']) return
         def input = inputs.get(name)
-        boolean present = (input instanceof Map && input.containsKey('inputValue')) || row.containsKey('value')
-        def raw = (input instanceof Map && input.containsKey('inputValue')) ? input.get('inputValue') : row.get('value')
+        // Cleared native settings lose their storage identity; inputValues can still prefill the UI default.
+        boolean nativeUnset = row.containsKey('id') && row.get('id') == null &&
+            row.containsKey('deviceId') && row.get('deviceId') == null && row.containsKey('value') && row.get('value') == null
+        boolean present = !nativeUnset && ((input instanceof Map && input.containsKey('inputValue')) || row.containsKey('value'))
+        def raw = nativeUnset ? null : ((input instanceof Map && input.containsKey('inputValue')) ? input.get('inputValue') : row.get('value'))
         boolean multiple = row.multiple == true || row.multiple?.toString() == 'true'
         def normalized = _normalizeDevicePreferenceValue(raw, type, multiple)
         def entry = [name: name, type: type, declared: true, multiple: multiple,
@@ -1374,6 +1377,13 @@ private Map _deviceConfigurationDriverSource(Map d, deviceId) {
         def catalog = text ? new groovy.json.JsonSlurper().parseText(text) : null
         if (catalog instanceof List) {
             def matches = catalog.findAll { row -> row instanceof Map && row.name == d.deviceTypeName && row.namespace == d.deviceTypeNamespace }
+            if (matches.size() > 1) {
+                matches = matches.findAll { row ->
+                    row.usedBy instanceof List && row.usedBy.any { use ->
+                        use instanceof Map && use.id != null && deviceId != null && use.id.toString() == deviceId.toString()
+                    }
+                }
+            }
             if (matches.size() == 1 && matches[0].id != null) {
                 return [status: 'available', gateway: 'hub_read_apps_code', tool: 'hub_get_source',
                         args: [type: 'driver', id: matches[0].id.toString()]]
@@ -3594,6 +3604,22 @@ def _prefSaveDeviceId(deviceId) {
     catch (Exception ignored) { return deviceId }
 }
 
+private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List preferenceRows = []) {
+    def fresh = _fetchDeviceFullJson(deviceId)
+    def d = fresh?.device
+    if (!(d instanceof Map) || !(d.get("showOnHome") instanceof Boolean) ||
+        !(d.get("retryEnabled") instanceof Boolean) || !d.containsKey("defaultCurrentState") ||
+        !(d.get("defaultCurrentState") == null || d.get("defaultCurrentState") instanceof String)) {
+        throw new RuntimeException("Unable to read complete preference-pane controls before saving; no preference update sent")
+    }
+    def payload = [deviceId: _prefSaveDeviceId(deviceId),
+        defaultCurrentState: d.get("defaultCurrentState") == null ? "" : d.get("defaultCurrentState").toString(),
+        commandRetry: d.get("retryEnabled"), showOnHome: d.get("showOnHome"),
+        preferences: preferenceRows]
+    overrides.each { key, value -> payload.put(key, value) }
+    return payload
+}
+
 private List _deviceExtendedFormProperties() {
     return ["deviceTypeId", "zigbeeId", "notes", "maxEvents", "maxStates", "spammyThreshold",
         "defaultIcon", "dashboardIds", "meshEnabled", "retryEnabled", "meshFullSync"]
@@ -3796,7 +3822,8 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
     if (args.containsKey("retryEnabled") && !_deviceFlag(full?.commandRetrySelectionEnabled) && _deviceFlag(full?.device?.retryAvailable)) {
         def wanted = args.remove("retryEnabled")
         try {
-            hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), commandRetry: wanted]))
+            def payload = _devicePreferencePanePayload(deviceId, [commandRetry: wanted])
+            hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
             def readback = _fetchDeviceFullJson(deviceId)?.device
             if (readback?.retryEnabled instanceof Boolean && readback.retryEnabled == wanted) changes << [property: "retryEnabled", newValue: wanted]
             else errors << [property: "retryEnabled", error: "POST accepted but could not confirm retryEnabled; native read-back did not match."]
@@ -3859,7 +3886,8 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
             if (args.containsKey(property)) {
                 def wanted = args.remove(property)
                 try {
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId)] + [(property): wanted]))
+                    def payload = _devicePreferencePanePayload(deviceId, [(property): wanted])
+                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
                     def readback = _fetchDeviceFullJson(deviceId)?.device
                     def equal = readback?.containsKey(property) && (wanted instanceof Boolean ? readback.get(property) instanceof Boolean && readback.get(property) == wanted : (readback.get(property) ?: "").toString() == wanted)
                     if (equal) changes << [property: property, newValue: wanted]
@@ -3966,7 +3994,13 @@ def toolUpdateDevice(args) {
         args.preferences.each { key, setting ->
             def name = key.toString()
             try {
-                device.updateSetting(name, [type: setting.type, value: setting.value])
+                if (setting.value == null) {
+                    def row = [name: name, type: setting.type, value: ""]
+                    def payload = _devicePreferencePanePayload(deviceId, [:], [row])
+                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
+                } else {
+                    device.updateSetting(name, [type: setting.type, value: setting.value])
+                }
                 _verifyDevicePreferenceWrite(deviceId, name, setting, changes, errors)
             } catch (Exception e) {
                 errors << [property: "preference.${name}", error: "Preference update or verification failed; inspect the device configuration before retrying."]
@@ -4210,7 +4244,7 @@ def toolUpdateDevice(args) {
     // /device/preference/save when it's absent: /device/setShowOnHome answers on some hubs and
     // 404s on others (observed 404 on a 2.5.0.157 hub, 200 on 2.5.0.159 -- cause not established,
     // and NOT attributable to any documented release-notes change), whereas /device/preference/save
-    // also carries showOnHome and was present on both. A partial body touches only the named field.
+    // was present on both. That fallback re-posts every preference-pane control because omissions reset.
     if (args.showOnHome != null) {
         if (settings.enableWrite == false) {
             errors << [property: "showOnHome", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
@@ -4223,7 +4257,8 @@ def toolUpdateDevice(args) {
                     throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
                 } catch (Exception primaryErr) {
                     mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), showOnHome: args.showOnHome]))
+                    def payload = _devicePreferencePanePayload(deviceId, [showOnHome: args.showOnHome])
+                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
                 }
                 // Confirm via a FRESH read-back: a 200 from either endpoint does not prove the flag
                 // flipped, and /device/preference/save returns {success} even on a no-op. fullJson
@@ -4273,7 +4308,8 @@ def toolUpdateDevice(args) {
                 } catch (Exception primaryErr) {
                     // Dedicated endpoint absent on some hubs (404) -- fall back to the Preferences-pane save.
                     mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), defaultCurrentState: csVal]))
+                    def payload = _devicePreferencePanePayload(deviceId, [defaultCurrentState: csVal])
+                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
                     applied = true
                 }
                 if (applied) {
@@ -4449,8 +4485,8 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
         args.preferences.each { key, setting ->
             def name = key.toString()
             try {
-                def payload = [deviceId: _prefSaveDeviceId(deviceId),
-                    preferences: [[name: name, type: setting.type, value: setting.value == null ? "" : setting.value]]]
+                def row = [name: name, type: setting.type, value: setting.value == null ? "" : setting.value]
+                def payload = _devicePreferencePanePayload(deviceId, [:], [row])
                 hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
                 _verifyDevicePreferenceWrite(deviceId, name, setting, changes, errors)
             } catch (Exception e) {

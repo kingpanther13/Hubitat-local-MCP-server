@@ -36,6 +36,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
             zigbeeId: null, maxEvents: 10, maxStates: 10, spammyThreshold: 100,
             deviceNetworkId: 'fixture-10', deviceTypeId: 100, deviceTypeReadableType: 'User',
             roomId: null, meshEnabled: false, retryEnabled: false, meshFullSync: false,
+            showOnHome: false, defaultCurrentState: '',
             locationId: 1, hubId: 1, groupId: null, tags: '', defaultIcon: null, notes: null]
         full.device = defaults + full.device
         full.homeKitEnabled = false
@@ -124,7 +125,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Porch Light')
         childDevicesList << device
         hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> '' }
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Porch Light","showOnHome":true}}' }
+        hubGet.register('/device/fullJson/10') { params ->
+            '{"device":{"id":10,"label":"Porch Light","showOnHome":true,"retryEnabled":false,"defaultCurrentState":""}}'
+        }
 
         when:
         def response = mcpDriver.callTool('hub_update_device', [deviceId: '10', showOnHome: true])
@@ -247,7 +250,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def currentState = 'humidity'
         hubGet.register('/device/fullJson/10') { params ->
             groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Thermostat',
-                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState]])
+                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState,
+                showOnHome: false, retryEnabled: false]])
         }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> currentState = 'temperature'; 'true' }
         // Read-back confirms the attribute landed.

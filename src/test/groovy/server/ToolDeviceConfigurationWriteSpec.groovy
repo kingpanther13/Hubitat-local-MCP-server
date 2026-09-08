@@ -544,6 +544,8 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         'showOnHome'          | null
         'retryEnabled'        | 'false'
         'defaultCurrentState' | 'REMOVE'
+        'defaultCurrentState' | false
+        'defaultCurrentState' | 1
     }
 
     @Unroll
