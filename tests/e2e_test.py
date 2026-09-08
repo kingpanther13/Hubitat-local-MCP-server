@@ -3006,18 +3006,12 @@ class TestRunner:
                 matches = [row for row in catalog.get("drivers", []) if row.get("name") == driver_name]
                 assert len(matches) == 1, f"fixture driver type missing or ambiguous: {matches}"
                 custom_type = int(matches[0]["id"])
-                # Hubitat's system-device creator does not consistently accept freshly installed
-                # user-driver type IDs. Allocate with a built-in, then use the native edit path.
                 created = self._write_once("hub_manage_devices", "hub_create_device", {
-                    "deviceTypeId": self._driver_type_id("Virtual Switch"),
+                    "deviceTypeId": custom_type,
                     "label": label, "confirm": True,
                 }, "unlisted configuration device create")
                 device_id = created.get("deviceId")
                 assert created.get("success") is True and device_id, f"fixture device create failed: {created}"
-                assigned = self._write_once("hub_manage_devices", "hub_update_device", {
-                    "deviceId": device_id, "deviceTypeId": custom_type, "confirm": True,
-                }, "unlisted configuration fixture driver assignment")
-                assert assigned.get("success") is True, f"fixture driver assignment failed: {assigned}"
                 initialized = self._write_once("hub_manage_devices", "hub_update_device", {
                     "deviceId": device_id,
                     "preferences": {

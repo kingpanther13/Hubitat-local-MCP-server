@@ -4635,8 +4635,8 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
 }
 
 def toolCreateDevice(args) {
-    // Instantiate a device from a driver TYPE id (the hub's "add device by driver" path:
-    // GET /device/sysDriverByIdJson/<deviceTypeId> -> {success, deviceId, errorMessage}).
+    // Instantiate a device from a driver TYPE id. The compatible-device installer can reject a
+    // user-driver id; the current Vue manual add flow uses /device/createVirtual for those types.
     // This creates a real, non-radio-bound device -- useful for LAN/integration/cloud and
     // software/component drivers that have no pairing flow. Radio drivers created this way
     // are orphan shells (no node), so we warn. MCP-managed virtual devices have their own
@@ -4661,6 +4661,19 @@ def toolCreateDevice(args) {
         return [success: false, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
     }
+    if (resp?.success == false && resp?.deviceId == null && resp?.errorMessage?.toString() == "Driver not found") {
+        try {
+            def fallbackText = hubInternalGet("/device/createVirtual", [deviceTypeId: typeId], 30)
+            def fallback = fallbackText ? new groovy.json.JsonSlurper().parseText(fallbackText) : null
+            if (fallback?.deviceId != null && fallback?.success != false) resp = fallback
+            else resp = fallback ?: resp
+        } catch (Exception e) {
+            return [success: false, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+        }
+    }
+    // Vue's /device/createVirtual response identifies success by deviceId and omits success.
+    if (resp?.deviceId != null && resp?.success == null) resp.put("success", true)
     if (resp?.success != true || resp?.deviceId == null) {
         return [success: false, error: resp?.errorMessage ?: "Hub did not create a device for driver-type ${typeId}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
