@@ -107,20 +107,17 @@ private Map _vrbDetect(Integer appId) {
     // Resolve which serialization a VRB rule speaks: graph (2.0 editor, /app/ruleBuilder20Json)
     // or classic (when/then/else editor, /app/ruleBuilderJson). Null = neither (not a VRB rule).
     def graph = _vrbFetchGraph(appId)
-    if (graph != null) return [format: "graph", data: _vrbWithBareName(graph)]
+    if (graph != null) return [format: "graph", data: _vrbWithBareName(graph, true)]
     def classic = _vrbFetchClassic(appId)
-    if (classic != null) return [format: "classic", data: _vrbWithBareName(classic)]
+    if (classic != null) return [format: "classic", data: _vrbWithBareName(classic, false)]
     return null
 }
 
-// The hub decorates a paused rule's name ("Name <span class='text-red'>(Paused)</span>"). Every
-// consumer wants the rule's OWN name -- a save that echoed the decoration renamed the rule to it
-// and then failed its own read-back -- so strip it once at the single reader and keep the raw form
-// alongside for anything that needs to show what the hub said.
-private Map _vrbWithBareName(Map data) {
+private Map _vrbWithBareName(Map data, boolean graph) {
+    // JSON names are raw strings. Only the graph endpoint appends runtime markup.
     if (data?.name != null) {
         data.rawName = data.name
-        data.name = _vrbBareName(data.name, data.rulePaused == true)
+        data.name = graph ? _vrbBareName(data.name, data.rulePaused == true) : data.name.toString()
     }
     return data
 }
@@ -1083,17 +1080,17 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
 }
 
 private String _vrbBareName(Object raw, boolean paused) {
-    // Classic builder JSON already carries the rule's own name; graph JSON adds an HTML
-    // decoration. A bare suffix cannot be distinguished from a literal part of the name.
+    // Remove exactly the graph endpoint's appended span. The own name can itself
+    // contain identical markup or literal entity spellings; it is not HTML-encoded.
     def s = raw?.toString()
     if (s != null && paused) {
-        s = s.replaceFirst(/<[^>]+>\s*\(Paused\)\s*(?:<\/[^>]+>\s*)*$/, "")
+        s = s.replaceFirst(/ <span class=['"]text-red['"]>\(Paused\)<\/span>$/, "")
     }
-    return stripAppConfigHtml(s)?.toString()
+    return s
 }
 
 private boolean _vrbNameMatches(Map after, String requestedName) {
-    // _vrbDetect already removed runtime markup and decoded the own name.
+    // _vrbDetect already removed the graph endpoint's runtime decoration.
     // Processing it again would reinterpret literal tags/entities as decoration.
     return after != null && after.data?.name?.toString() == requestedName
 }
@@ -1645,9 +1642,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
                 note: "Recreate the rule manually with hub_set_visual_rule -- see hub_get_tool_guide(section='visual_rule_reference')."]
     }
     def name = snapshot.appLabel?.toString()?.trim() ?: "restored-visual-rule-${savedId}"
-    // Older snapshots may carry a tagged runtime decoration; a bare suffix
-    // can be the rule's own name and must survive restore, even when paused.
-    if (snapshot.vrbRulePaused == true) name = _vrbBareName(name, true) ?: name
+    // Snapshot capture already stored the own name; markup here is literal user text.
     // Always restore the SNAPSHOT's pause state (a Boolean, never null) -- an in-place
     // restore must not inherit whatever pause state the live rule drifted to.
     Boolean pausedRequested = snapshot.vrbRulePaused == true

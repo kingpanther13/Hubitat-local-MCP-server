@@ -8144,17 +8144,19 @@ class TestRunner:
         return None
 
     def _check_visual_literal_pause_name(self, app_id: Any, name: str) -> None:
-        for paused in (True, False):
-            changed = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_visual_rule", "args": {
-                    "appId": app_id, "name": name, "paused": paused, "confirm": True}})
-            assert changed.get("success") is True, f"literal-name pause write did not verify: {changed}"
-            own = self._get_visual_rule(app_id)
-            assert own.get("name") == name and own.get("rulePaused") is paused, own
-            health = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-            assert health.get("paused") is paused and health.get("label") == name, \
-                f"health disagrees with the Visual Rule's own state/name: {health}"
+        names = (name, name + " &amp; <span>(Paused)</span> <span class='text-red'>(Paused)</span>")
+        for expected_name in names:
+            for paused in (True, False):
+                changed = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule", "args": {
+                        "appId": app_id, "name": expected_name, "paused": paused, "confirm": True}})
+                assert changed.get("success") is True, f"literal-name pause write did not verify: {changed}"
+                own = self._get_visual_rule(app_id)
+                assert own.get("name") == expected_name and own.get("rulePaused") is paused, own
+                health = self.client.call_tool("hub_read_rules", {
+                    "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+                assert health.get("paused") is paused and health.get("label") == expected_name, \
+                    f"health disagrees with the Visual Rule's own state/name: {health}"
 
     @test("visual_rules")
     def test_visual_rule_classic_lifecycle(self) -> None:

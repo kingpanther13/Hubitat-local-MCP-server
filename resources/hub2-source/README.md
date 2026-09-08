@@ -460,7 +460,16 @@ Throwaway, device-free rules read through server 4.2.2 confirmed that RM's expor
 state carries Boolean `paused`. Classic Visual Rule JSON carries `rulePaused`
 and the rule's own `name` (including a user-typed `(Paused)` suffix); graph Visual
 Rule JSON carries `rulePaused` and appends a real HTML span for its runtime pause
-decoration. Strip that decoration before HTML cleanup, without stripping a bare
-suffix from the stored name. Pausing the classic fixture with a literal suffix
+decoration. Remove only that graph decoration; preserve the own name as a string,
+including a bare suffix, literal markup, and entity spellings. Pausing the classic fixture with a literal suffix
 previously caused a false rename-verification failure despite the stored name
 being correct. These are wire observations, not refreshed UI bundle captures.
+
+Live BAT with PR #408 at `21370b18` additionally confirmed that **both builder JSON
+`name` fields preserve the submitted string without HTML-encoding it**. A literal
+`<span>(Paused)</span>` or `&amp;` survives verbatim in the raw response. Only the graph
+builder appends ` <span class='text-red'>(Paused)</span>` while paused. Remove that
+one appended span using the graph pause state; do not strip tags or decode entities
+from either builder's own name. The classic builder adds no decoration even when
+paused. This differs from HTML/config-page labels and exposed false save-verification
+failures that the earlier encoded-name test fixtures did not represent.

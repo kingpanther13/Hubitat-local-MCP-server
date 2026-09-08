@@ -7261,7 +7261,7 @@ private Map _ruleCompiledState(Integer appId) {
             if (parsed.containsKey("whenNodes") && parsed.containsKey("thenNodes")) {
                 return [ruleFormat: "vrb-classic", broken: null, validationErrors: [], endpoint: "ruleBuilderJson",
                         paused: parsed.rulePaused instanceof Boolean ? parsed.rulePaused : null,
-                        label: stripAppConfigHtml(parsed.name)]
+                        label: parsed.name?.toString()]
             }
             if (parsed.containsKey("broken")) {
                 def pred = (parsed.containsKey("hasPredicate") || parsed.containsKey("predCapabs")) ?
