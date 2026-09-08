@@ -2122,6 +2122,8 @@ private Map _mrtrCopyMap(Map value) {
 private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs) {
     if (outerTool == leafTool) return outerArgs
     def inner = outerArgs.args
+    // Match gateway dispatch: omitted/null args are a valid empty argument object.
+    if (inner == null) return [:]
     if (inner instanceof Map) return inner
     if (inner instanceof String) {
         try {
