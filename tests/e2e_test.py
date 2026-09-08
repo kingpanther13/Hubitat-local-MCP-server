@@ -12033,14 +12033,15 @@ class TestRunner:
     def test_reactive_bps_gateway_returned_map_carries_bp_warning_field(self) -> None:
         """Gateway-routed RETURNED-[success:false] path: hub_set_app_disabled via its gateway with a
         numeric-but-nonexistent appId RETURNS a success:false Map (no throw); the bp_warning FIELD rides
-        the result and names the sub-tool's section (builtin_app_tools). Proves the returned-Map path."""
+        the result and names the sub-tool's own sub-section (builtin_app_tools_rules). Proves the
+        returned-Map path."""
         self._set_bps(enableMandatoryBPS=False)
         res = self.client.call_tool("hub_manage_native_rules_and_apps", {
             "tool": "hub_set_app_disabled", "args": {"appId": "999999999", "disabled": True}})
         assert isinstance(res, dict), f"expected a returned result map, got: {res!r}"
         assert res.get("success") is False, f"expected success:false for a nonexistent appId, got: {res}"
         assert "bp_warning" in res, f"returned-error result missing the bp_warning field: {res}"
-        assert 'section="builtin_app_tools"' in res["bp_warning"], f"bp_warning wrong section: {res.get('bp_warning')}"
+        assert 'section="builtin_app_tools_rules"' in res["bp_warning"], f"bp_warning wrong section: {res.get('bp_warning')}"
         assert "hub_set_app_disabled" in res["bp_warning"], f"bp_warning should name the sub-tool: {res.get('bp_warning')}"
 
     @test("best_practice_gating")
@@ -12146,6 +12147,56 @@ class TestRunner:
             assert isinstance(res, dict) and res.get("success") is True, f"guide section {sec} not reachable: {res}"
             content = res.get("content", "")
             assert "##" in content and len(content) > 80, f"guide section {sec} returned trivial content: {content[:120]!r}"
+
+    @test("best_practice_gating")
+    def test_guide_full_call_pages_instead_of_hitting_the_size_guard(self) -> None:
+        """Issue #392: the documented no-section call used to return the response_too_large
+        envelope and nothing else -- ~188 KB of guide against a 120 KB cap. It now pages."""
+        first = self.client.call_tool("hub_get_tool_guide", {})
+        assert isinstance(first, dict), f"unexpected shape: {first!r}"
+        assert not first.get("response_too_large"), f"full-guide call still trips the size guard: {first!r}"
+        assert first.get("success") is True, f"full-guide call failed: {first!r}"
+        assert len(first.get("content", "")) > 1000, "first page carried no real content"
+        # The point of the no-section call: discover the key space. Both levels, on page one.
+        assert "set_rule_reference" in (first.get("availableSections") or [])
+        sub_map = first.get("availableSubSections") or {}
+        assert "set_rule_reference_conditions" in (sub_map.get("set_rule_reference") or [])
+
+        cursor = first.get("nextCursor")
+        assert cursor, f"guide is larger than one page but no nextCursor was returned: {first.keys()}"
+        second = self.client.call_tool("hub_get_tool_guide", {"cursor": cursor})
+        assert second.get("success") is True, f"cursor page failed: {second!r}"
+        assert second.get("offset") == len(first.get("content", "")), (
+            f"page 2 offset {second.get('offset')} does not resume where page 1 ended"
+        )
+        assert len(second.get("content", "")) > 0, "cursor page carried no content"
+
+    @test("best_practice_gating")
+    def test_guide_sub_section_is_a_cheap_slice_of_its_parent(self) -> None:
+        """Issue #392: the four oversized sections split into sub-keys the same `section` parameter
+        takes. Proven on the hub, not just in unit tests: the sub-key resolves, names its parent,
+        carries the fact it is supposed to carry, and costs a fraction of the parent."""
+        parent = self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference"})
+        assert isinstance(parent, dict) and parent.get("success") is True, f"parent section not reachable: {parent}"
+        advertised = parent.get("subSections") or []
+        assert "set_rule_reference_conditions" in advertised, (
+            f"parent response does not advertise its sub-keys: {advertised!r}"
+        )
+
+        sub = self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference_conditions"})
+        assert isinstance(sub, dict) and sub.get("success") is True, f"sub-section not reachable: {sub}"
+        assert sub.get("parentSection") == "set_rule_reference", f"missing parent pointer: {sub!r}"
+
+        parent_len = len(parent.get("content", ""))
+        sub_content = sub.get("content", "")
+        # The motivating case: learning the Mode / Variable condition shapes used to cost the
+        # whole section. The STPage capability list is where those shapes are documented.
+        assert "STPage capability list" in sub_content, f"condition reference missing: {sub_content[:200]!r}"
+        assert "`addTrigger` capability families" not in sub_content, "sub-section leaked the trigger reference"
+        assert len(sub_content) < parent_len / 2, (
+            f"sub-section is {len(sub_content)} chars against a "
+            f"{parent_len}-char parent -- the split is not paying off"
+        )
 
     # -----------------------------------------------------------------------
     # GROUP 11: hub_get_device_attribute poll mode (2 tests -- wall-clock coverage, I7)

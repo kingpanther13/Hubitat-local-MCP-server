@@ -1418,7 +1418,7 @@ private _canonicalDeviceIdArg(value) {
 // The commands-array form of hub_call_device_command. Not a tool of its own: it is reached only
 // through that tool's `commands` parameter. Batching exists because the per-call round trip, not
 // the hub actuating the device, dominates wall clock. The measured figures, the bridged-device
-// exception and the group/scene trade-off live in hub_get_tool_guide(section='performance').
+// exception and the group/scene trade-off live in hub_get_tool_guide(section='performance_overview').
 private _sendCommandBatch(commands, reqT0 = null) {
     if (!(commands instanceof List) || commands.isEmpty()) {
         throw new IllegalArgumentException("commands must be a non-empty array of {deviceId, command, parameters?} objects")
@@ -4513,7 +4513,7 @@ DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> sugges
 [[FLAT_TRIM]]
 Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
 [[/FLAT_TRIM]]
-Call `hub_get_tool_guide(section='performance')` for response-shape details, filter/projection semantics, and field-name reference.""",
+Call `hub_get_tool_guide(section='performance_devices')` for response-shape details, filter/projection semantics, and field-name reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4528,7 +4528,7 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     changedSince: [type: ["string", "integer"], description: "Only devices with activity at/after this timestamp: epoch ms, or ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00Z; -0600 and -06:00 both accepted -- offset-less or date-only forms are rejected).[[FLAT_TRIM]] A returned lastActivity value round-trips. Inverse of filter='stale:<hours>'; devices with no readable lastActivity are excluded. Epoch-ms input echoes back as canonical ISO.[[/FLAT_TRIM]]"],
                     attributeNames: [type: "array", items: [type: "string"], description: "format='context' only (rejected on other formats): which attributes to show per device line[[FLAT_TRIM]], replacing the default set. Empty array = the default set[[/FLAT_TRIM]]."],
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
-                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
+                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance_devices')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
                     scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = only devices granted to this MCP app (full detail/currentStates). 'all' = EVERY device on the hub, each tagged mcpAuthorized true/false."]
                 ]

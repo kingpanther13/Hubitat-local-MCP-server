@@ -4867,7 +4867,7 @@ def executeTool(toolName, args) {
         case "hub_clone_dashboard": return toolCloneDashboard(args)
 
         // Tool Guide
-        case "hub_get_tool_guide": return toolGetToolGuide(args.section)
+        case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor)
 
         // Tool Search (BM25)
         case "hub_search_tools": return toolSearchTools(args)
@@ -8093,8 +8093,11 @@ def hubBpsGuideKey() { 'bps-ack-299' }
 
 // Map a (write) tool to the hub_get_tool_guide section that documents IT (issue #299). This is the
 // reactive hint's whole point: on an error, point the LLM at the FAILING tool's own reference, not
-// a generic page. Sections are the real keys in getToolGuideSections(); the groupings mirror where
-// each family already cites hub_get_tool_guide(section=...) in its descriptions/errors. Returns null
+// a generic page -- so where a section splits into sub-keys, the hint names the SUB-key that holds
+// the failing tool's own block, not the parent. hub_set_rule is the exception: at hint time the
+// failing shortcut is unknown, and the parent response lists its sub-keys anyway. Keys are real
+// keys in getToolGuideSections() / getToolGuideSubSections(); the groupings mirror where each
+// family already cites hub_get_tool_guide(section=...) in its descriptions/errors. Returns null
 // for tools with no dedicated section -- those get NO reactive hint (a generic pointer is exactly
 // what this feature must avoid).
 def _guideSectionForTool(toolName) {
@@ -8103,16 +8106,18 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
     if (t in ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
-              'hub_export_native_app', 'hub_import_native_app', 'hub_set_app_disabled',
-              'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean']) return 'builtin_app_tools'
+              'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
+    if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
+              'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
     if (t == 'hub_update_device') return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
+    if (t in ['hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter']) return 'hub_admin_write_radios'
+    if (t in ['hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write_devices'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
-              'hub_update_firmware', 'hub_call_destructive_ops', 'hub_call_zwave', 'hub_call_zigbee',
-              'hub_call_matter', 'hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write'
+              'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
     if (t in ['hub_call_device_command', 'hub_get_device_attribute']) return 'device_authorization'
     return null
 }
@@ -8873,7 +8878,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 
-**hub_read_apps_code (4 tools):**
+### hub_read_apps_code (4 tools)
 
 - **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
@@ -8899,7 +8904,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
-**hub_read_apps_code (2 tools) — HPM package state introspection (Read master required):**
+### hub_read_apps_code (2 tools) — HPM package state introspection (Read master required)
 
 - **hub_list_hpm_packages** — return all packages tracked by Hubitat Package Manager with full component inventory
   - If hpmAppId is omitted, HPM is auto-discovered by scanning installed apps for type="Hubitat Package Manager"
@@ -8914,7 +8919,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-**hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules:**
+### hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
 - **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "stopped" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
@@ -8949,13 +8954,13 @@ For READING an RM rule's current state, use **hub_get_app_config** in the hub_re
 
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
-**Safety model for native CRUD:**
+### Safety model for native CRUD
 1. Every existing-app edit has a full File Manager rollback baseline (configure/json + statusJson); by default, edits to the same app reuse the newest baseline for one hour. The response's backup.backupKey is the restore handle, and restoring a reused baseline undoes every edit made after it. Deletes and destructive Required Expression replacement always take a fresh snapshot.
 2. Multi-device capability inputs (capability.X with multiple=true) require a 3-field POST payload group (settings[name]=csv, name.type=capability.X, name.multiple=true). Omitting name.multiple=true poisons the AppSetting DB flag and every render throws `Command 'size' is not supported by device`. hub_set_rule emits the full group automatically from the input schema — callers never have to think about this.
 3. After every write, the multiple flags in the live appSettings are verified. If any flipped, one automatic retry fires with the full group. Persistent divergence throws and the response surfaces hub_restore_backup as the next step.
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
 
-**CRUD workflow example:**
+### CRUD workflow example
   hub_set_rule(name="BAT-RM-demo", confirm=true) → {appId: 974, ...}
   hub_get_app_config(appId=974, includeSettings=true) → input schema + current settings
   hub_set_rule(appId=974, addTrigger={capability: "Switch", deviceIds: [8, 9], state: "on"}, confirm=true)
@@ -9012,7 +9017,7 @@ This is the generic upsert tool for ANY classic SmartApp. It is separate from th
 
 **Button Rules.** A Button Rule cannot be created standalone and is NOT an `appType` value — create it via the `buttonRule` parameter (`buttonRule={controllerId, buttonNumber, event}`). It routes through the controller's add-button flow and returns `buttonRuleId` with the Button trigger auto-seeded; author its actions via `hub_set_rule(appId=buttonRuleId, addAction=...)`. The controller must already have a button device assigned.
 
-**RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference')`. For Rule Machine RULES use `hub_set_rule`.
+**RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference_walkstep')`. For Rule Machine RULES use `hub_set_rule`.
 
 **Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and destructive Required Expression replacement always take a fresh snapshot.
 
@@ -9142,15 +9147,25 @@ Each edit response includes the File Manager baseline under `backup.backupKey`. 
   ```
   Monthly has TWO mutually-exclusive modes: by-day (`dayOfMonth` + `everyNMonths` -- BOTH required or renders null) and nth-weekday (`weekOfMonth` + `dayOfWeek` + `everyNMonths`). Passing both `dayOfMonth` and `weekOfMonth` is rejected. Monthly "specific months" ("on day N of selected months") is NOT yet supported (an order-sensitive third sub-mode) -- use `rawSettings`. Yearly is ALWAYS nth-weekday (`weekOfMonth` + `dayOfWeek` + single `months`) because RM 5.1 exposes no by-day calendar-day field for Yearly -- only the nth-weekday picker. A `Periodic Schedule` with no `periodic` map is rejected up front (`success=false`, naming any stray top-level keys) rather than committing a phantom `?` row. The tool walks the periodic sub-page (`whichPeriod<N>` → `everyN`/select → time → Done, where `<N>` is the per-trigger sub-page index) so the trigger description bakes correctly. Seconds/Minutes `everyN` outside the restricted enum (and Monthly dayOfMonth+weekOfMonth) is rejected with `success=false` and a structured error.
 
-**Fail-loud `addTrigger` shape guards** (both reject before any hub write, returning `success=false` with a structured error rather than committing a broken trigger): (1) a state-change token supplied as `state` with no `comparator` (e.g. `state:'changed'`/`'increased'` on a device-state or numeric trigger) is rejected and steered to `comparator:'*changed*'`; **Mode / Variable / Custom Attribute are exempt** because their `state` legitimately carries a mode name or an enum value. (2) A `Periodic Schedule` with no `periodic` map is rejected, naming the stray top-level keys you passed instead.
+### Fail-loud `addTrigger` shape guards
 
-**Fail-loud `addAction` shape guards** (both reject before any hub write -- "RM is not touched"): (1) a condition-bearing action subtype (`ifThen`/`elseIf`/`repeatWhile`/`waitExpression`, matched irrespective of letter casing) passed a flat top-level `conditions` array is rejected and steered to the `expression` wrapper (`conditions:[...]` plus `operator`|`operators`); (2) an action-driven capability (any capability whose action schema exposes an `action` enum -- switch/dimmer/color/colorTemp/lock/shade/fan/button/..., plus the `Window Shade` display name) passed a trigger-style `state:` instead of `action:` is rejected and steered to `action:`.
+Both reject before any hub write, returning `success=false` with a structured error rather than committing a broken trigger: (1) a state-change token supplied as `state` with no `comparator` (e.g. `state:'changed'`/`'increased'` on a device-state or numeric trigger) is rejected and steered to `comparator:'*changed*'`; **Mode / Variable / Custom Attribute are exempt** because their `state` legitimately carries a mode name or an enum value. (2) A `Periodic Schedule` with no `periodic` map is rejected, naming the stray top-level keys you passed instead.
 
-**Did-you-mean on unknown capability names:** when `addTrigger` (or an `addRequiredExpression` / `ifThen` / `waitEvents` condition) capability name is not in the live picker's option list, the fail-loud error appends a closest-match suggestion drawn from that same list (so the suggested name is one the picker actually accepts).
+### Fail-loud `addAction` shape guards
 
-**Comma-joined mode steer:** a mode passed as a single comma-joined string (`state:'Day,Evening'`) is looked up as one nonexistent mode; the unknown-mode error steers to the list shape (`state:['Day','Evening']`) instead of an opaque "unknown mode". Applies across the trigger Mode path, per-mode actions, the `mode` action, and Mode conditions.
+Both reject before any hub write -- "RM is not touched": (1) a condition-bearing action subtype (`ifThen`/`elseIf`/`repeatWhile`/`waitExpression`, matched irrespective of letter casing) passed a flat top-level `conditions` array is rejected and steered to the `expression` wrapper (`conditions:[...]` plus `operator`|`operators`); (2) an action-driven capability (any capability whose action schema exposes an `action` enum -- switch/dimmer/color/colorTemp/lock/shade/fan/button/..., plus the `Window Shade` display name) passed a trigger-style `state:` instead of `action:` is rejected and steered to `action:`.
 
-**Condition-only rejects:** a `*changed*`/`*became*` state-change comparator on a device-state CONDITION capability (with no explicit value) is rejected on every condition surface (`addTrigger.condition`, `addRequiredExpression`, `ifThen`) and steered to a trigger row -- conditions are point-in-time, so a change comparator has no meaning there. The date/day-window condition capabilities (`Between two dates`, `Days of week`, `On a Day`) are unmodelled on every structured condition surface and are rejected up front, steering to `rawSettings`/`walkStep`.
+### Did-you-mean on unknown capability names
+
+when `addTrigger` (or an `addRequiredExpression` / `ifThen` / `waitEvents` condition) capability name is not in the live picker's option list, the fail-loud error appends a closest-match suggestion drawn from that same list (so the suggested name is one the picker actually accepts).
+
+### Comma-joined mode steer
+
+a mode passed as a single comma-joined string (`state:'Day,Evening'`) is looked up as one nonexistent mode; the unknown-mode error steers to the list shape (`state:['Day','Evening']`) instead of an opaque "unknown mode". Applies across the trigger Mode path, per-mode actions, the `mode` action, and Mode conditions.
+
+### Condition-only rejects
+
+a `*changed*`/`*became*` state-change comparator on a device-state CONDITION capability (with no explicit value) is rejected on every condition surface (`addTrigger.condition`, `addRequiredExpression`, `ifThen`) and steered to a trigger row -- conditions are point-in-time, so a change comparator has no meaning there. The date/day-window condition capabilities (`Between two dates`, `Days of week`, `On a Day`) are unmodelled on every structured condition surface and are rejected up front, steering to `rawSettings`/`walkStep`.
 
 ### `addAction` capability families
 
@@ -9556,4 +9571,153 @@ The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls clou
 No custom operation-token or deployment-job protocol is exposed. If a non-continuation write loses its response, read current hub state before deciding whether it is safe to retry.
 '''
     ]
+}
+
+// Sub-section registry (issue #392). Four sections carry ~70% of the guide, so a caller after one
+// fact -- a Mode condition shape, say -- had to pull all 57 KB of set_rule_reference. This maps each
+// oversized parent to narrower keys that hub_get_tool_guide accepts directly; parent keys are
+// untouched and still return the whole section.
+//
+// A sub-key's value is the list of "### " heading PREFIXES it owns inside the parent's markdown.
+// A prefix claims EVERY heading it matches (so 'hub_update_app' takes both hub_update_app blocks),
+// and the EMPTY list means "owns the preamble" -- the text before the parent's first "### ".
+// The invariant ToolGuideSubSectionsSpec enforces: inside one parent, every block is claimed by
+// exactly one sub-key, so a new heading owned by nobody -- or by two sub-keys -- fails CI. What it
+// canNOT catch is ANNEXATION: a prefix silently swallows any longer heading starting with it, which
+// is how 'hub_get_device' already claims hub_get_device_attribute and hub_get_device_health. That is
+// deliberate here, but it means the prefix lists below are not an inventory of what each key serves
+// -- when you add a "### " heading, check which prefix already matches it.
+def getToolGuideSubSections() {
+    return [
+        hub_admin_write: [
+            hub_admin_write_overview: [],
+            hub_admin_write_destructive: ["Destructive Write Tools", "Tool-Specific Requirements",
+                                          "hub_call_destructive_ops", "hub_update_firmware"],
+            hub_admin_write_radios: ["hub_call_zwave", "hub_set_zwave", "hub_call_zigbee",
+                                     "hub_set_zigbee", "hub_call_matter"],
+            hub_admin_write_devices: ["hub_call_device_command", "hub_call_device_swap",
+                                      "hub_call_device_replace", "hub_create_device"],
+            hub_admin_write_code: ["hub_update_app", "hub_create_app", "hub_update_package"],
+            hub_admin_write_system: ["hub_get_info", "hub_list_modes", "hub_manage_mode",
+                                     "hub_set_mode_manager", "hub_get_hsm_status",
+                                     "hub_set_system_settings", "hub_update_mcp_settings"]
+        ],
+        performance: [
+            performance_overview: [],
+            performance_devices: ["hub_list_devices", "hub_list_device_events", "hub_get_device",
+                                  "hub_get_compatible_devices"],
+            performance_diagnostics: ["hub_get_logs", "hub_get_radio_details", "hub_get_metrics",
+                                      "hub_get_performance_stats", "hub_delete_debug_logs",
+                                      "hub_report_issue"]
+        ],
+        builtin_app_tools: [
+            builtin_app_tools_overview: [],
+            builtin_app_tools_apps: ["hub_read_apps_code", "hub_get_app_config", "hub_list_apps",
+                                     "hub_list_drivers", "hub_list_app_pages", "hub_list_hpm_packages",
+                                     "hub_list_device_dependents"],
+            builtin_app_tools_rules: ["hub_manage_native_rules_and_apps", "hub_call_rule",
+                                      "hub_get_rule_health", "hub_list_rule_local_variables"],
+            builtin_app_tools_crud: ["Safety model for native CRUD", "CRUD workflow example",
+                                     "hub_set_native_app", "hub_delete_native_app",
+                                     "hub_clone_native_app", "hub_export_native_app",
+                                     "hub_import_native_app"]
+        ],
+        set_rule_reference: [
+            set_rule_reference_overview: [],
+            set_rule_reference_triggers: ["`addTrigger`", "Fail-loud `addTrigger`"],
+            set_rule_reference_actions: ["`addAction`", "Fail-loud `addAction`"],
+            set_rule_reference_conditions: ["`addRequiredExpression`", "`replaceRequiredExpression`",
+                                            "Extended per-capability spec shapes",
+                                            "Supported comparison shapes",
+                                            "deviceId vs deviceIds normalization"],
+            set_rule_reference_walkstep: ["`walkStep`", "Raw `settings`/`button` mode"],
+            set_rule_reference_responses: ["Partial-success and trailing-updateRule",
+                                           "Action-mutation defensive recovery"],
+            // Fail-loud rules that fire across trigger, action AND condition writes -- they belong
+            // to no single shortcut, so they get their own key rather than being filed under one.
+            set_rule_reference_guards: ["Did-you-mean on unknown capability names",
+                                        "Comma-joined mode steer", "Condition-only rejects"]
+        ]
+    ]
+}
+
+// Split a guide section into its "### " blocks. Index 0 is the preamble (everything before the
+// first "### "); every later entry starts with its own heading line. Each split CONSUMES the
+// newline before the heading, so the blocks reconstruct the section only when rejoined with a
+// single "\n" -- every caller depends on that. Used by the sub-section resolver and by the spec
+// that proves the split is lossless.
+def guideSectionBlocks(text) {
+    def blocks = []
+    def cur = []
+    (text ?: '').toString().split("\n", -1).each { line ->
+        if (line.startsWith("### ")) {
+            blocks << cur.join("\n")
+            cur = []
+        }
+        cur << line
+    }
+    blocks << cur.join("\n")
+    return blocks
+}
+
+// Guide characters per hub_get_tool_guide response. A tool result is JSON-encoded TWICE on the
+// wire -- serialized, embedded as a text content block, then serialized again -- which together
+// with the response's own fields costs ~5% over the raw markdown, so a 90,000-char page measures
+// ~95 KB against the 120,000-byte guard. Every section fits one page today; the full guide (~188 KB)
+// does not, and never did.
+def guidePageChars() { 90000 }
+
+// Page a guide payload so NO hub_get_tool_guide call can dead-end on the response-size guard: the
+// documented no-section call used to exceed the cap outright, and a size-guard envelope hands the
+// caller nothing at all. Content that fits one page comes back whole with no nextCursor, which is
+// every section and sub-section call today. Anything larger pages AUTOMATICALLY, whether or not a
+// cursor was passed -- an unanswerable call is worse than a first page. Pages break on a line
+// boundary so no markdown line is ever split, and a cursor aimed at a payload that was never paged
+// is rejected rather than silently lopping the head off the caller's section.
+def paginateGuideContent(content, cursor) {
+    String text = (content ?: '').toString()
+    int total = text.length()
+    int start = _parseListCursor(cursor, total, "hub_get_tool_guide")
+    if (start > 0 && total <= guidePageChars()) {
+        throw new IllegalArgumentException(
+            "cursor ${start} does not belong to this payload: it fits one response (${total} chars) and was never paged, " +
+            "so paging from ${start} would silently drop the first ${start} characters. Omit cursor. " +
+            "A cursor is only valid for the call that returned it -- the no-section full-guide call.")
+    }
+    int end = Math.min(start + guidePageChars(), total)
+    if (end < total) {
+        int nl = text.lastIndexOf("\n", end)
+        if (nl > start) end = nl + 1
+    }
+    return [
+        content: text.substring(start, end),
+        nextCursor: end < total ? end.toString() : null,
+        totalChars: total,
+        offset: start
+    ]
+}
+
+// Resolve a sub-section key to [parent: <section key>, content: <markdown>], or null when the key
+// is not one. Block 0 goes to the sub-key declared with an empty prefix list; every other block
+// goes to the sub-key one of whose prefixes starts its heading text. Blocks are rejoined with a
+// single "\n" per guideSectionBlocks' contract. Returns null rather than empty content when nothing
+// matched (a renamed heading, a misspelled parent key), so the caller answers with the loud
+// unknown-section error instead of a plausible empty success.
+def guideSubSectionLookup(subKey) {
+    def registry = getToolGuideSubSections()
+    def parentKey = registry.keySet().find { registry[it].containsKey(subKey) }
+    if (!parentKey) return null
+    def prefixes = registry[parentKey][subKey]
+    def blocks = guideSectionBlocks(getToolGuideSections()[parentKey])
+    def mine = []
+    blocks.eachWithIndex { block, idx ->
+        if (idx == 0) {
+            if (!prefixes) mine << block
+            return
+        }
+        def heading = block.split("\n", -1)[0].substring(4)
+        if (prefixes.any { heading.startsWith(it) }) mine << block
+    }
+    if (!mine) return null
+    return [parent: parentKey, content: mine.join("\n")]
 }

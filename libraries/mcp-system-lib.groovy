@@ -909,7 +909,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write') for the optional deep-dive flags and PII gating.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system') for the optional deep-dive flags and PII gating.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -946,13 +946,13 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
-                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write')."]
+                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write_system')."]
                 ]
             ]
         ],
         [
             name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. See hub_get_tool_guide(section='hub_admin_write').",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. See hub_get_tool_guide(section='hub_admin_write_system').",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -968,7 +968,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_system_settings",
-            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write') for the per-field write model and reboot caveats.""",
+            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write_system') for the per-field write model and reboot caveats.""",
             inputSchema: [
                 type: "object",
                 properties: [

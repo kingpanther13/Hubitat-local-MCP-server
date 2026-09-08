@@ -55,9 +55,9 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_manage_native_rules_and_apps',
             [tool: 'hub_set_app_disabled', args: [appId: 'x']])
 
-        then: "the hint maps to the SUB-TOOL's section (builtin_app_tools), since the gateway has none"
+        then: "the hint maps to the SUB-TOOL's own sub-section (builtin_app_tools_rules), since the gateway has none"
         response.error.code == -32602
-        response.error.message.contains('hub_get_tool_guide(section="builtin_app_tools")')
+        response.error.message.contains('hub_get_tool_guide(section="builtin_app_tools_rules")')
         response.error.message.contains('hub_set_app_disabled')
     }
 
@@ -197,11 +197,30 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         script._guideSectionForTool('hub_set_rule') == 'set_rule_reference'
         script._guideSectionForTool('hub_set_visual_rule') == 'visual_rule_reference'
         script._guideSectionForTool('hub_create_custom_rule') == 'rules'
-        script._guideSectionForTool('hub_set_native_app') == 'builtin_app_tools'
         script._guideSectionForTool('hub_update_device') == 'update_device'
         script._guideSectionForTool('hub_manage_virtual_device') == 'virtual_devices'
-        script._guideSectionForTool('hub_delete_device') == 'hub_admin_write'
         script._guideSectionForTool('hub_call_device_command') == 'device_authorization'
+
+        and: "where the section splits, the hint names the SUB-key holding that tool's own block -- the error is where an agent is most likely to follow the pointer, so it must not cost the whole parent"
+        script._guideSectionForTool('hub_set_native_app') == 'builtin_app_tools_crud'
+        script._guideSectionForTool('hub_call_rule') == 'builtin_app_tools_rules'
+        script._guideSectionForTool('hub_delete_device') == 'hub_admin_write_destructive'
+        script._guideSectionForTool('hub_call_zwave') == 'hub_admin_write_radios'
+        script._guideSectionForTool('hub_call_device_swap') == 'hub_admin_write_devices'
+
+        and: "every mapping resolves to something hub_get_tool_guide actually serves"
+        def served = (script.getToolGuideSections().keySet() as Set) +
+                     (script.getToolGuideSubSections().values().collectMany { it.keySet().toList() } as Set)
+        ['hub_set_rule', 'hub_set_visual_rule', 'hub_create_custom_rule', 'hub_update_device',
+         'hub_manage_virtual_device', 'hub_call_device_command', 'hub_set_native_app',
+         'hub_call_rule', 'hub_delete_device', 'hub_call_zwave', 'hub_call_device_swap',
+         'hub_delete_native_app', 'hub_clone_native_app', 'hub_export_native_app',
+         'hub_import_native_app', 'hub_set_app_disabled', 'hub_set_rule_paused',
+         'hub_set_rule_private_boolean', 'hub_call_zigbee', 'hub_call_matter',
+         'hub_call_device_replace', 'hub_update_firmware', 'hub_call_destructive_ops',
+         'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
+         'hub_create_dashboard', 'hub_create_backup', 'hub_write_file'
+        ].every { script._guideSectionForTool(it) in served }
 
         and: "a tool with no dedicated section maps to null (no generic fallback)"
         script._guideSectionForTool('hub_set_hsm') == null

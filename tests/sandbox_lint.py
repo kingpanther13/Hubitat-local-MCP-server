@@ -1764,6 +1764,20 @@ def check_tool_guide_pointers(src_override: str | None = None,
             continue
         section_bodies[key] = method_body.group(1)
 
+    # 1c. Sub-section keys (issue #392): getToolGuideSubSections() splits the four oversized
+    #     sections into narrower keys hub_get_tool_guide also accepts, so a pointer at one is
+    #     valid. They stay OUT of section_keys -- step 3 and step 4 are per parent section, and a
+    #     sub-key has no TOOL_GUIDE.md heading of its own.
+    sub_section_keys = set()
+    sub_block_match = re.search(
+        r"def getToolGuideSubSections\(\)\s*\{\s*return\s*\[(.*?)\n\s*\]\s*\}",
+        src,
+        re.DOTALL,
+    )
+    if sub_block_match:
+        sub_section_keys = set(re.findall(r"^ {12}([a-z_][a-z0-9_]*):\s*\[",
+                                          sub_block_match.group(1), re.MULTILINE))
+
     # 2. Extract every get_tool_guide(section='X') reference from the .groovy -- the app file AND
     #    every library. A domain's guide body now travels with its domain (section 1b), so a
     #    pointer written beside it in libraries/*.groovy is exactly as breakable as one in the app
@@ -1786,7 +1800,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     for rel, text in pointer_sources:
         for line_no, line in enumerate(text.splitlines(), start=1):
             for ptr in pointer_re.findall(line):
-                if ptr not in section_keys:
+                if ptr not in section_keys and ptr not in sub_section_keys:
                     findings.append({
                         "file": rel,
                         "line": line_no,
@@ -1794,8 +1808,10 @@ def check_tool_guide_pointers(src_override: str | None = None,
                         "rule": "tool-guide-broken-pointer",
                         "message": (
                             f"get_tool_guide(section='{ptr}') points at a section that is NOT a key "
-                            f"in getToolGuideSections(). Either add the section to the dispatcher or "
-                            f"fix the pointer. Known sections: {sorted(section_keys)}."
+                            f"in getToolGuideSections() nor a sub-key in getToolGuideSubSections(). "
+                            f"Either add the section to the dispatcher or fix the pointer. "
+                            f"Known sections: {sorted(section_keys)}. "
+                            f"Known sub-sections: {sorted(sub_section_keys)}."
                         ),
                         "source": line.strip()[:200],
                     })

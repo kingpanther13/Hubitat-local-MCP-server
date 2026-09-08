@@ -124,7 +124,7 @@ class HandleGatewaySpec extends ToolSpecBase {
 
     def "hub_set_native_app schema-only meta-call bypasses the required-param pre-check (mirrors hub_set_rule)"() {
         given:
-        script.metaClass.toolGetToolGuide = { s -> [section: s, stubbed: true] }
+        script.metaClass.toolGetToolGuide = { s, c = null -> [section: s, stubbed: true] }
 
         when: "guide meta-call routed through the gateway WITHOUT confirm (its only required param)"
         def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_native_app', [appId: 123, guide: true])

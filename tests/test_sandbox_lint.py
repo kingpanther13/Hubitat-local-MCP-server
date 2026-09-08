@@ -464,6 +464,76 @@ Stuff.
     assert findings == [], f"expected no findings, got: {findings}"
 
 
+def test_check_tool_guide_pointers_accepts_sub_section_keys(monkeypatch, tmp_path):
+    """A pointer at a getToolGuideSubSections() sub-key resolves through hub_get_tool_guide
+    exactly like a section key, so the lint must accept it."""
+    server_groovy = """\
+def getToolGuideSections() {
+    return [
+        device_authorization: '''## Device Authorization (CRITICAL)
+Body.''',
+        builtin_app_tools: '''## Installed-App & Native-Rule Tools
+Body.'''
+    ]
+}
+
+def getToolGuideSubSections() {
+    return [
+        builtin_app_tools: [
+            builtin_app_tools_overview: [],
+            builtin_app_tools_apps: ["hub_list_apps"]
+        ]
+    ]
+}
+
+def someTool() {
+    return [description: "Call `get_tool_guide(section='builtin_app_tools_apps')` for details."]
+}
+"""
+    tool_guide_md = """\
+## Device Authorization (CRITICAL)
+Stuff.
+
+## Installed-App & Native-Rule Tools
+Stuff.
+"""
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    findings = sl.check_tool_guide_pointers()
+    assert findings == [], f"sub-key pointer should resolve, got: {findings}"
+
+
+def test_check_tool_guide_pointers_undeclared_sub_section_flagged(monkeypatch, tmp_path):
+    """A `<section>_<part>`-shaped pointer that no sub-key declares is still broken -- the
+    sub-key allowance must not become a blanket pass for anything with an underscore."""
+    server_groovy = """\
+def getToolGuideSections() {
+    return [
+        builtin_app_tools: '''## Installed-App & Native-Rule Tools
+Body.'''
+    ]
+}
+
+def getToolGuideSubSections() {
+    return [
+        builtin_app_tools: [
+            builtin_app_tools_overview: []
+        ]
+    ]
+}
+
+def someTool() {
+    return [description: "Call `get_tool_guide(section='builtin_app_tools_typo')` for details."]
+}
+"""
+    tool_guide_md = "## Installed-App & Native-Rule Tools\nStuff.\n"
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    findings = sl.check_tool_guide_pointers()
+    broken = [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
+    assert broken, f"expected tool-guide-broken-pointer finding, got: {findings}"
+    assert "builtin_app_tools_typo" in broken[0]["message"]
+    assert "builtin_app_tools_overview" in broken[0]["message"]
+
+
 def test_check_tool_guide_pointers_broken_pointer_flagged(monkeypatch, tmp_path):
     """Schema points at section X but X is not in the dispatcher map -> tool-guide-broken-pointer."""
     server_groovy = """\

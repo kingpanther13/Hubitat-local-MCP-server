@@ -92,7 +92,7 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
     def "hub_set_native_app schema-only guide call (edit-shaped) is exempt from the Write master (mirrors hub_set_rule)"() {
         given:
         settingsMap.enableWrite = false
-        script.metaClass.toolGetToolGuide = { s -> [section: s, stubbed: true] }
+        script.metaClass.toolGetToolGuide = { s, c = null -> [section: s, stubbed: true] }
 
         when: "guide meta-call on an existing app -- static reference content, no mutation"
         def result = script.executeTool("hub_set_native_app", [appId: 123, guide: true])
