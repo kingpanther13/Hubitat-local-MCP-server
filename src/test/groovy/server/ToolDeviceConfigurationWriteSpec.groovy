@@ -471,7 +471,9 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         result.errors.find { it.property == 'notes' }?.error?.contains('dashboards')
 
         where:
-        dashboards << [null, [:], [[id: 1]], [[selected: true]]]
+        dashboards << [null, [:], [[id: 1]], [[selected: true]],
+            [[id: [], selected: true]], [[id: '', selected: true]], [[id: false, selected: true]],
+            [[id: 0, selected: true]], [[id: -1, selected: true]], [[id: 1.5, selected: true]]]
     }
 
     def 'explicit nullable fields false and version zero survive a complete form save'() {

@@ -59,6 +59,29 @@ def test_validation_log_expectation_uses_reactive_gateway_tool_and_exact_reason(
     )
 
 
+def test_validation_log_expectation_strips_only_the_exact_legacy_reactive_hint():
+    params = {
+        "name": "hub_manage_devices",
+        "arguments": {"tool": "hub_update_device", "args": {"deviceId": "42"}},
+    }
+    raw_reason = "preference probeBool must be a boolean"
+    exact_hint = (
+        ' See hub_get_tool_guide(section="update_device") for '
+        "hub_update_device's reference and best practices."
+    )
+
+    assert et._validation_log_expectation("tools/call", params, {
+        "code": -32602, "message": f"Invalid params: {raw_reason}{exact_hint}",
+    }) == f"Validation error in hub_update_device: {raw_reason}"
+
+    # Similar caller-authored text is part of the raw exception and must not be
+    # broadly removed merely because it mentions the guide.
+    altered_hint = exact_hint.replace("hub_update_device's", "another_tool's")
+    assert et._validation_log_expectation("tools/call", params, {
+        "code": -32602, "message": f"Invalid params: {raw_reason}{altered_hint}",
+    }) == f"Validation error in hub_update_device: {raw_reason}{altered_hint}"
+
+
 @pytest.mark.parametrize(
     ("method", "params", "error"),
     [
