@@ -497,8 +497,36 @@ after an uncertain outcome; arbitrary-duration completion is not supported.
 Idle active records have a three-minute TTL. Executing MRTR claims retain protection beyond it;
 a hard-killed worker can leave a live marker stranded until class reload. Write terminal records
 have a ten-minute TTL but may be evicted earlier under record pressure. These are finite replay
-and safety contracts, not proof of restart recovery or eventual completion. Worker-local budgets
-and recovery from hard kills require their own design and are not implemented by these tests.
+and safety contracts, not proof of restart recovery or eventual completion.
+
+### Cooperative worker checkpoints
+
+Detached workers use their own 120-second target, independent of the cloud/LAN request budget.
+They check it between completed native bulk items, patch operations and walk-driver steps, and
+between driver installs or updates. Each checkpoint stores the untouched suffix, advances the
+owner generation, and renews the three-minute idle window. The next request with the same
+original arguments and state schedules the next slice with a fresh clock. Running claims keep
+their write reservation; duplicate callbacks do not repeat completed items.
+
+This is a cooperative target, not a platform execution deadline or maximum duration. An
+individual wizard operation or driver compile/save/delete runs uninterrupted. Native app
+creation and action replacement have no restart-safe intermediate checkpoint. A patch batch
+containing `replaceRequiredExpression` also stays together: its duplicate-replacement fence and
+deferred rollback context must survive through finalization. A guessed age cutoff cannot safely
+distinguish a slow write from a killed worker, so this change does not add one.
+
+At the eight-owner-slice cap, `continuation_limit` is terminal. Its aggregate records completed
+work and its remaining-work fields identify the exact unprocessed suffix. Native results retain
+the finalization guidance: settings may have landed while `updateRule`/Done is still deferred.
+Inspect that outcome before submitting a **new** smaller call containing only the remainder;
+replaying the old state only replays the terminal error.
+
+`MrtrWorkerBudgetSpec` uses virtual time and real tool dispatch to force safe native checkpoints,
+verify ordered results, cap recovery and one finalization, and protect atomic replacement
+batches. The regular live MRTR scenario uses six actions in nested and single-action patches;
+the official SDK scenario retains its bulk edit. Both independently check exact persisted
+settings. These small live calls need not cross 120 seconds; deterministic unit coverage proves
+the clock boundary without adding hub stress or a test-only production setting.
 
 ### Leg 2 — official Python SDK client (e2e side)
 

@@ -8890,7 +8890,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         // pause always represents a clean partial: every earlier step committed and
         // nothing failed. Each step is a live POST, so stopping here and handing back
         // the unrun steps lets the caller resume before the transport drops the response.
-        if (idx > 1 && allOk && _timeBudgetExceeded(spec?.__reqT0 as Long)) {
+        if (idx > 1 && allOk && _resumableBudgetExceeded(spec?.__reqT0 as Long)) {
             pausedAtStep = idx
             stepsRemaining = steps.subList(idx - 1, steps.size()).collect { _stripInternalClock(it) }
             break
@@ -14378,6 +14378,10 @@ def _applyNativeAppEdit(args) {
         // valid per batch; a second would replace the first (and its additive restore would land
         // on the intermediate, not the original). Track it to refuse the second.
         def seenReplaceRE = false
+        // Replacement rollback context and whole-batch attribution cannot cross a checkpoint.
+        boolean canPausePatchBatch = mrtrWorkerSliceStartedAt == null || !patchesList.any {
+            it instanceof Map && it.containsKey("replaceRequiredExpression")
+        }
         // Resolve the valid-rule-id set once for the whole patch batch (only when
         // some action op targets a rule) and thread it to every addAction /
         // addActions / replaceActions op below -- one resolve per batch, not per item.
@@ -14405,7 +14409,7 @@ def _applyNativeAppEdit(args) {
                 // batch-end trailing updateRule below so it does NOT fire -- the ops so far are
                 // committed at the settings level but not yet baked; the resume call's own batch-end
                 // updateRule bakes them once the remaining patches complete.
-                if (pi > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
+                if (pi > 0 && canPausePatchBatch && _resumableBudgetExceeded(args?.__reqT0 as Long)) {
                     def patchesRemaining = patchesList.subList(pi, patchesList.size()).collect { _stripInternalClock(it) }
                     return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                 }
@@ -14437,7 +14441,7 @@ def _applyNativeAppEdit(args) {
                         boolean innerPaused = false
                         for (def tspec : innerList) {
                             ii++
-                            if (ii > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
+                            if (ii > 0 && canPausePatchBatch && _resumableBudgetExceeded(args?.__reqT0 as Long)) {
                                 innerPaused = true
                                 break
                             }
@@ -14470,7 +14474,7 @@ def _applyNativeAppEdit(args) {
                         boolean innerPaused = false
                         for (def aspec : innerList) {
                             ii++
-                            if (ii > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
+                            if (ii > 0 && canPausePatchBatch && _resumableBudgetExceeded(args?.__reqT0 as Long)) {
                                 innerPaused = true
                                 break
                             }
@@ -14943,7 +14947,7 @@ def _applyNativeAppEdit(args) {
             for (def spec : trigList) {
                 ti++
                 if ((triggerResults.size() + actionResults.size()) > 0 &&
-                        _timeBudgetExceeded(args?.__reqT0 as Long)) {
+                        _resumableBudgetExceeded(args?.__reqT0 as Long)) {
                     return _bulkPauseResult(appId, backup, triggerResults, actionResults,
                         trigList.subList(ti, trigList.size()), actList)
                 }
@@ -14964,7 +14968,7 @@ def _applyNativeAppEdit(args) {
             for (def spec : actList) {
                 ai++
                 if ((triggerResults.size() + actionResults.size()) > 0 &&
-                        _timeBudgetExceeded(args?.__reqT0 as Long)) {
+                        _resumableBudgetExceeded(args?.__reqT0 as Long)) {
                     // Every trigger already processed; only the unprocessed actions remain.
                     return _bulkPauseResult(appId, backup, triggerResults, actionResults,
                         [], actList.subList(ai, actList.size()))

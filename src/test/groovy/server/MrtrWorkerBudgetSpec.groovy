@@ -334,7 +334,8 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         leadingOp << ['addAction', 'addActions', 'addTriggers']
     }
 
-    def "walk drive retains inherited page and defers mainPage Done across worker slices"() {
+    @Unroll
+    def "walk drive retains original step numbering across slices (second step fails=#failSecondStep)"() {
         given:
         settingsMap.useGateways = false
         def walked = []
@@ -343,6 +344,9 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
             if (spec.operation == 'drive') return script._rmDriveWalkSteps(id, spec)
             walked << new LinkedHashMap(spec)
             clock.addAndGet(walked.size() == 1 ? 120001L : 10L)
+            if (failSecondStep && walked.size() == 2) {
+                return [success: false, page: spec.page, error: 'second requested step refused']
+            }
             [success: true, page: spec.page]
         }
         hubGet.register('/installedapp/configure/json/1/mainPage') {
@@ -377,14 +381,24 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
 
         then:
         complete.result.resultType == 'complete'
-        terminal.success == true
-        terminal.steps.size() == 3
-        terminal.stepsRun == 3
-        walked*.page == ['selectActions', 'selectActions', 'selectActions']
-        finalized == 1
+        terminal.success == !failSecondStep
+        terminal.stepsRequested == 3
+        terminal.steps.size() == (failSecondStep ? 2 : 3)
+        terminal.stepsRun == (failSecondStep ? 2 : 3)
+        terminal.steps*.step == (failSecondStep ? [1, 2] : [1, 2, 3])
+        walked*.page == (failSecondStep ? ['selectActions', 'selectActions'] :
+            ['selectActions', 'selectActions', 'selectActions'])
+        finalized == (failSecondStep ? 0 : 1)
+        !failSecondStep || (terminal.steps[1].success == false &&
+            terminal.steps[1].error == 'second requested step refused')
+        !failSecondStep || terminal.error.contains('step 2')
+        !failSecondStep || terminal.repairHints.any { it.contains('steps[1]') }
         runInMillisCalls.size() == 2
         mcpDriver.parseInner(replay) == terminal
         !JsonOutput.toJson(walked).contains('__reqT0')
+
+        where:
+        failSecondStep << [false, true]
     }
 
     @Unroll

@@ -31,6 +31,8 @@
 @groovy.transform.Field static final Map WRITE_REQUEST_LEASES = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
+// Per execution: never pass this clock into a destructive inner wizard operation.
+@groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
 // JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
 // _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot (the trimmed page + at), fetchId
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
@@ -2338,16 +2340,9 @@ private List _mrtrSweepLocked() {
     _mrtrSweepTerminalEvidenceLocked()
     def stored = _writeStateMapLocked("mrtrRequests")
     long at = now()
-    // The liveness disjunct is deliberately UNCAPPED here, unlike the lease sweep's two
-    // horizons. A detached worker strips __reqT0 so _timeBudgetExceeded is permanently false
-    // for it: its slice is time-unbounded by design, and nothing refreshes expiresAt WHILE it
-    // runs (only _mrtrClaim and the slice-completion bank write it). So any ceiling measured
-    // from expiresAt eventually fires under a genuinely running worker -- evicting the record
-    // it needs to store its terminal (the client then gets "Invalid or expired requestState"
-    // for a write that already mutated the hub) and freeing its write-cap slot so a second
-    // write can interleave on the same classic-app page. A stranded marker from a hard kill
-    // outside the catch is the lesser evil; closing it needs a worker heartbeat that refreshes
-    // expiresAt, so "live but expired" can mean dead. Do not add a ceiling without one.
+    // Cooperative checkpoints renew expiry, but an individual wizard/driver operation can
+    // overrun the worker target. Age alone cannot distinguish that live write from a killed
+    // worker. Expiring it would lose its terminal result and admit an overlapping write.
     def kept = [:]
     def cleanup = []
     stored.each { k, v ->
@@ -2642,6 +2637,14 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             else nextLeaf.patches = result.patchesRemaining
             kind = "patches"
         }
+    } else if (leafTool == "hub_create_driver" && result.status == "in_progress" &&
+            result.installsRemaining instanceof List && !result.installsRemaining.isEmpty()) {
+        nextLeaf.installs = result.installsRemaining
+        kind = "driver_installs"
+    } else if (leafTool == "hub_update_driver" && result.status == "in_progress" &&
+            result.updatesRemaining instanceof List && !result.updatesRemaining.isEmpty()) {
+        nextLeaf.updates = result.updatesRemaining
+        kind = "driver_updates"
     } else if ((_mrtrReadTools().contains(leafTool) || leafTool == "hub_delete_debug_logs")
             && result.status == "in_progress") {
         // The background fetch is still running; the next leg re-runs the identical read.
@@ -2718,7 +2721,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
             def capped = [
                 success: false, isError: true, status: "continuation_limit",
                 tool: leaf,
-                error: "The operation did not finish within ${_mrtrMaxContinuationSlices()} bounded continuation slices.",
+                error: "The operation did not finish within ${_mrtrMaxContinuationSlices()} owner continuation slices.",
                 note: "The completed slices remain committed. Inspect the current hub state before deciding whether to submit a smaller follow-up operation."
             ]
             // Hand back the per-item ledger the record is already holding. Telling a caller to
@@ -2781,6 +2784,16 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     (merged.backup != null ? " and a rollback handle in aggregate.backup" : "") +
                     ", so a follow-up can resume from there rather than re-running the whole " +
                     "operation."
+            }
+            if (continuation.kind in ["bulk_edit", "patches", "walk_steps", "driver_installs", "driver_updates"]) {
+                ["appId", "page", "operation", "stepsRemaining", "addTriggersRemaining",
+                 "addActionsRemaining", "patchesRemaining", "installsRemaining", "updatesRemaining",
+                 "backup", "repairHints", "resume"].each { key ->
+                    if (result.containsKey(key)) capped[key] = result[key]
+                }
+                capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
+                    "and resume guidance before submitting a new call with only that remainder. " +
+                    "This requestState now replays the terminal continuation_limit result."
             }
             if (continuation.kind in ["clone_native_app", "import_native_app"] &&
                     continuation.checkpoint instanceof Map &&
@@ -2848,11 +2861,18 @@ private def _mrtrAggregateTerminal(Map rec, result) {
             out.remove("remainingRuleIds")
             break
         case "walk_steps":
-            out.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-                ((out.steps instanceof List) ? out.steps : [])
+            out.steps = _mrtrWalkSteps(aggregate, out)
             out.stepsRun = out.steps.size()
             out.stepsRequested = Math.max(out.stepsRun as Integer,
-                ((aggregate.stepsRequested ?: 0) as Integer) + ((out.stepsRequested ?: 0) as Integer))
+                Math.max((aggregate.stepsRequested ?: 0) as Integer, (out.stepsRequested ?: 0) as Integer))
+            def failedStep = out.steps.find { it?.success == false }
+            if (failedStep != null) {
+                out.error = "drive halted at step ${failedStep.step} (${failedStep.operation}): " +
+                    (failedStep.error ?: "step reported success:false -- inspect its valueEcho/silentRejection/health")
+                out.repairHints = ((out.repairHints ?: []) as List).findAll {
+                    !it?.toString()?.startsWith("Drive stopped at step ")
+                } + ["Drive stopped at step ${failedStep.step}. Inspect steps[${failedStep.step - 1}] for the failure detail, correct it, and re-run the drive from that step.".toString()]
+            }
             out.partial = aggregate.anyPartial == true || out.partial == true
             break
         case "bulk_edit":
@@ -2863,13 +2883,28 @@ private def _mrtrAggregateTerminal(Map rec, result) {
             boolean itemsOk = out.triggers.every { it?.success != false } && out.actions.every { it?.success != false }
             out.success = out.success == true && itemsOk
             out.partial = aggregate.anyPartial == true || out.partial == true || !itemsOk
+            out.note = "Results include all ${out.triggers.size()} triggers and ${out.actions.size()} actions across owner slices; inspect per-item outcomes and finalization fields."
             break
         case "patches":
             out.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
-                ((out.patchResults instanceof List) ? out.patchResults : [])
+                _mrtrPatchResults(out)
+            if (out.patches instanceof List) out.patches = out.patchResults
             boolean patchesOk = out.patchResults.every { it?.success != false }
             out.success = out.success == true && patchesOk
             out.partial = aggregate.anyPartial == true || out.partial == true || !patchesOk
+            out.note = "Patch results include every owner slice; inspect per-item outcomes and finalization fields."
+            break
+        case "driver_installs":
+        case "driver_updates":
+            String driverField = aggregate.kind == "driver_installs" ? "installs" : "updates"
+            out[driverField] = ((aggregate[driverField] instanceof List) ? aggregate[driverField] : []) +
+                ((out[driverField] instanceof List) ? out[driverField] : [])
+            int driverCount = out[driverField].size()
+            int driverSucceeded = out[driverField].count { it?.success == true }
+            out.success = out.success == true && driverSucceeded == driverCount
+            String driverVerb = driverField == "installs" ? "installed" : "updated"
+            out.message = out.success ? "All ${driverCount} driver(s) ${driverVerb} successfully." :
+                "${driverSucceeded} of ${driverCount} driver(s) ${driverVerb} successfully."
             break
     }
     out.remove("status")
@@ -3000,6 +3035,8 @@ def runMrtrSlice(Map job = [:]) {
     }
     if (work == null || rec == null) return
 
+    Long previousWorkerStart = mrtrWorkerSliceStartedAt
+    mrtrWorkerSliceStartedAt = now()
     try {
         Map executionArgs = _mrtrCopyMap(work.arguments as Map)
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
@@ -3011,6 +3048,7 @@ def runMrtrSlice(Map job = [:]) {
         _mrtrCleanupRecord(rec)
         _mrtrStoreTerminal(stateId, rec, claim, failure, true)
     } finally {
+        mrtrWorkerSliceStartedAt = previousWorkerStart
         synchronized (WRITE_RESERVATION_LOCK) {
             def current = MRTR_WORK_ITEMS[claimId]
             if (current instanceof Map && current.stateId?.toString() == stateId
@@ -3096,6 +3134,33 @@ private List _mrtrRuleResultRows(result) {
 // the round that triggered it has already run against the hub -- merging it there by a
 // separate path is how the two drift, which is exactly how the cap came to return an
 // aggregate one round stale.
+private List _mrtrWalkSteps(Map aggregate, Map result) {
+    def rows = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
+        ((result.steps instanceof List) ? result.steps : [])
+    def numbered = []
+    rows.eachWithIndex { row, index ->
+        numbered << (row instanceof Map ? (row + [step: index + 1]) : row)
+    }
+    return numbered
+}
+
+private List _mrtrPatchResults(Map result) {
+    def rows = result.patchResults instanceof List ? result.patchResults :
+        (result.patches instanceof List ? result.patches : [])
+    return rows.collect { row ->
+        // A paused inner list marks its row partial even when every completed item succeeded.
+        // That checkpoint marker must not survive successful completion as an item defect.
+        if (result.status == "in_progress" && row instanceof Map &&
+                row.op in ["addActions", "addTriggers"] && row.success == true &&
+                row.results instanceof List && row.results.every {
+                    it instanceof Map && it.success != false && it.partial != true
+                }) {
+            return row.findAll { key, value -> key != "partial" }
+        }
+        return row
+    }
+}
+
 private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
     if (!(result instanceof Map)) return
     aggregate.kind = kind
@@ -3108,10 +3173,9 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
             aggregate.ruleIds = banked.ruleIds
             break
         case "walk_steps":
-            aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-                ((result.steps instanceof List) ? result.steps : [])
-            aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
-                ((result.stepsRequested ?: 0) as Integer)
+            aggregate.steps = _mrtrWalkSteps(aggregate, result as Map)
+            aggregate.stepsRequested = Math.max((aggregate.stepsRequested ?: 0) as Integer,
+                (result.stepsRequested ?: 0) as Integer)
             break
         case "bulk_edit":
             aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
@@ -3121,13 +3185,20 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
             break
         case "patches":
             aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
-                ((result.patchResults instanceof List) ? result.patchResults : [])
+                _mrtrPatchResults(result as Map)
             // The rollback handle is the single most useful thing to hand back on a batch big
             // enough to reach the cap, and it lives only on the round that produced it.
             if (result.backup != null) aggregate.backup = result.backup
             break
+        case "driver_installs":
+        case "driver_updates":
+            String driverField = kind == "driver_installs" ? "installs" : "updates"
+            aggregate[driverField] = ((aggregate[driverField] instanceof List) ? aggregate[driverField] : []) +
+                ((result[driverField] instanceof List) ? result[driverField] : [])
+            break
     }
-    aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
+    aggregate.anyPartial = aggregate.anyPartial == true || (kind == "patches" ?
+        aggregate.patchResults.any { it?.success == false || it?.partial == true } : result.partial == true)
 }
 
 private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
@@ -3264,6 +3335,17 @@ def _timeBudgetExceeded(Long t0) {
     Long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
     if (budget <= 0) return false
     return (now() - t0) >= budget
+}
+
+def _mrtrWorkerSliceBudgetMs() { 120000L }
+
+// Only restart-safe batch boundaries use the worker clock. Inner wizard calls keep
+// the request clock absent so a pause cannot split a destructive operation in half.
+def _resumableBudgetExceeded(Long requestT0) {
+    if (mrtrWorkerSliceStartedAt != null) {
+        return now() - mrtrWorkerSliceStartedAt >= _mrtrWorkerSliceBudgetMs()
+    }
+    return _timeBudgetExceeded(requestT0)
 }
 
 // Returned in place of the real result when handleToolsCall trips the size guard. Shape
@@ -9527,9 +9609,17 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`. When the transport carries a time budget, log and diagnostic reads also continue as described below.
 
-The first write request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers do not currently have their own slice budget. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
+The first write request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
 The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState`; it cannot reserve or run a second write. This lets a client safely replay a mutation-free preflight whose HTTP response was lost. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
+
+### Worker checkpoints and limits
+
+Native bulk trigger/action edits, resumable patch batches and walk-driver steps pause between completed items after the worker target. Driver bulk installs/updates pause between drivers. Each saved checkpoint retains the untouched remainder, renews the active window, and advances the owner generation; the next original-argument request with the same state starts a fresh worker slice. Inner destructive wizard operations never receive this worker clock.
+
+Native creation, action replacement, individual driver operations, and patch batches containing `replaceRequiredExpression` remain uninterrupted. Splitting those operations would require additional phase or rollback state. The target is not a hard execution deadline or a guarantee of recovery from a platform kill.
+
+If eight owner slices leave work unfinished, the terminal `continuation_limit` result retains the completed aggregate, exact remaining-work fields and any deferred-finalization guidance. Inspect that result before making a new, smaller call containing only the remainder. Replaying the old state only returns the same terminal result. Native settings may already be written while updateRule/Done remains deferred.
 
 ### Client retry limits and resume
 
