@@ -288,9 +288,10 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         then: 'the partial native save is used and its exact post-clear native shape is freshly verified'
         sdkUpdates.empty
         nativePosts == [[path: '/device/preference/save', body: [
-            deviceId: 10, preferences: [[name: 'probeText', type: 'text', value: '']]
+            deviceId: 10, defaultCurrentState: '', commandRetry: false, showOnHome: false,
+            preferences: [[name: 'probeText', type: 'text', value: '']]
         ]]]
-        reads == 2
+        reads == 3
         result.success == true
         result.changes.find { it.property == 'preference.probeText' }?.newValue == [type: 'text', value: null]
         !result.errors
@@ -445,9 +446,104 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         def result = script.toolUpdateDevice([deviceId: '10', retryEnabled: true])
 
         then:
-        sent == [deviceId: 10, commandRetry: true]
+        sent == [deviceId: 10, defaultCurrentState: '', commandRetry: true, showOnHome: false, preferences: []]
         result.success == true
         result.changes.find { it.property == 'retryEnabled' }
+    }
+
+    @Unroll
+    def 'preference pane #pathScope #operation preserves omitted controls in one complete native payload'() {
+        given:
+        def model = fixture()
+        model.device.showOnHome = true
+        model.device.retryEnabled = true
+        model.device.defaultCurrentState = 'temperature'
+        model.device.currentStates = [temperature: [:], switch: [:]]
+        if (operation == 'retry') {
+            model.commandRetrySelectionEnabled = false
+            model.device.retryAvailable = true
+        }
+        registerFixture(model, bypass)
+        def reads = 0
+        hubGet.register('/device/fullJson/10') {
+            reads++
+            JsonOutput.toJson(model)
+        }
+        if (!bypass && operation == 'show') {
+            hubGet.register('/device/setShowOnHome?deviceId=10&show=false') { throw new RuntimeException('Not Found (404)') }
+        }
+        if (!bypass && operation == 'default') {
+            hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { throw new RuntimeException('Not Found (404)') }
+        }
+        def sent
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            sent = new JsonSlurper().parseText(body)
+            model.device.showOnHome = sent.showOnHome
+            model.device.retryEnabled = sent.commandRetry
+            model.device.defaultCurrentState = sent.defaultCurrentState
+            sent.preferences.each { pref -> model.settings.find { it.name == pref.name }.value = pref.value.toString() }
+            [success: true]
+        }
+        def patch = operation == 'show' ? [showOnHome: false] :
+            operation == 'default' ? [defaultCurrentState: 'switch'] :
+            operation == 'retry' ? [retryEnabled: false] :
+            [preferences: [logEnable: [type: 'bool', value: false]]]
+        def wantedPreferences = operation == 'preference' ? [[name: 'logEnable', type: 'bool', value: false]] : []
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10'] + patch)
+
+        then:
+        result.success == true
+        sent == [deviceId: 10,
+                 defaultCurrentState: operation == 'default' ? 'switch' : 'temperature',
+                 commandRetry: operation == 'retry' ? false : true,
+                 showOnHome: operation == 'show' ? false : true,
+                 preferences: wantedPreferences]
+        reads == 3
+
+        where:
+        pathScope | bypass | operation
+        'bypass'  | true   | 'show'
+        'bypass'  | true   | 'default'
+        'listed'  | false  | 'show'
+        'listed'  | false  | 'default'
+        'bypass'  | true   | 'retry'
+        'bypass'  | true   | 'preference'
+    }
+
+    @Unroll
+    def 'preference pane native save refuses a fresh model with invalid #field'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        def reads = 0
+        hubGet.register('/device/fullJson/10') {
+            if (++reads == 2) {
+                if (invalid == 'REMOVE') model.device.remove(field)
+                else model.device.put(field, invalid)
+            }
+            JsonOutput.toJson(model)
+        }
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            posts << body
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: [type: 'bool', value: false]]])
+
+        then:
+        posts.empty
+        result.success == false
+        result.errors.find { it.property == 'preference.logEnable' }
+
+        where:
+        field                 | invalid
+        'showOnHome'          | null
+        'retryEnabled'        | 'false'
+        'defaultCurrentState' | 'REMOVE'
     }
 
     @Unroll
