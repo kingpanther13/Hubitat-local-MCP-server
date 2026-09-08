@@ -347,6 +347,30 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.editableFields.every { !it.writable }
     }
 
+    def "native unset storage does not promote the UI default into a saved #kind preference"() {
+        given:
+        def full = [device: [id: 901], settings: [[name: 'cleared', type: kind,
+            id: null, deviceId: null, value: null, defaultValue: nativeDefault]],
+            inputValues: [[name: 'cleared', inputValue: nativeDefault]]]
+
+        when:
+        def model = script._readDevicePreferenceModel(full)
+        def entry = script._lookupDevicePreference(model, 'cleared')
+
+        then:
+        model.status == 'complete'
+        entry.valuePresent == false
+        entry.valueStatus == 'unset'
+        entry.value == null
+        entry.defaultValue == typedDefault
+
+        where:
+        kind     | nativeDefault         | typedDefault
+        'text'   | 'declaration default' | 'declaration default'
+        'bool'   | 'true'                | true
+        'number' | '7'                   | 7
+    }
+
     def "input values match by name and conflicting malformed storage never reports complete"() {
         given:
         def full = [device: [id: 1], settings: [

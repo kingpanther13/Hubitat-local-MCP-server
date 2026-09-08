@@ -241,6 +241,61 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         [bypass, target] << [[false, true], [false, true, null]].combinations()
     }
 
+    def 'listed null preference clear uses native partial save after complete validation and verifies a fresh native read'() {
+        given:
+        def model = fixture()
+        model.settings << [name: 'probeText', type: 'text', value: 'original saved text', required: false]
+        model.inputValues << [name: 'probeText', type: 'text', inputValue: 'original saved text']
+        registerFixture(model, false)
+        def reads = 0
+        hubGet.register('/device/fullJson/10') {
+            reads++
+            JsonOutput.toJson(model)
+        }
+        def sdkUpdates = []
+        def labelUpdates = []
+        childDevicesList[0].metaClass.updateSetting = { String name, setting ->
+            sdkUpdates << [name: name, setting: setting]
+        }
+        childDevicesList[0].metaClass.setLabel = { String label -> labelUpdates << label }
+        def nativePosts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            def decoded = new JsonSlurper().parseText(body)
+            nativePosts << [path: path, body: decoded]
+            def row = model.settings.find { it.name == 'probeText' }
+            row.put('value', null)
+            row.put('deviceId', null)
+            row.put('id', null)
+            model.inputValues.find { it.name == 'probeText' }.put('inputValue', 'declaration default')
+            [success: true]
+        }
+
+        when: 'a mixed patch contains an invalid preference'
+        script.toolUpdateDevice([deviceId: '10', label: 'Must remain unchanged', preferences: [
+            probeText: [type: 'text', value: null], doesNotExist: [type: 'text', value: 'bad']
+        ]])
+
+        then: 'the complete patch is rejected before either write mechanism runs'
+        thrown(IllegalArgumentException)
+        nativePosts.empty
+        sdkUpdates.empty
+        labelUpdates.empty
+
+        when: 'the valid clear is issued'
+        reads = 0
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [probeText: [type: 'text', value: null]]])
+
+        then: 'the partial native save is used and its exact post-clear native shape is freshly verified'
+        sdkUpdates.empty
+        nativePosts == [[path: '/device/preference/save', body: [
+            deviceId: 10, preferences: [[name: 'probeText', type: 'text', value: '']]
+        ]]]
+        reads == 2
+        result.success == true
+        result.changes.find { it.property == 'preference.probeText' }?.newValue == [type: 'text', value: null]
+        !result.errors
+    }
+
     def 'clear cannot be confirmed after storage disappears from a successful fullJson fetch'() {
         given:
         def model = fixture()
