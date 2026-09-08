@@ -229,6 +229,84 @@ def test_clean_source_no_findings():
 
 
 # ---------------------------------------------------------------------------
+# SandboxSubscriptGuard -- arbitrary Map-key copy and colliding literal keys
+# ---------------------------------------------------------------------------
+
+def sandbox_map_findings(source: str, path: str = "hubitat-mcp-server.groovy") -> list[dict]:
+    """Run the focused source guard against an inline production-shaped fixture."""
+    return sl.check_sandbox_map_subscripts({path: source})
+
+
+@pytest.mark.parametrize("function_name", ["_publicToolResultValue", "_mrtrCanonicalArgs"])
+def test_sandbox_map_guard_catches_arbitrary_key_assignment_in_implicated_copy_functions(function_name):
+    source = f"""
+private def {function_name}(value) {{
+    def copy = new LinkedHashMap()
+    (value as Map).each {{ key, child ->
+        copy[key] = child
+    }}
+    return copy
+}}
+"""
+    findings = sandbox_map_findings(source)
+    assert {f["rule"] for f in findings} == {"sandbox-map-key-subscript"}
+
+
+def test_sandbox_map_guard_catches_known_colliding_literal_key():
+    source = """
+private def renderCatalog(Map response) {
+    def nested = response['fields']
+    nested['getClass'] = response['getClass']
+    return nested
+}
+"""
+    findings = sandbox_map_findings(source)
+    assert {f["rule"] for f in findings} == {"sandbox-map-key-subscript"}
+
+
+def test_sandbox_map_guard_accepts_get_put_for_arbitrary_and_colliding_keys():
+    source = """
+private def safeCopy(Map value) {
+    def copy = new LinkedHashMap()
+    value.each { key, child -> copy.put(key, child) }
+    def fields = copy.get('fields')
+    copy.put('getClass', fields)
+    return copy
+}
+"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_sandbox_map_guard_ignores_list_indexing_and_comment_string_false_positives():
+    source = r'''
+private def ordinaryLists(List rows, int index) {
+    def selected = rows[index]
+    // copy[key] = child is documentation, not executable code
+    def example = "nested['fields'] = value"
+    return selected
+}
+'''
+    assert sandbox_map_findings(source) == []
+
+
+def test_sandbox_map_guard_catches_nested_device_catalog_copy():
+    source = """
+private def copyDeviceCatalog(Map catalog) {
+    def out = new LinkedHashMap()
+    catalog.get('fields').each { fieldName, definition ->
+        def nested = new LinkedHashMap()
+        definition.each { driverKey, value -> nested[driverKey] = value }
+        out[fieldName] = nested
+    }
+    return out
+}
+"""
+    findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
+    assert findings
+    assert all(f["rule"] == "sandbox-map-key-subscript" for f in findings)
+
+
+# ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------
 

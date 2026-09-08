@@ -4,10 +4,10 @@ import support.ToolSpecBase
 
 /**
  * Mandatory best-practice acknowledgment gate at the executeTool dispatch chokepoint
- * (issue #299, opt-in). When enableMandatoryBPS is ON every write tool requires the caller
+ * (issue #299, default ON). When enableMandatoryBPS is ON every write tool requires the caller
  * to pass the acknowledgment key published by hub_get_tool_guide(section='best_practice_reference')
- * as the bestPracticeKey argument. Default OFF (null/unset/false = inactive, matching the #113
- * master-gate convention). hub_get_tool_guide (read) and hub_update_mcp_settings (self-disable)
+ * as the bestPracticeKey argument. Only explicit false disables the gate. hub_get_tool_guide
+ * (read) and hub_update_mcp_settings (self-disable)
  * are exempt so the caller can never lock itself out; gateway names short-circuit.
  */
 class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {

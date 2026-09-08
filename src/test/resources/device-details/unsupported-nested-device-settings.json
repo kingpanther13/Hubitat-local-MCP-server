@@ -1,0 +1,35 @@
+{
+  "device": {
+    "id": 955,
+    "deviceId": 955,
+    "name": "Synthetic Nested Device",
+    "label": "Synthetic Nested Device",
+    "roomName": null,
+    "deviceNetworkId": "SYNTHETIC-DNI-955",
+    "deviceTypeName": "Synthetic Nested Driver",
+    "deviceTypeNamespace": "synthetic.example",
+    "deviceTypeId": 88,
+    "driverType": "usr",
+    "disabled": false,
+    "showOnHome": true,
+    "settings": [
+      {
+        "name": "nestedBoolean",
+        "type": "bool",
+        "title": "Nested boolean",
+        "description": "Synthetic nested-shape fixture",
+        "required": false,
+        "multiple": false,
+        "options": {},
+        "range": null,
+        "defaultValue": "false",
+        "value": "true"
+      }
+    ]
+  },
+  "inputValues": [
+    {"name": "nestedBoolean", "inputValue": "true"}
+  ],
+  "commands": [],
+  "tags": []
+}

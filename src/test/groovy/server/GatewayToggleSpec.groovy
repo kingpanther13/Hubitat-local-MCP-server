@@ -425,6 +425,63 @@ class GatewayToggleSpec extends ToolSpecBase {
         toolEnum.contains('hub_test_custom_rule')
     }
 
+    def "device gateway introductions do not promise write operations when Write is disabled"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+
+        when:
+        def byName = script.getToolDefinitions().collectEntries { [(it.name): it] }
+        def readDescription = byName.hub_read_devices.description.toLowerCase()
+        def manageDescription = byName.hub_manage_devices.description.toLowerCase()
+
+        then: 'both surviving gateway intros stay neutral; the filtered enum/Available line carries exact capability'
+        !readDescription.contains('device commands and updates live')
+        !manageDescription.contains('send commands')
+        !manageDescription.contains('update a device')
+        !manageDescription.contains('create a device')
+        !manageDescription.contains('swap/replace')
+        byName.hub_manage_devices.inputSchema.properties.tool.enum.every {
+            (script.getReadOnlyToolNames() as Set).contains(it)
+        }
+    }
+
+    def "mixed device gateway introduction does not promise reads when Read is disabled"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableRead = false
+        settingsMap.enableWrite = true
+
+        when:
+        def byName = script.getToolDefinitions().collectEntries { [(it.name): it] }
+        def manageDescription = byName.hub_manage_devices.description.toLowerCase()
+
+        then:
+        !byName.containsKey('hub_read_devices')
+        !manageDescription.contains('read-only inspection')
+        !manageDescription.contains('list/get/attribute/events')
+        byName.hub_manage_devices.inputSchema.properties.tool.enum.every {
+            !(script.getReadOnlyToolNames() as Set).contains(it)
+        }
+    }
+
+    def "device gateway introduction stays neutral when an individual operation is hidden"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.disabled_tools = ['hub_call_device_command']
+
+        when:
+        def manage = script.getToolDefinitions().find { it.name == 'hub_manage_devices' }
+        def catalog = script.handleGateway('hub_manage_devices', null, null)
+
+        then:
+        !manage.description.toLowerCase().contains('send commands')
+        !manage.inputSchema.properties.tool.enum.contains('hub_call_device_command')
+        !catalog.tools*.name.contains('hub_call_device_command')
+        (manage.inputSchema.properties.tool.enum as Set) == (catalog.tools*.name as Set)
+    }
+
     def "useGateways=false + both masters off: gateway-name hint omits hidden sub-tools"() {
         // The flat-mode guard's hint must filter through getHiddenToolNames() — telling a
         // stale client to call hub_list_rules when it's also disabled by the Read master

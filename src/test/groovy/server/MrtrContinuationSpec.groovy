@@ -2865,6 +2865,44 @@ class MrtrContinuationSpec extends ToolSpecBase {
         write.error.message.contains('Mandatory best-practice acknowledgment')
     }
 
+    def "modern gateway preflight validation refusal is error logged without reserving or executing"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = true
+        settingsMap.enableMandatoryBPS = true
+        settingsMap.useGateways = true
+        def executions = []
+        script.metaClass.toolRunRmRule = { a -> executions << new LinkedHashMap(a); [success: true] }
+        def args = [tool: 'hub_call_rule', args: [ruleId: [401, 402], action: 'stop']]
+        def observations = [:]
+
+        when:
+        ['error', 'debug'].each { threshold ->
+            settingsMap.mcpLogLevel = threshold
+            def buffer = script.initDebugLogs()
+            buffer.entries.clear()
+            script.log.messages.clear()
+            def response = modernCall('hub_manage_native_rules_and_apps', args)
+            def visible = script.toolGetHubLogs([mode: 'mcp', level: 'error', component: 'server'])
+            observations[threshold] = [response: response, visible: visible,
+                                       nativeLines: new ArrayList(script.log.messages)]
+        }
+
+        then:
+        observations.error.response.error.code == -32602
+        observations.error.response.error.message == observations.debug.response.error.message
+        observations.error.response.error.message.contains('Mandatory best-practice acknowledgment')
+        observations.values().every { observation ->
+            observation.visible.entries.size() == 1 &&
+                observation.visible.entries[0].level == 'error' &&
+                observation.visible.entries[0].details.tool == 'hub_call_rule' &&
+                observation.visible.entries[0].details.gateway == 'hub_manage_native_rules_and_apps' &&
+                observation.nativeLines.any { it.startsWith('error:') }
+        }
+        executions.isEmpty()
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+    }
+
     def "every continuation-eligible read is a canonical read-only tool"() {
         expect:
         (script._mrtrReadTools() as Set).every { (script.getReadOnlyToolNames() as Set).contains(it) }

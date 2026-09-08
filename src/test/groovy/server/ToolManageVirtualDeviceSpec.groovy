@@ -889,6 +889,54 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     // -------- toolListVirtualDevices --------
 
+    def "list_virtual_devices honors limit offset and cursor and rejects conflicting starts"() {
+        given:
+        (0..<6).each { int index ->
+            def device = new support.TestDevice(
+                id: 200 + index,
+                name: 'Virtual Switch',
+                label: "Paged Virtual ${index}",
+                deviceNetworkId: "mcp-virtual-page-${index}",
+                typeName: 'Virtual Switch'
+            )
+            device.dataValues['mcpDriverNamespace'] = 'hubitat'
+            childDevicesList << device
+        }
+
+        when: 'the declared limit is smaller than the virtual inventory'
+        def first = script.toolListVirtualDevices([limit: 3])
+
+        then:
+        first.devices*.id == ['200', '201', '202']
+        first.count == 3
+        first.total == 6
+        first.offset == 0
+        first.limit == 3
+        first.hasMore == true
+        first.nextOffset == 3
+
+        when: 'offset and limit select the requested classic page'
+        def offsetPage = script.toolListVirtualDevices([offset: 2, limit: 2])
+
+        then:
+        offsetPage.devices*.id == ['202', '203']
+        offsetPage.nextOffset == 4
+
+        when: 'cursor selects the same page and emits the next cursor'
+        def cursorPage = script.toolListVirtualDevices([cursor: '2', limit: 2])
+
+        then:
+        cursorPage.devices*.id == ['202', '203']
+        cursorPage.nextCursor == '4'
+
+        when: 'two different starting controls are supplied together'
+        script.toolListVirtualDevices([cursor: '2', offset: 1, limit: 2])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('cursor and offset are mutually exclusive')
+    }
+
     def "list_virtual_devices: fallback -- getDriverType() returns namespace-bearing object when no data value"() {
         // Backward-compat fallback: when mcpDriverNamespace data value is absent (device created before
         // this fix or by other means), the list path falls back to getDriverType()?.namespace.

@@ -1,0 +1,248 @@
+package server
+
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import support.TestDevice
+import support.ToolSpecBase
+
+/**
+ * Read-only device configuration/details contract. Fixtures are synthetic, but retain the
+ * current-firmware fullJson nesting and scalar encodings captured for issue 403.
+ */
+class ToolDevicePreferencesSpec extends ToolSpecBase {
+
+    private static final String DEVICE_ID = '901'
+
+    private static Map fixture(String name = 'current-root-settings.json') {
+        def stream = ToolDevicePreferencesSpec.class.getResourceAsStream("/device-details/${name}")
+        assert stream != null: "Missing device-details fixture: ${name}"
+        try {
+            return new JsonSlurper().parseText(stream.getText('UTF-8')) as Map
+        } finally {
+            stream.close()
+        }
+    }
+
+    private void addListedDevice() {
+        childDevicesList << new TestDevice(
+            id: 901,
+            name: 'Synthetic Mutable Device Name',
+            label: 'Synthetic Hall Climate',
+            roomName: 'Synthetic Hall',
+            capabilities: [[name: 'TemperatureMeasurement'], [name: 'Refresh']],
+            supportedAttributes: [[name: 'temperature', dataType: 'NUMBER']],
+            supportedCommands: [[name: 'refresh', arguments: null]],
+            attributeValues: [temperature: '21.5']
+        )
+    }
+
+    private void registerFixture(String id = DEVICE_ID, Map model = fixture()) {
+        hubGet.register("/device/fullJson/${id}") { params -> JsonOutput.toJson(model) }
+    }
+
+    def "omitted and explicit summary preserve the seven-key response without supplemental reads"() {
+        given:
+        addListedDevice()
+
+        when:
+        def omitted = script.toolGetDevice(DEVICE_ID)
+        def explicit = script.toolGetDevice(DEVICE_ID, 'summary')
+
+        then:
+        omitted == explicit
+        omitted.keySet() == ['id', 'name', 'label', 'room', 'capabilities', 'attributes', 'commands'] as Set
+        !omitted.containsKey('mode')
+        !omitted.containsKey('preferences')
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+    }
+
+    def "unknown mode is rejected before authorization detail is fetched"() {
+        given:
+        addListedDevice()
+        registerFixture()
+
+        when:
+        script.toolGetDevice(DEVICE_ID, 'expanded')
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('summary')
+        ex.message.contains('configuration')
+        ex.message.contains('details')
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+    }
+
+    def "configuration reads top-level declarations and preserves false zero empty unset and explicit null"() {
+        given:
+        addListedDevice()
+        registerFixture()
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+
+        then:
+        result.id == DEVICE_ID
+        result.name == 'Synthetic Mutable Device Name'
+        result.label == 'Synthetic Hall Climate'
+        result.mode == 'configuration'
+        result.preferenceRead == [status: 'complete', source: "/device/fullJson/${DEVICE_ID}"]
+        result.deviceInfoRead.status == 'complete'
+        result.deviceInfo.driver.name == 'Synthetic Environmental Driver'
+        result.deviceInfo.driver.namespace == 'synthetic.example'
+        result.name != result.deviceInfo.driver.name
+
+        and: 'stored scalar values retain their declared types and presence'
+        def prefs = result.preferences.collectEntries { [(it.name): it] }
+        prefs.descriptionLogging.value == false
+        prefs.descriptionLogging.valuePresent == true
+        prefs.descriptionLogging.valueStatus == 'stored'
+        prefs.temperatureOffset.value == 0
+        prefs.temperatureOffset.valuePresent == true
+        prefs.operatingProfile.value == ''
+        prefs.operatingProfile.valuePresent == true
+        prefs.operatingProfile.options == [eco: 'Economy', comfort: 'Comfort']
+        prefs.declarationOnly.value == null
+        prefs.declarationOnly.valuePresent == false
+        prefs.declarationOnly.valueStatus == 'unset'
+        prefs.declarationOnly.defaultValue == 'factory-default'
+        prefs.explicitNull.value == null
+        prefs.explicitNull.valuePresent == true
+        prefs.explicitNull.valueStatus == 'stored'
+        !prefs.containsKey('fixtureSection')
+
+        and: 'one authorized configuration fetch is reused'
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
+    }
+
+    def "public configuration redacts password values and defaults while the internal model retains raw verification data"() {
+        given:
+        def fullJson = fixture()
+        addListedDevice()
+        registerFixture(DEVICE_ID, fullJson)
+
+        when:
+        def model = script._readDevicePreferenceModel(fullJson)
+        def internal = script._lookupDevicePreference(model, 'apiToken')
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+        def exposed = result.preferences.find { it.name == 'apiToken' }
+
+        then:
+        internal.rawValue == 'synthetic-password-value'
+        internal.value == 'synthetic-password-value'
+        internal.defaultValue == 'synthetic-password-default'
+        internal.valuePresent == true
+        internal.valueStatus == 'stored'
+
+        and:
+        exposed.value == '***redacted (password)***'
+        exposed.defaultValue == '***redacted (password)***'
+        !result.toString().contains('synthetic-password-value')
+        !result.toString().contains('synthetic-password-default')
+    }
+
+    def "preference reader prefers current top-level settings and rejects a nested-only speculative shape"() {
+        given:
+        def topLevel = fixture()
+        topLevel.device.settings = [[name: 'descriptionLogging', type: 'bool', value: 'true']]
+        def nested = fixture('unsupported-nested-device-settings.json')
+
+        when:
+        def preferred = script._readDevicePreferenceModel(topLevel)
+        def fallback = script._readDevicePreferenceModel(nested)
+
+        then:
+        preferred.status == 'complete'
+        preferred.source == 'settings'
+        script._lookupDevicePreference(preferred, 'descriptionLogging').value == false
+        fallback.status == 'unavailable'
+        fallback.reason
+        fallback.entries == []
+    }
+
+    def "known empty preferences are complete while absent or malformed sources are diagnostic failures"() {
+        when:
+        def empty = script._readDevicePreferenceModel([device: [id: 1], settings: [], inputValues: []])
+        def absent = script._readDevicePreferenceModel([device: [id: 1], inputValues: []])
+        def malformed = script._readDevicePreferenceModel([device: [id: 1], settings: [unexpected: true], inputValues: []])
+
+        then:
+        empty.status == 'complete'
+        empty.entries == []
+        absent.status == 'unavailable'
+        absent.reason
+        malformed.status in ['partial', 'unavailable']
+        malformed.reason
+        malformed.status != 'complete'
+    }
+
+    def "configuration authorizes a listed device before fetching fullJson"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = false
+        registerFixture()
+
+        when:
+        script.toolGetDevice(DEVICE_ID, 'configuration')
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message == "Device not found: ${DEVICE_ID}"
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+    }
+
+    def "configuration reuses the bypass authorization fullJson instead of fetching it twice"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        registerFixture()
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+
+        then:
+        result.id == DEVICE_ID
+        result.preferenceRead.status == 'complete'
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
+    }
+
+    def "configuration remains reachable through the read gateway with Write off and no BPS key"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+        addListedDevice()
+        registerFixture()
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: DEVICE_ID, mode: 'configuration'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.mode == 'configuration'
+        inner.preferenceRead.status == 'complete'
+        inner.preferences.find { it.name == 'descriptionLogging' }.value == false
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
+    }
+
+    def "details returns only selected sections and configuration shares the normalized preference model"() {
+        given:
+        addListedDevice()
+        registerFixture()
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'details', ['configuration', 'identity'])
+
+        then:
+        result.id == DEVICE_ID
+        result.mode == 'details'
+        result.sections.keySet() == ['configuration', 'identity'] as Set
+        !result.containsKey('preferences')
+        !result.containsKey('editableFields')
+        result.sections.configuration.preferenceRead.status == 'complete'
+        result.sections.configuration.preferences.find { it.name == 'descriptionLogging' }.value == false
+        result.sections.identity.driver.name == 'Synthetic Environmental Driver'
+        !result.sections.containsKey('attributes')
+        !result.sections.containsKey('commands')
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
+    }
+}
