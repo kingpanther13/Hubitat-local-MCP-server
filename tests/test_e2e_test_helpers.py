@@ -71,7 +71,7 @@ def test_metadata_mode_switch_is_registered_and_restores_without_catalog(monkeyp
     runner = object.__new__(et.TestRunner)
     runner.client = client
     if failure in {"flip", "read"}:
-        with pytest.raises(et.McpError, match="lost mode-change response|flat read failure"):
+        with pytest.raises(et.McpError, match=r"lost mode-change response|flat read failure"):
             getattr(runner, name)()
     else:
         getattr(runner, name)()
