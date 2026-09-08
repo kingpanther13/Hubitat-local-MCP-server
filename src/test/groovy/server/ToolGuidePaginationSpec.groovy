@@ -152,6 +152,23 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         (far.envelope.error.message as String).contains('out of range')
     }
 
+    def "guide:true returns the whole section, never a page a hub_set_rule caller cannot redeem"() {
+        // hub_set_rule has no cursor parameter, so if set_rule_reference ever crosses a page the
+        // inline meta-call would hand back a nextCursor with no way to spend it. It concatenates.
+        when:
+        def inline = script.executeTool('hub_set_rule', [guide: true])
+
+        then:
+        inline.success == true
+        (inline.content as String) == (script.getToolGuideSections()['set_rule_reference'] as String)
+        !(inline as Map).containsKey('nextCursor')
+        !(inline as Map).containsKey('offset')
+        !(inline as Map).containsKey('totalChars')
+
+        and: 'it still names the narrower keys, so the caller can go straight to one next time'
+        (inline.subSections as List).contains('set_rule_reference_conditions')
+    }
+
     def "an empty cursor is the documented first page"() {
         expect:
         dispatch([cursor: '']).payload.content == dispatch([:]).payload.content

@@ -304,6 +304,31 @@ def toolSetAppDisabled(args) {
 //   liveApps     -- the /hub2/appsList map (id -> [name, disabled]) used for the
 //                   ghost filter AND hub_list_rules status enrichment; null when
 //                   the tree was unreadable (treeReadable=false)
+// Fetch a guide section in full for an inline meta-call on a tool that has no cursor of its own.
+// Returns the same envelope hub_get_tool_guide does, with every page concatenated and the
+// pagination bookkeeping stripped -- the caller asked for the reference, not a page of it.
+private Map _rmWholeGuideSection(String sectionKey) {
+    def result = toolGetToolGuide(sectionKey)
+    if (!(result instanceof Map) || result.nextCursor == null) return result as Map
+    def parts = [result.content as String]
+    def cursor = result.nextCursor
+    // Bounded: a page is guidePageChars() and the whole guide is well under 20 pages, so the
+    // guard can only fire if the pager itself regressed.
+    int guard = 0
+    while (cursor != null && guard++ < 50) {
+        def page = toolGetToolGuide(sectionKey, cursor)
+        parts << (page.content as String)
+        cursor = page.nextCursor
+    }
+    def whole = [:] + (result as Map)
+    whole.content = parts.join('')
+    whole.remove('nextCursor')
+    whole.remove('offset')
+    whole.remove('totalChars')
+    return whole
+}
+
+
 private Map _rmCollectFilteredRmRules() {
     def combined = [:]
     def v4Error = null
@@ -13456,8 +13481,10 @@ def _applyNativeAppEdit(args) {
     // Guide short-circuit: {guide: true} returns the hub_set_rule capability
     // reference inline (same content as hub_get_tool_guide), with no hub interaction
     // and no rule change -- bypasses ALL gates exactly like discover mode above.
+    // hub_set_rule exposes no cursor, so a paged guide response would hand back a nextCursor
+    // this caller can never redeem: take the whole section however large it grows.
     if (args?.guide == true) {
-        return toolGetToolGuide('set_rule_reference')
+        return _rmWholeGuideSection('set_rule_reference')
     }
     requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
