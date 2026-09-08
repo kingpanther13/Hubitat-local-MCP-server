@@ -9,8 +9,8 @@
 #   - sdk_conformance_test.py: live-hub harness driven by the official MCP Python
 #     SDK. Its name matches pytest's default `*_test.py` pattern, but it is a
 #     standalone script whose import guard EXITS when the pinned `mcp` package is
-#     absent (deliberately a failure, never a skip). The Python Tests workflow does
-#     not install that SDK — only the e2e job does — so collecting it here would
-#     turn a green lane red for the wrong reason.
+#     absent (deliberately a failure, never a skip). The Python Tests workflow also
+#     installs that SDK for offline policy tests; collecting the live runner here
+#     would still be wrong because this lane must never require hub configuration.
 collect_ignore = ["e2e_test.py", "sandbox_lint.py", "wizard_probe.py", "sdk_conformance_test.py"]
 collect_ignore_glob = ["wizard_probe_examples/*", "diag_*.py"]

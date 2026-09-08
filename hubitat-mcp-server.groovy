@@ -42,8 +42,7 @@
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
 // freshly scheduled worker execution can read an atomicState snapshot that predates
-// another execution's manifest write (the same visibility gap MRTR_TERMINAL_EVIDENCE
-// exists for) -- without the mirror, a same-rule edit seconds after the last one
+// another execution's manifest write -- without the mirror, a same-rule edit seconds after the last one
 // takes a redundant fresh baseline and its rollbackScope promise silently narrows.
 // Guarded by synchronized(RM_BASELINE_HANDLES); cleared by recompile like any static.
 @groovy.transform.Field static final Map RM_BASELINE_HANDLES = new java.util.HashMap()
@@ -1947,8 +1946,8 @@ private void _writeStatePutLocked(String stateKey, String entryId, Map rec) {
     }
 }
 
-// Next access reloads from atomicState. A recompile/restart empties the statics the
-// same way; this is the seam that models that boundary without one.
+// Reload these two keys from atomicState on next access. Other coordination statics
+// survive this cache-only reset; it does not model a full class reload by itself.
 private void _writeStateCacheInvalidate() {
     WRITE_STATE_CACHE.clear()
     WRITE_STATE_DURABLE_MAPS.clear()
@@ -2225,8 +2224,8 @@ def _mrtrMaxContinuationSlices() { 8 }
 // Live cloud proof put a 6s worker wait at 9.057s end-to-end and a second
 // standards-identical client crossed the relay ceiling. Keep 2s of the known
 // relay budget plus a lower absolute cap for dispatch/rendering jitter. At the 6000 ms default
-// that is min(cap, 3000) for a synchronous slice and min(cap, 4000) detached; the caps only bind
-// once the budget is raised past 9000 ms.
+// that is 3000 ms synchronous and 4000 ms detached. Cloud caps are reached at
+// budgets of 8000 ms synchronous and 6500 ms detached; LAN thresholds differ.
 def _mrtrContentionWaitMs(String leafTool = null) {
     boolean cloud = _isCloudRequest()
     boolean detached = _mrtrDetachedWorkerTools().contains(leafTool)
@@ -2256,10 +2255,10 @@ private void _mrtrPutLocked(String stateId, Map rec) {
     _writeStatePutLocked("mrtrRequests", stateId, rec)
 }
 
-// Hubitat can expose an older atomicState snapshot after the app is disabled and
-// immediately re-enabled (the E2E limiter-recovery bounce). Keep class-live proof
-// of a terminal generation so that exact snapshot can be repaired without guessing
-// that an absent/aged worker completed. Caller holds WRITE_RESERVATION_LOCK.
+// Defensive repair if a cache reload exposes an older active record while exact
+// class-live terminal evidence survives. Normal reads use the write-through cache;
+// a full class reload loses both maps. This is not a proven disable/enable recovery
+// path. Caller holds WRITE_RESERVATION_LOCK.
 private Map _mrtrRecoverTerminalEvidenceLocked(String stateId, Map rec) {
     def evidence = MRTR_TERMINAL_EVIDENCE[stateId]
     if (!(evidence instanceof Map)) return null
@@ -2700,9 +2699,9 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
     }
     def continuation = _mrtrContinuation(leaf, executionArgs, result, rec)
     if (continuation instanceof Map) {
-        // The official Python SDK stops after ten request-to-request rounds.
-        // Finish with a protocol-level terminal result before a conforming client
-        // can hit that ceiling and surface its own opaque retry-limit exception.
+        // Bound committed owner slices, not client retries: preflight and worker
+        // coordination also return input_required without incrementing rec.rounds.
+        // This cap cannot guarantee completion within a client's retry limit.
         if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
             if (continuation.kind?.toString() == "slow_read") {
                 // Nothing was committed: the read only ever observed its background fetch,
@@ -2911,10 +2910,9 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
             }
             _mrtrPutLocked(stateId, rec)
-            // Record proof only AFTER the durable terminal write returned. If a
-            // subsequent app disable/enable exposes the older claimed-active
-            // atomicState snapshot, this exact claim+generation is sufficient to
-            // repair it without treating worker absence or TTL age as completion.
+            // Publish exact claim/generation proof after storing the terminal.
+            // The scheduling observer uses it immediately; defensive cache-reload
+            // repair can also use it while this compiled class remains loaded.
             MRTR_TERMINAL_EVIDENCE[stateId] = [
                 claimId: claim?.claimId?.toString(), generation: claim?.generation,
                 expiresAt: rec.expiresAt, record: [:] + rec
@@ -9529,9 +9527,17 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`. When the transport carries a time budget, log and diagnostic reads also continue as described below.
 
-The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
+The first write request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers do not currently have their own slice budget. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
 The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState`; it cannot reserve or run a second write. This lets a client safely replay a mutation-free preflight whose HTTP response was lost. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
+
+### Client retry limits and resume
+
+The official Python SDK pinned by this project (2.0.0) defaults to ten automatic continuation retries. Preflight and coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
+
+For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
+
+Stopping client retries does not cancel an executing worker or free its write slot. Replaying the saved state retrieves the retained outcome without repeating the write. Retention is finite: idle active records expire after three minutes; executing workers remain protected while their live marker exists; write terminal results expire after ten minutes and may be evicted earlier under record pressure. If state expires or is lost, inspect the actual target before deciding on a new write. A fresh identical call after completion is a NEW operation, not a terminal replay. Clients with an unconfigurable limit cannot be promised completion for arbitrary operation sizes.
 
 ### Global write concurrency cap
 

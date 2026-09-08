@@ -315,10 +315,9 @@ abstract class HarnessSpec extends Specification {
         runInMillisCalls.clear()
         stateMap.clear()
         atomicStateMap.clear()
-        // The production app deliberately keeps exact terminal-generation
-        // evidence in a class-static map so a Hubitat disable/enable bounce can
-        // repair an older atomicState snapshot.  The shared compiled script and
-        // fixed test clock would otherwise retain that evidence across features.
+        // Exact terminal evidence serves scheduled-worker observation and defensive
+        // cache-reload repair. The shared compiled script and fixed test clock would
+        // otherwise retain this class-static evidence across features.
         (scriptStaticField('MRTR_TERMINAL_EVIDENCE') as Map).clear()
         // Ordinary-write leases are class-static only -- nothing in atomicState mirrors
         // them, so a feature that reserves without releasing would otherwise hand the

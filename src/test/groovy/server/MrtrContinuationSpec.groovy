@@ -13,7 +13,7 @@ import support.ToolSpecBase
  *
  * A modern slow write gets a no-mutation preflight InputRequiredResult first.
  * The client echoes requestState with the unchanged original arguments. Each
- * resumed request runs one bounded slice; a terminal response is retained under
+ * resumed request runs a slice or observes a worker; a terminal response is retained under
  * the same state briefly so a dropped final HTTP response can be replayed without
  * running the write again.
  */
@@ -507,13 +507,22 @@ class MrtrContinuationSpec extends ToolSpecBase {
             }
         }
         assert entered.await(5, TimeUnit.SECONDS)
-        def whileRunning = modernCall('hub_set_rule', args, stateId)
+        def whileRunning = (1..12).collect { modernCall('hub_set_rule', args, stateId) }
 
-        then: 'the same logical request stays automatic and does not dispatch twice'
-        whileRunning.error == null
-        whileRunning.result.resultType == 'input_required'
-        whileRunning.result.requestState == stateId
+        then: 'more polls than the SDK default and server slice cap do not release the owner'
+        whileRunning.every { it.error == null && it.result.resultType == 'input_required' }
+        whileRunning.every { it.result.requestState == stateId }
+        atomicStateMap.mrtrRequests[stateId].rounds == 0
         leafCalls.get() == 1
+
+        when: 'the client stops polling past TTL while the worker remains alive'
+        virtualNow.addAndGet((script._mrtrActiveTtlMs() as Long) + 1L)
+        def stillCapped = modernCall('hub_call_rule', [ruleId: [403, 404], action: 'stop'])
+
+        then: 'client exhaustion is not worker cancellation or permission for another write'
+        mcpDriver.parseInner(stillCapped).status == 'too_many_writes_in_flight'
+        leafCalls.get() == 1
+        runInMillisCalls.size() == 1
 
         when: 'the worker finishes and the client advances once more'
         release.countDown()
@@ -531,6 +540,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         complete.result.isError != true
         inner.success == true
         inner.appId == 321
+        inner.mrtr.rounds == 1
         leafCalls.get() == 1
 
         cleanup:
@@ -980,7 +990,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._mrtrContentionWaitMs() == 1500L
     }
 
-    def "cloud worker contention uses the safe budget headroom instead of exhausting SDK rounds"() {
+    def "cloud worker contention waits within safe relay headroom"() {
         given:
         script.metaClass._isCloudRequest = { -> true }
 
@@ -1175,14 +1185,121 @@ class MrtrContinuationSpec extends ToolSpecBase {
         dispatched.size() == 1
     }
 
-    def "terminal evidence repairs an active MRTR snapshot resurrected by an app bounce"() {
-        // Live E2E: a limiter recovery disabled/enabled the MCP app immediately after
-        // an identical pausRule fallback had returned its terminal result.  The next
-        // execution observed that request's older active atomicState snapshot and
-        // refused the legitimate next toggle as duplicate_in_flight.  Reproduce the
-        // platform boundary by restoring the exact claimed-active snapshot after the
-        // worker has completed.  Only terminal evidence captured by that worker may
-        // repair it; absence/age alone is deliberately insufficient.
+    def "installed clears old request visibility and a late queued callback cannot execute"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        def args = [appId: 654, confirm: true, button: 'pausRule']
+        int calls = 0
+        script.metaClass.toolSetRule = { Map actual ->
+            calls++
+            [success: true, appId: actual.appId]
+        }
+        String completedId = modernCall('hub_set_rule', args).result.requestState
+        modernCall('hub_set_rule', args, completedId)
+        script.runMrtrSlice(new LinkedHashMap(runInMillisCalls.last()[2].data as Map))
+        String queuedId = modernCall('hub_set_rule', args).result.requestState
+        modernCall('hub_set_rule', args, queuedId)
+        Map lateCallback = new LinkedHashMap(runInMillisCalls.last()[2].data as Map)
+
+        when: 'a new installation has empty durable state but the class statics are retained'
+        // Exercise installed(), not a cache-only test seam. Platform initialization is unrelated.
+        atomicStateMap.clear()
+        stateMap.clear()
+        script.metaClass.initialize = { -> }
+        script.installed()
+        def oldTerminal = modernCall('hub_set_rule', args, completedId)
+        def oldQueued = modernCall('hub_set_rule', args, queuedId)
+        script.runMrtrSlice(lateCallback)
+        def fresh = modernCall('hub_set_rule', args)
+
+        then: 'neither stale evidence nor queued arguments resurrects a removed request'
+        oldTerminal.error.code == -32602
+        oldQueued.error.code == -32602
+        calls == 1
+        fresh.result.resultType == 'input_required'
+        !(fresh.result.requestState in [completedId, queuedId])
+        (scriptStaticField('MRTR_WORK_ITEMS') as Map).isEmpty()
+    }
+
+    def "durable terminal replay survives #boundary without repeating the write"() {
+        given:
+        settingsMap.enableWrite = true
+        def args = [appId: 654, confirm: true, button: 'pausRule']
+        int calls = 0
+        script.metaClass.toolSetRule = { Map actual ->
+            calls++
+            [success: true, appId: actual.appId]
+        }
+        String stateId = modernCall('hub_set_rule', args).result.requestState
+        modernCall('hub_set_rule', args, stateId)
+        script.runMrtrSlice(new LinkedHashMap(runInMillisCalls.last()[2].data as Map))
+
+        when:
+        if (boundary == 'updated') {
+            script.metaClass.initialize = { -> }
+            script.updated()
+        } else {
+            // Model loss of all coordination statics, not the platform's disable/enable behavior.
+            ['MRTR_TERMINAL_EVIDENCE', 'MRTR_WORK_ITEMS', 'WRITE_REQUEST_LEASES'].each {
+                (scriptStaticField(it) as Map).clear()
+            }
+            (scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).clear()
+            script._writeStateCacheInvalidate()
+        }
+        def replay = modernCall('hub_set_rule', args, stateId)
+
+        then:
+        replay.result.resultType == 'complete'
+        mcpDriver.parseInner(replay).success == true
+        mcpDriver.parseInner(replay).appId == 654
+        calls == 1
+        runInMillisCalls.size() == 1
+
+        where:
+        boundary << ['updated', 'modeled class-static loss']
+    }
+
+    def "loss of coordination statics does not steal an already claimed generation"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        def args = [appId: 654, confirm: true, button: 'pausRule']
+        int calls = 0
+        script.metaClass.toolSetRule = { Map actual -> calls++; [success: true] }
+        String stateId = modernCall('hub_set_rule', args).result.requestState
+        modernCall('hub_set_rule', args, stateId)
+        Map lateCallback = new LinkedHashMap(runInMillisCalls.last()[2].data as Map)
+        ['MRTR_TERMINAL_EVIDENCE', 'MRTR_WORK_ITEMS', 'WRITE_REQUEST_LEASES'].each {
+            (scriptStaticField(it) as Map).clear()
+        }
+        (scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).clear()
+        script._writeStateCacheInvalidate()
+
+        when: 'durable ownership survives, but queued arguments and liveness did not'
+        def waiting = modernCall('hub_set_rule', args, stateId)
+        script.runMrtrSlice(lateCallback)
+
+        then: 'absence of the worker is not proof it never committed'
+        waiting.result.resultType == 'input_required'
+        calls == 0
+        runInMillisCalls.size() == 1
+
+        when: 'the retained claim expires without live execution or terminal evidence'
+        virtualNow.addAndGet((script._mrtrActiveTtlMs() as Long) + 1L)
+        def expired = modernCall('hub_set_rule', args, stateId)
+
+        then: 'reject the state instead of guessing success or repeating the write'
+        expired.error.code == -32602
+        calls == 0
+        runInMillisCalls.size() == 1
+    }
+
+    def "terminal evidence repairs a synthetically restored active snapshot after cache-only reset"() {
+        // Deliberately manufacture stale durable state plus a cache-only reset.
+        // This proves defensive exact-generation repair, not a Hubitat bounce path.
         given:
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
@@ -1202,12 +1319,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script.runMrtrSlice(workerData)
         def complete = modernCall('hub_set_rule', args, stateId)
 
-        expect: 'the original logical write completed exactly once before the simulated bounce'
+        expect: 'the original logical write completed exactly once before the synthetic reset'
         scheduled.result.resultType == 'input_required'
         complete.result.resultType == 'complete'
         calls == 1
 
-        when: 'disable/enable exposes the older claimed-active snapshot'
+        when: 'the test injects the older claimed-active snapshot'
         atomicStateMap.mrtrRequests[stateId] = activeSnapshot
         // Reloading atomicState is what makes the older snapshot the read path again;
         // MRTR_TERMINAL_EVIDENCE deliberately survives, and is the only repair proof.
