@@ -392,13 +392,37 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         !result.toString().contains('synthetic-device-data-secret')
     }
 
-    def "ambiguous user driver identity does not invent a source reference"() {
+    def "duplicate user driver identity resolves through exact usedBy device membership"() {
         given:
         addListedDevice()
         registerFixture()
         hubGet.register('/hub2/userDeviceTypes') {
-            '[{"id":808,"name":"Synthetic Environmental Driver","namespace":"synthetic.example"},' +
-            '{"id":809,"name":"Synthetic Environmental Driver","namespace":"synthetic.example"}]'
+            JsonOutput.toJson([
+                [id: 808, name: 'Synthetic Environmental Driver', namespace: 'synthetic.example',
+                    usedBy: [[id: 900, name: 'Another device']]],
+                [id: 809, name: 'Synthetic Environmental Driver', namespace: 'synthetic.example',
+                    usedBy: [[id: 901, name: 'Synthetic Hall Climate']]]
+            ])
+        }
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+
+        then:
+        result.driverSource == [status: 'available', gateway: 'hub_read_apps_code',
+            tool: 'hub_get_source', args: [type: 'driver', id: '809']]
+    }
+
+    @spock.lang.Unroll
+    def "duplicate user driver identity with #membership remains unresolved"() {
+        given:
+        addListedDevice()
+        registerFixture()
+        hubGet.register('/hub2/userDeviceTypes') {
+            JsonOutput.toJson([
+                [id: 808, name: 'Synthetic Environmental Driver', namespace: 'synthetic.example', usedBy: firstUsedBy],
+                [id: 809, name: 'Synthetic Environmental Driver', namespace: 'synthetic.example', usedBy: secondUsedBy]
+            ])
         }
 
         when:
@@ -408,6 +432,11 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.driverSource.status == 'unresolved'
         !result.driverSource.containsKey('args')
         result.driverSource.lookup.tool == 'hub_list_drivers'
+
+        where:
+        membership                   | firstUsedBy                          | secondUsedBy
+        'no exact device membership' | []                                   | []
+        'ambiguous exact membership' | [[id: 901, name: 'First instance']]  | [[id: '901', name: 'Second instance']]
     }
 
     def "new native device fields make incomplete details coverage visible"() {
