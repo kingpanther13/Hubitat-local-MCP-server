@@ -6,6 +6,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
+import spock.lang.Shared
+import support.TestChildApp
 import support.ToolSpecBase
 
 /**
@@ -18,6 +20,16 @@ import support.ToolSpecBase
  * running the write again.
  */
 class MrtrContinuationSpec extends ToolSpecBase {
+
+    @Shared private TestChildApp lifecycleApp = new TestChildApp(id: 1L, label: 'MCP')
+
+    def setupSpec() {
+        appExecutor.getApp() >> lifecycleApp
+    }
+
+    def setup() {
+        lifecycleApp.settingsStore.clear()
+    }
 
     private List<Map> race(int count, Closure<Map> action) {
         def ready = new CountDownLatch(count)
@@ -999,7 +1011,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._mrtrContentionWaitMs('hub_set_rule') == 4000L
         script._mrtrContentionWaitMs('hub_set_native_app') == 4000L
 
-        and: 'the scheduling observer has one more second of cloud-relay headroom'
+        and: 'the scheduling observer uses a lower cloud wait cap'
         script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
         script._mrtrScheduleObserveWaitMs('hub_set_native_app') == 3500L
 

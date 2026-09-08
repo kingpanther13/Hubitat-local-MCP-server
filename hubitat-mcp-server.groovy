@@ -42,8 +42,8 @@
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
 // freshly scheduled worker execution can read an atomicState snapshot that predates
-// another execution's manifest write -- without the mirror, a same-rule edit seconds after the last one
-// takes a redundant fresh baseline and its rollbackScope promise silently narrows.
+// another execution's manifest write -- without the mirror, a same-rule edit seconds
+// after the last one takes a redundant baseline and silently narrows rollbackScope.
 // Guarded by synchronized(RM_BASELINE_HANDLES); cleared by recompile like any static.
 @groovy.transform.Field static final Map RM_BASELINE_HANDLES = new java.util.HashMap()
 // Snapshots of the two atomicState keys the reservation/MRTR machinery below reads:
@@ -470,7 +470,7 @@ def advancedOverridesPage() {
                   required: false
         }
         section("Slow-operation time budgets") {
-            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes, Logs-page reads, and native log history recovery automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
+            paragraph "The cloud relay can end a slow /mcp call while hub-side work continues. Modern MCP clients can continue slow operations with requestState, subject to their retry limits; reaching a client limit does not cancel an active write. Legacy clients receive the existing resumable in_progress envelope. The concurrency cap limits overlapping writes without a client token. The relay budget defaults ON; the LAN budget defaults OFF."
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
@@ -2240,8 +2240,8 @@ def _mrtrContentionWaitMs(String leafTool = null) {
 }
 
 // A scheduling request also pays claim, scheduler, cloud transit, and render
-// costs. Keep one more second of cloud headroom than an ordinary contention
-// observer while retaining the measured 2-4s fast-worker terminal window.
+// costs. Use a lower cloud cap than the ordinary contention observer to leave
+// room for that overhead while still observing fast-worker completion.
 def _mrtrScheduleObserveWaitMs(String leafTool = null) {
     if (!_isCloudRequest()) return _mrtrContentionWaitMs(leafTool)
     long cap = 3500L
