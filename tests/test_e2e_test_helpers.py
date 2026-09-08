@@ -155,6 +155,35 @@ def test_entries_new_since_snapshot_detects_identical_same_timestamp_duplicate()
     assert fresh == [old, unrelated]
 
 
+@pytest.mark.parametrize(
+    ("test_status", "reset_failures", "expected"),
+    [
+        pytest.param("pass", [], True, id="all-tests-pass"),
+        pytest.param("fail", [], False, id="test-failed"),
+        pytest.param("skip", [], False, id="test-skipped"),
+        pytest.param("pass", ["5329 via off: response lost"], False,
+                     id="fixture-reset-unresolved"),
+    ],
+)
+def test_print_summary_requires_tests_and_fixture_resets_to_succeed(
+    test_status, reset_failures, expected, capsys,
+):
+    runner = object.__new__(et.TestRunner)
+    runner.results = [{
+        "group": "isolated", "name": "summary_probe", "status": test_status,
+        "message": "probe result", "duration": 0.1,
+    }]
+    runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
+    runner.throttle_bounces = 0
+    runner.server_app_id = None
+    runner._fixture_reset_failures = reset_failures
+    runner._soft_passes = []
+
+    assert runner._print_summary() is expected
+    output = capsys.readouterr().out
+    assert ("[FIXTURE-RESET]" in output) is bool(reset_failures)
+
+
 def test_limiter_lines_falls_back_to_watchdog_and_filters_exact_device_method(monkeypatch):
     target = (
         "dev|5781|BAT_E2E_CmdRoundtrip|error|"
