@@ -1658,6 +1658,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.2.4** - feat: make every hub_get_tool_guide call answerable. PRs: [#409](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/409)
 - **v4.2.3** - fix: preserve rule names and unify clone/import staging safeguards. PRs: [#408](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/408)
 - **v4.2.2** - feat: Visual Rule Builder 2.0 support — editor form, pre-flight validation, versioned create. PRs: [#398](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/398)
 - **v4.2.1** - fix: move MCP log history to native Hubitat storage. PRs: [#406](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/406)
