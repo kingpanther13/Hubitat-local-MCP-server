@@ -88,6 +88,23 @@ class RelayBudgetSpec extends ToolSpecBase {
         value << [4294967296L, Long.MAX_VALUE, -1, 101, 1.5G, 'invalid', true]
     }
 
+    @spock.lang.Unroll
+    def "valid stored write cap #value retains the configured limit #expected"() {
+        given:
+        settingsMap.maxConcurrentWrites = value
+
+        expect:
+        script._maxConcurrentWrites() == expected
+
+        where:
+        value | expected
+        1     | 1
+        100   | 100
+        '3'   | 3
+        3.0G  | 3
+        '1E2' | 100
+    }
+
     def "_maxConcurrentWrites defaults to 2 and honours zero as unlimited"() {
         expect:
         script._maxConcurrentWrites() == 2

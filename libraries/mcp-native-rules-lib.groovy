@@ -180,7 +180,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] This STANDALONE read is the only one that adds the live eventSubscriptionCount/scheduledJobCount and the runtime `stopped` flag; the `health` block hub_set_rule / hub_set_native_app attach to their own responses is the structural verdict ONLY and carries neither, so call this tool when you need them. Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label. Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -15345,8 +15345,9 @@ def toolCheckRuleHealth(args) {
         } else if (pausedVerdict == null) pausedVerdict = true
         rawLabel = rawLabel.substring(0, decoration.start()).trim()
     }
-    // A readable status with no stopped flag means never stopped; it must not
-    // masquerade as an explicit false while evaluating the markup fallback.
+    // Explicit state outranks older display markup; unreadable state still uses it.
+    // A readable status with no stopped flag means never stopped. An absent paused
+    // flag remains unknown, so only stopped gains a false default after the fallback.
     if (stoppedVerdict == null && status != null) stoppedVerdict = false
     result.stopped = stoppedVerdict
     result.paused = pausedVerdict

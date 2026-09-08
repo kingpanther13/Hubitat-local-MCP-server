@@ -629,21 +629,11 @@ def toolImportNativeApp(args) {
     }
 }
 
-// Stage a freshly cloned/imported app inactive: disable the new app and every
-// DESCENDANT under it via the admin red-X (works on any app type -- RMUtils
-// pause reaches only Rule Machine rules, not Button Controllers / Room
-// Lighting / other classic apps, and a Button Controller clone's child Button
-// Rules subscribe to live button events, so the whole subtree must be
-// covered). Verified live on fw 2.5.1.135: a clone of an ACTIVE rule lands
-// ACTIVE and a clone/import is live until this (or a follow-up call) disables
-// it. The tree is enumerated breadth-first with a visited set (cycle-proof)
-// BEFORE any disable, so a parent's flag can't hide deeper levels.
-//
-// Failure contract: staging was explicitly requested as the safety property,
-// so ANY staging failure flips the envelope to success:false + isError -- but
-// the error text must prevent the reflex retry, because the clone/import
-// itself DID commit and a fresh call would create a duplicate app.
 private Map _appClonerStagePlan(Integer newAppId) {
+    // Enumerate every descendant BEFORE disabling anything: a parent's flag can
+    // hide deeper levels. The primary traversal is recursive; the fallback is BFS.
+    // Child Button Rules can subscribe independently, so staging only the parent
+    // would leave live automation behind. A clone/import remains active until disabled.
     List failures = []
     List targets = []
     // Primary enumeration: ONE /hub2/appsList read carries the complete nested
@@ -700,6 +690,8 @@ private Map _appClonerStagePlan(Integer newAppId) {
 }
 
 private Map _appClonerDisableTargets(List targets, Long reqT0, List staged, List failures) {
+    // Each disable includes read-back. Retain unattempted IDs when the budget
+    // expires so the result/checkpoint keeps the committed app and a safe remedy.
     List stageRemaining = []
     for (int i = 0; i < targets.size(); i++) {
         if (i > 0 && _timeBudgetExceeded(reqT0)) {
@@ -717,6 +709,8 @@ private Map _appClonerDisableTargets(List targets, Long reqT0, List staged, List
 }
 
 private void _appClonerFinishStaging(Map result, Integer newAppId, Map outcome) {
+    // Staging is the requested safety property, but creation already committed.
+    // Report partial failure with a disable remedy; retrying creation makes duplicates.
     List staged = outcome.staged
     List failures = outcome.failures
     List stageRemaining = outcome.remaining

@@ -1642,7 +1642,8 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
                 note: "Recreate the rule manually with hub_set_visual_rule -- see hub_get_tool_guide(section='visual_rule_reference')."]
     }
     def name = snapshot.appLabel?.toString()?.trim() ?: "restored-visual-rule-${savedId}"
-    // Snapshot capture already stored the own name; markup here is literal user text.
+    // Preserve the saved name: stripping cannot distinguish literal text from
+    // a config-label fallback captured when the builder supplied no usable name.
     // Always restore the SNAPSHOT's pause state (a Boolean, never null) -- an in-place
     // restore must not inherit whatever pause state the live rule drifted to.
     Boolean pausedRequested = snapshot.vrbRulePaused == true

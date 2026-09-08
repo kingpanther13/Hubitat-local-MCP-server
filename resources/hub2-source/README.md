@@ -291,8 +291,9 @@ require them.
 
 Paused rules: the builder appends the literal constant
 `" <span class='text-red'>(Paused)</span>"` to the rule NAME (39 characters — the
-chunk strips it with `.slice(0, -39)`), so any read-back name comparison must
-strip HTML and tolerate that suffix.
+chunk strips it with `.slice(0, -39)`). Remove that exact runtime suffix only
+when the graph pause Boolean is true; builder JSON names are raw strings, so
+stripping arbitrary HTML or decoding entities corrupts literal user text.
 
 #### AI generate (2.0)
 
@@ -456,8 +457,13 @@ them.
 
 ## Pause/name wire observations (2026-09-07, platform 2.5.1.181)
 
-Throwaway, device-free rules read through server 4.2.2 confirmed that RM's export
-state carries Boolean `paused`. Classic Visual Rule JSON carries `rulePaused`
+Throwaway, device-free rules read through server 4.2.2 confirmed that RM's native
+appCloner export state carries Boolean `paused`. This is distinct from the
+`/app/ruleBuilderJson/<id>` response: the compiled-state health reader accepts
+its `paused` field only when it is a Boolean. A newly created empty RM fixture
+with no compiled/status pause evidence reported `paused:null`; after explicit
+pause/resume, health reported true/false. Do not infer false from key absence.
+Classic Visual Rule JSON carries `rulePaused`
 and the rule's own `name` (including a user-typed `(Paused)` suffix); graph Visual
 Rule JSON carries `rulePaused` and appends a real HTML span for its runtime pause
 decoration. Remove only that graph decoration; preserve the own name as a string,

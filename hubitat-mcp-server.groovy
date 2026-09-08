@@ -1785,8 +1785,8 @@ def _maxConcurrentWrites() {
             return limit.intValue()
         }
     } catch (Exception ignored) { }
-    // Stored preferences can bypass the public API's validation; never let an
-    // overflow or malformed value silently turn the write limit off.
+    // Invalid stored preferences must not overflow the cap or break admission.
+    // Valid zero still explicitly disables the cap; invalid values use two.
     return 2
 }
 
@@ -7223,14 +7223,18 @@ private Map _rmFetchStatusJson(Integer appId) {
  * health source across EVERY rule engine (issue #254 + the VRB follow-up).
  * Returns a normalized map or null when appId is not a recognized rule shape:
  *
- *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, predicate, capabsfalse]
+ *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, paused, predicate, capabsfalse]
  *     from GET /app/ruleBuilderJson (the real `broken` boolean + predicate/condition
  *     structure, instead of scraping rendered HTML).
  *   - graph Visual Rule (VRB 2.0) -> [ruleFormat:"vrb-graph", broken:<validationErrors
- *     non-empty>, validationErrors] from GET /app/ruleBuilder20Json. VRB rules ARE
+ *     non-empty>, validationErrors, paused, label] from GET /app/ruleBuilder20Json. VRB rules ARE
  *     rules — their validationErrors are the engine-native equivalent of RM's broken.
- *   - classic Visual Rule -> [ruleFormat:"vrb-classic", broken:null] (the when/then/else
+ *   - classic Visual Rule -> [ruleFormat:"vrb-classic", broken:null, paused, label] (the when/then/else
  *     shape carries no error field, so there is no structured boolean to report).
+ *
+ * paused is the compiled Boolean or null; Visual Rule label is the raw own name
+ * (graph: without its runtime pause span). Status/markup fallbacks are added by
+ * the standalone health wrapper, not the embedded structural verdict.
  *
  * SHAPE-CHECK, never status-check: /app/ruleBuilderJson serializes the raw state of
  * ANY installed app and answers HTTP 200 regardless (a nonexistent id returns {}, a
@@ -8908,7 +8912,7 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
 - **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "stopped" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
   - **disabled** is the app's red-X enable/disable flag, read straight from /hub2/appsList (data.disabled).
   - **paused** is decoration-detected. Rule Machine surfaces a paused rule ONLY as a "(Paused)" suffix appended to the app's /hub2/appsList name; the RMUtils label for the same rule stays clean (live-verified). So the appsList name and the RMUtils label are BOTH HTML-stripped (tags removed, entities decoded, trimmed — the appsList name comes decoded, the RMUtils label comes entity-escaped like "Heat On &lt;67" and can carry trailing spaces) and diffed: equal → no decoration; appsList == label + remainder → the remainder is the decoration ("(Paused)" ⇒ paused, "(Required Expression false)" ⇒ requiredExpressionFalse). A rule the user literally NAMED "... (Paused)" is NOT false-flagged: the RMUtils label carries the same suffix, so the remainder is empty.
-  - **stopped** is the runtime "(Stopped)" decoration after hub_call_rule(action="stop"), detected by the SAME appsList-vs-RMUtils-label diff the paused check uses (a rule literally NAMED "... (Stopped)" carries the suffix in both strings, so it is not false-flagged). The suffix is stripped from the returned label/name in the encoding they already use; hub_call_rule(action="start") removes it. CAVEAT: this decoration appears here only when the hub's list source decorates the label, which many firmwares do NOT do -- the authoritative stopped check is hub_get_rule_health's `stopped` field, which reads the per-app config page.
+  - **stopped** is the runtime "(Stopped)" decoration after hub_call_rule(action="stop"), detected by the SAME appsList-vs-RMUtils-label diff the paused check uses (a rule literally NAMED "... (Stopped)" carries the suffix in both strings, so it is not false-flagged). The suffix is stripped from the returned label/name in the encoding they already use; hub_call_rule(action="start") removes it. CAVEAT: this decoration appears here only when the hub's list source decorates the label, which many firmwares do NOT do -- the authoritative stopped check is hub_get_rule_health's `stopped` field, which prefers explicit statusJson state and falls back to config-page markup when state is unavailable.
   - **precedence** governs only the **status** summary (disabled > stopped > paused > active). The disabled/paused booleans are independent facts: a rule paused first and red-X disabled afterward keeps its "(Paused)" decoration, so it truthfully reads disabled:true AND paused:true with status:"disabled".
   - **status "unknown"** is per-rule, not just per-list. Tree-level: /hub2/appsList was momentarily unreadable, so NO rule has data — the whole list is returned unfiltered (post-delete ghosts may linger) with a result-level **statusNote**. Per-entry: the tree read fine but ONE rule's node is under-populated (data.disabled absent, node name null, or the RMUtils label null), so just THAT rule is "unknown" while the rest keep real statuses. Either way the disabled/paused booleans are omitted (a value the data can't support is never asserted).
   - This status detection covers Rule Machine rules. For the enabled/disabled state of other classic automation apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances'), whose entries carry a disabled flag.
@@ -8929,7 +8933,7 @@ Native CRUD (hub admin-layer, additionally requires the Write master):
 - **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner (deep: child apps and pause state copy, so a clone of an ACTIVE app lands ACTIVE). Args: sourceAppId, newName (opt), stageDisabled (opt: disable the clone + every descendant immediately; a staging failure returns success:false with per-app stageFailures -- do NOT re-clone, the app exists), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
 - **hub_export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through hub_import_native_app.
 - **hub_import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId, newName (opt), stageDisabled (opt: disable the import + every descendant immediately; failure contract as on clone), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
-- **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read). Pause state comes from the rule's compiled Boolean or status state; tagged runtime decoration is a fallback. `paused:null` means unknown. Literal `(Paused)` and `(Stopped)` name suffixes are preserved; Visual Rule labels come from their own document.
+- **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / paused / stopped / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read). Pause state comes from the rule's compiled Boolean or status state; tagged runtime decoration is a fallback. `paused:null` means unknown. Explicit stopped state outranks config-page markup. Literal `(Paused)` and `(Stopped)` name suffixes are preserved; Visual Rule labels come from their own document unless configPage is forced. Embedded write-response health carries compiled paused only; the standalone read adds status/markup fallbacks, stopped, and live subscription/job counts.
 
 For READING an RM rule's current state, use **hub_get_app_config** in the hub_read_apps_code gateway — it works on any installed app including RM rules and returns the same configPage shape that hub_set_rule expects to see.
 

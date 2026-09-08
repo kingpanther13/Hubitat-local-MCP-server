@@ -41,6 +41,64 @@ class AppClonerSafetyParitySpec extends ToolSpecBase {
         operation << ['clone', 'import']
     }
 
+    @Unroll
+    def "modern #operation carries discovered descendants and enumeration failures into staging (fallback=#fallback)"() {
+        given:
+        def cleaned = []
+        def disabled = []
+        hubGet.register('/installedapp/configure/json/900/main') { '_action_href_name|importRule|0' }
+        hubGet.register('/installedapp/configure/json/21') {
+            '{"app":{"id":21},"childApps":[{"id":100},{"id":200,"label":"Source clone"}]}'
+        }
+        hubGet.register('/hub2/appsList') {
+            if (fallback) throw new IOException('tree unavailable')
+            '{"apps":[{"data":{"id":200},"children":[{"data":{"id":201}}]}]}'
+        }
+        hubGet.register('/installedapp/configure/json/200') { '{"app":{"id":200},"childApps":[{"id":201}]}' }
+        hubGet.register('/installedapp/configure/json/201') { throw new IOException('child unreadable') }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 -> [status: 200] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, Integer timeout = 420 -> [status: 200] }
+        script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
+            cleaned << path
+            [status: 302]
+        }
+        script.metaClass.toolSetAppDisabled = { Map args -> disabled << args.appId; [success: true] }
+        def tool = "hub_${operation}_native_app".toString()
+        def rec = [outerTool: tool, leafTool: tool, checkpoint: [
+            phase: "${operation}_commit".toString(), clonerAppId: 900,
+            sourceAppId: 100, originalSourceId: 100, parentAppId: 21,
+            sourceLabel: 'Source', originalLabel: 'Source', preIds: ['100'], stageDisabled: true
+        ]]
+
+        when:
+        def waiting = operation == 'clone' ? script._mrtrCloneNativeAppSlice(rec, [:]) :
+            script._mrtrImportNativeAppSlice(rec, [:])
+
+        then: 'commit discovers the subtree without disabling or cleaning up early'
+        waiting.__mrtrContinue.checkpoint.phase == 'stage_disable'
+        waiting.__mrtrContinue.checkpoint.newAppId == 200
+        disabled == []
+        cleaned == []
+
+        when:
+        rec.checkpoint = waiting.__mrtrContinue.checkpoint
+        def result = operation == 'clone' ? script._mrtrCloneNativeAppSlice(rec, [:]) :
+            script._mrtrImportNativeAppSlice(rec, [:])
+
+        then: 'both slices use the real plan and preserve its incomplete-enumeration verdict'
+        disabled == [200, 201]
+        result.newAppId == 200
+        result.stagedDisabled == [200, 201]
+        result.success == !fallback
+        (result.isError == true) == fallback
+        (result.stageFailures ?: [])*.appId == (fallback ? [201] : [])
+        !fallback || result.error.contains('do NOT re-issue')
+        cleaned == ['/installedapp/forcedelete/900/quiet']
+
+        where:
+        [operation, fallback] << [['clone', 'import'], [false, true]].combinations()
+    }
+
     def "modern staging failure identifies an enabled new app and a nonduplicating remedy"() {
         given:
         def cleaned = []
