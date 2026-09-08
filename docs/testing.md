@@ -432,6 +432,102 @@ The validator is `com.networknt:json-schema-validator`, a `testImplementation` d
 
 **The recorded hashes are enforced.** `python tests/sandbox_lint.py` (rule `MCP_SCHEMA_PROVENANCE`) re-hashes both files and fails on drift in either direction — an edited schema, a refreshed file whose provenance wasn't re-recorded, a recorded hash with no file, or a schema vendored with no provenance section. Without that, a loosened or half-refreshed schema would quietly weaken every verdict above while the README still claimed the upstream bytes.
 
+### Client retry policy (offline SDK and server coverage)
+
+The pinned [Python SDK 2.0.0 retry driver](https://github.com/modelcontextprotocol/python-sdk/blob/v2.0.0/src/mcp/client/_input_required.py)
+allows ten retries after an initial `input_required` response. Reservation and worker-observation
+responses count toward this client limit even though they do not commit a server work slice.
+`mrtr.rounds` measures owner slices; the server's eight-slice cap cannot guarantee completion
+within ten client retries. Neither number is an MCP protocol requirement.
+
+`tests/test_sdk_mrtr_policy.py` exercises the real SDK `Client` and Streamable HTTP transport
+against `httpx2.MockTransport`, without a network socket, hub configuration, or fixture. It proves
+default exhaustion, completion with a higher configured limit, and resumption using captured
+state after exhaustion. Python Tests installs the same SDK pin as the live conformance lane;
+missing dependencies fail collection instead of skipping this coverage.
+
+The mock peer proves SDK behavior, not server correctness. `MrtrContinuationSpec` independently
+holds a detached worker open through more than ten polling legs, advances the virtual clock past
+the active TTL while the client is idle, and verifies that the write reservation remains held.
+Completion and terminal replay must execute the leaf once, report one owner slice, and never
+schedule a second worker. The normal live SDK scenario below separately measures real hub timing.
+
+For integrations that expect longer operations, configure
+`Client(..., input_required_max_rounds=20)` (an example limit, not a completion guarantee).
+For explicit recovery, capture state before handing control to the automatic loop:
+
+```python
+from mcp_types import InputRequiredResult
+
+# client is an entered modern SDK Client; name and arguments are the original call.
+first = await client.session.call_tool(name, arguments, allow_input_required=True)
+if isinstance(first, InputRequiredResult):
+    # This example handles Hubitat's state-only continuations.
+    if first.input_requests or not first.request_state:
+        raise RuntimeError("Expected a state-only Hubitat continuation")
+    saved_state = first.request_state
+    # Retain saved_state together with name and arguments before the next request.
+    result = await client.call_tool(name, arguments, request_state=saved_state)
+else:
+    result = first
+```
+
+If the automatic call raises `InputRequiredRoundsExceededError`, it does **not** carry the last
+state. Hubitat uses the same state string throughout this logical call, so the captured state can
+seed a later `client.call_tool(name, arguments, request_state=saved_state)`. Alternatively, drive
+`client.session.call_tool(..., allow_input_required=True)` manually from the beginning, retain
+every returned state, and pace retries. Never print state or original arguments in diagnostic logs.
+
+Exhaustion is a client stop, not server cancellation. A running worker may still commit while the
+client is idle. A fresh state-free call after completion creates another operation; it is not a
+substitute for terminal replay. State remains subject to exact outer-tool/argument binding, expiry
+and storage pressure. For clients with a fixed limit, keep operations small and inspect the target
+after an uncertain outcome; arbitrary-duration completion is not supported.
+
+### MRTR lifecycle coverage
+
+| Boundary | Established contract |
+|---|---|
+| Warm cache | Normal coordination reads use the write-through cache; the scheduler also consults exact terminal evidence. |
+| Cache-only invalidation | Reloads durable state but retains other statics. The synthetic stale-record tests prove defensive claim/generation matching, not a live disable/enable recovery path. |
+| `updated()` | Keeps MRTR state and terminal replay; the boundary test stubs unrelated `initialize()` work. |
+| Loss of class statics | Tests model loss of cache, evidence, leases, work items and live markers while retaining durable records. A terminal can replay; a claimed generation without a worker is not stolen and eventually expires. This does not establish Hubitat's disable/enable semantics. |
+| Fresh installation on a retained class | With empty durable state, `installed()` invalidates the old cache. Old continuation IDs and late queued callbacks cannot resurrect the prior installation's requests. |
+
+Idle active records have a three-minute TTL. Executing MRTR claims retain protection beyond it;
+a hard-killed worker can leave a live marker stranded until class reload. Write terminal records
+have a ten-minute TTL but may be evicted earlier under record pressure. These are finite replay
+and safety contracts, not proof of restart recovery or eventual completion.
+
+### Cooperative worker checkpoints
+
+Detached workers use their own 120-second target, independent of the cloud/LAN request budget.
+They check it between completed native bulk items, patch operations and walk-driver steps, and
+between driver installs or updates. Each checkpoint stores the untouched suffix, advances the
+owner generation, and renews the three-minute idle window. The next request with the same
+original arguments and state schedules the next slice with a fresh clock. Running claims keep
+their write reservation; duplicate callbacks do not repeat completed items.
+
+This is a cooperative target, not a platform execution deadline or maximum duration. An
+individual wizard operation or driver compile/save/delete runs uninterrupted. Native app
+creation and action replacement have no restart-safe intermediate checkpoint. A patch batch
+containing `replaceRequiredExpression` also stays together: its duplicate-replacement fence and
+deferred rollback context must survive through finalization. A guessed age cutoff cannot safely
+distinguish a slow write from a killed worker, so this change does not add one.
+
+At the eight-owner-slice cap, `continuation_limit` is terminal. Its aggregate records completed
+work and its remaining-work fields identify the exact unprocessed suffix. Native results retain
+the finalization guidance: settings may have landed while `updateRule`/Done is still deferred.
+Inspect that outcome before submitting a **new** smaller call containing only the remainder;
+replaying the old state only replays the terminal error.
+
+`MrtrWorkerBudgetSpec` uses virtual time and real tool dispatch to force safe native checkpoints,
+verify ordered results, cap recovery and one finalization, and protect atomic replacement
+batches. The regular live MRTR scenario uses six actions in nested and single-action patches;
+the official SDK scenario retains its bulk edit. Both independently check exact persisted
+settings. These small live calls need not cross 120 seconds; deterministic unit coverage proves
+the clock boundary without adding hub stress or a test-only production setting.
+
 ### Leg 2 — official Python SDK client (e2e side)
 
 `tests/sdk_conformance_test.py` connects one official SDK high-level `Client` through its `streamable_http_client` to a real hub `/mcp` endpoint, pinned directly to `mode="2026-07-28"`. It never uses `mode="auto"` (which could fall back) or `mode="legacy"`. Catalog, benign call, resources, and the MRTR proof all share that modern client. One `Client.call_tool()` drives the Rule Machine write through multiple state-only continuation responses to one terminal `CallToolResult` — no project-owned loop and no low-level session call.

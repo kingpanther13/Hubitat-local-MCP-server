@@ -1093,11 +1093,19 @@ private Map toolInstallItem(String type, args) {
         // Bulk mode: apply each install in sequence, continue on per-item errors
         def itemResults = []
         def allSucceeded = true
-        args.installs.eachWithIndex { item, idx ->
+        for (int idx = 0; idx < args.installs.size(); idx++) {
+            // Each item owns its save and verification; pause only after that outcome is known.
+            if (type == "driver" && idx > 0 && _resumableBudgetExceeded(null)) {
+                return [success: allSucceeded, status: "in_progress", installs: itemResults,
+                        installsRemaining: args.installs.subList(idx, args.installs.size()),
+                        lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                        resume: [note: "Completed driver installs are retained. Continue with only installsRemaining; do not repeat completed installs."]]
+            }
+            def item = args.installs[idx]
             if (!(item instanceof Map) || (item.source == null && item.sourceFile == null && item.importUrl == null)) {
                 itemResults << [(idField): null, success: false, error: "Each installs entry must have a 'source', 'sourceFile', or 'importUrl' field."]
                 allSucceeded = false
-                return
+                continue
             }
             try {
                 def singleArgs = [confirm: args.confirm]
@@ -1829,11 +1837,19 @@ def toolUpdateDriverCode(args) {
         // Bulk mode: apply each update in sequence, continue on per-item errors
         def itemResults = []
         def allSucceeded = true
-        args.updates.eachWithIndex { item, idx ->
+        for (int idx = 0; idx < args.updates.size(); idx++) {
+            // Retain the untouched suffix, including repeated IDs and each expectedVersion.
+            if (idx > 0 && _resumableBudgetExceeded(null)) {
+                return [success: allSucceeded, status: "in_progress", updates: itemResults,
+                        updatesRemaining: args.updates.subList(idx, args.updates.size()),
+                        lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                        resume: [note: "Completed driver updates are retained. Continue with only updatesRemaining, preserving their order and expectedVersion values."]]
+            }
+            def item = args.updates[idx]
             if (!(item instanceof Map) || !item.driverId) {
                 itemResults << [driverId: item?.driverId?.toString() ?: "item[${idx}]", success: false, error: "Each updates entry must have a 'driverId' field."]
                 allSucceeded = false
-                return
+                continue
             }
             try {
                 def singleArgs = [driverId: item.driverId]

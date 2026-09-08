@@ -6811,7 +6811,10 @@ class TestRunner:
             ]
             result = self._call_slow_rule({
                 "appId": app_id,
-                "addActions": requested_actions,
+                "patches": [
+                    {"addActions": requested_actions[:3]},
+                    *[{"addAction": action} for action in requested_actions[3:]],
+                ],
             })
             rounds = self.client._last_continuation_rounds
             result_type = self.client._last_result_type
@@ -6827,7 +6830,17 @@ class TestRunner:
             assert result.get("success") is not False, \
                 f"MRTR rule edit failed: {result}"
             assert not result.get("partial"), f"MRTR rule edit was partial: {result}"
-            action_results = result.get("actions") or []
+            patch_results = result.get("patchResults") or result.get("patches") or []
+            assert all(isinstance(patch, dict) and patch.get("success") is not False
+                       for patch in patch_results), (
+                f"MRTR rule edit contained a failed patch: {patch_results}"
+            )
+            action_results = [
+                action
+                for patch in patch_results
+                for action in (patch.get("results", []) if patch.get("op") == "addActions"
+                               else [patch])
+            ]
             assert len(action_results) == len(requested_actions), (
                 "MRTR rule edit did not return every requested mutation result: "
                 f"requested={len(requested_actions)}, returned={len(action_results)}, "

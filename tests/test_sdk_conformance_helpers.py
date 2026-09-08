@@ -133,7 +133,7 @@ def test_request_trace_treats_only_an_unread_stream_as_state_unknown() -> None:
 
         @property
         def content(self):
-            raise helpers.RequestNotRead("stream body was not buffered")
+            raise helpers.RequestNotRead()
 
     assert RequestTrace._fields(UnreadRequest())["has_request_state"] is None
 
