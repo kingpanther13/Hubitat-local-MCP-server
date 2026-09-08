@@ -3680,6 +3680,9 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     if (sensitive.any { args.containsKey(it) }) requireDestructiveConfirm(args.confirm)
     def nativeFields = _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList() + ["deviceNetworkId"]
     def needModel = args.preferences || nativeFields.any { args.containsKey(it) }
+    if (settings.enableWrite == false && (_deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()).any { args.containsKey(it) }) {
+        throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
+    }
     def full = suppliedFull
     if (full == null && settings.enableWrite != false) full = _fetchDeviceFullJson(deviceId)
     if (needModel && !(full?.device instanceof Map)) throw new IllegalArgumentException("Unable to read device configuration before updating; use hub_get_device(mode='configuration') and retry")

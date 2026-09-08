@@ -34,6 +34,31 @@ def test_accepts_native_wire_values_and_exact_typed_configuration():
     assert_native_preferences(native, configuration, expected)
 
 
+@pytest.mark.parametrize("surface", ["settings", "inputValues"])
+@pytest.mark.parametrize("wire", ['["red","blue"]', '["red", "blue"]'])
+def test_accepts_native_json_array_storage_without_changing_typed_expectation(surface, wire):
+    native, configuration, expected = fixture()
+    native[surface][-1]["value" if surface == "settings" else "inputValue"] = wire
+    assert_native_preferences(native, configuration, expected)
+
+
+@pytest.mark.parametrize("wire", ['["red"]', '["blue","red"]', '["red","blue","red"]'])
+def test_json_array_storage_with_a_different_selection_fails(wire):
+    native, configuration, expected = fixture()
+    native["settings"][-1]["value"] = wire
+    with pytest.raises(AssertionError, match="probeMultiple"):
+        assert_native_preferences(native, configuration, expected)
+
+
+def test_empty_json_array_is_a_saved_empty_selection():
+    native, configuration, expected = fixture()
+    expected["probeMultiple"] = ("enum", [])
+    native["settings"][-1]["value"] = '[]'
+    native["inputValues"][-1]["inputValue"] = '[]'
+    configuration["preferences"][-1]["value"] = []
+    assert_native_preferences(native, configuration, expected)
+
+
 @pytest.mark.parametrize("surface", ["settings", "inputValues", "preferences"])
 def test_missing_expected_row_cannot_become_a_vacuous_pass(surface):
     native, configuration, expected = fixture()

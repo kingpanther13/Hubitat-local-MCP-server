@@ -457,6 +457,31 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         explicitNull.valuePresent
     }
 
+    @spock.lang.Unroll
+    def "JSON-array multiple enum storage preserves selection and defaults for #wire"() {
+        given:
+        def full = [device: [id: 1], settings: [[name: 'choices', type: 'enum', multiple: true,
+            value: wire, defaultValue: wire]], inputValues: [[name: 'choices', inputValue: wire]]]
+
+        when:
+        def model = script._readDevicePreferenceModel(full)
+        def entry = script._lookupDevicePreference(model, 'choices')
+
+        then:
+        model.status == 'complete'
+        entry.valueStatus == 'stored'
+        entry.valuePresent
+        entry.value == expected
+        entry.defaultValue == expected
+
+        where:
+        wire                       | expected
+        '["red"]'                  | ['red']
+        '["red", "blue"]'          | ['red', 'blue']
+        '[]'                       | []
+        '["red,blue", "two words"]' | ['red,blue', 'two words']
+    }
+
     def "missing and malformed native sections cannot masquerade as complete empty information"() {
         given:
         addListedDevice()
