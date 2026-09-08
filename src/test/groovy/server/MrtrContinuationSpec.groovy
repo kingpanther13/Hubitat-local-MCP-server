@@ -2057,6 +2057,121 @@ class MrtrContinuationSpec extends ToolSpecBase {
         workItems['running'] != null
     }
 
+    def "modern #operation staging cap preserves the latest recovery ledger and replays without writes"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        String tool = "hub_${operation}_native_app".toString()
+        String importJson = '{"appReplacements":{"42":{"appLabel":"Source Rule"}}}'
+        Map args = [confirm: true, stageDisabled: true] + (operation == 'clone'
+            ? [sourceAppId: 100]
+            : [parentHintAppId: 100, jsonContent: importJson])
+        int cap = script._mrtrMaxContinuationSlices() as Integer
+        int setupSlices = operation == 'clone' ? 3 : 2
+        List targets = (250..(250 + cap)).toList()
+        List expectedAttempted = targets.take(cap - setupSlices)
+        List expectedStaged = expectedAttempted.findAll { it != 251 }
+        List expectedRemaining = targets.drop(expectedAttempted.size())
+        def disabled = []
+        def posts = []
+        def cleaned = []
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            nativeRuleConfig(100, 'Source Rule', 21)
+        }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params ->
+            clonerPageState('importRule', 0)
+        }
+        int parentReads = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentReads++
+            nativeParentConfig(21, parentReads == 1
+                ? [[id: 100, label: 'Source Rule']]
+                : [[id: 100, label: 'Source Rule'], [id: 250, label: 'Source Rule clone']])
+        }
+        hubGet.register('/hub2/appsList') { params ->
+            groovy.json.JsonOutput.toJson([apps: [[data: [id: 250],
+                children: targets.drop(1).collect { [data: [id: it]] }]]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, Integer timeout = 30 ->
+            if (path.startsWith('/installedapp/forcedelete/')) cleaned << path
+            [status: 302, location: '/apps/api/4242/app/100', data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            posts << [path: path, body: new LinkedHashMap(body)]
+            [status: 200, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, Integer timeout = 420 ->
+            posts << [path: path, body: decodeForm(body)]
+            [status: 200, data: '{"status":"success"}']
+        }
+        script.metaClass._timeBudgetExceeded = { Long start -> true }
+        script.metaClass.toolSetAppDisabled = { Map disableArgs ->
+            disabled << disableArgs.appId
+            disableArgs.appId == 251 ? [success: false, error: 'denied'] : [success: true]
+        }
+
+        when:
+        def preflight = modernCall(tool, args)
+        String requestState = preflight.result.requestState
+
+        then:
+        preflight.result.resultType == 'input_required'
+        posts.isEmpty()
+        disabled.isEmpty()
+
+        when: 'ordinary continuations initialize, commit, and stage one target per slice'
+        for (int round = 1; round < cap; round++) {
+            def continued = modernCall(tool, args, requestState)
+            assert continued.result.resultType == 'input_required'
+        }
+
+        then: 'the pre-cap checkpoint contains the earlier failure and has not attempted the final slice yet'
+        atomicStateMap.mrtrRequests[requestState].checkpoint.newAppId == 250
+        atomicStateMap.mrtrRequests[requestState].checkpoint.stageFailures*.appId == [251]
+        disabled == expectedAttempted.take(expectedAttempted.size() - 1)
+        cleaned.isEmpty()
+
+        when: 'the actual MRTR cap finalizes the last staging continuation'
+        def completed = modernCall(tool, args, requestState)
+        def terminal = mcpDriver.parseInner(completed)
+        int postsAfterCap = posts.size()
+
+        then:
+        completed.result.resultType == 'complete'
+        completed.result.isError == true
+        terminal.status == 'continuation_limit'
+        terminal.success == false
+        terminal.partial == true
+        terminal.newAppId == 250
+        terminal.stagedDisabled == expectedStaged
+        terminal.stageFailures == [[appId: 251, kind: 'disable', error: 'denied']]
+        terminal.stageRemaining == expectedRemaining
+        terminal.error.contains('do NOT re-issue')
+        terminal.error.contains('hub_set_app_disabled')
+        terminal.error.contains('newAppId=250')
+        terminal.mrtr.rounds == cap
+        disabled == expectedAttempted
+        cleaned == ['/installedapp/forcedelete/4242/quiet']
+        parentReads == 2
+        posts.count { it.path == '/installedapp/btn' && it.body.name == 'importNow' } == 2
+        !atomicStateMap.mrtrRequests[requestState].containsKey('checkpoint')
+
+        when: 'a dropped cap response is replayed using the same requestState'
+        def replay = modernCall(tool, args, requestState)
+
+        then:
+        replay.result.resultType == 'complete'
+        replay.result.isError == true
+        mcpDriver.parseInner(replay) == terminal
+        posts.size() == postsAfterCap
+        disabled == expectedAttempted
+        cleaned == ['/installedapp/forcedelete/4242/quiet']
+
+        where:
+        operation << ['clone', 'import']
+    }
+
     def "the continuation cap returns the per-rule ledger it is holding"() {
         given: 'a call_rule request one round below the cap, with two rules already banked and a third round still pausing'
         Map claim = [claimId: 'cap1', generation: 1]
