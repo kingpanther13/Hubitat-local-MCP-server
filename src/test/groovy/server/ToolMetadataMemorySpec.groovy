@@ -109,6 +109,9 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         atomicStateMap.requiredParamsByTool = [hub_get_room: ['obsolete']]
         atomicStateMap.requiredParamsByToolFingerprint = 'old'
         atomicStateMap.capturedDeviceStates = [saved: [devices: [[id: '1']]]]
+        stateMap.toolSearchCorpus = ['legacy state corpus']
+        stateMap.requiredParamsByTool = [hub_get_room: ['obsolete']]
+        stateMap.ruleVariables = [enabled: false, count: 0]
         script.metaClass.getAllToolDefinitions = { throw new AssertionError('cleanup built catalog') }
         mcpDriver.pushBody([jsonrpc: '2.0', id: 1, method: 'ping'])
 
@@ -122,6 +125,9 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         !atomicStateMap.containsKey('requiredParamsByTool')
         !atomicStateMap.containsKey('requiredParamsByToolFingerprint')
         atomicStateMap.capturedDeviceStates.saved.devices == [[id: '1']]
+        !stateMap.containsKey('toolSearchCorpus')
+        !stateMap.containsKey('requiredParamsByTool')
+        stateMap.ruleVariables == [enabled: false, count: 0]
     }
 
     def "cleanup retries a failed removal and warm calls stop accessing state"() {

@@ -172,13 +172,8 @@ def toolSearchCorpusFingerprint(List defs = null) {
             h = _fpField(h, config.searchHints?."${toolName}")
         }
     }
-    // The cached TOKENS are only length-checked against the corpus, so a tokenizer change
-    // moves neither the corpus content nor its size and the hub keeps serving tokens built
-    // by the old one. The probe runs a synthetic entry through the SAME two functions the
-    // real tokenize line uses -- _bm25DocText for the field template, bm25Tokenize for the
-    // split -- so editing either invalidates. Probing bm25Tokenize on a bare literal would
-    // cover the split only and miss a template edit entirely (dropping `hints` from the
-    // template changes no corpus content, so nothing else in this guard would notice).
+    // Include representative field-template and tokenizer output in the cold-build fingerprint.
+    // A bare tokenizer input would omit the template's choice of searchable fields.
     h = _fpField(h, bm25Tokenize(_bm25DocText(
         [name: 'hub_x-1', title: 'A_b', description: 'cd', params: 'ef', hints: 'gh',
          gateway: 'ij'])).join(','))
@@ -192,13 +187,8 @@ private String _bm25DocText(entry) {
     return "${entry.name} ${entry.title ?: ''} ${entry.description} ${entry.params ?: ''} ${entry.hints ?: ''}"
 }
 
-// Accumulate rather than materialize: the concatenated form of this catalog is ~98 KB, and
-// it would be rebuilt and re-compared on EVERY hub_search_tools call plus stored in
-// atomicState. Length-prefix each field before folding it in -- plain delimiters would be
-// ambiguous, because the summaries genuinely contain them (an alternatives list reads
-// "source|sourceFile|importUrl"), so content could impersonate a field boundary and two
-// different catalogs could fingerprint identically, serving the stale corpus this exists
-// to invalidate.
+// Cold builds fold fields without allocating a concatenated catalog. Include each field's
+// length so delimiter text such as "source|sourceFile|importUrl" cannot erase field boundaries.
 private long _fpField(long h, value) {
     String s = (value == null) ? "" : value.toString()
     // String.hashCode(), not a hand-rolled character loop. Nothing here is @CompileStatic,

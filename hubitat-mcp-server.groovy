@@ -589,8 +589,8 @@ def updated() {
     atomicState.remove("toolSearchCorpusFingerprint")  // ...and the corpus content fingerprint in lockstep
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
     synchronized (TOOL_SEARCH_INDEX) { TOOL_SEARCH_INDEX.clear() }   // ...and the in-JVM index itself
-    atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
-    atomicState.remove("requiredParamsByToolFingerprint")  // ...and its content fingerprint in lockstep
+    atomicState.remove("requiredParamsByTool")    // Shed the retired persisted required-param memo
+    atomicState.remove("requiredParamsByToolFingerprint")  // ...and its retired fingerprint
     initialize()
 
     // ===== One-time custom-engine rename migration =====
@@ -4400,12 +4400,9 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     // Only a Map can carry it; a present value is never overwritten.
     if (reqT0 != null && safeArgs instanceof Map && safeArgs.__reqT0 == null
             && _budgetAwareTools().contains(toolName)) safeArgs.__reqT0 = reqT0
-    // Read this tool's required-param list from the memoized map. Computing the
-    // memo key walks the catalog once per gateway call; the memo saves the per-tool
-    // map re-derivation, not the catalog walk. A missing key means the tool has no
-    // required params. The full catalog (with the [[FLAT_TRIM]]-stripped param
-    // descriptions for the hint) is rebuilt lazily only inside the if (missing)
-    // branch below, which fires rarely.
+    // Warm lookups use immutable class metadata without rebuilding the catalog.
+    // An absent entry means no required params. Missing-param hints below still
+    // build fresh definitions for their descriptions.
     def required = requiredParamsByTool()[toolName]
     // Gate-bypassing meta-calls return pure static content with NO hub mutation and
     // short-circuit at the very top of their handler (before any gate / appId check),

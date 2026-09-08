@@ -298,9 +298,6 @@ class HandleGatewaySpec extends ToolSpecBase {
     // The class cache must preserve required-parameter validation without durable catalog metadata.
 
     def "memo stays outside persisted state after the first gateway call; a repeat call throws the identical missing-param error"() {
-        given: 'a clean atomicState so the memo builds fresh on the first call'
-        atomicStateMap.remove('requiredParamsByTool')
-
         when: 'first call with a missing required param (hub_get_room requires room)'
         def firstEx = null
         try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { firstEx = e }
@@ -324,9 +321,8 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "the missing-param message stays intact (no FLAT_TRIM leak) even after a flat-mode tools/list strip"() {
-        given: 'flat mode drives the in-place [[FLAT_TRIM]] strip path; clean memo'
+        given: 'flat mode drives the in-place [[FLAT_TRIM]] strip path'
         settingsMap.useGateways = false
-        atomicStateMap.remove('requiredParamsByTool')
 
         when: 'run the flat strip path first (mutates fresh def copies in place), then a gateway missing-param call'
         script.getToolDefinitions()
@@ -339,9 +335,6 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "two-missing-required path rebuilds the full catalog for the hint and caches the two-element required list"() {
-        given:
-        atomicStateMap.remove('requiredParamsByTool')
-
         when: 'hub_create_room requires both name and confirm; omit both'
         Exception ex = null
         try { script.handleGateway('hub_manage_rooms', 'hub_create_room', [:]) } catch (Exception e) { ex = e }
@@ -356,13 +349,9 @@ class HandleGatewaySpec extends ToolSpecBase {
 
     // Retired persisted indexes must never override the current compiled tool definitions.
 
-    def "a same-version stale memo is rebuilt from live definitions (live required honored, not the stale entry)"() {
-        given: 'an old build memoized a different required list for hub_get_room; version is UNCHANGED but the catalog fingerprint no longer matches'
-        // hub_get_room requires ['room'] in the live (current) catalog. The seeded memo
-        // simulates an older same-version build that required `legacy_param` instead. The
-        // stamped fingerprint is a stale string that cannot match the live fingerprint --
-        // the exact same-version code-deploy scenario the e2e caught (a relaxed required
-        // array served stale because currentVersion() did not change).
+    def "compiled required parameters supersede a same-version persisted memo"() {
+        given: 'an old build persisted a different required list for hub_get_room'
+        // Retired metadata is ignored even when currentVersion() has not changed.
         atomicStateMap.requiredParamsByTool = ['hub_get_room': ['legacy_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint-from-an-older-same-version-build'
 
@@ -379,16 +368,9 @@ class HandleGatewaySpec extends ToolSpecBase {
         script.requiredParamsByTool()['hub_get_room'] == ['room']
     }
 
-    def "a relaxed-required tool with a stale fingerprint is NOT rejected for the now-optional params (the e2e failure, abstracted)"() {
-        given: 'a stale memo lists params as required that the live build relaxed away; fingerprint is stale (same-version deploy)'
-        // Directly models the failing e2e: a tool whose required array was relaxed (here
-        // hub_get_room, whose live required is only ['room']) must not be rejected for a
-        // param the OLD build still listed. With the fix, supplying the live-required
-        // `room` passes the pre-check and dispatch reaches the impl; reverting the
-        // fingerprint guard would reject on the stale `extra_param` before dispatch even
-        // though `room` was supplied. Stub getRooms() to return a matching room so the
-        // impl resolves cleanly to a real result (bucket-1 per-test metaClass stub;
-        // setup() wipes it next test).
+    def "retired persisted requirements cannot reject a now-optional parameter"() {
+        given: 'a stale memo lists an extra requirement removed from the compiled catalog'
+        // Supplying the current requirements must reach dispatch without extra_param.
         script.metaClass.getRooms = { [[id: 7, name: 'Kitchen', deviceIds: []]] }
         atomicStateMap.requiredParamsByTool = ['hub_get_room': ['room', 'extra_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint'
