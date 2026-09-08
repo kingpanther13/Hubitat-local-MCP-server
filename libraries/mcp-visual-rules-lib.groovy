@@ -107,20 +107,17 @@ private Map _vrbDetect(Integer appId) {
     // Resolve which serialization a VRB rule speaks: graph (2.0 editor, /app/ruleBuilder20Json)
     // or classic (when/then/else editor, /app/ruleBuilderJson). Null = neither (not a VRB rule).
     def graph = _vrbFetchGraph(appId)
-    if (graph != null) return [format: "graph", data: _vrbWithBareName(graph)]
+    if (graph != null) return [format: "graph", data: _vrbWithBareName(graph, true)]
     def classic = _vrbFetchClassic(appId)
-    if (classic != null) return [format: "classic", data: _vrbWithBareName(classic)]
+    if (classic != null) return [format: "classic", data: _vrbWithBareName(classic, false)]
     return null
 }
 
-// The hub decorates a paused rule's name ("Name <span class='text-red'>(Paused)</span>"). Every
-// consumer wants the rule's OWN name -- a save that echoed the decoration renamed the rule to it
-// and then failed its own read-back -- so strip it once at the single reader and keep the raw form
-// alongside for anything that needs to show what the hub said.
-private Map _vrbWithBareName(Map data) {
+private Map _vrbWithBareName(Map data, boolean graph) {
+    // JSON names are raw strings. Only the graph endpoint appends runtime markup.
     if (data?.name != null) {
         data.rawName = data.name
-        data.name = _vrbBareName(data.name, data.rulePaused == true)
+        data.name = graph ? _vrbBareName(data.name, data.rulePaused == true) : data.name.toString()
     }
     return data
 }
@@ -1082,27 +1079,20 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
     return [map: map, format: _vrbDetectDefinitionFormat(map)]
 }
 
-// The rule's name with the hub's paused decoration removed. Only strips when the rule actually
-// reads back paused, so an UNPAUSED rule a user genuinely named "... (Paused)" keeps its name; a
-// paused one so named is indistinguishable from the decoration and is stripped.
 private String _vrbBareName(Object raw, boolean paused) {
-    def s = stripAppConfigHtml(raw)?.toString()
-    if (s != null && paused && s.endsWith("(Paused)")) {
-        return s.substring(0, s.length() - "(Paused)".length()).trim()
+    // Remove the graph endpoint's runtime suffix without decoding raw name text.
+    // Hubitat itself conflates an identical literal suffix with its pause marker.
+    def s = raw?.toString()
+    if (s != null && paused) {
+        s = s.replaceFirst(/ <span class=['"]text-red['"]>\(Paused\)<\/span>$/, "")
     }
     return s
 }
 
 private boolean _vrbNameMatches(Map after, String requestedName) {
-    // Read-back name comparison for every save path. A PAUSED rule comes back carrying the hub's
-    // own "(Paused)" decoration, usually HTML-wrapped ("Name <span
-    // class='text-red'>(Paused)</span>"), so a literal compare reported verified:false on a write
-    // that had landed -- and on create that left the child installed, inviting a duplicate on
-    // retry. Accept the literal name OR the decoration-stripped one; a name that differs beyond
-    // the suffix still fails.
-    if (after == null) return false
-    return stripAppConfigHtml(after.data?.name)?.toString() == requestedName ||
-           _vrbBareName(after.data?.name, after.data?.rulePaused == true) == requestedName
+    // _vrbDetect already removed the graph endpoint's runtime decoration.
+    // Processing it again would reinterpret literal tags/entities as decoration.
+    return after != null && after.data?.name?.toString() == requestedName
 }
 
 private Map _vrbNotVisualRuleError(Integer appId) {
@@ -1351,13 +1341,8 @@ private Map _toolSetVisualRuleImpl(args) {
     // Rename and/or pause without replacing the definition: re-save the EXISTING definition under
     // the new name (the save endpoints have no rename-only verb), then apply the pause flag.
     try {
-        // Strip the hub's "(Paused)" decoration off the fallback. On a RESUME the caller sends no
-        // name, so requestedName falls back to the name read BEFORE the write -- and the rule was
-        // paused then, so that string carries the decoration while the post-resume read-back is
-        // bare. _vrbNameMatches strips `actual` but not `requestedName`, and its decoration-
-        // tolerant branch needs rulePaused==true, which the resume just made false: every resume
-        // of a paused rule therefore reported verified:false on a write that had landed.
-        def requestedName = (name ?: _vrbBareName(detected.data?.name, detected.data?.rulePaused == true))?.toString()
+        // The detected name is already normalized, including before a resume.
+        def requestedName = (name ?: detected.data?.name)?.toString()
         if (name && name != detected.data.name?.toString()) {
             Map existing = null
             if (detected.format == "graph") {
@@ -1657,10 +1642,8 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
                 note: "Recreate the rule manually with hub_set_visual_rule -- see hub_get_tool_guide(section='visual_rule_reference')."]
     }
     def name = snapshot.appLabel?.toString()?.trim() ?: "restored-visual-rule-${savedId}"
-    // The hub decorates a paused rule's label with an HTML-wrapped "(Paused)"; capture prefers the
-    // rule's own undecorated name, but strip the decoration defensively (HTML or plain) so an older
-    // decorated-label snapshot can't bake it into the restored rule's name.
-    if (snapshot.vrbRulePaused == true) name = _vrbBareName(name, true) ?: name
+    // Preserve the saved name: stripping cannot distinguish literal text from
+    // a config-label fallback captured when the builder supplied no usable name.
     // Always restore the SNAPSHOT's pause state (a Boolean, never null) -- an in-place
     // restore must not inherit whatever pause state the live rule drifted to.
     Boolean pausedRequested = snapshot.vrbRulePaused == true

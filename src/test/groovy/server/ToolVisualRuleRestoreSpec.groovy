@@ -461,10 +461,11 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         parsedUpload().vrbRulePaused == true
     }
 
-    def "restore strips a trailing pause decoration from a decorated-label snapshot"() {
-        given: 'a paused-rule snapshot whose appLabel carries the hub decoration'
+    @spock.lang.Unroll
+    def "restore preserves the own name captured in a paused snapshot (#label)"() {
+        given: 'snapshot appLabel already came from the dedicated own-name reader'
         enableWrite()
-        def snapshot = vrbSnapshot(500, [appLabel: 'Hall light (Paused)', vrbFormat: 'classic',
+        def snapshot = vrbSnapshot(500, [appLabel: label, vrbFormat: 'classic',
                                          vrbRulePaused: true, vrbDefinition: classicDefinition()])
         stubDownload(json(snapshot).getBytes('UTF-8'))
         hubGet.register('/app/ruleBuilder20Json/500') { params -> GRAPH_NOT_FOUND }
@@ -480,12 +481,19 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         when:
         def result = script._rmRestoreFromBackup([fileName: 'mcp-rm-backup-500-t.json'])
 
-        then: 'the replayed name has the decoration stripped; the pause state still restores'
+        then: 'the replay preserves the own name and the saved pause state'
         result.success == true
-        result.name == 'Hall light'
+        result.name == expected
         def body = new JsonSlurper().parseText(posts[0].body as String)
-        body.name == 'Hall light'
+        body.name == expected
         body.rulePaused == true
+
+        where:
+        label                                                   | expected
+        'Hall light (Paused)'                                    | 'Hall light (Paused)'
+        "Hall light <span class='text-red'>(Paused)</span>"       | "Hall light <span class='text-red'>(Paused)</span>"
+        "Hall light (Paused) <span>(Paused)</span>"              | "Hall light (Paused) <span>(Paused)</span>"
+        'Hall light &amp; (Paused)'                              | 'Hall light &amp; (Paused)'
     }
 
     @Unroll

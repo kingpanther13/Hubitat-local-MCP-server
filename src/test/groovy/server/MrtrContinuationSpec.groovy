@@ -2057,6 +2057,121 @@ class MrtrContinuationSpec extends ToolSpecBase {
         workItems['running'] != null
     }
 
+    def "modern #operation staging cap preserves the latest recovery ledger and replays without writes"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        String tool = "hub_${operation}_native_app".toString()
+        String importJson = '{"appReplacements":{"42":{"appLabel":"Source Rule"}}}'
+        Map args = [confirm: true, stageDisabled: true] + (operation == 'clone'
+            ? [sourceAppId: 100]
+            : [parentHintAppId: 100, jsonContent: importJson])
+        int cap = script._mrtrMaxContinuationSlices() as Integer
+        int setupSlices = operation == 'clone' ? 3 : 2
+        List targets = (250..(250 + cap)).toList()
+        List expectedAttempted = targets.take(cap - setupSlices)
+        List expectedStaged = expectedAttempted.findAll { it != 251 }
+        List expectedRemaining = targets.drop(expectedAttempted.size())
+        def disabled = []
+        def posts = []
+        def cleaned = []
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            nativeRuleConfig(100, 'Source Rule', 21)
+        }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params ->
+            clonerPageState('importRule', 0)
+        }
+        int parentReads = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentReads++
+            nativeParentConfig(21, parentReads == 1
+                ? [[id: 100, label: 'Source Rule']]
+                : [[id: 100, label: 'Source Rule'], [id: 250, label: 'Source Rule clone']])
+        }
+        hubGet.register('/hub2/appsList') { params ->
+            groovy.json.JsonOutput.toJson([apps: [[data: [id: 250],
+                children: targets.drop(1).collect { [data: [id: it]] }]]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, Integer timeout = 30 ->
+            if (path.startsWith('/installedapp/forcedelete/')) cleaned << path
+            [status: 302, location: '/apps/api/4242/app/100', data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            posts << [path: path, body: new LinkedHashMap(body)]
+            [status: 200, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, Integer timeout = 420 ->
+            posts << [path: path, body: decodeForm(body)]
+            [status: 200, data: '{"status":"success"}']
+        }
+        script.metaClass._timeBudgetExceeded = { Long start -> true }
+        script.metaClass.toolSetAppDisabled = { Map disableArgs ->
+            disabled << disableArgs.appId
+            disableArgs.appId == 251 ? [success: false, error: 'denied'] : [success: true]
+        }
+
+        when:
+        def preflight = modernCall(tool, args)
+        String requestState = preflight.result.requestState
+
+        then:
+        preflight.result.resultType == 'input_required'
+        posts.isEmpty()
+        disabled.isEmpty()
+
+        when: 'ordinary continuations initialize, commit, and stage one target per slice'
+        for (int round = 1; round < cap; round++) {
+            def continued = modernCall(tool, args, requestState)
+            assert continued.result.resultType == 'input_required'
+        }
+
+        then: 'the pre-cap checkpoint contains the earlier failure and has not attempted the final slice yet'
+        atomicStateMap.mrtrRequests[requestState].checkpoint.newAppId == 250
+        atomicStateMap.mrtrRequests[requestState].checkpoint.stageFailures*.appId == [251]
+        disabled == expectedAttempted.take(expectedAttempted.size() - 1)
+        cleaned.isEmpty()
+
+        when: 'the actual MRTR cap finalizes the last staging continuation'
+        def completed = modernCall(tool, args, requestState)
+        def terminal = mcpDriver.parseInner(completed)
+        int postsAfterCap = posts.size()
+
+        then:
+        completed.result.resultType == 'complete'
+        completed.result.isError == true
+        terminal.status == 'continuation_limit'
+        terminal.success == false
+        terminal.partial == true
+        terminal.newAppId == 250
+        terminal.stagedDisabled == expectedStaged
+        terminal.stageFailures == [[appId: 251, kind: 'disable', error: 'denied']]
+        terminal.stageRemaining == expectedRemaining
+        terminal.error.contains('do NOT re-issue')
+        terminal.error.contains('hub_set_app_disabled')
+        terminal.error.contains('newAppId=250')
+        terminal.mrtr.rounds == cap
+        disabled == expectedAttempted
+        cleaned == ['/installedapp/forcedelete/4242/quiet']
+        parentReads == 2
+        posts.count { it.path == '/installedapp/btn' && it.body.name == 'importNow' } == 2
+        !atomicStateMap.mrtrRequests[requestState].containsKey('checkpoint')
+
+        when: 'a dropped cap response is replayed using the same requestState'
+        def replay = modernCall(tool, args, requestState)
+
+        then:
+        replay.result.resultType == 'complete'
+        replay.result.isError == true
+        mcpDriver.parseInner(replay) == terminal
+        posts.size() == postsAfterCap
+        disabled == expectedAttempted
+        cleaned == ['/installedapp/forcedelete/4242/quiet']
+
+        where:
+        operation << ['clone', 'import']
+    }
+
     def "the continuation cap returns the per-rule ledger it is holding"() {
         given: 'a call_rule request one round below the cap, with two rules already banked and a third round still pausing'
         Map claim = [claimId: 'cap1', generation: 1]
@@ -2183,6 +2298,99 @@ class MrtrContinuationSpec extends ToolSpecBase {
                 runningJobs: [], hubCommands: []
             ])
         }
+    }
+
+    @spock.lang.Unroll
+    def "cold gateway #leaf with #argumentForm inner args continues until the read is complete"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+        settingsMap.useGateways = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 3)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        Map args = [tool: leaf]
+        if (argumentForm == 'null') args.args = null
+        if (argumentForm == 'empty map') args.args = [:]
+        if (argumentForm == 'encoded object') args.args = '{}'
+
+        when: 'the cold fetch is queued but cannot complete during the request'
+        def first = modernCall('hub_manage_logs', args)
+        String stateId = first.result.requestState
+
+        then: 'a pending read is a protocol continuation, never a complete in_progress payload'
+        first.error == null
+        first.result.resultType == 'input_required'
+        stateId?.startsWith('mrtr-')
+        !first.result.containsKey('content')
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
+        script._activeWrites().isEmpty()
+
+        when: 'the client echoes its original arguments while the fetch remains queued'
+        def waiting = modernCall('hub_manage_logs', args, stateId)
+
+        then:
+        waiting.error == null
+        waiting.result.resultType == 'input_required'
+        waiting.result.requestState == stateId
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+
+        when: 'the worker publishes and the same call resumes'
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        def completed = modernCall('hub_manage_logs', args, stateId)
+        def inner = mcpDriver.parseInner(completed)
+
+        then:
+        completed.error == null
+        completed.result.resultType == 'complete'
+        completed.result.isError != true
+        inner.status != 'in_progress'
+        leaf == 'hub_get_performance_stats' ? inner.uptime == '2d' : inner.scheduledJobs.count == 3
+        inner.snapshot.background == true
+        inner.mrtr.continued == true
+        fetches.get() == 1
+        runInMillisCalls.size() == 1
+        script._activeWrites().isEmpty()
+
+        where:
+        [leaf, argumentForm] << [['hub_get_performance_stats', 'hub_get_jobs'],
+            ['omitted', 'null', 'empty map', 'encoded object']].combinations()
+    }
+
+    @spock.lang.Unroll
+    def "malformed gateway inner args #innerArgs remain rejected before any read or continuation"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.useGateways = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 3)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+
+        when:
+        def refused = modernCall('hub_manage_logs', [tool: 'hub_get_performance_stats', args: innerArgs])
+
+        then:
+        refused.error.code == -32602
+        refused.error.message.contains("Gateway arg 'args'")
+        refused.result == null
+        fetches.get() == 0
+        runInMillisCalls.isEmpty()
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+        script._activeWrites().isEmpty()
+
+        where:
+        innerArgs << ['not JSON', '[]', 'null', 'true', '42']
     }
 
     def "a budgeted hub_get_jobs continues through requestState while its background fetch runs, holding no write slot"() {

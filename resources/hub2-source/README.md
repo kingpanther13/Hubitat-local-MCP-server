@@ -291,8 +291,9 @@ require them.
 
 Paused rules: the builder appends the literal constant
 `" <span class='text-red'>(Paused)</span>"` to the rule NAME (39 characters — the
-chunk strips it with `.slice(0, -39)`), so any read-back name comparison must
-strip HTML and tolerate that suffix.
+chunk strips it with `.slice(0, -39)`). Remove that exact runtime suffix only
+when the graph pause Boolean is true; builder JSON names are raw strings, so
+stripping arbitrary HTML or decoding entities corrupts literal user text.
 
 #### AI generate (2.0)
 
@@ -453,3 +454,38 @@ the same terms as anyone accessing them from a Hubitat hub they own — as a
 reference for interoperability with the published admin HTTP surface. Do not
 redistribute outside this repo or the contexts that already legitimately serve
 them.
+
+## Pause/name wire observations (2026-09-07, platform 2.5.1.181)
+
+Throwaway, device-free rules read through server 4.2.2 confirmed that RM's native
+appCloner export state carries Boolean `paused`. This is distinct from the
+`/app/ruleBuilderJson/<id>` response: the compiled-state health reader accepts
+its `paused` field only when it is a Boolean. A newly created empty RM fixture
+with no compiled/status pause evidence reported `paused:null`; after explicit
+pause/resume, health reported true/false. Do not infer false from key absence.
+Classic Visual Rule JSON carries `rulePaused`
+and the rule's own `name` (including a user-typed `(Paused)` suffix); graph Visual
+Rule JSON carries `rulePaused` and appends a real HTML span for its runtime pause
+decoration. Remove only that graph decoration; preserve the own name as a string,
+including a bare suffix, literal markup, and entity spellings. Pausing the classic fixture with a literal suffix
+previously caused a false rename-verification failure despite the stored name
+being correct. These are wire observations, not refreshed UI bundle captures.
+
+Live BAT with PR #408 at `21370b18` additionally confirmed that **both builder JSON
+`name` fields preserve the submitted string without HTML-encoding it**. A literal
+`<span>(Paused)</span>` or `&amp;` survives verbatim in the raw response. Only the graph
+builder appends ` <span class='text-red'>(Paused)</span>` while paused. Remove that
+one appended span using the graph pause state; do not strip tags or decode entities
+from either builder's own name. The classic builder adds no decoration even when
+paused. This differs from HTML/config-page labels and exposed false save-verification
+failures that the earlier encoded-name test fixtures did not represent.
+
+The exact trailing ` <span class='text-red'>(Paused)</span>` is a native graph
+builder collision, not a supported literal-name round trip. Direct HTTP save,
+pause, and resume calls on a device-free scratch rule confirmed that a save while
+unpaused preserves this suffix, pausing leaves only one copy, and resuming removes
+it from the stored name. The paused response cannot distinguish this literal suffix
+from runtime decoration. The regression cases therefore exercise ordinary literal
+markup and entities, with the exact marker inside (rather than at the end of) a
+name in synthetic reader coverage. They do not claim to repair Hubitat's native
+pause/resume naming collision.
