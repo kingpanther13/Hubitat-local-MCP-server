@@ -2300,6 +2300,99 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
     }
 
+    @spock.lang.Unroll
+    def "cold gateway #leaf with #argumentForm inner args continues until the read is complete"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+        settingsMap.useGateways = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 3)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        Map args = [tool: leaf]
+        if (argumentForm == 'null') args.args = null
+        if (argumentForm == 'empty map') args.args = [:]
+        if (argumentForm == 'encoded object') args.args = '{}'
+
+        when: 'the cold fetch is queued but cannot complete during the request'
+        def first = modernCall('hub_manage_logs', args)
+        String stateId = first.result.requestState
+
+        then: 'a pending read is a protocol continuation, never a complete in_progress payload'
+        first.error == null
+        first.result.resultType == 'input_required'
+        stateId?.startsWith('mrtr-')
+        !first.result.containsKey('content')
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
+        script._activeWrites().isEmpty()
+
+        when: 'the client echoes its original arguments while the fetch remains queued'
+        def waiting = modernCall('hub_manage_logs', args, stateId)
+
+        then:
+        waiting.error == null
+        waiting.result.resultType == 'input_required'
+        waiting.result.requestState == stateId
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+
+        when: 'the worker publishes and the same call resumes'
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        def completed = modernCall('hub_manage_logs', args, stateId)
+        def inner = mcpDriver.parseInner(completed)
+
+        then:
+        completed.error == null
+        completed.result.resultType == 'complete'
+        completed.result.isError != true
+        inner.status != 'in_progress'
+        leaf == 'hub_get_performance_stats' ? inner.uptime == '2d' : inner.scheduledJobs.count == 3
+        inner.snapshot.background == true
+        inner.mrtr.continued == true
+        fetches.get() == 1
+        runInMillisCalls.size() == 1
+        script._activeWrites().isEmpty()
+
+        where:
+        [leaf, argumentForm] << [['hub_get_performance_stats', 'hub_get_jobs'],
+            ['omitted', 'null', 'empty map', 'encoded object']].combinations()
+    }
+
+    @spock.lang.Unroll
+    def "malformed gateway inner args #innerArgs remain rejected before any read or continuation"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.useGateways = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 3)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+
+        when:
+        def refused = modernCall('hub_manage_logs', [tool: 'hub_get_performance_stats', args: innerArgs])
+
+        then:
+        refused.error.code == -32602
+        refused.error.message.contains("Gateway arg 'args'")
+        refused.result == null
+        fetches.get() == 0
+        runInMillisCalls.isEmpty()
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+        script._activeWrites().isEmpty()
+
+        where:
+        innerArgs << ['not JSON', '[]', 'null', 'true', '42']
+    }
+
     def "a budgeted hub_get_jobs continues through requestState while its background fetch runs, holding no write slot"() {
         given: 'the Write master is OFF (a read must not need it) and the write cap is already full'
         settingsMap.enableRead = true
