@@ -9403,15 +9403,25 @@ Each edit response includes the File Manager baseline under `backup.backupKey`. 
   ```
   Monthly has TWO mutually-exclusive modes: by-day (`dayOfMonth` + `everyNMonths` -- BOTH required or renders null) and nth-weekday (`weekOfMonth` + `dayOfWeek` + `everyNMonths`). Passing both `dayOfMonth` and `weekOfMonth` is rejected. Monthly "specific months" ("on day N of selected months") is NOT yet supported (an order-sensitive third sub-mode) -- use `rawSettings`. Yearly is ALWAYS nth-weekday (`weekOfMonth` + `dayOfWeek` + single `months`) because RM 5.1 exposes no by-day calendar-day field for Yearly -- only the nth-weekday picker. A `Periodic Schedule` with no `periodic` map is rejected up front (`success=false`, naming any stray top-level keys) rather than committing a phantom `?` row. The tool walks the periodic sub-page (`whichPeriod<N>` → `everyN`/select → time → Done, where `<N>` is the per-trigger sub-page index) so the trigger description bakes correctly. Seconds/Minutes `everyN` outside the restricted enum (and Monthly dayOfMonth+weekOfMonth) is rejected with `success=false` and a structured error.
 
-**Fail-loud `addTrigger` shape guards** (both reject before any hub write, returning `success=false` with a structured error rather than committing a broken trigger): (1) a state-change token supplied as `state` with no `comparator` (e.g. `state:'changed'`/`'increased'` on a device-state or numeric trigger) is rejected and steered to `comparator:'*changed*'`; **Mode / Variable / Custom Attribute are exempt** because their `state` legitimately carries a mode name or an enum value. (2) A `Periodic Schedule` with no `periodic` map is rejected, naming the stray top-level keys you passed instead.
+### Fail-loud `addTrigger` shape guards
 
-**Fail-loud `addAction` shape guards** (both reject before any hub write -- "RM is not touched"): (1) a condition-bearing action subtype (`ifThen`/`elseIf`/`repeatWhile`/`waitExpression`, matched irrespective of letter casing) passed a flat top-level `conditions` array is rejected and steered to the `expression` wrapper (`conditions:[...]` plus `operator`|`operators`); (2) an action-driven capability (any capability whose action schema exposes an `action` enum -- switch/dimmer/color/colorTemp/lock/shade/fan/button/..., plus the `Window Shade` display name) passed a trigger-style `state:` instead of `action:` is rejected and steered to `action:`.
+Both reject before any hub write, returning `success=false` with a structured error rather than committing a broken trigger: (1) a state-change token supplied as `state` with no `comparator` (e.g. `state:'changed'`/`'increased'` on a device-state or numeric trigger) is rejected and steered to `comparator:'*changed*'`; **Mode / Variable / Custom Attribute are exempt** because their `state` legitimately carries a mode name or an enum value. (2) A `Periodic Schedule` with no `periodic` map is rejected, naming the stray top-level keys you passed instead.
 
-**Did-you-mean on unknown capability names:** when `addTrigger` (or an `addRequiredExpression` / `ifThen` / `waitEvents` condition) capability name is not in the live picker's option list, the fail-loud error appends a closest-match suggestion drawn from that same list (so the suggested name is one the picker actually accepts).
+### Fail-loud `addAction` shape guards
 
-**Comma-joined mode steer:** a mode passed as a single comma-joined string (`state:'Day,Evening'`) is looked up as one nonexistent mode; the unknown-mode error steers to the list shape (`state:['Day','Evening']`) instead of an opaque "unknown mode". Applies across the trigger Mode path, per-mode actions, the `mode` action, and Mode conditions.
+Both reject before any hub write -- "RM is not touched": (1) a condition-bearing action subtype (`ifThen`/`elseIf`/`repeatWhile`/`waitExpression`, matched irrespective of letter casing) passed a flat top-level `conditions` array is rejected and steered to the `expression` wrapper (`conditions:[...]` plus `operator`|`operators`); (2) an action-driven capability (any capability whose action schema exposes an `action` enum -- switch/dimmer/color/colorTemp/lock/shade/fan/button/..., plus the `Window Shade` display name) passed a trigger-style `state:` instead of `action:` is rejected and steered to `action:`.
 
-**Condition-only rejects:** a `*changed*`/`*became*` state-change comparator on a device-state CONDITION capability (with no explicit value) is rejected on every condition surface (`addTrigger.condition`, `addRequiredExpression`, `ifThen`) and steered to a trigger row -- conditions are point-in-time, so a change comparator has no meaning there. The date/day-window condition capabilities (`Between two dates`, `Days of week`, `On a Day`) are unmodelled on every structured condition surface and are rejected up front, steering to `rawSettings`/`walkStep`.
+### Did-you-mean on unknown capability names
+
+when `addTrigger` (or an `addRequiredExpression` / `ifThen` / `waitEvents` condition) capability name is not in the live picker's option list, the fail-loud error appends a closest-match suggestion drawn from that same list (so the suggested name is one the picker actually accepts).
+
+### Comma-joined mode steer
+
+a mode passed as a single comma-joined string (`state:'Day,Evening'`) is looked up as one nonexistent mode; the unknown-mode error steers to the list shape (`state:['Day','Evening']`) instead of an opaque "unknown mode". Applies across the trigger Mode path, per-mode actions, the `mode` action, and Mode conditions.
+
+### Condition-only rejects
+
+a `*changed*`/`*became*` state-change comparator on a device-state CONDITION capability (with no explicit value) is rejected on every condition surface (`addTrigger.condition`, `addRequiredExpression`, `ifThen`) and steered to a trigger row -- conditions are point-in-time, so a change comparator has no meaning there. The date/day-window condition capabilities (`Between two dates`, `Days of week`, `On a Day`) are unmodelled on every structured condition surface and are rejected up front, steering to `rawSettings`/`walkStep`.
 
 ### `addAction` capability families
 
@@ -9819,16 +9829,20 @@ No custom operation-token or deployment-job protocol is exposed. If a non-contin
     ]
 }
 
-// Sub-section registry (issue #392). Four sections carry ~75% of the guide, so a caller after one
-// fact -- a Mode condition shape, say -- had to pull the whole 56 KB set_rule_reference. This maps
-// each oversized parent to narrower keys that hub_get_tool_guide accepts directly; parent keys are
+// Sub-section registry (issue #392). Four sections carry ~70% of the guide, so a caller after one
+// fact -- a Mode condition shape, say -- had to pull all 57 KB of set_rule_reference. This maps each
+// oversized parent to narrower keys that hub_get_tool_guide accepts directly; parent keys are
 // untouched and still return the whole section.
 //
 // A sub-key's value is the list of "### " heading PREFIXES it owns inside the parent's markdown.
 // A prefix claims EVERY heading it matches (so 'hub_update_app' takes both hub_update_app blocks),
 // and the EMPTY list means "owns the preamble" -- the text before the parent's first "### ".
-// The invariant: inside one parent, every block is claimed by exactly one sub-key. ToolGuideSubSectionsSpec
-// enforces it, so a newly added "### " heading fails CI instead of silently becoming unreachable.
+// The invariant ToolGuideSubSectionsSpec enforces: inside one parent, every block is claimed by
+// exactly one sub-key, so a new heading owned by nobody -- or by two sub-keys -- fails CI. What it
+// canNOT catch is ANNEXATION: a prefix silently swallows any longer heading starting with it, which
+// is how 'hub_get_device' already claims hub_get_device_attribute and hub_get_device_health. That is
+// deliberate here, but it means the prefix lists below are not an inventory of what each key serves
+// -- when you add a "### " heading, check which prefix already matches it.
 def getToolGuideSubSections() {
     return [
         hub_admin_write: [
@@ -9866,22 +9880,28 @@ def getToolGuideSubSections() {
         ],
         set_rule_reference: [
             set_rule_reference_overview: [],
-            set_rule_reference_triggers: ["`addTrigger`"],
-            set_rule_reference_actions: ["`addAction`"],
+            set_rule_reference_triggers: ["`addTrigger`", "Fail-loud `addTrigger`"],
+            set_rule_reference_actions: ["`addAction`", "Fail-loud `addAction`"],
             set_rule_reference_conditions: ["`addRequiredExpression`", "`replaceRequiredExpression`",
                                             "Extended per-capability spec shapes",
                                             "Supported comparison shapes",
                                             "deviceId vs deviceIds normalization"],
             set_rule_reference_walkstep: ["`walkStep`", "Raw `settings`/`button` mode"],
             set_rule_reference_responses: ["Partial-success and trailing-updateRule",
-                                           "Action-mutation defensive recovery"]
+                                           "Action-mutation defensive recovery"],
+            // Fail-loud rules that fire across trigger, action AND condition writes -- they belong
+            // to no single shortcut, so they get their own key rather than being filed under one.
+            set_rule_reference_guards: ["Did-you-mean on unknown capability names",
+                                        "Comma-joined mode steer", "Condition-only rejects"]
         ]
     ]
 }
 
 // Split a guide section into its "### " blocks. Index 0 is the preamble (everything before the
-// first "### "); every later entry starts with its own heading line. Used by the sub-section
-// resolver and by the spec that proves the split is lossless.
+// first "### "); every later entry starts with its own heading line. Each split CONSUMES the
+// newline before the heading, so the blocks reconstruct the section only when rejoined with a
+// single "\n" -- every caller depends on that. Used by the sub-section resolver and by the spec
+// that proves the split is lossless.
 def guideSectionBlocks(text) {
     def blocks = []
     def cur = []
@@ -9896,22 +9916,30 @@ def guideSectionBlocks(text) {
     return blocks
 }
 
-// Guide characters per hub_get_tool_guide response (issue #392). A tool result is JSON-encoded
-// TWICE on the wire -- serialized, embedded as a text content block, then serialized again -- which
-// costs ~6% over the raw markdown, so 90,000 chars lands near 95 KB against the 120,000-byte guard
-// with room for the response's own fields. Every section fits one page today; the full guide does not.
+// Guide characters per hub_get_tool_guide response. A tool result is JSON-encoded TWICE on the
+// wire -- serialized, embedded as a text content block, then serialized again -- which together
+// with the response's own fields costs ~5% over the raw markdown, so a 90,000-char page measures
+// ~95 KB against the 120,000-byte guard. Every section fits one page today; the full guide (~188 KB)
+// does not, and never did.
 def guidePageChars() { 90000 }
 
-// Page a guide payload so NO hub_get_tool_guide call can dead-end on the response-size guard
-// (issue #392: the documented no-section call returned 174 KB against a 120 KB cap, so it could
-// never return content -- and a size-guard envelope gives the caller nothing at all). Content that
-// fits one page comes back whole with no nextCursor, which is every section call today. Anything
-// larger pages AUTOMATICALLY, whether or not a cursor was passed: an unanswerable call is worse
-// than a first page. Pages break on a line boundary so no markdown line is ever split.
+// Page a guide payload so NO hub_get_tool_guide call can dead-end on the response-size guard: the
+// documented no-section call used to exceed the cap outright, and a size-guard envelope hands the
+// caller nothing at all. Content that fits one page comes back whole with no nextCursor, which is
+// every section and sub-section call today. Anything larger pages AUTOMATICALLY, whether or not a
+// cursor was passed -- an unanswerable call is worse than a first page. Pages break on a line
+// boundary so no markdown line is ever split, and a cursor aimed at a payload that was never paged
+// is rejected rather than silently lopping the head off the caller's section.
 def paginateGuideContent(content, cursor) {
     String text = (content ?: '').toString()
     int total = text.length()
     int start = _parseListCursor(cursor, total, "hub_get_tool_guide")
+    if (start > 0 && total <= guidePageChars()) {
+        throw new IllegalArgumentException(
+            "cursor ${start} does not belong to this payload: it fits one response (${total} chars) and was never paged, " +
+            "so paging from ${start} would silently drop the first ${start} characters. Omit cursor. " +
+            "A cursor is only valid for the call that returned it -- the no-section full-guide call.")
+    }
     int end = Math.min(start + guidePageChars(), total)
     if (end < total) {
         int nl = text.lastIndexOf("\n", end)
@@ -9925,9 +9953,12 @@ def paginateGuideContent(content, cursor) {
     ]
 }
 
-// Resolve a sub-section key to [parent, content], or null when the key is not one. Block 0 goes to
-// the sub-key declared with an empty prefix list; every other block goes to the sub-key one of whose
-// prefixes starts its heading text.
+// Resolve a sub-section key to [parent: <section key>, content: <markdown>], or null when the key
+// is not one. Block 0 goes to the sub-key declared with an empty prefix list; every other block
+// goes to the sub-key one of whose prefixes starts its heading text. Blocks are rejoined with a
+// single "\n" per guideSectionBlocks' contract. Returns null rather than empty content when nothing
+// matched (a renamed heading, a misspelled parent key), so the caller answers with the loud
+// unknown-section error instead of a plausible empty success.
 def guideSubSectionLookup(subKey) {
     def registry = getToolGuideSubSections()
     def parentKey = registry.keySet().find { registry[it].containsKey(subKey) }
@@ -9943,5 +9974,6 @@ def guideSubSectionLookup(subKey) {
         def heading = block.split("\n", -1)[0].substring(4)
         if (prefixes.any { heading.startsWith(it) }) mine << block
     }
+    if (!mine) return null
     return [parent: parentKey, content: mine.join("\n")]
 }

@@ -336,11 +336,16 @@ def toolGetToolGuide(section, cursor = null) {
         }
         def sub = guideSubSectionLookup(key)
         if (sub) {
+            // Siblings, not just the parent: some reference material is shared between shortcuts
+            // (the extended condition shapes serve addRequiredExpression, addAction.expression AND
+            // addTrigger.condition), so a caller that landed on the wrong sub-key needs the narrow
+            // alternatives -- naming only the parent sends it back to the fetch this split avoids.
             def result = [
                 success: true,
                 section: key,
                 parentSection: sub.parent,
-                note: "Part of the '${sub.parent}' section; hub_get_tool_guide(section='${sub.parent}') returns all of it.".toString()
+                subSections: subSections[sub.parent].keySet().toList(),
+                note: "Part of the '${sub.parent}' section. A sibling sub-key may hold what you need; hub_get_tool_guide(section='${sub.parent}') returns all of it.".toString()
             ]
             return _withGuidePage(result, sub.content, cursor)
         }
@@ -372,11 +377,13 @@ private Map _withGuidePage(Map result, content, cursor) {
     def paged = paginateGuideContent(content, cursor)
     result.content = paged.content
     if (paged.nextCursor != null || paged.offset > 0) {
-        result.nextCursor = paged.nextCursor
         result.offset = paged.offset
         result.totalChars = paged.totalChars
-        result.truncated = paged.nextCursor != null
     }
+    // ABSENT, never present-and-null, on the last page: the repo's cursor contract is "iterate
+    // nextCursor until absent", and a client that tests key presence would hand null back, land on
+    // page 1 again, and loop forever with no error.
+    if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
 }
 
@@ -385,11 +392,11 @@ def _getAllToolDefinitions_partDiscovery() {
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]] when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section to minimize tokens; omitting it now returns the full section + sub-section key list plus the first page of the whole guide, and pages onward via nextCursor.",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]] when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section to minimize tokens: omitting it returns the section + sub-section key list plus the first page of the whole guide, and pages onward via nextCursor -- but that first page is the largest response this tool produces, so on a timeout retry a specific section rather than the full guide.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
+                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_reference_guards", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
                     cursor: [type: "string", description: "Page a payload too large for one response. Omit it normally; pass the prior call's nextCursor to continue. Only the no-section full-guide call pages today."]
                 ]
             ]

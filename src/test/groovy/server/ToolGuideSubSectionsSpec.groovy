@@ -4,8 +4,8 @@ import support.ToolSpecBase
 
 /**
  * Issue #392: hub_get_tool_guide's four biggest sections (set_rule_reference,
- * builtin_app_tools, hub_admin_write, performance) carried ~75% of the guide, so a caller
- * after one fact -- the wire shape of a Mode condition, say -- had to pull all 56 KB of
+ * builtin_app_tools, hub_admin_write, performance) carry ~70% of the guide, so a caller
+ * after one fact -- the wire shape of a Mode condition, say -- had to pull all 57 KB of
  * set_rule_reference. getToolGuideSubSections() splits those four into narrower keys the
  * same `section` parameter accepts; the parent keys are untouched.
  *
@@ -95,6 +95,54 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
 
         then:
         problems == []
+    }
+
+    def "each sub-key serves the block it is named for, and not a sibling's -- #subKey"() {
+        // The losslessness test proves every block has exactly ONE owner; it cannot prove the owner
+        // is the RIGHT one. Moving hub_call_zwave from _radios to _devices, or the addAction guards
+        // back into _triggers, would keep every structural assertion green while the library
+        // pointers send callers to a sub-key that does not answer them. This is that check: one
+        // sentinel it MUST carry, one a sibling owns that it MUST NOT.
+        given:
+        def content = script.toolGetToolGuide(subKey).content as String
+
+        expect:
+        content.contains(present)
+        !content.contains(absent)
+
+        where:
+        subKey                          | present                                                       | absent
+        'hub_admin_write_overview'      | '## Admin, System & Destructive Write Tools'                  | '### hub_get_info'
+        'hub_admin_write_destructive'   | '### Destructive Write Tools - Pre-Flight Checklist'          | '### hub_call_zwave'
+        'hub_admin_write_radios'        | '### hub_call_zwave'                                          | '### hub_create_device'
+        'hub_admin_write_devices'       | '### hub_call_device_command'                                 | '### hub_set_zwave'
+        'hub_admin_write_code'          | '### hub_create_app'                                          | '### hub_update_firmware'
+        'hub_admin_write_system'        | '### hub_set_system_settings'                                 | '### hub_update_package'
+        'performance_overview'          | '## Performance Tips'                                         | '### hub_get_logs'
+        'performance_devices'           | '### hub_list_devices'                                        | '### hub_get_metrics'
+        'performance_diagnostics'       | '### hub_get_logs'                                            | '### hub_list_devices'
+        'builtin_app_tools_overview'    | '## Installed-App & Native-Rule Tools'                        | '### hub_call_rule'
+        'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_set_native_app'
+        'builtin_app_tools_rules'       | '### hub_get_rule_health'                                     | '### hub_list_drivers'
+        'builtin_app_tools_crud'        | '### Safety model for native CRUD'                            | '### hub_get_rule_health'
+        'set_rule_reference_overview'   | '## `hub_set_rule` capability reference'                      | '### `addTrigger` capability families'
+        'set_rule_reference_triggers'   | '### `addTrigger` capability families'                        | '### `addAction` capability families'
+        'set_rule_reference_actions'    | '### `addAction` capability families'                         | '### `addTrigger` capability families'
+        'set_rule_reference_conditions' | '### `addRequiredExpression` STPage capability list'          | '### `walkStep` schema-aware wizard walker'
+        'set_rule_reference_walkstep'   | '### `walkStep` schema-aware wizard walker'                   | '### `addRequiredExpression` STPage capability list'
+        'set_rule_reference_responses'  | '### Partial-success and trailing-updateRule response slots'  | '### Raw `settings`/`button` mode'
+        'set_rule_reference_guards'     | '### Did-you-mean on unknown capability names'                | '### `addTrigger` capability families'
+    }
+
+    def "the fail-loud shape guards each land with the shortcut they steer -- the pointers promise it"() {
+        // The addAction guards used to sit inside the addTrigger block, so retargeting addAction's
+        // description at _actions would have sent a caller whose write just failed to a page that
+        // did not contain its own recovery rule.
+        expect:
+        (script.toolGetToolGuide('set_rule_reference_actions').content as String)
+            .contains('### Fail-loud `addAction` shape guards')
+        (script.toolGetToolGuide('set_rule_reference_triggers').content as String)
+            .contains('### Fail-loud `addTrigger` shape guards')
     }
 
     def "toolGetToolGuide serves a sub-section with its parent named, and the parent still serves the whole section"() {

@@ -1,6 +1,6 @@
 package server
 
-import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import support.ToolSpecBase
 
 /**
@@ -9,45 +9,43 @@ import support.ToolSpecBase
  * the hub's 120,000-byte tools/call cap, so that call tripped the response-size guard and the
  * caller got NOTHING: no content, no key list, no way forward except reading the enum.
  *
- * It now pages instead. A payload that fits one response is unchanged (every section call today);
- * anything larger returns a first page plus nextCursor, so a caller always gets real content and
- * can walk the rest. Nothing this tool can return trips the guard any more.
+ * It now pages. The cap assertions here go through handleMcpRequest, so they are measured by the
+ * REAL guard in handleToolsCall against the REAL envelope (jsonRpcResult stamps resultType and the
+ * serverInfo _meta, and the result is JSON-encoded twice) rather than a stand-in built here.
  */
 class ToolGuidePaginationSpec extends ToolSpecBase {
 
-    // handleToolsCall's guard: hubResponseCapBytes() - 11072. Every page must land under it after
-    // the DOUBLE JSON encoding the wire does -- the result map is serialized, embedded as a text
-    // content block, then serialized again.
-    private static final int WIRE_LIMIT = 131072 - 11072
-
-    private int wireBytes(Map result) {
-        def envelope = [jsonrpc: '2.0', id: 1,
-                        result: [content: [[type: 'text', text: JsonOutput.toJson(result)]]]]
-        return JsonOutput.toJson(envelope).getBytes('UTF-8').length
+    /** Drive the tool through the production tools/call envelope, so the response-size guard,
+     *  the jsonRpcResult decoration and the executeTool dispatch line are all the real ones. */
+    private Map dispatch(Map args) {
+        def envelope = mcpDriver.callTool('hub_get_tool_guide', args)
+        def text = envelope?.result?.content?.getAt(0)?.text as String
+        return [envelope: envelope,
+                text: text,
+                payload: text ? new JsonSlurper().parseText(text) as Map : null]
     }
 
-    def "the no-section call returns content instead of tripping the size guard"() {
-        when:
-        def first = script.toolGetToolGuide(null)
+    def "the no-section call returns content through the real dispatch path instead of the size guard"() {
+        when: 'the documented discovery call, driven end to end'
+        def first = dispatch([:])
 
-        then: 'real content, not a size-guard dead end'
-        first.success == true
-        first.section == 'full'
-        (first.content as String).length() > 0
-        wireBytes(first) < WIRE_LIMIT
+        then: 'the size guard did not fire -- this is the whole point of the change'
+        first.payload.response_too_large == null
+        first.payload.success == true
+        first.payload.section == 'full'
+        (first.payload.content as String).length() > 0
 
-        and: 'the documented purpose of the no-section call -- discovering the key space -- is served on the very first page'
-        (first.availableSections as List).contains('set_rule_reference')
-        (first.availableSubSections['set_rule_reference'] as List).contains('set_rule_reference_conditions')
+        and: 'discovering the key space -- the documented purpose -- is served on the very first page'
+        (first.payload.availableSections as List).contains('set_rule_reference')
+        (first.payload.availableSubSections['set_rule_reference'] as List).contains('set_rule_reference_conditions')
 
-        and: 'the guide is bigger than one page, so the caller is told there is more and how to get it'
-        first.truncated == true
-        first.nextCursor != null
-        first.offset == 0
-        (first.totalChars as Integer) > (first.content as String).length()
+        and: 'the caller is told there is more, and how to get it'
+        first.payload.nextCursor != null
+        first.payload.offset == 0
+        (first.payload.totalChars as Integer) > (first.payload.content as String).length()
     }
 
-    def "walking nextCursor reassembles the whole guide, every page under the wire cap"() {
+    def "walking nextCursor through dispatch reassembles the guide, every page inside the real cap"() {
         given:
         def pages = []
         def cursor = null
@@ -55,12 +53,12 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
 
         when: 'iterate until the tool stops handing back a cursor'
         while (guard++ < 50) {
-            def page = script.toolGetToolGuide(null, cursor)
-            assert page.success == true
-            assert wireBytes(page) < WIRE_LIMIT :
-                "page at offset ${page.offset} is ${wireBytes(page)} wire bytes, over the ${WIRE_LIMIT} guard"
-            pages << (page.content as String)
-            cursor = page.nextCursor
+            def page = dispatch(cursor == null ? [:] : [cursor: cursor])
+            assert page.payload.response_too_large == null :
+                "page at offset ${page.payload.offset} tripped the response-size guard: ${page.payload}"
+            assert page.payload.success == true
+            pages << (page.payload.content as String)
+            cursor = page.payload.nextCursor
             if (cursor == null) break
         }
 
@@ -70,65 +68,92 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         pages.join('') == script.getToolGuideSections().collect { k, v -> v }.join('\n\n---\n\n')
     }
 
+    def "the last page omits nextCursor entirely -- a present-but-null key loops a contract-following client forever"() {
+        given: 'walk to the final page'
+        def page = dispatch([:])
+        def guard = 0
+        while (page.payload.nextCursor != null && guard++ < 50) {
+            page = dispatch([cursor: page.payload.nextCursor])
+        }
+
+        expect: 'the key is ABSENT, not null: a client that tests presence would hand null back and get page 1 again'
+        !(page.payload as Map).containsKey('nextCursor')
+        !page.text.contains('nextCursor')
+
+        and: 'it is still recognisably a later page'
+        (page.payload.offset as Integer) > 0
+        page.payload.totalChars == page.payload.offset + (page.payload.content as String).length()
+    }
+
     def "pages break on line boundaries and resume exactly where the previous page stopped"() {
         when:
-        def first = script.toolGetToolGuide(null)
-        def second = script.toolGetToolGuide(null, first.nextCursor)
+        def first = dispatch([:])
+        def second = dispatch([cursor: first.payload.nextCursor])
 
         then: 'a page never splits a markdown line'
-        (first.content as String).endsWith('\n')
+        (first.payload.content as String).endsWith('\n')
 
-        and: 'no gap and no overlap at the seam'
-        second.offset == (first.content as String).length()
-        first.nextCursor == second.offset.toString()
-        second.totalChars == first.totalChars
+        and: 'no gap and no overlap at the seam -- and the cursor actually reached the dispatcher'
+        second.payload.offset == (first.payload.content as String).length()
+        first.payload.nextCursor == second.payload.offset.toString()
+        second.payload.totalChars == first.payload.totalChars
     }
 
-    def "a section that fits one page is unchanged -- no cursor, no pagination fields"() {
+    def "a section that fits one page is unchanged -- no cursor, no pagination bookkeeping"() {
         when: 'the largest section, comfortably inside one page'
-        def result = script.toolGetToolGuide('set_rule_reference')
+        def result = dispatch([section: 'set_rule_reference'])
 
-        then: 'whole section, and none of the pagination bookkeeping'
-        (result.content as String) == (script.getToolGuideSections()['set_rule_reference'] as String)
-        result.nextCursor == null
-        !result.containsKey('offset')
-        !result.containsKey('totalChars')
-        !result.containsKey('truncated')
-        wireBytes(result) < WIRE_LIMIT
+        then: 'whole section, and none of the pagination fields'
+        (result.payload.content as String) == (script.getToolGuideSections()['set_rule_reference'] as String)
+        !(result.payload as Map).containsKey('nextCursor')
+        !(result.payload as Map).containsKey('offset')
+        !(result.payload as Map).containsKey('totalChars')
+        result.payload.response_too_large == null
     }
 
-    def "every section and sub-section returns whole in one response"() {
+    def "every section and sub-section returns whole in one response, under the real guard"() {
         given:
         def keys = (script.getToolGuideSections().keySet() as List) +
                    script.getToolGuideSubSections().values().collectMany { it.keySet().toList() }
 
         when:
-        def paged = keys.findAll { script.toolGetToolGuide(it).nextCursor != null }
-        def oversized = keys.findAll { wireBytes(script.toolGetToolGuide(it)) >= WIRE_LIMIT }
+        def defects = keys.findAll { key ->
+            def r = dispatch([section: key])
+            r.payload.response_too_large != null || r.payload.nextCursor != null
+        }
 
         then: 'the split keeps every named key a single-response fetch; pagination is the backstop, not the norm'
-        paged == []
-        oversized == []
+        defects == []
     }
 
-    def "a malformed cursor is a caller error, not a silent full response"() {
+    def "a cursor aimed at a payload that was never paged is refused, not silently served headless"() {
+        when: 'a cursor carried over from a full-guide walk, pointed at a section that fits one page'
+        def result = dispatch([section: 'set_rule_reference', cursor: '5000'])
+
+        then: 'refused as a caller error -- serving chars 5000.. would drop the head of the section with no signal'
+        result.envelope.error != null
+        result.envelope.error.code == -32602
+        (result.envelope.error.message as String).contains('fits one response')
+    }
+
+    def "a malformed cursor is a caller error, not a silent reset to page one"() {
         when:
-        script.toolGetToolGuide(null, 'not-a-number')
+        def bad = dispatch([cursor: 'not-a-number'])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('cursor')
+        bad.envelope.error.code == -32602
+        (bad.envelope.error.message as String).contains('cursor')
 
         when: 'a cursor past the end of the guide'
-        script.toolGetToolGuide(null, '99999999')
+        def far = dispatch([cursor: '99999999'])
 
         then:
-        def outOfRange = thrown(IllegalArgumentException)
-        outOfRange.message.contains('out of range')
+        far.envelope.error.code == -32602
+        (far.envelope.error.message as String).contains('out of range')
     }
 
     def "an empty cursor is the documented first page"() {
         expect:
-        script.toolGetToolGuide(null, '').content == script.toolGetToolGuide(null).content
+        dispatch([cursor: '']).payload.content == dispatch([:]).payload.content
     }
 }
