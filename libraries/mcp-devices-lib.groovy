@@ -4487,12 +4487,13 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
             def name = key.toString()
             try {
                 def declaration = _lookupDevicePreference(preferenceModel, name)
-                // Native JSON [] deletes the stored row and changes a declared multi-enum to
-                // multiple=false. The SDK wire representation "[]" preserves the
-                // declaration while the driver receives an actual empty List.
-                def emptyMultipleEnum = declaration?.type == "enum" && declaration?.multiple == true &&
-                    setting.value instanceof List && setting.value.isEmpty()
-                def wireValue = emptyMultipleEnum ? "[]" : (setting.value == null ? "" : setting.value)
+                // Native JSON arrays collapse to scalar driver values (and [] also deletes the
+                // stored row). The SDK wire representation is a JSON-array String: it preserves
+                // the multi-select declaration and the driver receives an actual List.
+                def multipleEnumList = declaration?.type == "enum" && declaration?.multiple == true &&
+                    setting.value instanceof List
+                def wireValue = multipleEnumList ? groovy.json.JsonOutput.toJson(setting.value) :
+                    (setting.value == null ? "" : setting.value)
                 def row = [name: name, type: setting.type, value: wireValue]
                 def payload = _devicePreferencePanePayload(deviceId, [:], [row])
                 hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))

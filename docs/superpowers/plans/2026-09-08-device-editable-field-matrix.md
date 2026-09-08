@@ -48,12 +48,14 @@ is the numeric `id`; display labels and `deviceTypeReadableType` are not IDs.
 The linked-device DNI selector reads `/device/accessibleLinkedDevices`, takes
 `.devices`, and offers `${hubId}-${deviceId}` with `linkedLocally` entries disabled.
 The special value `0` keeps the current device link; it must not be mistaken for
-an actual new identity. Preferences use native booleans/numbers/arrays in their
-JSON values. Multiple-enum storage can use JSON-array strings or comma-separated
-strings; the first live configuration E2E observed JSON-array strings. A native
-empty array deletes the preference row and loses its multi-select flag. Native
-empty multi-select saves therefore send the SDK JSON-array string `"[]"`; live
-verification confirms retained metadata and an actual empty List in the driver. All
+an actual new identity. Preferences use native booleans/numbers and typed values in
+their JSON rows. For a multiple enum, a raw JSON array is collapsed by the native
+handler into a scalar driver value; an empty raw array also deletes the preference
+row and loses its multi-select flag. Bypass saves therefore encode every multiple-enum
+List as the SDK's JSON-array string (`"[]"`, `"[\"red\"]"`, or
+`"[\"red\",\"blue\"]"`). Current-firmware live verification confirms that these
+preserve `multiple:true` and deliver actual empty, one-value and multi-value Lists to
+the driver. Scalar enums and other preference types retain their native values. All
 three captured device models put settings at the root; nested `device.settings`
 is not an evidenced compatibility source.
 
