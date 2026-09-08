@@ -188,11 +188,17 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the dedicated setShowOnHome endpoint 404s (older firmware) -- the GET throws'
         def device = new TestDevice(id: 10, label: 'Porch Light')
         childDevicesList << device
+        def showOnHome = false
         hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> throw new RuntimeException('Not Found (404)') }
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Porch Light","showOnHome":true}}' }
+        hubGet.register('/device/fullJson/10') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Porch Light', showOnHome: showOnHome,
+                retryEnabled: false, defaultCurrentState: '']])
+        }
         def posted = null
         script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
-            posted = [path: path, body: jsonBody]; return [status: 200]
+            posted = [path: path, body: jsonBody]
+            showOnHome = new groovy.json.JsonSlurper().parseText(jsonBody).showOnHome
+            return [status: 200]
         }
 
         when:
@@ -272,7 +278,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def currentState = 'temperature'
         hubGet.register('/device/fullJson/10') { params ->
             groovy.json.JsonOutput.toJson([device: [id: 10, label: 'Thermostat',
-                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState]])
+                currentStates: [temperature: [:], humidity: [:], switch: [:]], defaultCurrentState: currentState,
+                showOnHome: false, retryEnabled: false]])
         }
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=') { params -> currentState = null; 'true' }
         // Read-back: None reads back as null (the empty-string request is a clear).
