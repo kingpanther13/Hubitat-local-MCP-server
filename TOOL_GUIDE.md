@@ -344,7 +344,10 @@ report per-property successes and errors, so inspect the result before retrying.
 
 Use the preference's declared type, allowed values and range from configuration
 mode. Unknown names are refused. An unreadable schema/readback is reported
-separately from an unknown name or a value that did not persist.
+separately from an unknown name or a value that did not persist. Pass `value: null`
+to clear a saved preference. A driver default displayed afterward remains a
+default, not a saved value. Preference saves preserve Home visibility, status
+display and command-retry settings unless the patch explicitly changes them.
 
 **Room assignment:** Use exact room name as it appears in Hubitat (case-sensitive)
 

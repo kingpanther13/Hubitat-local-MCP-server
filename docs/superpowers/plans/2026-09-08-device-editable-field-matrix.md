@@ -31,7 +31,7 @@ scope, Write-master, advanced overrides and BPS enforcement.
 | Device note | `notes`: string | `device.notes` | Merged form | Empty string clears | Configuration form including Unicode/form-sensitive text; disposable note restore |
 | Show on Home | `showOnHome`: boolean | `device.showOnHome` | Existing setter or `/device/preference/save` JSON | Preserve other Preferences-pane fields | Existing edit/bypass specs; disposable homepage restore |
 | Default current state | `defaultCurrentState`: string | `device.defaultCurrentState` | Existing setter or `/device/preference/save` JSON | Attribute discovery; empty string selects None | Existing edit/bypass specs; disposable status restore |
-| Driver preferences | `preferences`: object keyed by declared name | Root `settings` definitions/saved rows and root `inputValues` | Listed `updateSetting`; bypass `/device/preference/save` JSON `{deviceId,preferences:[{name,type,value}]}` | Complete prevalidation; type/options/range; no invented names; distinguish unknown/unset/storage failure | Configuration root readback/clear/invalid preference plus preference specs; independent saved-value restore |
+| Driver preferences | `preferences`: object keyed by declared name | Root `settings` definitions/saved rows and root `inputValues` | Listed non-null `updateSetting`; clears and bypass use `/device/preference/save` JSON with the complete pane controls | Complete prevalidation; type/options/range; no invented names; distinguish unknown/unset/storage failure | Configuration root readback/clear/invalid preference plus preference specs; independent saved-value restore |
 | Apple HomeKit | `homeKitEnabled`: boolean | Root `homeKitEnabled` | `/device/updateAssistants` merged JSON | `homeKitSelectionEnabled`; confirm and backup | Configuration assistants/partial failure/confirmation; dedicated integration fixture required |
 | Amazon Alexa | `amazonAlexaEnabled`: boolean | Root `amazonAlexaEnabled` | `/device/updateAssistants` merged JSON | `amazonAlexaInstalled && amazonAlexaSupported`; confirm and backup | Configuration assistants/partial failure/confirmation; dedicated integration fixture required |
 | Google Home | `googleHomeEnabled`: boolean | Root `googleHomeEnabled` | `/device/updateAssistants` merged JSON | `googleHomeInstalled && googleHomeSupported`; confirm and backup | Configuration assistants/partial failure/confirmation; dedicated integration fixture required |
@@ -53,6 +53,17 @@ JSON values. Multiple-enum storage can use JSON-array strings or comma-separated
 strings; the first live configuration E2E observed JSON-array strings. All
 three captured device models put settings at the root; nested `device.settings`
 is not an evidenced compatibility source.
+
+Every `/device/preference/save` request preserves fresh `device.showOnHome`,
+`device.retryEnabled` (sent as `commandRetry`) and `device.defaultCurrentState`
+(null becomes the native empty no-selection value), then overlays requested
+changes. Omitting these controls can reset them even when only a preference is
+being saved. Missing or malformed preservation data prevents the save. Listed
+non-null preference changes retain the SDK path; clearing uses the native save
+because `updateSetting` with a null value can leave the previous value stored.
+After a native clear, the UI may prefill `inputValues` with a declared default.
+A setting row with explicit null storage ID, device ID and value is therefore
+reported as unset, with the default exposed separately, rather than as saved.
 
 The wholesale endpoint is `POST /device/update` with URL-encoded form fields.
 Vue maps true to `on`, false to `false`, null/undefined to empty string, and arrays

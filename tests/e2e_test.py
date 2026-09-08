@@ -3012,15 +3012,6 @@ class TestRunner:
                 }, "unlisted configuration device create")
                 device_id = created.get("deviceId")
                 assert created.get("success") is True and device_id, f"fixture device create failed: {created}"
-                initialized = self._write_once("hub_manage_devices", "hub_update_device", {
-                    "deviceId": device_id,
-                    "preferences": {
-                        name: {"type": kind, "value": value}
-                        for name, (kind, value) in expected.items()
-                    },
-                }, "unlisted configuration fixture preference initialization")
-                assert initialized.get("success") is True, \
-                    f"fixture preference initialization failed: {initialized}"
             else:
                 dni = label
                 self.created_device_dnis.append(dni)
@@ -3030,6 +3021,26 @@ class TestRunner:
                 }, "listed configuration device create")
                 device_id = (created.get("device") or {}).get("id")
             assert created.get("success") is True and device_id, f"fixture device create failed: {created}"
+            _, before_pane = capture()
+            update({"showOnHome": True, "defaultCurrentState": "switch"})
+            _, original_info = capture()
+            assert original_info["showOnHome"] is True and original_info["defaultCurrentState"] == "switch", \
+                f"preference preservation sentinels were not saved: {original_info}"
+            assert original_info["retryEnabled"] == before_pane["retryEnabled"], \
+                f"setting pane sentinels changed command retry: {original_info}"
+            if unlisted:
+                initialized = self._write_once("hub_manage_devices", "hub_update_device", {
+                    "deviceId": device_id,
+                    "preferences": {
+                        name: {"type": kind, "value": value}
+                        for name, (kind, value) in expected.items()
+                    },
+                }, "unlisted configuration fixture preference initialization")
+                assert initialized.get("success") is True, \
+                    f"fixture preference initialization failed: {initialized}"
+                _, initialized_info = capture()
+                assert all(initialized_info[key] == original_info[key] for key in original_info if key != "nonce"), \
+                    f"initial preferences changed device information: {initialized_info}"
             inventory = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
             rows = [row for row in inventory.get("devices", []) if str(row.get("id")) == str(device_id)]
             assert len(rows) == 1 and rows[0].get("mcpAuthorized") is (not unlisted), \
@@ -3040,7 +3051,7 @@ class TestRunner:
                 assert set(summary) == {"id", "name", "label", "room", "capabilities", "attributes", "commands"}, \
                     f"summary contract expanded: {summary.keys()}"
             cfg = configuration()
-            native, original_info = capture()
+            native, _ = capture()
             assert_native_preferences(native, cfg, expected)
             assert cfg.get("preferenceRead", {}).get("status") == "complete", f"preference discovery incomplete: {cfg}"
             assert cfg.get("deviceInfo", {}).get("driver", {}).get("name") == driver_name, \
@@ -3135,6 +3146,15 @@ class TestRunner:
                 native, _ = capture()
                 assert_native_preferences(native, configuration(), expected)
 
+            def assert_preference_pane_preserved(info):
+                for key in ("name", "label", "deviceNetworkId", "deviceTypeId",
+                            "showOnHome", "defaultCurrentState", "retryEnabled"):
+                    actual, baseline = info[key], original_info[key]
+                    if key == "defaultCurrentState":
+                        actual = "" if actual is None else actual
+                        baseline = "" if baseline is None else baseline
+                    assert actual == baseline, f"preference edit changed {key}: {info}"
+
             for name, value in (("probeBool", True), ("probeBool", False), ("probeNumber", 0),
                                 ("probeText", "literal & + = café"), ("probeEnum", "comfort"),
                                 ("probeMultiple", ["red", "blue"]), ("probeMultiple", [])):
@@ -3149,23 +3169,39 @@ class TestRunner:
                     update({"preferences": {name: {"type": kind, "value": value}}})
                     native, info = capture()
                     assert_native_preferences(native, configuration(), desired)
-                    for key in ("name", "label", "deviceNetworkId", "deviceTypeId"):
-                        assert info[key] == original_info[key], f"preference edit changed {key}: {info}"
+                    assert_preference_pane_preserved(info)
                 finally:
                     update({"preferences": {name: {"type": kind, "value": original}}})
-                    native, _ = capture()
+                    native, info = capture()
+                    assert_preference_pane_preserved(info)
                     assert_native_preferences(native, configuration(), expected)
 
             try:
                 update({"preferences": {"probeText": {"type": "text", "value": None}}})
-                native, _ = capture()
+                native, info = capture()
+                assert_preference_pane_preserved(info)
                 assert isinstance(native.get("settings"), list) and isinstance(native.get("inputValues"), list), \
                     f"clear cannot be verified against unavailable native storage: {native}"
                 input_rows = [row for row in native["inputValues"] if row.get("name") == "probeText"]
                 setting_rows = [row for row in native["settings"] if row.get("name") == "probeText"]
                 assert len(setting_rows) == 1 and len(input_rows) <= 1, f"clear lost preference definition: {native}"
                 cleared = next(row for row in configuration()["preferences"] if row["name"] == "probeText")
-                if input_rows:
+                native_setting = setting_rows[0]
+                native_unset = (
+                    native_setting.get("valuePresent") is True
+                    and native_setting.get("storageIdPresent") is True
+                    and native_setting.get("storageDeviceIdPresent") is True
+                    and native_setting.get("storageId") is None
+                    and native_setting.get("storageDeviceId") is None
+                    and native_setting.get("value") is None
+                )
+                if native_unset:
+                    assert cleared["valuePresent"] is False and cleared["valueStatus"] == "unset", \
+                        f"UI default was reported as saved after native clear: {cleared}"
+                    assert cleared["value"] is None, f"unset preference retained a saved value: {cleared}"
+                    assert cleared["defaultValue"] == native_setting["defaultValue"], \
+                        f"clear lost the separate driver default: {cleared}"
+                elif input_rows:
                     saved = input_rows[0]["inputValue"]
                     assert saved in (None, ""), f"native text clear retained a saved value: {saved!r}"
                     assert cleared["valuePresent"] is True and cleared["valueStatus"] == "stored", \
@@ -3180,13 +3216,14 @@ class TestRunner:
                         f"missing native value conflated with explicit null: {cleared}"
             finally:
                 update({"preferences": {"probeText": {"type": "text", "value": expected["probeText"][1]}}})
-                native, _ = capture()
+                native, info = capture()
+                assert_preference_pane_preserved(info)
                 assert_native_preferences(native, configuration(), expected)
 
             edits = {
                 "notes": "Native persistence: café & + =", "tags": ["configuration-probe"],
                 "maxEvents": 47, "maxStates": 31, "spammyThreshold": 321,
-                "showOnHome": not original_info["showOnHome"], "defaultCurrentState": "switch",
+                "showOnHome": not original_info["showOnHome"], "defaultCurrentState": "",
                 "defaultIcon": "he-switch_1", "name": f"{label}_name", "label": f"{label}_label",
             }
             editable = {entry["name"]: entry for entry in cfg.get("editableFields", [])}
@@ -3210,10 +3247,16 @@ class TestRunner:
                 try:
                     update({key: value})
                     native, info = capture()
-                    assert info[key] == native_value, f"native {key} did not persist: {info[key]!r} != {native_value!r}"
+                    observed = info[key]
+                    if key == "defaultCurrentState" and observed is None:
+                        observed = ""
+                    assert observed == native_value, f"native {key} did not persist: {info[key]!r} != {native_value!r}"
                     current_configuration = configuration()
                     current = {row["name"]: row for row in current_configuration["editableFields"]}
-                    assert current[key]["value"] == value, f"configuration {key} disagrees with native page: {current[key]}"
+                    observed = current[key]["value"]
+                    if key == "defaultCurrentState" and observed is None:
+                        observed = ""
+                    assert observed == value, f"configuration {key} disagrees with native page: {current[key]}"
                     assert_native_preferences(native, current_configuration, expected)
                     for preserved in ("deviceNetworkId", "deviceTypeId"):
                         assert info[preserved] == original_info[preserved], f"form edit changed {preserved}: {info}"

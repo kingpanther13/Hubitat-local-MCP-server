@@ -42,7 +42,9 @@ def captureConfiguration(String nonce) {
         }
         def names = ["probeBool", "probeNumber", "probeText", "probeEnum", "probeMultiple"]
         def rows = nativePage.settings instanceof List ? nativePage.settings.findAll { names.contains(it.name) }.collect {
-            [name: it.name, type: it.type, value: it.value, valuePresent: it.containsKey("value")]
+            [name: it.name, type: it.type, value: it.value, valuePresent: it.containsKey("value"),
+             storageId: it.id, storageIdPresent: it.containsKey("id"),
+             storageDeviceId: it.deviceId, storageDeviceIdPresent: it.containsKey("deviceId"), defaultValue: it.defaultValue]
         } : null
         def values = nativePage.inputValues instanceof List ? nativePage.inputValues.findAll { names.contains(it.name) }.collect {
             [name: it.name, inputValue: it.inputValue]
@@ -51,7 +53,7 @@ def captureConfiguration(String nonce) {
         def info = [nonce: nonce, deviceId: device.id.toString()]
         ["name", "label", "deviceNetworkId", "deviceTypeId", "notes", "maxEvents", "maxStates",
          "spammyThreshold", "tags", "defaultIcon", "showOnHome", "defaultCurrentState",
-         "roomId", "roomName", "isComponent", "meshSelectionEnabled", "retryAvailable"].each { key ->
+         "roomId", "roomName", "isComponent", "meshSelectionEnabled", "retryAvailable", "retryEnabled"].each { key ->
             if (nativePage.device.containsKey(key)) info[key] = nativePage.device[key]
         }
         [nativeConfiguration: snapshot, nativeDeviceInfo: info].each { attributeName, data ->

@@ -42,10 +42,11 @@ def test_accepts_native_json_array_storage_without_changing_typed_expectation(su
     assert_native_preferences(native, configuration, expected)
 
 
+@pytest.mark.parametrize("surface", ["settings", "inputValues"])
 @pytest.mark.parametrize("wire", ['["red"]', '["blue","red"]', '["red","blue","red"]'])
-def test_json_array_storage_with_a_different_selection_fails(wire):
+def test_json_array_storage_with_a_different_selection_fails(surface, wire):
     native, configuration, expected = fixture()
-    native["settings"][-1]["value"] = wire
+    native[surface][-1]["value" if surface == "settings" else "inputValue"] = wire
     with pytest.raises(AssertionError, match="probeMultiple"):
         assert_native_preferences(native, configuration, expected)
 
