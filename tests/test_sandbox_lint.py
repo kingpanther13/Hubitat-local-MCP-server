@@ -1009,3 +1009,80 @@ def test_logs_json_guard_findings_format_without_error(tmp_path, monkeypatch):
     for f in findings:
         assert "source" in f
         assert sl.format_finding(f).startswith("ERROR: ")
+
+
+# ---------------------------------------------------------------------------
+# Retired persisted derived-key writes (issue #402)
+# ---------------------------------------------------------------------------
+
+_RETIRED_DERIVED_KEYS = (
+    "toolSearchCorpus",
+    "toolSearchTokens",
+    "toolSearchCorpusVersion",
+    "toolSearchCorpusFingerprint",
+    "requiredParamsByTool",
+    "requiredParamsByToolFingerprint",
+)
+
+
+@pytest.mark.parametrize("store", ("state", "atomicState"))
+@pytest.mark.parametrize("key", _RETIRED_DERIVED_KEYS)
+def test_retired_persisted_key_guard_flags_dot_writes(store, key):
+    """Reintroducing any retired code-derived cache through property assignment is rejected."""
+    source = f"{store}.{key} = buildDerivedValue()"
+    findings = sl._scan_retired_persisted_key_writes("<test>", source)
+    assert len(findings) == 1
+    assert findings[0]["rule"] == "PERSISTED_DERIVED_KEY"
+    assert key in findings[0]["message"]
+    assert findings[0]["line"] == 1
+
+
+@pytest.mark.parametrize("store", ("state", "atomicState"))
+@pytest.mark.parametrize("quote", ("'", '\"'))
+@pytest.mark.parametrize("key", _RETIRED_DERIVED_KEYS)
+def test_retired_persisted_key_guard_flags_bracket_writes(store, quote, key):
+    """Quoted bracket keys remain visible even though ordinary lint string stripping hides them."""
+    source = f"{store}[{quote}{key}{quote}] = buildDerivedValue()"
+    findings = sl._scan_retired_persisted_key_writes("<test>", source)
+    assert len(findings) == 1
+    assert findings[0]["rule"] == "PERSISTED_DERIVED_KEY"
+    assert findings[0]["source"] == source
+
+
+def test_retired_persisted_key_guard_allows_reads_cleanup_and_migration():
+    """Legacy values may be inspected, copied into memory, and removed during migration."""
+    source = """
+def oldCorpus = atomicState.toolSearchCorpus
+def oldTokens = state['toolSearchTokens']
+if (atomicState['toolSearchCorpusVersion'] != null) migrate(oldCorpus)
+def oldFingerprint = state.toolSearchCorpusFingerprint
+atomicState.remove('requiredParamsByTool')
+state.remove("requiredParamsByToolFingerprint")
+"""
+    assert sl._scan_retired_persisted_key_writes("<test>", source) == []
+
+
+def test_retired_persisted_key_guard_ignores_comments_and_string_contents():
+    """Documentation and log text naming a forbidden write do not create findings."""
+    source = '''
+// atomicState.toolSearchCorpus = rebuilt
+/* state['toolSearchTokens'] = tokens */
+def note = "atomicState['requiredParamsByTool'] = memo"
+def detail = ''' + "'''state.toolSearchCorpusFingerprint = fp'''" + '''
+'''
+    assert sl._scan_retired_persisted_key_writes("<test>", source) == []
+
+
+def test_retired_persisted_key_guard_reports_each_real_write_among_ignored_text():
+    """Comment/string stripping must not blind the scanner to nearby bracket-key writes."""
+    source = '''
+def note = "state['toolSearchCorpus'] = pretend"
+atomicState['toolSearchCorpus'] = buildCorpus()
+// atomicState.requiredParamsByTool = pretend
+state.requiredParamsByTool = buildRequiredParams()
+'''
+    findings = sl._scan_retired_persisted_key_writes("<test>", source)
+    assert [(f["line"], f["source"]) for f in findings] == [
+        (3, "atomicState['toolSearchCorpus'] = buildCorpus()"),
+        (5, "state.requiredParamsByTool = buildRequiredParams()"),
+    ]
