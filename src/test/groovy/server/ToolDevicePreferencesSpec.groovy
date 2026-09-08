@@ -273,6 +273,63 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         !result.toString().contains('synthetic-device-data-secret')
     }
 
+    def "linked device preferences remain readable but point writes to the source device"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.device.linkedDevice = true
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+        def preferenceField = result.editableFields.find { it.name == 'preferences' }
+        def preferences = result.preferences.collectEntries { [(it.name): it] }
+
+        then:
+        preferenceField.valueReference == 'preferences'
+        preferenceField.valuePresent
+        preferenceField.readStatus == 'complete'
+        !preferenceField.applicable
+        !preferenceField.writable
+        preferenceField.reason == 'Driver preferences cannot be saved on a linked device; edit the source device.'
+
+        and: 'stored values, types, and defaults remain available for inspection'
+        preferences.descriptionLogging.value == false
+        preferences.descriptionLogging.type == 'bool'
+        preferences.descriptionLogging.defaultValue == true
+        preferences.declarationOnly.valueStatus == 'unset'
+        preferences.declarationOnly.defaultValue == 'factory-default'
+        preferences.values().every {
+            !it.applicable && !it.writable &&
+                it.reason == 'Driver preferences cannot be saved on a linked device; edit the source device.'
+        }
+    }
+
+    def "linked device target options expose native local-link exclusions"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.device.linkedDevice = true
+        registerFixture(DEVICE_ID, full)
+        hubGet.register('/device/accessibleLinkedDevices') { params ->
+            JsonOutput.toJson([devices: [
+                [hubId: 2001, deviceId: 41, label: 'Already linked here', linkedLocally: true],
+                [hubId: 2001, deviceId: 42, name: 'Available remote target', linkedLocally: false]
+            ]])
+        }
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+        def networkId = result.editableFields.find { it.name == 'deviceNetworkId' }
+
+        then:
+        networkId.options == [
+            [value: '0', label: 'Keep current device link'],
+            [value: '2001-41', label: 'Already linked here', disabled: true],
+            [value: '2001-42', label: 'Available remote target', disabled: false]
+        ]
+    }
+
     def "native fetch failure preserves useful identity and explicitly unavailable discovery"() {
         given:
         addListedDevice()
