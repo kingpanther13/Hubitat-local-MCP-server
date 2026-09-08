@@ -375,6 +375,190 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         result.changes.find { it.property == 'retryEnabled' }
     }
 
+    @Unroll
+    def 'clear cannot be confirmed from partial malformed preference storage in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        registerFixture(model, bypass)
+        def writes = []
+        def loseStorage = {
+            writes << 'preference'
+            model.settings.find { it.name == 'logEnable' }.remove('value')
+            model.inputValues = [logEnable: 'ambiguous storage']
+        }
+        if (!bypass) childDevicesList[0].metaClass.updateSetting = { String name, setting -> loseStorage() }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            loseStorage()
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: [type: 'bool', value: null]]])
+
+        then:
+        writes == ['preference']
+        result.success == false
+        !result.changes.find { it.property == 'preference.logEnable' }
+        result.errors.find { it.property == 'preference.logEnable' }?.status == 'unavailable'
+
+        where:
+        bypass << [false, true]
+    }
+
+    @Unroll
+    def 'fresh form model missing #scope.#field is refused before POST in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        registerFixture(model, bypass)
+        def reads = 0
+        hubGet.register('/device/fullJson/10') {
+            if (++reads == 2) {
+                if (scope == 'device') model.device.remove(field)
+                else model.remove(field)
+            }
+            JsonOutput.toJson(model)
+        }
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false ->
+            forms << decodeForm(body)
+            model.device.notes = 'New note'
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', notes: 'New note'])
+
+        then:
+        forms.empty
+        result.success == false
+        !result.changes.find { it.property == 'notes' }
+        result.errors.find { it.property == 'notes' }?.error?.contains(field)
+
+        where:
+        [bypass, row] << [[false, true], [
+            ['device', 'id'], ['device', 'version'], ['device', 'controllerType'],
+            ['device', 'name'], ['device', 'label'], ['device', 'deviceNetworkId'],
+            ['device', 'deviceTypeId'], ['device', 'deviceTypeReadableType'], ['device', 'zigbeeId'],
+            ['device', 'roomId'], ['device', 'locationId'], ['device', 'hubId'], ['device', 'groupId'],
+            ['device', 'maxEvents'], ['device', 'maxStates'], ['device', 'spammyThreshold'],
+            ['device', 'meshEnabled'], ['device', 'retryEnabled'], ['device', 'meshFullSync'],
+            ['device', 'tags'], ['device', 'defaultIcon'], ['device', 'notes'],
+            ['root', 'homeKitEnabled'], ['root', 'dashboards']
+        ]].combinations()
+        scope = row[0]
+        field = row[1]
+    }
+
+    @Unroll
+    def 'invalid dashboard preservation source #dashboards is refused before a notes POST'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        def reads = 0
+        hubGet.register('/device/fullJson/10') {
+            if (++reads == 2) model.dashboards = dashboards
+            JsonOutput.toJson(model)
+        }
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false -> forms << body; '' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', notes: 'New note'])
+
+        then:
+        forms.empty
+        result.success == false
+        result.errors.find { it.property == 'notes' }?.error?.contains('dashboards')
+
+        where:
+        dashboards << [null, [:], [[id: 1]], [[selected: true]]]
+    }
+
+    def 'explicit nullable fields false and version zero survive a complete form save'() {
+        given:
+        def model = fixture()
+        model.device.zigbeeId = null
+        model.device.roomId = null
+        model.device.label = null
+        model.device.defaultIcon = null
+        model.device.notes = null
+        model.homeKitEnabled = false
+        model.dashboards = []
+        registerFixture(model, true)
+        def form
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false ->
+            form = decodeForm(body)
+            model.device.maxEvents = 100
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', maxEvents: 100])
+
+        then:
+        result.success == true
+        form.zigbeeId == ''
+        form.roomId == ''
+        form.label == ''
+        form.defaultIcon == ''
+        form.notes == ''
+        form.dashboardIds == ''
+        form.homeKitEnabled == 'false'
+        form.meshEnabled == 'false'
+        form.version == '0'
+        form.groupId == '0'
+    }
+
+    @Unroll
+    def 'nonempty defaultCurrentState needs authoritative attributes before a mixed update in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        if (shape != 'absent') model.device.currentStates = shape == 'null' ? null : []
+        registerFixture(model, bypass)
+        def writes = []
+        if (!bypass) childDevicesList[0].metaClass.setLabel = { String label -> writes << 'label' }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false -> writes << path; '' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> writes << path; [success: true] }
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { writes << 'defaultCurrentState'; 'true' }
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', label: 'Must not apply', defaultCurrentState: 'switch'])
+
+        then:
+        thrown(IllegalArgumentException)
+        writes.empty
+
+        where:
+        [bypass, shape] << [[false, true], ['absent', 'null', 'list']].combinations()
+    }
+
+    @Unroll
+    def 'linked component exposes native linked-target DNI selection in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        model.device.linkedDevice = true
+        model.device.isComponent = true
+        registerFixture(model, bypass)
+        hubGet.register('/device/accessibleLinkedDevices') { JsonOutput.toJson([devices: [[hubId: 'source-hub', deviceId: 11, linkedLocally: false]]]) }
+        def form
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false ->
+            form = decodeForm(body)
+            model.device.deviceNetworkId = form.deviceNetworkId
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', confirm: true, deviceNetworkId: 'source-hub-11'])
+
+        then:
+        result.success == true
+        form.deviceNetworkId == 'source-hub-11'
+        result.changes.find { it.property == 'deviceNetworkId' }?.newValue == 'source-hub-11'
+
+        where:
+        bypass << [false, true]
+    }
+
     def 'secret preference saved value is never echoed in the changes response'() {
         given:
         def model = fixture()

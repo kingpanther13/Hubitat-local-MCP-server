@@ -367,4 +367,78 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.sourceCoverage.status == 'partial'
         result.sourceCoverage.unmappedDeviceFields == ['futureFirmwareField']
     }
+
+    def "details redacts secret attribute records from the listed device path"() {
+        given:
+        childDevicesList << new TestDevice(id: 901, name: 'Fixture', supportedAttributes: [[name: 'apiToken', dataType: 'STRING']],
+            attributeValues: [apiToken: 'private-attribute-value'])
+        registerFixture()
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'details', ['attributes'])
+
+        then:
+        !result.toString().contains('private-attribute-value')
+        result.sections.attributes.declaredAttributes[0].name == 'apiToken'
+        result.sections.attributes.declaredAttributes[0].value == '***redacted (password)***'
+    }
+
+    def "empty multiple enum storage is a saved empty selection while explicit null remains null"() {
+        given:
+        def full = [device: [id: 1], settings: [[name: 'choices', type: 'enum', multiple: true, value: '']], inputValues: []]
+
+        when:
+        def empty = script._lookupDevicePreference(script._readDevicePreferenceModel(full), 'choices')
+        full.settings[0].value = null
+        def explicitNull = script._lookupDevicePreference(script._readDevicePreferenceModel(full), 'choices')
+
+        then:
+        empty.value == []
+        empty.valuePresent
+        empty.valueStatus == 'stored'
+        explicitNull.value == null
+        explicitNull.valuePresent
+    }
+
+    def "missing and malformed native sections cannot masquerade as complete empty information"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.scheduledJobs = 'unexpected'
+        ['parentApp', 'childDevices', 'appsUsing', 'appsUsingCount', 'appsUsingForDialog', 'hasChildren'].each { full.remove(it) }
+        full.remove('amazonAlexaEnabled')
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'details', ['jobs', 'relationships', 'integrations'])
+
+        then:
+        result.sectionRead.jobs.status in ['partial', 'unavailable']
+        result.sectionRead.relationships.status in ['partial', 'unavailable']
+        result.sectionRead.integrations.status in ['partial', 'unavailable']
+        result.sectionRead.values().every { it.reason }
+    }
+
+    def "field discovery and projection keep individually large sections reachable below the response cap"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [first: 'a' * 60000, second: 'b' * 60000, third: 'c' * 60000]
+        full.settings.each { it.description = 'd' * 25000 }
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def index = script.toolGetDevice(DEVICE_ID, 'details', ['state'], [])
+        def part = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['second'])
+        def configuration = script.toolGetDevice(DEVICE_ID, 'configuration', null, ['descriptionLogging'])
+
+        then:
+        index.availableFields.state == ['first', 'second', 'third']
+        index.sections.state == [:]
+        part.sections.state == [second: 'b' * 60000]
+        configuration.preferences*.name == ['descriptionLogging']
+        JsonOutput.toJson(index).getBytes('UTF-8').length < 4000
+        JsonOutput.toJson(part).getBytes('UTF-8').length < 100000
+        JsonOutput.toJson(configuration).getBytes('UTF-8').length < 100000
+    }
 }
