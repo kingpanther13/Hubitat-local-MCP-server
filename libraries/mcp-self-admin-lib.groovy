@@ -83,7 +83,7 @@ def toolUpdateMcpSettings(args) {
         if (!allowedSettings.containsKey(keyStr)) {
             throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via hub_update_mcp_settings. Allowed: ${allowedKeyNames.join(', ')}")
         }
-        def coerced = coerceSettingValue(keyStr, value, allowedSettings[keyStr])
+        def coerced = coerceSettingValue(keyStr, value, allowedSettings.get(keyStr))
         // Per-key sub-validation that the apply step would otherwise discover too late.
         // mcpLogLevel must be one of the configured log levels — if 'blarg' slipped through
         // the enum coerce and only failed inside toolSetLogLevel during apply, any prior
@@ -98,7 +98,7 @@ def toolUpdateMcpSettings(args) {
             }
             coerced = numeric.intValue()
         }
-        updates[keyStr] = coerced
+        updates.put(keyStr, coerced)
     }
 
     // selectedDevices is VALIDATED FIRST (still no write): _validateMcpDeviceScope does its own

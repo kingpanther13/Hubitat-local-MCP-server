@@ -501,7 +501,7 @@ private String _contextDeviceLine(device, List attrNames) {
     boolean stateReadFailed = false
     try {
         device.currentStates?.each { st ->
-            if (st?.name != null && st.value != null) states[st.name.toString()] = st
+            if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
         }
     } catch (Exception e) {
         // Serve the line rather than failing the whole snapshot, but a failed read must
@@ -512,7 +512,7 @@ private String _contextDeviceLine(device, List attrNames) {
     }
     def attrParts = []
     attrNames.each { an ->
-        def st = states[an]
+        def st = states.get(an)
         if (st != null) {
             def unit = null
             // Per-attribute micro-read; a failure only drops the unit suffix, so no log.
@@ -643,7 +643,7 @@ def _buildContextJson() {
         try {
             d.currentStates?.each { st ->
                 if (st?.name != null && st.value != null && contextAttrs.contains(st.name.toString())) {
-                    attrs[st.name.toString()] = st.value.toString()
+                    attrs.put(st.name.toString(), st.value.toString())
                 }
             }
         } catch (Exception e) {
@@ -789,7 +789,7 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
                 // `capabilities: []`, and an authorized device would then hide from capabilityFilter
                 // behind a list the model could have filled. Treat it exactly like an absent list.
                 if (entry.capabilities instanceof List && !entry.capabilities.isEmpty()) { rec.capabilities = entry.capabilities; feedHasCapabilities = true }
-                feed[entry.id.toString()] = rec
+                feed.put(entry.id.toString(), rec)
             }
             if (feed.isEmpty()) {
                 mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices answered ${parsed.size()} entries but none carried an id")
@@ -832,7 +832,7 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         def records = spine.collect { d ->
             def key = d.id?.toString()
             spineIds << key
-            def entry = feed[key]
+            def entry = feed.get(key)
             if (entry != null && entry.containsKey("capabilities")) return [id: d.id, label: d.label, capabilities: entry.capabilities]
             missingCapabilities++
             return [id: d.id, label: d.label]   // no `capabilities` key on purpose: routes to the model fill-in
@@ -931,7 +931,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         // authorized yet unmatchable by capabilityFilter.
         (((selectedDevices ?: []) as List) + ((getChildDevices() ?: []) as List)).each { dev ->
             def did = dev?.id?.toString()
-            if (did != null) capsById[did] = _capabilityNames(dev.capabilities)
+            if (did != null) capsById.put(did, _capabilityNames(dev.capabilities))
         }
     }
 
@@ -941,7 +941,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     def devices = raw.findAll { it instanceof Map }.collect { d ->
         def idStr = d.id?.toString()
         def caps = (d.capabilities instanceof List) ? _capabilityNames(d.capabilities)
-                                                   : (idStr != null ? (capsById[idStr] ?: []) : [])
+                                                   : (idStr != null ? (capsById.get(idStr) ?: []) : [])
         [id: idStr, label: d.label, capabilities: caps, mcpAuthorized: idStr != null && authorizedIds.contains(idStr)]
     }
     def unfilteredTotal = devices.size()
@@ -1470,7 +1470,7 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean l
 private _readBypassAttrValueFrom(Map fullJson, attribute) {
     def st = fullJson?.device?.currentStates
     if (!(st instanceof Map)) return null
-    def entry = st[attribute]
+    def entry = st.get(attribute)
     return (entry instanceof Map) ? entry.value : entry
 }
 

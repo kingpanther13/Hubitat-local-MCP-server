@@ -250,20 +250,18 @@ private def {function_name}(value) {{
 """
     findings = sandbox_map_findings(source)
     assert {f["rule"] for f in findings} == {"sandbox-map-key-subscript"}
-    assert {f["severity"] for f in findings} == {"warning"}
 
 
 def test_sandbox_map_guard_catches_known_colliding_literal_key():
     source = """
 private def renderCatalog(Map response) {
-    def nested = response['fields']
-    nested['getClass'] = response['getClass']
+    def nested = [:]
+    nested['fields'] = response.get('fields')
     return nested
 }
 """
     findings = sandbox_map_findings(source)
     assert {f["rule"] for f in findings} == {"sandbox-map-key-subscript"}
-    assert {f["severity"] for f in findings} == {"error"}
 
 
 def test_sandbox_map_guard_accepts_get_put_for_arbitrary_and_colliding_keys():
@@ -404,7 +402,7 @@ private def copyRows(List rows, int index, value) {
     assert sandbox_map_findings(source) == []
 
 
-def test_sandbox_map_guard_allows_bounded_keys_and_does_not_treat_comparison_as_write():
+def test_sandbox_map_guard_allows_bounded_keys_and_reports_comparison_as_read():
     source = """
 private def copyStatus(Map source, String key) {
     def output = [:]
@@ -412,8 +410,221 @@ private def copyStatus(Map source, String key) {
     return output[key] == source.get(key)
 }
 """
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "read candidate output[key]" in findings[0]["message"]
+
+
+
+
+@pytest.mark.parametrize("key", ["fields", "class", "metaClass"])
+@pytest.mark.parametrize("access", ["return copy['KEY']", "copy['KEY'] = false"])
+def test_measured_untyped_literal_collisions_block_reads_and_writes(key, access):
+    source = "private def probe() {\n def copy = [:]\n " + access.replace("KEY", key) + "\n}"
+    findings = sandbox_map_findings(source)
+    assert findings
+    assert all(f["severity"] == "error" for f in findings)
+
+
+@pytest.mark.parametrize("key", ["Fields", "getClass"])
+def test_scanner_exempts_measured_noncolliding_literal_names(key):
+    source = f"private def probe() {{\n def copy = [:]\n copy['{key}'] = false\n return copy['{key}']\n}}"
     assert sandbox_map_findings(source) == []
 
+
+@pytest.mark.parametrize("key", ["fields", "class"])
+def test_explicit_map_type_accepts_measured_literal_access(key):
+    source = f"private def probe(Map copy) {{\n copy['{key}'] = false\n return copy['{key}']\n}}"
+    assert sandbox_map_findings(source) == []
+
+
+def test_typed_metaclass_assignment_is_still_a_collision():
+    source = "private def probe(Map copy) {\n copy['metaClass'] = false\n}"
+    assert any(f["severity"] == "error" for f in sandbox_map_findings(source))
+
+
+def test_external_untyped_map_reads_are_detected():
+    source = """private def readValues(Map values) {
+ def copy = [:] + values
+ values.each { key, value ->
+  def seen = copy[key]
+ }
+}"""
+    assert sandbox_map_findings(source)
+
+
+def test_bounded_device_mapping_branch_is_not_external_key_evidence():
+    source = """private def mapDevice(Map values) {
+ def result = [:]
+ values.each { key, value ->
+  if (key == "deviceId" && value != null) {
+   result[key] = value
+  } else {
+   result[key] = value
+  }
+ }
+ return result
+}"""
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [7]
+
+
+def test_alias_of_map_return_is_scanned_without_a_method_name_exemption():
+    source = """private Map obtainSchema() {
+ return [:]
+}
+private def copySchema(Map external) {
+ def schema = obtainSchema()
+ def alias = schema
+ external.each { key, value -> alias[key] = value }
+ return alias
+}"""
+    assert sandbox_map_findings(source)
+
+
+def test_map_guard_does_not_treat_numeric_list_access_as_map_access():
+    source = """private def copyRows(List rows) {
+ rows.eachWithIndex { row, index -> rows[index] = row }
+ return rows[0]
+}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("key", ["input.name.toString()", "entry.key.toString()"])
+def test_map_guard_recognizes_native_name_and_entry_key_expressions(key):
+    source = f"private def collectNames() {{\n def schema = [:]\n schema[{key}] = false\n}}"
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "warning"
+
+
+def test_map_guard_does_not_scan_control_blocks_as_duplicate_methods():
+    source = """private def copyValue(Map input) {
+ if (input) {
+  def copy = [:]
+  input.each { key, value -> copy[key] = value }
+ }
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_map_guard_tracks_key_alias_within_its_originating_closure():
+    source = """private def options(Map external) {
+ def layout = [:]
+ external.each { k, value ->
+  def key = k?.toString()
+  layout[key] = value
+ }
+ ['status'].each { key -> layout[key] = true }
+}"""
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [5]
+
+
+def test_map_guard_detects_native_settings_conditional_map_read():
+    source = """private def settings(Map cfg, Map schema) {
+ def values = (cfg?.settings instanceof Map) ? cfg.settings : [:]
+ schema.each { name, input ->
+  return values[name]
+ }
+}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "read candidate values[name]" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("access", ["vars[action.variableName] = false", "return vars[action.variableName]"])
+def test_map_guard_tracks_elvis_map_and_action_variable_name(access):
+    source = f"def act(action) {{\n def vars = atomicState.localVariables ?: [:]\n {access}\n}}"
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_map_guard_tracks_untyped_key_parameter_on_state_map():
+    source = """def setValue(name, value) {
+ if (!state.ruleVariables) state.ruleVariables = [:]
+ state.ruleVariables[name] = value
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_map_guard_tracks_single_parameter_iteration_without_assuming_list_receiver_is_map():
+    source = """def copy(List names) {
+ def states = [:]
+ names.each { an -> states[an] = false }
+ names.each { index -> names[index] = false }
+}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "states[an]" in findings[0]["message"]
+
+
+def test_map_guard_tracks_first_map_key_and_cast_initializer():
+    source = """def inspect(spec) {
+ def writeMap = spec.write as Map
+ def key = writeMap.keySet().iterator().next().toString()
+ return writeMap[key]
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_map_guard_tracks_checked_option_map_key():
+    source = """def options(values) {
+ values.each { o ->
+  if (o instanceof Map) {
+   def k = o.keySet().iterator().next()
+   return o[k]
+  }
+ }
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+@pytest.mark.parametrize("key, expected", [("fields", 0), ("metaClass", 1)])
+def test_map_guard_applies_typed_contract_to_script_fields(key, expected):
+    source = f"""@groovy.transform.Field static final Map CACHE = new HashMap()
+def write() {{
+ CACHE['{key}'] = false
+}}
+"""
+    assert len(sandbox_map_findings(source)) == expected
+
+
+def test_untyped_local_shadow_does_not_inherit_script_field_exemption():
+    source = """@groovy.transform.Field static final Map CACHE = new HashMap()
+def write() {
+ def CACHE = [:]
+ CACHE['fields'] = false
+}
+"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_untyped_parameter_shadow_does_not_inherit_script_field_exemption():
+    source = """@groovy.transform.Field static final Map CACHE = new HashMap()
+def write(CACHE) {
+ if (CACHE instanceof Map) CACHE['fields'] = false
+}
+"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_unknown_helper_return_is_not_assumed_to_be_map():
+    source = """def copy(String key) {
+ def result = buildThing()
+ result[key] = false
+}
+"""
+    # buildThing could return a List or a custom getAt/putAt receiver. No type
+    # evidence is available in this source; silence is not a safety verdict.
+    assert sandbox_map_findings(source) == []
+
+
+def test_interpolated_bounded_key_is_not_misread_as_its_embedded_identifier():
+    source = '''def fields(List ids) {
+ def result = [:]
+ ids.each { id -> result["switch${id}.@N"] = false }
+}'''
+    assert sandbox_map_findings(source) == []
 
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation

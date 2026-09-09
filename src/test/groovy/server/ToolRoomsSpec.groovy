@@ -450,7 +450,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         and:
         childDevicesList << new TestDevice(
             id: 100, name: 'den_light', label: 'Den Light',
-            currentStates: [[name: 'switch', value: 'on']]
+            currentStates: [[name: 'switch', value: 'on'], [name: 'fields', value: false],
+                            [name: 'metaClass', value: 0], [name: 'Fields', value: null],
+                            [name: 'getClass', value: 'data']]
         )
 
         when:
@@ -465,7 +467,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         known != null
         known.label == 'Den Light'
         known.name == 'den_light'
-        known.currentStates == [switch: 'on']
+        known.currentStates == [switch: 'on', fields: false, metaClass: 0, Fields: null, getClass: 'data']
         def unknown = inner.devices.find { it.id == '999' }
         unknown != null
         unknown.label == '(device not accessible via MCP)'

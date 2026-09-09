@@ -683,7 +683,9 @@ def initialize() {
     // longer referenced (rule edited away from the var, rule deleted).
     _refreshHubVarInUseRegistrations()
     // Shed persisted legacy payloads even when no rule accesses captures again.
-    if (state.capturedDeviceStates || atomicState.capturedDeviceStates) countCapturedStates()
+    if (state.containsKey("capturedDeviceStates") || atomicState.containsKey("capturedDeviceStates")) {
+        countCapturedStates()
+    }
 }
 
 
@@ -1929,7 +1931,7 @@ private Map _writeStateMapLocked(String stateKey) {
         loaded = _mrtrCopyMap(stored as Map)
         WRITE_STATE_DURABLE_MAPS.add(stateKey)
     }
-    WRITE_STATE_CACHE[stateKey] = loaded
+    WRITE_STATE_CACHE.put(stateKey, loaded)
     return loaded
 }
 
@@ -1939,12 +1941,12 @@ private def _writeStateValueLocked(String stateKey) {
     if (WRITE_STATE_CACHE.containsKey(stateKey)) return WRITE_STATE_CACHE[stateKey]
     def stored = _writeStateDurableRead(stateKey)
     def snapshot = (stored instanceof Map) ? _mrtrCopyMap(stored as Map) : stored
-    WRITE_STATE_CACHE[stateKey] = snapshot
+    WRITE_STATE_CACHE.put(stateKey, snapshot)
     return snapshot
 }
 
 private void _writeStateSetLocked(String stateKey, value) {
-    WRITE_STATE_CACHE[stateKey] = value
+    WRITE_STATE_CACHE.put(stateKey, value)
     if (value instanceof Map) WRITE_STATE_DURABLE_MAPS.add(stateKey)
     _writeStateDurableWrite(stateKey, value)
 }
@@ -1956,7 +1958,7 @@ private void _writeStateSetLocked(String stateKey, value) {
 // implied.
 private void _writeStatePutLocked(String stateKey, String entryId, Map rec) {
     Map cached = _writeStateMapLocked(stateKey)
-    cached[entryId] = rec
+    cached.put(entryId, rec)
     if (!WRITE_STATE_DURABLE_MAPS.contains(stateKey)) {
         _writeStateSetLocked(stateKey, cached)
         return
@@ -2380,7 +2382,7 @@ private List _mrtrSweepLocked() {
             _writeExecutionLiveLocked(v.claimId)
         if (v instanceof Map && (executing ||
                 (v.expiresAt != null && (v.expiresAt as Long) > at))) {
-            kept[k] = v
+            kept.put(k, v)
         } else if (v instanceof Map && v.status == "active") {
             cleanup << ([:] + (v as Map))
         }
@@ -2517,7 +2519,7 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
     synchronized (WRITE_RESERVATION_LOCK) {
         cleanup = _mrtrSweepLocked()
         def stored = _writeStateMapLocked("mrtrRequests")
-        def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
+        def rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
         boolean executing = rec != null && _writeExecutionLiveLocked(rec.claimId)
         if (rec == null || (!executing &&
                 (rec.expiresAt == null || (rec.expiresAt as Long) <= now()))) {
@@ -2589,7 +2591,7 @@ private Map _mrtrObserveScheduled(String stateId, Map claim, long requestStarted
     while (true) {
         synchronized (WRITE_RESERVATION_LOCK) {
             def stored = _writeStateMapLocked("mrtrRequests")
-            def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
+            def rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
             def evidence = MRTR_TERMINAL_EVIDENCE[stateId]
             boolean exactTerminal = evidence instanceof Map &&
                 evidence.claimId?.toString() == claimId &&
@@ -2696,7 +2698,7 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
 
 private Map _mrtrOwnedRecordLocked(String stateId, Map claim) {
     def stored = _writeStateMapLocked("mrtrRequests")
-    def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
+    def rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
     if (rec == null || rec.status != "active") return null
     if (rec.claimId?.toString() != claim?.claimId?.toString()) return null
     if (rec.claimedGeneration != claim?.generation) return null
@@ -2989,10 +2991,10 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             // Publish exact claim/generation proof after storing the terminal.
             // The scheduling observer uses it immediately; defensive cache-reload
             // repair can also use it while this compiled class remains loaded.
-            MRTR_TERMINAL_EVIDENCE[stateId] = [
+            MRTR_TERMINAL_EVIDENCE.put(stateId, [
                 claimId: claim?.claimId?.toString(), generation: claim?.generation,
                 expiresAt: rec.expiresAt, record: [:] + rec
-            ]
+            ])
             _mrtrSweepTerminalEvidenceLocked()
             return true
         } finally {
@@ -5166,7 +5168,8 @@ def getVariableValue(name) {
 // Helper method for child apps to set rule-scoped variables
 def setRuleVariable(name, value) {
     if (!state.ruleVariables) state.ruleVariables = [:]
-    state.ruleVariables[name] = value
+    state.ruleVariables.put(name, value)
+    return value
 }
 
 
@@ -6469,7 +6472,7 @@ def initDebugLogs() {
                       entries: [], hydrated: fresh]
         // The old state-backed history is discarded once; subsequent reloads use native logs.
         state.debugLogs = [config: config]
-        DEBUG_LOG_BUFFERS[appId] = buffer
+        DEBUG_LOG_BUFFERS.put(appId, buffer)
         return buffer
     }
 }
@@ -6607,14 +6610,14 @@ private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId
             }
             if (envelope instanceof Map && envelope.appId == buffer.appId &&
                 envelope.generation == generation && envelope.id && envelope.entry instanceof Map) {
-                recovered[envelope.id] = _debugLogRecord(envelope.entry, envelope.id.toString())
+                recovered.put(envelope.id, _debugLogRecord(envelope.entry, envelope.id.toString()))
             }
         }
     }
     synchronized (buffer) {
         // A clear during the HTTP read establishes a new generation; old rows stay excluded.
         if (buffer.generation == generation && (fetchId == null || buffer.fetchId == fetchId)) {
-            buffer.entries.each { recovered[it.id] = it }
+            buffer.entries.each { recovered.put(it.id, it) }
             buffer.entries = []
             recovered.values().each { _appendDebugLogRecord(buffer, it) }
             buffer.hydrated = true
@@ -6875,7 +6878,7 @@ private Integer _discoverParentAppId(String appType) {
         ids.remove("rm")
         atomicState.parentAppIds = ids
     }
-    def cached = ids[appType]
+    def cached = ids.get(appType)
     if (cached != null) {
         try { return cached.toString().toInteger() } catch (NumberFormatException e) {
             mcpLog("warn", "rm-native", "Invalid cached parentAppId for '${appType}' ('${cached}') -- rediscovering")
@@ -7021,7 +7024,7 @@ private Integer _discoverParentAppId(String appType) {
         // unconfirmed -- the next call re-discovers (cheap) and re-verifies.
         mcpLog("warn", "rm-native", "Parent ${parentTypeName} id ${id}: install commit unverified (commit call threw) -- id NOT cached; the next create re-discovers")
     } else {
-        ids[appType] = id
+        ids.put(appType, id)
         atomicState.parentAppIds = ids
     }
     mcpLog("info", "rm-native", "Discovered ${parentTypeName} parent app id: ${id} (appType=${appType})")
@@ -7204,7 +7207,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
         // raw-settings escape hatch where the schema's declared type is
         // wrong). Clone so we don't mutate the cached schema map.
         schemaForBuild = [:] + schema
-        schemaForBuild[key] = ([:] + schema[key]) << [type: typeHintOverride]
+        schemaForBuild.put(key, ([:] + schema.get(key)) << [type: typeHintOverride])
     }
     def beforeKeys = (schema.keySet() ?: []) as Set
     def beforeValueStr = schema?."${key}"?.value?.toString()
@@ -7946,7 +7949,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             def schema = _rmCollectInputSchema(cfg?.configPage)
             schema.each { name, meta ->
                 if (meta?.multiple == true) {
-                    def rec = settingsByName[name]
+                    def rec = settingsByName.get(name)
                     if (rec != null && rec.multiple != true) {
                         multipleFlagPoison << name.toString()
                     }
@@ -8013,7 +8016,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // instance would slip through a string-set delta. Callers comparing two health verdicts
     // (the replace restore gate) use this count map to detect a NEW broken instance.
     def brokenMarkerCounts = [:]
-    brokenMarkers.each { m -> brokenMarkerCounts[m] = (brokenMarkerCounts[m] ?: 0) + 1 }
+    brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
 
     // Stable report shape (backward-compatible with the pre-#254 contract): the RM detection
     // arrays are always present so existing consumers can read them unconditionally. The new
@@ -8065,12 +8068,12 @@ private Map _rmCollectInputSchema(Map configPage) {
     for (s in (configPage?.sections ?: [])) {
         for (i in (s?.input ?: [])) {
             if (i instanceof Map && i.name) {
-                schema[i.name.toString()] = [
+                schema.put(i.name.toString(), [
                     name: i.name.toString(),
                     type: i.type?.toString(),
                     multiple: i.multiple == true,
                     required: i.required == true
-                ]
+                ])
             }
         }
     }

@@ -75,6 +75,22 @@ class MrtrContinuationSpec extends ToolSpecBase {
         return mcpDriver.decodeToolCallResponse(response)
     }
 
+    def "argument canonicalization preserves collision-named data and value types"() {
+        given:
+        def input = [z: null, fields: ['id', 'label'], nested: [fields: false, class: 0, getClass: []]]
+
+        when:
+        def canonical = script._mrtrCanonicalArgs(input)
+
+        then:
+        canonical == input
+        canonical.keySet().toList() == ['fields', 'nested', 'z']
+        canonical.nested.keySet().toList() == ['class', 'fields', 'getClass']
+        !canonical.is(input)
+        !canonical.nested.is(input.nested)
+        input.keySet().toList() == ['z', 'fields', 'nested']
+    }
+
     private String nativeRuleConfig(int appId, String label, int parentAppId) {
         return groovy.json.JsonOutput.toJson([
             app: [id: appId, name: 'Rule-5.1', label: label, trueLabel: label,
