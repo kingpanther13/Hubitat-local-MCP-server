@@ -12,9 +12,13 @@ gh workflow run codeql-manual.yml --ref <branch> --repo kingpanther13/Hubitat-lo
 GitHub enables manual dispatch once this workflow exists on `main`. A narrow
 push trigger also validates edits to the workflow, its gate and gate tests before
 merge. It uses a pinned official CodeQL CLI bundle, runs no application tests,
-and fails on any finding or incomplete analysis. Each language uploads a SARIF
-artifact named with the analyzed commit SHA. This is a full-source scan, so it
-also reports pre-existing findings; it does not apply GitHub alert dismissals.
+and scans both the branch and `main` with the same queries. The gate fails on new
+findings or incomplete analysis. It compares rule, file and CodeQL line
+fingerprint, including duplicate counts, so unrelated line shifts do not reopen
+existing findings. Each language uploads both complete SARIF reports and both
+analyzed SHAs in an artifact named with the branch commit. Existing findings
+remain visible in the reports; no rule or path is blanket-excluded. This is a
+branch regression check, not a replacement for GitHub's alert dismissal policy.
 
 The existing GitHub-managed CodeQL setup continues independently. Default setup
 rejects CodeQL SARIF uploads, so this lane publishes Actions artifacts instead of

@@ -30,6 +30,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          path: base
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:
@@ -45,23 +51,25 @@ jobs:
           sha256sum --check codeql-bundle-linux64.tar.zst.checksum.txt
           tar --zstd -xf codeql-bundle-linux64.tar.zst
           echo "$RUNNER_TEMP/codeql" >> "$GITHUB_PATH"
-      - name: Extract source without running application tests
+      - name: Scan branch and main with the same default security suite
         run: |
           codeql version
-          codeql database create "$RUNNER_TEMP/codeql-db" \
-            --language="$LANGUAGE" --build-mode=none --source-root . --threads=2
-      - name: Run the default security suite
-        run: |
-          codeql database analyze "$RUNNER_TEMP/codeql-db" \
-            "codeql/${LANGUAGE}-queries:codeql-suites/${LANGUAGE}-code-scanning.qls" \
-            --format=sarif-latest --output "$RUNNER_TEMP/codeql.sarif" --threads=2
+          mkdir -p "$RUNNER_TEMP/reports"
+          for revision in head base; do
+            git -C "$revision" rev-parse HEAD | tee "$RUNNER_TEMP/reports/$revision.sha"
+            codeql database create "$RUNNER_TEMP/codeql-db-$revision" \
+              --language="$LANGUAGE" --build-mode=none --source-root "$revision" --threads=2
+            codeql database analyze "$RUNNER_TEMP/codeql-db-$revision" \
+              "codeql/${LANGUAGE}-queries:codeql-suites/${LANGUAGE}-code-scanning.qls" \
+              --format=sarif-latest --output "$RUNNER_TEMP/reports/$revision.sarif" --threads=2
+          done
       # Managed default setup rejects CodeQL SARIF uploads. Keep an independent
       # Actions gate and artifact instead of changing the repository's setup.
-      - name: Require a successful scan with zero findings
-        run: python .github/scripts/codeql_gate.py "$RUNNER_TEMP/codeql.sarif"
+      - name: Require successful scans with no new findings
+        run: python head/.github/scripts/codeql_gate.py "$RUNNER_TEMP/reports/head.sarif" "$RUNNER_TEMP/reports/base.sarif"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: codeql-${{ matrix.language }}-${{ github.sha }}
-          path: ${{ runner.temp }}/codeql.sarif
+          path: ${{ runner.temp }}/reports/
           if-no-files-found: error
