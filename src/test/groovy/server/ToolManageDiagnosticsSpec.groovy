@@ -46,9 +46,11 @@ import support.ToolSpecBase
 class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     @Shared private TestLocation sharedLocation = new TestLocation()
+    @Shared private TestChildApp captureApp = new TestChildApp(id: 402L)
 
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
+        appExecutor.getApp() >> captureApp
     }
 
     def cleanup() {
@@ -1248,28 +1250,26 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.note.contains('not JSON')
     }
 
-    // -------- saveCapturedState atomic-store migration (issue #105 PR2a #5) --------
-    // Captured states back restore_state. They must live in atomicState, not the
-    // non-atomic state: subscribed event handlers run concurrently, so a non-atomic
-    // read-modify-write loses captures and can blow past the size cap.
+    // -------- saved capture memory storage and retention --------
 
-    def "saveCapturedState persists to atomicState (thread-safe store), not the non-atomic state"() {
+    def "saveCapturedState keeps the device payload only in memory"() {
         when:
         def result = script.saveCapturedState('snap1', [dev1: [switch: 'on']])
 
-        then: 'the capture lands in atomicState'
-        atomicStateMap.capturedDeviceStates?.containsKey('snap1')
+        then: 'neither payload nor index lands in atomicState'
+        !atomicStateMap.containsKey('captureIndex')
+        !atomicStateMap.capturedDeviceStates
 
         and: 'and NOT in the race-prone state store'
         !stateMap.containsKey('capturedDeviceStates')
 
-        and: 'round-trips through the atomic store'
+        and: 'the complete capture remains restorable'
         script.getCapturedState('snap1') == [dev1: [switch: 'on']]
         result.stateId == 'snap1'
         result.totalStored == 1
     }
 
-    def "saveCapturedState enforces the size cap via atomicState, evicting the oldest"() {
+    def "saveCapturedState enforces the size cap, evicting the oldest"() {
         given:
         settingsMap.maxCapturedStates = 2
 
@@ -1279,18 +1279,16 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.saveCapturedState('c', [d: [switch: 'on']])   // over cap -> evicts oldest 'a'
 
         then:
-        atomicStateMap.capturedDeviceStates?.size() == 2
-        !atomicStateMap.capturedDeviceStates?.containsKey('a')
-        atomicStateMap.capturedDeviceStates?.containsKey('b')
-        atomicStateMap.capturedDeviceStates?.containsKey('c')
+        script.listCapturedStates()*.stateId.toSet() == ['b', 'c'].toSet()
+        script.getCapturedState('a') == null
     }
 
-    def "getCapturedState reads from atomicState, not the non-atomic state (the restore_state consumer path)"() {
+    def "getCapturedState imports the atomic legacy value ahead of its stale state shadow"() {
         given: 'a capture in the atomic store, plus a decoy under the same key in non-atomic state'
         atomicStateMap.capturedDeviceStates = [snap: [devices: [dev1: [switch: 'on']], timestamp: 1000L, deviceCount: 1]]
         stateMap.capturedDeviceStates = [snap: [devices: [dev1: [switch: 'DECOY']], timestamp: 1L, deviceCount: 1]]
 
-        expect: 'restore reads the atomic store -- a regression back to state would return the decoy'
+        expect: 'the one-time import preserves the authoritative value'
         script.getCapturedState('snap') == [dev1: [switch: 'on']]
     }
 
@@ -1408,7 +1406,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.cleared == 2
-        atomicStateMap.capturedDeviceStates == [:]
+        !atomicStateMap.capturedDeviceStates
+        script.listCapturedStates() == []
     }
 
     def "hub_delete_captured_state removes the specified entry"() {
@@ -1424,8 +1423,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.remaining == 1
-        atomicStateMap.capturedDeviceStates.containsKey('keep')
-        !atomicStateMap.capturedDeviceStates.containsKey('gone')
+        script.listCapturedStates()*.stateId == ['keep']
+        script.getCapturedState('gone') == null
     }
 
     @spock.lang.Unroll
@@ -1446,8 +1445,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.remaining == 1
-        atomicStateMap.capturedDeviceStates.containsKey('keep')
-        !atomicStateMap.capturedDeviceStates.containsKey('gone')
+        script.listCapturedStates()*.stateId == ['keep']
+        script.getCapturedState('gone') == null
 
         where:
         useGateways << [true, false]
@@ -1481,7 +1480,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.cleared == 3
-        atomicStateMap.capturedDeviceStates == [:]
+        !atomicStateMap.capturedDeviceStates
+        script.listCapturedStates() == []
     }
 
     @spock.lang.Unroll
@@ -1503,7 +1503,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.cleared == 3
-        atomicStateMap.capturedDeviceStates == [:]
+        !atomicStateMap.capturedDeviceStates
+        script.listCapturedStates() == []
 
         where:
         useGateways << [true, false]

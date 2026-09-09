@@ -136,7 +136,7 @@ def toolGetHubInfo(args = null) {
         info.mcpLogReadError = logHistory.error
         info.mcpLogReadRetryable = logHistory.retryable
     }
-    info.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
+    info.mcpCapturedStates = countCapturedStates()
     // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
     // actually needed (the destructive-confirm gate's 24h window reads this same state key) --
     // e2e uses it to skip per-run backups, a hub-heavy op the platform's load limiter punishes.
