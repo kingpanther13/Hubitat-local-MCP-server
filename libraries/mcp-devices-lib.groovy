@@ -1708,7 +1708,7 @@ private Map _deviceReadFragment(Map snapshot, String token, int start) {
 }
 
 private String _deviceReadSelection(deviceId, String mode, sections, fields, boolean listed) {
-    return groovy.json.JsonOutput.toJson([app.id?.toString(), deviceId.toString(), mode, sections, fields, listed])
+    return groovy.json.JsonOutput.toJson([app?.id?.toString(), deviceId.toString(), mode, sections, fields, listed])
 }
 
 private Map _deviceReadContinuation(String cursor, String selection) {
@@ -1768,7 +1768,7 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
         throw new IllegalArgumentException('cursor is a string continuation for configuration/details mode only.')
     }
     def device = findDevice(deviceId)
-    String selection = _deviceReadSelection(deviceId, selectedMode, sections, fields, device != null)
+    String selection = selectedMode == 'summary' ? null : _deviceReadSelection(deviceId, selectedMode, sections, fields, device != null)
     if (cursor) {
         if (!device && !_bypassEnabled()) throw new IllegalArgumentException("Device not found: ${deviceId}")
         return _deviceReadContinuation(cursor, selection)
@@ -2331,7 +2331,7 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
                             mcpLog("error", "send-command", "date format failed for attribute '${st.name}' on ${deviceLabel}: ${dt.class.simpleName}")
                         }
                     }
-                    snapshot[st.name] = [value: st.value, timestamp: ts]
+                    snapshot.put(st.name, [value: st.value, timestamp: ts])
                 }
             }
         } else {
@@ -2355,7 +2355,7 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
                         // writing) would leave a systemic read failure fully invisible.
                         mcpLog("error", "send-command", "currentValue read failed for attribute '${name}' on ${deviceLabel}: ${cv.class.simpleName}")
                     }
-                    snapshot[name] = [value: val, timestamp: null]
+                    snapshot.put(name, [value: val, timestamp: null])
                 }
             }
         }
@@ -2472,7 +2472,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
             if (name != null) {
                 def val = (st instanceof Map) ? st.value : st
                 def rawDate = (st instanceof Map) ? st.date : null
-                snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]
+                snapshot.put(name, [value: val, timestamp: _formatBypassStateDate(rawDate)])
             }
         }
         return snapshot
@@ -3641,14 +3641,17 @@ def _prefSaveDeviceId(deviceId) {
 private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List preferenceRows = []) {
     def fresh = _fetchDeviceFullJson(deviceId)
     def d = fresh?.device
-    if (!(d instanceof Map) || !(d.get("showOnHome") instanceof Boolean) ||
-        !(d.get("retryEnabled") instanceof Boolean) || !d.containsKey("defaultCurrentState") ||
+    def controls = d instanceof Map ? d : [:]
+    def showOnHome = _normalizeDevicePreferenceValue(controls.get('showOnHome'), 'bool')
+    def retryEnabled = _normalizeDevicePreferenceValue(controls.get('retryEnabled'), 'bool')
+    if (!(d instanceof Map) || !showOnHome.valid || !(showOnHome.value instanceof Boolean) ||
+        !retryEnabled.valid || !(retryEnabled.value instanceof Boolean) || !d.containsKey("defaultCurrentState") ||
         !(d.get("defaultCurrentState") == null || d.get("defaultCurrentState") instanceof String)) {
         throw new RuntimeException("Unable to read complete preference-pane controls before saving; no preference update sent")
     }
     def payload = [deviceId: _prefSaveDeviceId(deviceId),
         defaultCurrentState: d.get("defaultCurrentState") == null ? "" : d.get("defaultCurrentState").toString(),
-        commandRetry: d.get("retryEnabled"), showOnHome: d.get("showOnHome"),
+        commandRetry: retryEnabled.value, showOnHome: showOnHome.value,
         preferences: preferenceRows]
     overrides.each { key, value -> payload.put(key, value) }
     return payload
@@ -3764,7 +3767,8 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
         throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
     }
     def full = suppliedFull
-    if (full == null && settings.enableWrite != false) full = _fetchDeviceFullJson(deviceId)
+    def inspectModel = needModel || ['name', 'label', 'defaultCurrentState', 'showOnHome', 'tags', 'dataValues'].any { args.containsKey(it) }
+    if (full == null && inspectModel && settings.enableWrite != false) full = _fetchDeviceFullJson(deviceId)
     if (needModel && !(full?.device instanceof Map)) throw new IllegalArgumentException("Unable to read device configuration before updating; use hub_get_device(mode='configuration') and retry")
     def d = full?.device
     if (args.defaultCurrentState && settings.enableWrite != false) {
@@ -4504,7 +4508,7 @@ def toolUpdateDevice(args) {
         ]
     }
 
-    mcpLog("info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
+    mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
     if (errors) {
         mcpLog("debug", "device", "hub_update_device errors: ${errors.collect { "${it.property}: ${it.error}" }.join('; ')}")
     }
@@ -4651,7 +4655,7 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
         ]
     }
 
-    mcpLog("info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}) via allowlist bypass: ${changes.size()} changes, ${errors.size()} errors")
+    mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}) via allowlist bypass: ${changes.size()} changes, ${errors.size()} errors")
     return [
         success: errors.isEmpty(),
         device: deviceLabel,

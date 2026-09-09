@@ -624,6 +624,102 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         inner.tool == 'hub_list_rooms'
     }
 
+    @spock.lang.Unroll
+    def "returned #failure failure logs safe ERROR with leaf and gateway context"() {
+        given: 'the leaf returns a failure result without throwing an exception'
+        settingsMap.enableRead = true
+        settingsMap.useGateways = viaGateway
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
+        script.metaClass.toolListRooms = { ignored -> payload }
+        def leafArgs = [filter: 'ARGUMENT-SECRET']
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 103, method: 'tools/call',
+            params: viaGateway
+                ? [name: 'hub_read_rooms', arguments: [tool: 'hub_list_rooms', args: leafArgs]]
+                : [name: 'hub_list_rooms', arguments: leafArgs]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'logging does not replace the tool response with a transport failure'
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.get(errorField) == payload.get(errorField)
+
+        and: 'the returned failure is discoverable at the default ERROR threshold'
+        def entries = script.getDebugLogEntries()
+        def failureLog = entries.find { it.level == 'error' && it.details?.tool == 'hub_list_rooms' }
+        failureLog != null
+        failureLog.message.contains('hub_list_rooms')
+        failureLog.details.gateway == (viaGateway ? 'hub_read_rooms' : null)
+
+        and: 'safe diagnostics do not copy arbitrary result values or arguments into messages or details'
+        def serializedLogs = groovy.json.JsonOutput.toJson(entries)
+        !serializedLogs.contains('ARGUMENT-SECRET')
+        !serializedLogs.contains('RESULT-SECRET')
+
+        where:
+        failure          | viaGateway | errorField   | payload
+        'success:false'  | false      | 'error'      | [success: false, error: 'RESULT-SECRET']
+        'isError:true'   | true       | 'error'      | [isError: true, error: 'RESULT-SECRET']
+        'stateError'     | true       | 'stateError' | [success: true, partial: true, stateError: 'RESULT-SECRET']
+    }
+
+    def "explicit renderer error override logs safe ERROR even without failure flags in the payload"() {
+        given:
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
+
+        when:
+        def rendered = script._renderToolResult(105, 'hub_list_rooms', 'hub_list_rooms',
+            [filter: 'ARGUMENT-SECRET'], [detail: 'RESULT-SECRET'], true)
+
+        then:
+        def response = new groovy.json.JsonSlurper().parseText(rendered.__preserialized)
+        response.result.isError == true
+        def entries = script.getDebugLogEntries()
+        entries.any { it.level == 'error' && it.details?.tool == 'hub_list_rooms' }
+        def serializedLogs = groovy.json.JsonOutput.toJson(entries)
+        !serializedLogs.contains('ARGUMENT-SECRET')
+        !serializedLogs.contains('RESULT-SECRET')
+    }
+
+    @spock.lang.Unroll
+    def "ordinary #kind result does not produce failure ERROR logging"() {
+        given:
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
+        script.metaClass.toolListRooms = { ignored -> payload }
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 104, method: 'tools/call',
+            params: [name: 'hub_list_rooms', arguments: [:]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.isError != true
+        !script.getDebugLogEntries().any { it.level == 'error' }
+
+        where:
+        kind                   | payload
+        'success'              | [success: true, rooms: []]
+        'pagination'           | [rooms: [], hasMore: true, nextCursor: 'next-page']
+        'partial page'         | [success: true, partial: true, nextCursor: 'next-page']
+        'continuation'         | [status: 'in_progress', requestState: 'continuation-state']
+        'empty errors list'    | [success: true, errors: [], stateError: '']
+        'empty errors map'     | [success: true, errors: [:], stateError: null]
+        'diagnostic errors'    | [success: true, errors: ['Historical diagnostic event']]
+        'diagnostic errors map' | [success: true, errors: [previous: 'Historical diagnostic event']]
+        'nested device data'   | [success: true, device: [success: false, isError: true, stateError: 'device attribute']]
+    }
+
     // The non-serializable-result branch in handleToolsCall is defensive: groovy.json.JsonOutput
     // silently coerces most "weird" types (Closure -> {}, Pattern -> {pattern, flags}, etc.) so
     // there is no portable way to deterministically trigger the catch from a Spock spec.

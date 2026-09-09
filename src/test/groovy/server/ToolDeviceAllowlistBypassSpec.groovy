@@ -362,7 +362,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     def "bypass ON: toolSendCommand fires via /device/runmethod and snapshots from fullJson"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
-        registerFullJson({ 'on' })
+        def model = fullJsonModel('on')
+        model.device.currentStates.put('fields', [value: 'driver fields', date: null])
+        model.device.currentStates.put('getClass', [value: 42, date: null])
+        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params -> JsonOutput.toJson(model) }
         def posted = null
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             posted = [path: path, body: body]; return [success: true, message: null]
@@ -383,6 +386,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.command == 'on'
         result.device == 'Unlisted Switch'
         result.state.switch.value == 'on'
+        result.state.get('fields') == [value: 'driver fields', timestamp: null]
+        result.state.get('getClass') == [value: 42, timestamp: null]
         // TZ-robust: the snapshot reformats the offset-bearing ISO date in the JVM default zone, so
         // compute the expected from the SAME instant+format (a literal MT string false-fails on UTC CI).
         result.state.switch.timestamp == Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", '2026-06-27T10:30:00.000-0600').format('yyyy-MM-dd HH:mm:ss')
@@ -498,6 +503,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     def "bypass ON: toolSendCommand reports partial:true + stateError when the post-command snapshot fetch fails"() {
         given: 'the command fires; the snapshot re-fetch returns a model with no currentStates (read-back FAILURE sentinel)'
         settingsMap.bypassDeviceAllowlist = true
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
         def calls = 0
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
             // 1st fetch (command resolution) carries the full model; the 2nd (snapshot) has no currentStates.
@@ -515,6 +522,61 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.partial == true
         result.state == [:]
         result.stateError?.contains('device-state read-back failed')
+
+        and: 'the unsuccessful confirmation read remains visible at the default ERROR threshold'
+        script.getDebugLogEntries().any {
+            it.level == 'error' && (it.message?.contains('fullJson') || it.message?.contains('snapshot')) &&
+                (it.message?.contains(UNLISTED_ID) || it.message?.contains('Unlisted Switch'))
+        }
+    }
+
+    @spock.lang.Unroll
+    def "fullJson #failure returns null and logs safe ERROR diagnostics"() {
+        given:
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
+        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
+            if (fetchThrows) throw new RuntimeException('NATIVE-EXCEPTION-SECRET')
+            responseBody
+        }
+
+        when:
+        def result = script._fetchDeviceFullJson(UNLISTED_ID)
+
+        then:
+        result == null
+        def entries = script.getDebugLogEntries()
+        entries.any { it.level == 'error' && it.message?.contains('fullJson') && it.message?.contains(UNLISTED_ID) }
+
+        and: 'native response and exception contents cannot become log messages or structured details'
+        def serializedLogs = JsonOutput.toJson(entries)
+        !serializedLogs.contains('NATIVE-EXCEPTION-SECRET')
+        !serializedLogs.contains('NATIVE-BODY-SECRET')
+
+        where:
+        failure          | fetchThrows | responseBody
+        'fetch failure'  | true        | null
+        'parse failure'  | false       | '{"password":"NATIVE-BODY-SECRET", broken'
+        'null body'      | false       | null
+        'empty body'     | false       | ''
+        'JSON null'      | false       | 'null'
+        'array body'     | false       | '["NATIVE-BODY-SECRET"]'
+        'string body'    | false       | '"NATIVE-BODY-SECRET"'
+        'numeric body'   | false       | '42'
+    }
+
+    def "valid fullJson body is preserved without a failure ERROR"() {
+        given:
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
+        registerFullJson({ 'on' })
+
+        when:
+        def result = script._fetchDeviceFullJson(UNLISTED_ID)
+
+        then:
+        result.device.currentStates.switch.value == 'on'
+        !script.getDebugLogEntries().any { it.level == 'error' }
     }
 
     def "bypass ON: toolSendCommand waitFor converges off the re-fetched fullJson value"() {

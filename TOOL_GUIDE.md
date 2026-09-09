@@ -58,9 +58,9 @@ Every `tools/call` response is measured before send. If the wire-encoded respons
 
 The outer JSON-RPC envelope still reports success (this is not a tool error — the tool ran, the result just didn't fit). Treat `response_too_large=true` as a hint to either (a) narrow your query — the per-tool `suggestion` field names the specific knob — or (b) opt into pagination on tools that support it. The `tool` field reflects the actual sub-tool on gateway-routed calls so you can re-issue a narrower call directly.
 
-Opt-in cursor pagination is currently wired into the following read-only tools. All follow the same contract: omit `cursor` for the full list (backward-compatible, backstopped by the size guard), pass `cursor: ""` for the first page, then iterate `nextCursor` until absent. Two tools also paginate oversized reads automatically. `hub_get_device` retains its normal summary and fragments only oversized configuration/details; `hub_get_tool_guide`, whose full-guide payload cannot fit a single response at all: it pages whether or not a cursor was passed, because a size-guard envelope leaves the caller with nothing. Cursor is opaque per the MCP convention; non-numeric / out-of-range values reject as `-32602`.
+The following read-only tools support pagination. List tools return the full list when cursor is omitted (subject to the response-size guard); pass `cursor: ""` to start a page, then follow `nextCursor`. Two reads also paginate oversized responses automatically: `hub_get_device` fragments expanded configuration/details, and `hub_get_tool_guide` pages the full guide. Cursors are opaque; malformed or out-of-range values reject as `-32602`.
 
-These tools follow an explicit opt-in convention so pre-`cursor` callers see no behaviour change — pagination is genuinely opt-in. (Pre-PR `tools/list` had its own different shape — unconditional pagination at 50/page — which is now removed; see the previous section.)
+List pagination remains opt-in. Ordinary device summaries and small expanded reads keep their structured response; see Device inspection below for fragment assembly and snapshot expiry.
 
 | Tool | Page size | Notes |
 |---|---|---|
