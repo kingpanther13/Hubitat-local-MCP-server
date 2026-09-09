@@ -4209,17 +4209,18 @@ def check_sandbox_map_subscripts(
     Hubitat rejects a bracket subscript when a runtime Map key collides with a
     protected/reflection-like property (the device catalog's ``fields`` key is
     the reproduced case). Plain Groovy accepts the same source, so this check
-    holds two narrow invariants that ordinary Spock cannot prove:
+    detects two patterns that ordinary Spock cannot prove safe:
 
-    * identifiable Maps use ``Map.put`` for keys taken from Map iteration,
-      String parameters, or driver attribute names;
-    * the reproduced literal collision keys are not accessed with bracket
-      syntax in shipped app/library code.
+    * identifiable Maps assigned through keys taken from Map iteration,
+      String parameters, or driver attribute names (temporarily warnings);
+    * known literal collision patterns accessed with bracket syntax in shipped
+      app/library code (errors).
 
     This is deliberately a source guard: it does not infer return types, follow
     calls, or prove the safety of every dynamic key. Bounded literal-list keys
     and numeric indices are not external-key evidence. Live catalog coverage
-    remains the final proof.
+    remains the final proof. Issue #415 tracks live validation of the broader
+    dynamic-key findings and replacement of the temporary warning policy.
     """
     if src_override is None:
         sources: dict[str, str] = {}
@@ -4269,11 +4270,11 @@ def check_sandbox_map_subscripts(
         r"(?P<quote>['\"])(?:fields|getClass)(?P=quote)\s*\]"
     )
 
-    def add(path: str, line_no: int, source_line: str, message: str) -> None:
+    def add(path: str, line_no: int, source_line: str, message: str, severity: str = "error") -> None:
         findings.append({
             "file": path,
             "line": line_no,
-            "severity": "error",
+            "severity": severity,
             "rule": "sandbox-map-key-subscript",
             "message": message,
             "source": source_line.strip(),
@@ -4342,7 +4343,9 @@ def check_sandbox_map_subscripts(
                     continue
                 index = code.count("\n", 0, opening + 1 + match.start())
                 add(path, index + 1, original_lines[index],
-                    f"External key '{key}' assigned through {receiver}[{key}] in {method.group('name')}; use Map.put.")
+                    f"Potential external-key Map assignment {receiver}[{key}] in {method.group('name')}; "
+                    "validate key reachability and sandbox behavior before changing it (issue #415).",
+                    severity="warning")
 
     return findings
 

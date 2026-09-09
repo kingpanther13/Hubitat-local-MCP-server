@@ -70,14 +70,17 @@ restoration failure is recorded in `_fixture_reset_failures` and fails the run.
 
 ## Native prerequisite decisions
 
-All eight rows below start as `pending` in the manifest. This is pending positive
-coverage awaiting the user's disposition, not approved exclusion or proof of
-coverage. The matrix prints native applicability/writability and fails before
+All eight rows below start as `pending` in the manifest. Both positive coverage
+and unavailable/rejected-write coverage are required where appropriate. An
+unavailable expectation on one profile does not waive positive coverage on an
+appropriate owned fixture. The matrix prints native applicability/writability and fails before
 configuration mutations if that profile has any pending row. A run with approved
 unavailable rows must not be reported as positive radio/integration coverage.
-Final delivery remains blocked until the
-user disposes of every pending positive prerequisite; a green core run alone
-does not settle those decisions.
+Final delivery remains blocked until every positive prerequisite has evidence;
+a green core run alone does not establish complete field coverage. Additional
+test-hub infrastructure may be provisioned once and retained after direct access
+is supplied and no E2E run is active. Record actual native support before choosing
+fixture targets; do not manufacture availability in driver state.
 
 After direct inspection and user approval, a profile can override `nativeFields`:
 
