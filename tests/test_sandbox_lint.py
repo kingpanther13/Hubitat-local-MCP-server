@@ -862,6 +862,15 @@ def test_typed_map_comparisons_remain_reads(operator):
     source = f"def compare(Map data, String key, value) {{\n return data[key] {operator} value\n}}"
     assert sandbox_map_findings(source) == []
 
+
+def test_preceding_statement_increment_does_not_turn_typed_map_read_into_write():
+    source = """def read(Map data, String key) {
+ int index = 0
+ index++
+ data[key]
+}"""
+    assert sandbox_map_findings(source) == []
+
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------
