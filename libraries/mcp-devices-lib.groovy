@@ -1232,7 +1232,7 @@ private boolean _deviceConfigurationSecretKey(key) {
     String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
     return normalized.contains('password') || normalized.contains('token') || normalized.contains('secret') ||
         normalized.contains('credential') || normalized.contains('apikey') || normalized.contains('privatekey') ||
-        normalized.contains('accesskey') || normalized == 'psk'
+        normalized.contains('accesskey') || normalized in ['psk', 'psw']
 }
 
 private _deviceConfigurationPublicValue(value, key = '') {
@@ -1304,26 +1304,26 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
     }
     if (d.containsKey('data')) values.dataValues = _deviceConfigurationPublicValue(d.data)
     if (d.containsKey('tags')) {
-        values.tags = d.tags instanceof List ? d.tags : (d.tags ? d.tags.toString().split(',').collect { it.trim() } : [])
+        values.tags = _normalizedDeviceTags(d.tags)
     }
     if (fj?.dashboards instanceof List) values.dashboardIds = fj.dashboards.findAll { it.selected == true }.collect { it.id }
     ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].each { key ->
         if (fj?.containsKey(key)) values.put(key, fj.get(key))
     }
     def applicable = [
-        label: d.linkedAndDisabled != true,
-        name: d.isComponent != true && !d.linkedDevice,
-        deviceNetworkId: (!d.isComponent || !!d.linkedDevice) && d.linkedLocally != true,
+        label: !_deviceFlag(d.linkedAndDisabled),
+        name: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
+        deviceNetworkId: (!_deviceFlag(d.isComponent) || _deviceFlag(d.linkedDevice)) && !_deviceFlag(d.linkedLocally),
         dataValues: listed,
-        deviceTypeId: d.isComponent != true && !d.linkedDevice,
-        zigbeeId: d.isComponent != true && !d.linkedDevice && d.zigbeeId != null,
+        deviceTypeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
+        zigbeeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice) && d.zigbeeId instanceof String,
         dashboardIds: _deviceFlag(fj?.hasDashboards),
-        meshEnabled: d.meshSelectionEnabled == true,
-        retryEnabled: fj?.commandRetrySelectionEnabled == true || d.retryAvailable == true,
-        meshFullSync: !!d.linkedDevice && fj?.hubMeshRefreshEnabled == true,
-        homeKitEnabled: fj?.homeKitSelectionEnabled == true,
-        amazonAlexaEnabled: fj?.amazonAlexaInstalled == true && fj?.amazonAlexaSupported == true,
-        googleHomeEnabled: fj?.googleHomeInstalled == true && fj?.googleHomeSupported == true
+        meshEnabled: _deviceFlag(d.meshSelectionEnabled),
+        retryEnabled: _deviceFlag(fj?.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable),
+        meshFullSync: _deviceFlag(d.linkedDevice) && _deviceFlag(fj?.hubMeshRefreshEnabled),
+        homeKitEnabled: _deviceFlag(fj?.homeKitSelectionEnabled),
+        amazonAlexaEnabled: _deviceFlag(fj?.amazonAlexaInstalled) && _deviceFlag(fj?.amazonAlexaSupported),
+        googleHomeEnabled: _deviceFlag(fj?.googleHomeInstalled) && _deviceFlag(fj?.googleHomeSupported)
     ]
     def fields = _deviceConfigurationFieldDefinitions()
     fields.each { field ->
@@ -1444,15 +1444,6 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean l
         result.deviceInfo = _deviceConfigurationProjection(result.deviceInfo, fields)
     }
     return result
-}
-
-// Infer the /device/preference/save `type` token when the caller did not supply one: a Boolean
-// is "bool", a Number is "number", everything else "string". A typed pref should pass its type
-// explicitly ({type, value}); this is the fallback for a bare value.
-private String _inferPrefType(value) {
-    if (value instanceof Boolean) return "bool"
-    if (value instanceof Number) return "number"
-    return "string"
 }
 
 // Read one attribute's current value from a fullJson device model (currentStates keyed by name).
@@ -1707,29 +1698,58 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed
     return result
 }
 
-private Map _deviceReadPage(Map result, cursor) {
+private Map _deviceReadFragment(Map snapshot, String token, int start) {
+    String serialized = snapshot.content
+    int end = Math.min(start + 18000, serialized.length())
+    return [id: snapshot.id, mode: snapshot.mode, contentFormat: 'json-fragment',
+            content: serialized.substring(start, end), offset: start, totalCharacters: serialized.length(),
+            nextCursor: end < serialized.length() ? "v2:${token}:${end}".toString() : null,
+            note: 'Concatenate content fragments in order, then parse the joined JSON. Repeat with nextCursor and unchanged arguments within five minutes; fields=[] discovers smaller selections.']
+}
+
+private String _deviceReadSelection(deviceId, String mode, sections, fields, boolean listed) {
+    return groovy.json.JsonOutput.toJson([app.id?.toString(), deviceId.toString(), mode, sections, fields, listed])
+}
+
+private Map _deviceReadContinuation(String cursor, String selection) {
+    if (!(cursor ==~ /v2:[a-f0-9-]{36}:[0-9]+/)) {
+        throw new IllegalArgumentException('cursor must be a prior hub_get_device nextCursor; keep the same mode, sections and fields.')
+    }
+    def parts = cursor.split(':')
+    Map snapshot
+    synchronized (DEVICE_READ_SNAPSHOTS) {
+        snapshot = DEVICE_READ_SNAPSHOTS.get(parts[1])
+        if (snapshot && now() - (snapshot.at as Long) >= 300000L) {
+            DEVICE_READ_SNAPSHOTS.remove(parts[1])
+            snapshot = null
+        }
+    }
+    if (!snapshot) throw new IllegalArgumentException('Device read snapshot expired or was evicted. Restart without cursor, or select fewer fields.')
+    if (snapshot.selection != selection) throw new IllegalArgumentException('Device or selection changed. Restart without cursor and keep the same arguments for subsequent pages.')
+    int start = _parseListCursor(parts[2], snapshot.content.length(), 'hub_get_device')
+    return _deviceReadFragment(snapshot, parts[1], start)
+}
+
+private Map _deviceReadPage(Map result, String selection) {
     // Size the actual text-content envelope, including escaped JSON, before the shared guard.
     String serialized = groovy.json.JsonOutput.toJson(result)
     def envelope = [jsonrpc: '2.0', id: 1, result: [content: [[type: 'text', text: serialized]]]]
-    if (cursor == null && groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length < 95000) return result
-    // Only large expanded reads use fragments. No hub state is persisted for this continuation.
-    // The digest prevents assembling pages from different native snapshots or selections.
-    String digest = _mrtrSha256(serialized)
-    int start = 0
-    if (cursor != null && cursor != '') {
-        String token = cursor.toString()
-        if (!(token ==~ /v1:[a-f0-9]{64}:[0-9]+/)) throw new IllegalArgumentException('cursor must be a prior hub_get_device nextCursor; keep the same mode, sections and fields.')
-        def parts = token.split(':')
-        if (parts[1] != digest) throw new IllegalArgumentException('Device information or selection changed during pagination. Restart without cursor, or select fewer fields.')
-        start = _parseListCursor(parts[2], serialized.length(), 'hub_get_device')
+    if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length < 95000) return result
+    // Bound retained UTF-16 content to 4 MiB across at most eight snapshots, outside persisted app state.
+    if (serialized.length() > 2097152) throw new IllegalArgumentException('Device information exceeds the snapshot budget. Select fewer sections or fields, then read each selection separately.')
+    String token = java.util.UUID.randomUUID().toString()
+    Map snapshot = [id: result.id, mode: result.mode, content: serialized, selection: selection, at: now()]
+    synchronized (DEVICE_READ_SNAPSHOTS) {
+        DEVICE_READ_SNAPSHOTS.entrySet().findAll { now() - (it.value.at as Long) >= 300000L }
+            .collect { it.key }.each { DEVICE_READ_SNAPSHOTS.remove(it) }
+        int retained = DEVICE_READ_SNAPSHOTS.values().sum { it.content.length() } ?: 0
+        while (DEVICE_READ_SNAPSHOTS.size() >= 8 || retained + serialized.length() > 2097152) {
+            def oldest = DEVICE_READ_SNAPSHOTS.keySet().iterator().next()
+            retained -= DEVICE_READ_SNAPSHOTS.remove(oldest).content.length()
+        }
+        DEVICE_READ_SNAPSHOTS.put(token, snapshot)
     }
-    // JsonOutput escapes Unicode; this conservative fragment bound includes double escaping
-    // when the fragment is placed inside the MCP text-content JSON envelope.
-    int end = Math.min(start + 18000, serialized.length())
-    return [id: result.id, mode: result.mode, contentFormat: 'json-fragment',
-            content: serialized.substring(start, end), offset: start, totalCharacters: serialized.length(),
-            nextCursor: end < serialized.length() ? "v1:${digest}:${end}".toString() : null,
-            note: 'Concatenate content fragments in order, then parse the joined JSON. Repeat this call with nextCursor and unchanged arguments; fields=[] discovers smaller selections.']
+    return _deviceReadFragment(snapshot, token, 0)
 }
 
 def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cursor = null) {
@@ -1748,12 +1768,17 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
         throw new IllegalArgumentException('cursor is a string continuation for configuration/details mode only.')
     }
     def device = findDevice(deviceId)
+    String selection = _deviceReadSelection(deviceId, selectedMode, sections, fields, device != null)
+    if (cursor) {
+        if (!device && !_bypassEnabled()) throw new IllegalArgumentException("Device not found: ${deviceId}")
+        return _deviceReadContinuation(cursor, selection)
+    }
     if (!device) {
         if (_bypassEnabled()) {
             def fj = _fetchDeviceFullJson(deviceId)
             if (fj?.device instanceof Map) {
                 def identity = _getDeviceFromFullJson(deviceId, fj)
-                return selectedMode == 'summary' ? identity : _deviceReadPage(_deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections, fields), cursor)
+                return selectedMode == 'summary' ? identity : _deviceReadPage(_deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections, fields), selection)
             }
         }
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -1761,7 +1786,7 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
 
     if (selectedMode == 'configuration') {
         return _deviceReadPage(_deviceExpandedResult(deviceId, [name: device.name, label: device.label ?: device.name],
-                                     _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), cursor)
+                                     _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), selection)
     }
 
     def attributes = []
@@ -1806,7 +1831,7 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
         commands: commands
     ]
     return selectedMode == 'summary' ? summary : _deviceReadPage(_deviceExpandedResult(deviceId, summary,
-        _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), cursor)
+        _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), selection)
 }
 
 def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
@@ -3884,8 +3909,18 @@ private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List
             }
             def payload = _devicePreferencePanePayload(deviceId, [:], rows)
             stage = 'write'
-            hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
-            accepted.putAll(nativeSettings)
+            def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
+            if (response instanceof Map && (response.success == false || response._unparseable == true)) {
+                nativeSettings.each { name, setting ->
+                    errors << [property: "preference.${name}", stage: 'write',
+                        status: response._unparseable == true ? 'unavailable' : 'failed',
+                        error: response._unparseable == true ?
+                            'Preference save returned an unreadable response; inspect the device configuration before retrying.' :
+                            'Native preference save was rejected; inspect the device configuration before retrying.']
+                }
+            } else {
+                accepted.putAll(nativeSettings)
+            }
         } catch (Exception ignored) {
             nativeSettings.each { name, setting ->
                 errors << [property: "preference.${name}", stage: stage, status: stage == 'write' ? 'failed' : 'unavailable',
@@ -3940,6 +3975,7 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
                 }
                 def expected = property == "dashboardIds" ? wanted.collect { it.toString() }.sort() : wanted
                 def equal = present && (expected instanceof Boolean ? (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == expected : expected instanceof List ? actual == expected : actual?.toString() == expected?.toString())
+                if (property == "tags") equal = present && _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
                 if (present && property in ["notes", "defaultIcon", "tags"] && wanted == "" && actual == null) equal = true
                 if (equal) changes << [property: property, oldValue: full?.device?.get(property), newValue: wanted]
                 else errors << [property: property, error: present ? "POST accepted but ${property} read back as a different value; inspect configuration before retrying." : "POST accepted but could not confirm ${property}; native read-back is unavailable."]
@@ -4426,33 +4462,13 @@ def toolUpdateDevice(args) {
             errors << [property: "tags", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
-                def tagsCsv = (args.tags instanceof List) ? args.tags.collect { it?.toString()?.trim() }.findAll { it }.join(",") : args.tags.toString()
+                def tagsCsv = _normalizedDeviceTags(args.tags).join(",")
                 def fjText = hubInternalGet("/device/fullJson/${deviceId}")
                 def full = fjText ? new groovy.json.JsonSlurper().parseText(fjText) : null
                 def d = full?.device
                 if (!d) throw new RuntimeException("Could not read the device model from /device/fullJson to preserve fields")
-                _requireCompleteDeviceFormSource(full, deviceId)
                 def oldLabel = d.label; def oldName = d.name; def oldDni = d.deviceNetworkId
-                def dashIds = (full.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
-                // Faithful copy of the Vue device-edit form (deviceModel); omitting a field blanks it.
-                def model = [
-                    name: d.name, label: d.label, zigbeeId: d.zigbeeId,
-                    maxEvents: d.maxEvents, maxStates: d.maxStates, spammyThreshold: d.spammyThreshold,
-                    deviceNetworkId: d.deviceNetworkId, deviceTypeId: d.deviceTypeId,
-                    deviceTypeReadableType: d.deviceTypeReadableType, roomId: d.roomId,
-                    meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
-                    homeKitEnabled: full.homeKitEnabled, locationId: d.locationId, hubId: d.hubId,
-                    groupId: d.groupId, dashboardIds: dashIds, tags: tagsCsv,
-                    defaultIcon: (d.containsKey("defaultIcon") ? d.defaultIcon : d.icon), notes: (d.containsKey("notes") ? d.notes : "")
-                ]
-                if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
-                def enc = { v ->
-                    if (v == true) return "on"
-                    if (v == null) return ""
-                    if (v instanceof List) return v.collect { it?.toString() }.join(",")
-                    return v.toString()
-                }
-                def body = model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
+                def body = _deviceConfigurationFormBody(deviceId, full, [tags: tagsCsv])
                 hubInternalPostFormRaw("/device/update", body)
                 // Verify: tags applied AND identity fields not blanked by the wholesale form
                 def vText = hubInternalGet("/device/fullJson/${deviceId}")
@@ -4465,8 +4481,8 @@ def toolUpdateDevice(args) {
                 if (oldLabel && !vd?.label) { try { device.setLabel(oldLabel) } catch (Exception re) { errors << [property: "label", error: "Tags processed but the device-edit form blanked the label and restoring it failed: ${re.message}. Verify and re-set the label."] } }
                 if (oldName && !vd?.name) { try { device.setName(oldName) } catch (Exception re) { errors << [property: "name", error: "Tags processed but the device-edit form blanked the name and restoring it failed: ${re.message}. Verify and re-set the name."] } }
                 if (oldDni && !vd?.deviceNetworkId) { try { device.setDeviceNetworkId(oldDni) } catch (Exception re) { errors << [property: "deviceNetworkId", error: "Tags processed but the device-edit form blanked the deviceNetworkId and restoring it failed: ${re.message}. Verify and re-set the deviceNetworkId."] } }
-                def gotTags = vd?.tags?.toString() ?: ""
-                if (gotTags != (tagsCsv ?: "")) {
+                def gotTags = vd instanceof Map && vd.containsKey('tags') ? _normalizedDeviceTags(vd.tags) : null
+                if (gotTags != _normalizedDeviceTags(tagsCsv)) {
                     errors << [property: "tags", error: "POST accepted but tags read back as '${gotTags}' (expected '${tagsCsv}'). Other fields were preserved."]
                 } else {
                     changes << [property: "tags", oldValue: d.tags, newValue: tagsCsv]
@@ -4704,13 +4720,14 @@ private void _requireCompleteDeviceFormSource(Map full, deviceId) {
     }
 }
 
-private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
-    def fj = _fetchDeviceFullJson(deviceId)
-    if (fj?.device == null) {
-        // This is a PRE-write model read (the form is built from it, then POSTed) -- distinct from
-        // the post-write read-back legs, so the diagnostic says model-read, not confirm.
-        throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form")
-    }
+private List _normalizedDeviceTags(value) {
+    if (value == null) return []
+    def tags = value instanceof String ? value.split(',').toList() : value
+    if (!(tags instanceof List) || tags.any { !(it instanceof String) }) return null
+    return tags.collect { it.trim() }.findAll { it }
+}
+
+private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides) {
     _requireCompleteDeviceFormSource(fj, deviceId)
     def d = fj.device
     def dashIds = (fj.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
@@ -4722,7 +4739,7 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
         meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
         homeKitEnabled: fj.homeKitEnabled, locationId: d.locationId, hubId: d.hubId,
         groupId: d.groupId, dashboardIds: dashIds, tags: (d.tags ?: ""),
-        defaultIcon: (d.containsKey("defaultIcon") ? d.defaultIcon : d.icon), notes: (d.containsKey("notes") ? d.notes : "")
+        defaultIcon: d.defaultIcon, notes: d.notes
     ]
     if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
     if (fieldOverrides) model.putAll(fieldOverrides)
@@ -4732,15 +4749,23 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
         if (v instanceof List) return v.collect { it?.toString() }.join(",")
         return v.toString()
     }
-    def body = model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
+    return model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
+}
+
+private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
+    def fj = _fetchDeviceFullJson(deviceId)
+    if (fj?.device == null) {
+        throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form")
+    }
+    def body = _deviceConfigurationFormBody(deviceId, fj, fieldOverrides)
     hubInternalPostFormRaw("/device/update", body)
     return _fetchDeviceFullJson(deviceId)
 }
 
 def toolCreateDevice(args) {
-    // Instantiate a device from a driver TYPE id. The compatible-device installer can reject a
-    // user-driver id; the current Vue manual add flow uses /device/createVirtual for those types.
-    // This creates a real, non-radio-bound device -- useful for LAN/integration/cloud and
+    // Resolve the native driver type before choosing one creation endpoint; a failed mutation
+    // cannot safely be retried through another endpoint because its device may already exist.
+    // This creates a device without radio pairing -- useful for LAN/integration/cloud and
     // software/component drivers that have no pairing flow. Radio drivers created this way
     // are orphan shells (no node), so we warn. MCP-managed virtual devices have their own
     // tool (hub_manage_virtual_device); this is the broader catalog path.
@@ -4753,9 +4778,30 @@ def toolCreateDevice(args) {
     }
     typeId = typeId.toString().trim()
 
+    String driverType
+    try {
+        def catalogText = hubInternalGet('/device/drivers')
+        def catalog = catalogText ? new groovy.json.JsonSlurper().parseText(catalogText) : null
+        if (!(catalog instanceof Map) || !(catalog.drivers instanceof List)) {
+            return [success: false, error: 'The native driver catalog is unavailable or invalid; no device create request sent.',
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+        }
+        def matches = catalog.drivers.findAll { row -> row instanceof Map && row.id?.toString() == typeId }
+        if (matches.size() != 1 || !(matches[0].type in ['sys', 'usr'])) {
+            return [success: false, error: "Could not resolve one supported native driver type for ${typeId}; no device create request sent.",
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+        }
+        driverType = matches[0].type.toString()
+    } catch (Exception e) {
+        return [success: false, error: 'Hub call failed reading the driver catalog; no device create request sent.',
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+    }
+
     def resp
     try {
-        def respText = hubInternalGet("/device/sysDriverByIdJson/${java.net.URLEncoder.encode(typeId, 'UTF-8')}", null, 30)
+        def respText = driverType == 'usr'
+            ? hubInternalGet('/device/createVirtual', [deviceTypeId: typeId], 30)
+            : hubInternalGet("/device/sysDriverByIdJson/${java.net.URLEncoder.encode(typeId, 'UTF-8')}", null, 30)
         // Parse INSIDE the try: a 200 carrying an HTML/login body (not JSON) makes parseText
         // throw, and it must return the same structured runtime-error shape as a fetch failure
         // rather than escaping as an unstructured tool error.
@@ -4763,17 +4809,6 @@ def toolCreateDevice(args) {
     } catch (Exception e) {
         return [success: false, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
-    }
-    if (resp?.success == false && resp?.deviceId == null && resp?.errorMessage?.toString() == "Driver not found") {
-        try {
-            def fallbackText = hubInternalGet("/device/createVirtual", [deviceTypeId: typeId], 30)
-            def fallback = fallbackText ? new groovy.json.JsonSlurper().parseText(fallbackText) : null
-            if (fallback?.deviceId != null && fallback?.success != false) resp = fallback
-            else resp = fallback ?: resp
-        } catch (Exception e) {
-            return [success: false, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
-                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
-        }
     }
     // Vue's /device/createVirtual response identifies success by deviceId and omits success.
     if (resp?.deviceId != null && resp?.success == null) resp.put("success", true)
@@ -5446,7 +5481,7 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
                                description: "details mode only: non-empty section selection. Omit for all sections. Large histories remain reachable through read-tool references."],
                     fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names. For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names."],
-                    cursor: [type: "string", description: "Oversized configuration/details return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments, concatenate content fragments, then parse JSON. Changed data requires restarting. Prefer fields/sections for smaller reads."]
+                    cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON. Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads."]
                 ],
                 required: ["deviceId"]
             ]
@@ -5556,7 +5591,7 @@ Only modify devices user explicitly requested. Pre-flight: read configuration, c
                     label: [type: "string", description: "New display label for the device"],
                     name: [type: "string", description: "New device name"],
                     deviceNetworkId: [type: "string", description: "New device network ID (must be unique across all hub devices)"],
-                    room: [type: "string", description: "Room name to assign the device to (case-sensitive, must match an existing room)"],
+                    room: [type: "string", description: "Existing room name (case-insensitive exact match); empty string removes the assignment."],
                     enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
                     dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
                         additionalProperties: [type: "string"]],
@@ -5697,7 +5732,7 @@ def _toolDisplayMeta_partDevices() {
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
-        hub_update_device: [title: "Update Device Properties", summary: "Update a device's label, room, preferences, show-on-home, status attribute, or tags."],
+        hub_update_device: [title: "Update Device Properties", summary: "Update applicable device identity, preferences, display, driver, history limits, or integration assignments."],
         hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id (LAN/integration/software drivers; not radio hardware)."],
         hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]

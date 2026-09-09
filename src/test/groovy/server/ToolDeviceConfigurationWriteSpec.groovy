@@ -613,7 +613,13 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         where:
         field                 | invalid
         'showOnHome'          | null
-        'retryEnabled'        | 'false'
+        'retryEnabled'        | 'perhaps'
+        'showOnHome'          | 'perhaps'
+        'showOnHome'          | 1
+        'showOnHome'          | [:]
+        'retryEnabled'        | null
+        'retryEnabled'        | 0
+        'retryEnabled'        | []
         'defaultCurrentState' | 'REMOVE'
         'defaultCurrentState' | false
         'defaultCurrentState' | 1
@@ -1181,6 +1187,140 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         responseKind    | nativeResponse                                                    | expectedStatus
         'rejection'     | [success: false, message: 'fixture-secret-in-response']             | 'failed'
         'invalid-body'  | [_unparseable: true, message: 'fixture-secret-in-response']         | 'unavailable'
+    }
+
+    @Unroll
+    def 'failed preference update writes a safe native ERROR summary in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        model.settings << [name: 'apiToken', type: 'password', value: 'fixture-old-secret']
+        registerFixture(model, bypass)
+        settingsMap.mcpLogLevel = 'error'
+        script.log.messages.clear()
+        if (!bypass) childDevicesList[0].metaClass.updateSetting = { String name, setting ->
+            throw new RuntimeException('fixture-exception-secret')
+        }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            throw new RuntimeException('fixture-exception-secret')
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [apiToken: 'fixture-new-secret']])
+        def errors = script.log.messages.findAll { it.startsWith('error:[MCP1] ') }.collect {
+            new JsonSlurper().parseText(it.substring(it.indexOf('{'))).entry
+        }
+
+        then:
+        result.success == false
+        errors.find { it.component == 'device' && it.message.contains('ID: 10') && it.message.contains('errors') }
+        !script.log.messages.join('\n').contains('fixture-old-secret')
+        !script.log.messages.join('\n').contains('fixture-new-secret')
+        !script.log.messages.join('\n').contains('fixture-exception-secret')
+
+        where:
+        bypass << [false, true]
+    }
+
+    @Unroll
+    def 'preference pane preserves explicit Boolean strings as Boolean controls'() {
+        given:
+        def model = fixture()
+        model.device.showOnHome = rawShow
+        model.device.retryEnabled = rawRetry
+        registerFixture(model, true)
+
+        when:
+        def payload = script._devicePreferencePanePayload('10', [:], [[name: 'offset', type: 'number', value: 2]])
+
+        then:
+        noExceptionThrown()
+        payload == [deviceId: 10, defaultCurrentState: '', commandRetry: expectedRetry,
+            showOnHome: expectedShow, preferences: [[name: 'offset', type: 'number', value: 2]]]
+
+        where:
+        rawShow | rawRetry | expectedShow | expectedRetry
+        'true'  | 'false'  | true         | false
+        'false' | 'true'   | false        | true
+        true    | 'false'  | true         | false
+        'false' | true     | false        | true
+    }
+
+    def 'listed enabled-only update skips preparation fullJson but retains fresh post-write verification'() {
+        given:
+        def model = fixture()
+        model.device.disabled = false
+        registerFixture(model, false)
+        def events = []
+        hubGet.register('/device/fullJson/10') { events << 'read'; JsonOutput.toJson(model) }
+        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false ->
+            events << 'disable'
+            model.device.disabled = true
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', enabled: false])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == 'enabled' }?.newValue == false
+        events == ['disable', 'read']
+    }
+
+    def 'listed room-only update uses room inventory and verification without fullJson'() {
+        given:
+        registerFixture(fixture(), false)
+        def rooms = [[id: 7, name: 'Foyer', deviceIds: []]]
+        script.metaClass.getRooms = { -> rooms }
+        def saves = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            def payload = new JsonSlurper().parseText(body)
+            saves << [path: path, body: payload]
+            rooms[0].deviceIds = payload.deviceIds
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', room: 'foyer'])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == 'room' }?.newValue == 'Foyer'
+        saves == [[path: '/room/save', body: [roomId: 7, name: 'Foyer', deviceIds: [10]]]]
+        !hubGet.calls.any { it.path == '/device/fullJson/10' }
+    }
+
+    @Unroll
+    def 'listed #property patch retains native prevalidation before any setter'() {
+        given:
+        def model = fixture()
+        if (property in ['name', 'deviceNetworkId']) model.device.isComponent = true
+        if (property == 'label') model.device.linkedAndDisabled = true
+        if (property == 'preferences') model.device.linkedDevice = true
+        registerFixture(model, false)
+        def events = []
+        hubGet.register('/device/fullJson/10') { events << 'read'; JsonOutput.toJson(model) }
+        childDevicesList[0].metaClass.setLabel = { String ignoredValue -> events << 'label' }
+        childDevicesList[0].metaClass.setName = { String ignoredValue -> events << 'name' }
+        childDevicesList[0].metaClass.setDeviceNetworkId = { String ignoredValue -> events << 'dni' }
+        childDevicesList[0].metaClass.updateSetting = { String name, setting -> events << 'preference' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> events << 'post'; [success: true] }
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { events << 'defaultCurrentState'; 'true' }
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', confirm: true] + [(property): value])
+
+        then:
+        thrown(IllegalArgumentException)
+        events == ['read']
+
+        where:
+        property              | value
+        'name'                | 'Changed name'
+        'deviceNetworkId'     | 'changed-identity'
+        'label'               | 'Changed label'
+        'defaultCurrentState' | 'switch'
+        'preferences'         | [logEnable: false]
     }
 
     def 'secret preference saved value is never echoed in the changes response'() {

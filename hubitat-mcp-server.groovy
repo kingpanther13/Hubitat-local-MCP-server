@@ -39,6 +39,8 @@
 // fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 @groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
+// Redacted immutable device pages; bounded in memory so changing telemetry cannot split a read.
+@groovy.transform.Field static final Map DEVICE_READ_SNAPSHOTS = new java.util.LinkedHashMap()
 // Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
@@ -8213,7 +8215,7 @@ def _guideSectionForTool(toolName) {
               'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
     if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
               'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
-    if (t == 'hub_update_device') return 'update_device'
+    if (t in ['hub_get_device', 'hub_update_device']) return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
@@ -8621,7 +8623,7 @@ Call `hub_get_device(deviceId=..., mode="configuration")` before an update. It r
 
 For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then select exact names. Configuration selection applies to preference names, editable property names and device-info keys. Details selection applies to section keys; attributes also accepts an individual attribute name. Commands and jobs use the row indices returned by `availableFields`, so duplicate or unnamed rows remain selectable. Omitting `fields` retains the full selected sections.
 
-If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. The cursor is bound to the redacted response digest and refuses a changed snapshot; restart or narrow the selection instead of joining different data.
+If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 4 MiB of content are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
 
 Every update requires the Write master and applicable tool permissions. When mandatory best-practice acknowledgment is enabled, put `bestPracticeKey` inside the gateway's `args` alongside the patch.
 
@@ -8642,7 +8644,7 @@ Omitted properties are preserved. The complete patch is validated before writes 
 **Preferences format:**
 `{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}`
 
-Use the preference's declared type and constraints from configuration mode. Unknown names are refused. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names are exact and case-sensitive. `tags` replaces the full tag set; an empty array clears it.
+Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected unless clearing is explicit. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
 ''',
 
         rules: '''## Rule Structure Reference

@@ -334,6 +334,7 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
         (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()
+        (scriptStaticField('DEVICE_READ_SNAPSHOTS') as Map).clear()
         (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.

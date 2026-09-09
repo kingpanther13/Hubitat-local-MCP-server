@@ -252,6 +252,21 @@ def _validation_log_expectation(
     return f"Validation error in {tool_name}: {reason}"
 
 
+def _decode_mcp1_envelope(raw_message: str) -> dict | None:
+    """Decode only a complete MCP envelope at a native log prefix boundary."""
+    marker = "[MCP1] "
+    marker_index = raw_message.find(marker)
+    if marker_index != 0 and not (
+        marker_index > 0 and raw_message[:marker_index].endswith("|")
+    ):
+        return None
+    try:
+        envelope = json.loads(raw_message[marker_index + len(marker):])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return envelope if isinstance(envelope, dict) else None
+
+
 def _partition_new_hub_errors(
     logs: list, baseline: Counter[str] | set[str], expected_validation_logs: list[str],
 ) -> tuple[list, list]:
@@ -277,17 +292,11 @@ def _partition_new_hub_errors(
         # marker position and complete object shape. A malformed/truncated row
         # keeps its raw text and therefore cannot be broadly ignored.
         comparable_message = raw_message
-        marker = "[MCP1] "
-        marker_index = raw_message.find(marker)
-        if marker_index == 0 or (marker_index > 0 and raw_message[:marker_index].endswith("|")):
-            try:
-                envelope = json.loads(raw_message[marker_index + len(marker):])
-                nested = envelope.get("entry") if isinstance(envelope, dict) else None
-                nested_message = nested.get("message") if isinstance(nested, dict) else None
-                if isinstance(nested_message, str):
-                    comparable_message = nested_message
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+        envelope = _decode_mcp1_envelope(raw_message)
+        nested = envelope.get("entry") if envelope else None
+        nested_message = nested.get("message") if isinstance(nested, dict) else None
+        if isinstance(nested_message, str):
+            comparable_message = nested_message
 
         if remaining[comparable_message] > 0:
             expected.append(entry)
@@ -12698,17 +12707,8 @@ class TestRunner:
                 if server_id is None or raw_message.startswith(f"app|{server_id}|"):
                     rows.append(entry)
                     continue
-                marker = "[MCP1] "
-                marker_index = raw_message.find(marker)
-                if marker_index != 0 and not (
-                    marker_index > 0 and raw_message[:marker_index].endswith("|")
-                ):
-                    continue
-                try:
-                    envelope = json.loads(raw_message[marker_index + len(marker):])
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    continue
-                if isinstance(envelope, dict) and str(envelope.get("appId")) == server_id:
+                envelope = _decode_mcp1_envelope(raw_message)
+                if envelope is not None and str(envelope.get("appId")) == server_id:
                     rows.append(entry)
             return rows
 

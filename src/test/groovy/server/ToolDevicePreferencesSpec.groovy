@@ -672,9 +672,9 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
 
         then:
         def preference = configuration.preferences.find { it.name == 'psw' }
-        preference.value == '[REDACTED]'
-        preference.defaultValue == '[REDACTED]'
-        details.sections.state.psw == '[REDACTED]'
+        preference.value == '***redacted (password)***'
+        preference.defaultValue == '***redacted (password)***'
+        details.sections.state.psw == '***redacted (password)***'
         details.sections.state.harmless == 'public'
     }
 
@@ -732,6 +732,49 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
 
         then:
         thrown(IllegalArgumentException)
+    }
+
+    def "snapshot eviction bounds retained content and preserves the newest readable snapshot"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 400000]
+        registerFixture(DEVICE_ID, full)
+        def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+        def newest
+        9.times { newest = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large']) }
+
+        when:
+        def next = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], newest.nextCursor)
+        def snapshots = scriptStaticField('DEVICE_READ_SNAPSHOTS') as Map
+
+        then:
+        next.offset == 18000
+        snapshots.size() <= 8
+        snapshots.values().sum { it.content.length() } <= 2097152
+
+        when:
+        script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], first.nextCursor)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('restart')
+    }
+
+    def "one over-budget device selection fails with narrower-selection guidance without caching it"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 2200000]
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Select fewer')
+        (scriptStaticField('DEVICE_READ_SNAPSHOTS') as Map).isEmpty()
     }
 
     def "fragment continuation is bound to the original field selection"() {
