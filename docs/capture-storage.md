@@ -1,11 +1,11 @@
-# Saved device captures
+# Temporary device captures
 
-Saved captures keep their full device values in local Hubitat File Manager files. App state retains a compact index of capture IDs, timestamps, device counts and file references. Listing captures and reporting their count do not load every payload.
+Captures serve the legacy custom rule engine's `capture_state` and `restore_state` actions. They remember switch, level and color settings before a temporary change; ordinary device reads and native Rule Machine do not use this store.
 
-A save uploads a new, uniquely named generation and verifies its contents before publishing its index entry. Only then may the previous generation or an evicted capture be deleted. A failed upload or verification leaves the previous capture available. Missing or corrupt committed files produce an explicit error when loaded for restore.
+Captures live only in class-static memory, isolated and synchronized per installed parent app. Separate rule events can share a named capture. Hub restart or app code reload loses the snapshots; a later restore of a missing snapshot logs a warning and does nothing. Capture again before restoring after a restart. Saving app settings does not deliberately clear the memory store, but any platform reload may clear it.
 
-Files use an app-specific `mcp-capture-<appId>-<generation>.json` name. These are restore data: do not manually delete or edit them while their captures are retained. Delete captures through `hub_delete_captured_state` so the index and owned files stay consistent. The configured retention remains 20 captures by default, with a limit of 1–100; saves enforce a reduced limit as well as the ordinary oldest-first policy.
+Existing captures in `state` or `atomicState` are imported into memory once on initialization or first access, preserving their IDs, timestamps and full values. The old persisted key is then removed. Captures are not written to app state or File Manager, and there is no durable index or background file migration/cleanup. Memory holds the payloads until deletion, retention eviction or class reload.
 
-Legacy captures remain readable while migration uploads and verifies one entry at a time. Initialization schedules migration without performing bulk file I/O inside initialization; capture access also starts pending migration. A code-only deployment that does not initialize the app starts migration on the next capture access. Storage failures retain the legacy data and allow retry. Existing IDs, timestamps and device values are preserved, including legacy list entries.
+The existing configurable count limit remains 20 by default, clamped to 1-100. Saves evict the oldest other captures when necessary. This is a count limit, not a byte limit. Caller mutations cannot change a stored snapshot.
 
-This exchanges repeated app-state serialization of all capture payloads for file I/O when saving or loading a cold capture. A bounded memory cache reduces repeated reads. Hubs with no saved captures receive no bulk-state savings. The regression tests report representative serialized sizes and file-operation counts; they do not establish a general response-time or E2E speedup.
+Removing persisted capture payloads reduces app-state serialization work only on hubs that have those payloads. No overall E2E or request-latency improvement has been demonstrated. Legacy E2E and BAT coverage remains frozen; storage maintenance is checked with unit tests.

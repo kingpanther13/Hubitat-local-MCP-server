@@ -336,7 +336,7 @@ def mainPage() {
             input "debugLogging", "bool", title: "Enable Hubitat Console Logging", defaultValue: false,
                   description: "Logs to Hubitat's built-in log viewer"
             input "maxCapturedStates", "number", title: "Max Captured States",
-                  description: "Maximum number of unique state captures to store (default: 20)",
+                  description: "Maximum temporary legacy-rule captures (default: 20); lost on hub restart or app code reload",
                   defaultValue: 20, range: "1..100", required: false
             input "loopGuardMax", "number", title: "Loop Guard: Max Executions",
                   description: "Auto-disable a rule after this many executions within the time window (default: 30)",
@@ -616,6 +616,7 @@ def updated() {
 
 def uninstalled() {
     log.info "MCP Rule Server uninstalled"
+    _resetCaptureStore()
 
     // Clean up this app's hub-variable in-use registrations so deleting the
     // app doesn't leave Hubitat warning users about vars no rule references
@@ -672,10 +673,8 @@ def initialize() {
     // previously-tracked set so we removeInUseGlobalVar for vars no
     // longer referenced (rule edited away from the var, rule deleted).
     _refreshHubVarInUseRegistrations()
-    // Re-arm file cleanup too: unschedule() may have canceled a failed-delete retry.
-    if (state.capturedDeviceStates || atomicState.capturedDeviceStates || atomicState.captureIndex != null) {
-        _scheduleCaptureMigration(5000)
-    }
+    // Shed persisted legacy payloads even when no rule accesses captures again.
+    if (state.capturedDeviceStates || atomicState.capturedDeviceStates) countCapturedStates()
 }
 
 
@@ -8682,7 +8681,7 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - set_color: Set color via hue/saturation/level — {deviceId, hue (0-100), saturation (0-100), level (0-100, optional)}
 - set_color_temperature: Set color temperature — {deviceId, temperature (Kelvin)}
 - lock / unlock: Lock or unlock a lock — {deviceId}
-- capture_state: Capture device states for later restore — {deviceIds, stateId? (optional, default "default")}
+- capture_state: Capture device states in memory for later restore (lost on hub restart or app code reload) — {deviceIds, stateId? (optional, default "default")}
 - restore_state: Restore previously captured states — {stateId? (optional, default "default")}
 - send_notification: Send a notification to a device — {deviceId, message}
 - variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}

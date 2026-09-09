@@ -53,13 +53,6 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         appExecutor.getApp() >> captureApp
     }
 
-    def setup() {
-        def files = [:]
-        script.metaClass.uploadHubFile = { String name, byte[] bytes -> files[name] = bytes }
-        script.metaClass.downloadHubFile = { String name -> files[name] }
-        script.metaClass.deleteHubFile = { String name -> files.remove(name) }
-    }
-
     def cleanup() {
         sharedLocation.hub = null
     }
@@ -1257,14 +1250,14 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.note.contains('not JSON')
     }
 
-    // -------- saved capture persistence and retention --------
+    // -------- saved capture memory storage and retention --------
 
-    def "saveCapturedState persists an index without the full device payload"() {
+    def "saveCapturedState keeps the device payload only in memory"() {
         when:
         def result = script.saveCapturedState('snap1', [dev1: [switch: 'on']])
 
-        then: 'only its metadata lands in atomicState'
-        atomicStateMap.captureIndex.entries.containsKey('snap1')
+        then: 'neither payload nor index lands in atomicState'
+        !atomicStateMap.containsKey('captureIndex')
         !atomicStateMap.capturedDeviceStates
 
         and: 'and NOT in the race-prone state store'
@@ -1290,12 +1283,12 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.getCapturedState('a') == null
     }
 
-    def "getCapturedState reads from atomicState, not the non-atomic state (the restore_state consumer path)"() {
+    def "getCapturedState imports the atomic legacy value ahead of its stale state shadow"() {
         given: 'a capture in the atomic store, plus a decoy under the same key in non-atomic state'
         atomicStateMap.capturedDeviceStates = [snap: [devices: [dev1: [switch: 'on']], timestamp: 1000L, deviceCount: 1]]
         stateMap.capturedDeviceStates = [snap: [devices: [dev1: [switch: 'DECOY']], timestamp: 1L, deviceCount: 1]]
 
-        expect: 'restore reads the atomic store -- a regression back to state would return the decoy'
+        expect: 'the one-time import preserves the authoritative value'
         script.getCapturedState('snap') == [dev1: [switch: 'on']]
     }
 
