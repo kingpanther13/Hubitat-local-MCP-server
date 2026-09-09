@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -52,7 +53,15 @@ def main(argv):
     }
     (destination / "scope.json").write_text(json.dumps(scope, indent=2) + "\n", encoding="utf-8")
     for revision, paths in (("head", head_paths), ("base", base_paths)):
-        (destination / f"{revision}-config.json").write_text(json.dumps({"paths": paths}) + "\n", encoding="utf-8")
+        source = Path(head if revision == "head" else base).resolve()
+        staged = destination.parent / "codeql-source" / revision
+        for path in paths:
+            original = source / path
+            if original.is_symlink() or not original.resolve().is_relative_to(source):
+                raise ValueError(f"Source path must be a regular file inside the checkout: {path}")
+            target = staged / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(original, target)
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
         stream.write(f"head={str(bool(head_paths)).lower()}\nbase={str(bool(base_paths)).lower()}\n")
     print(json.dumps(scope, indent=2))

@@ -14,8 +14,9 @@ files change, allowing the command above to be exercised before the initial
 merge as well. It uses a pinned official CodeQL CLI bundle, runs no application tests,
 and selects supported source files changed in `main...HEAD`. Copied reference
 material under `resources/hub2-source/` is excluded; languages with no changed
-sources skip analysis. Exact changed-file paths limit CodeQL extraction, and
-the result gate also restricts findings to those files. The corresponding files
+sources skip analysis. Only selected files are copied, preserving relative paths,
+into temporary scan directories on the GitHub runner; extraction never receives
+the whole checkout. The result gate also restricts findings to those files. The corresponding files
 on `main` are scanned with the same queries to identify existing findings.
 The gate fails on new findings or incomplete analysis. It compares rule, file and CodeQL line
 fingerprint, including duplicate counts, so unrelated line shifts do not reopen

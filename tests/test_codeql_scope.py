@@ -70,5 +70,8 @@ def test_real_git_diff_excludes_unchanged_deleted_and_upstream_only_files(tmp_pa
     assert evidence["head_paths"] == ["added.py", "changed.py"]
     assert evidence["base_paths"] == ["changed.py"]
     assert evidence["head_sha"] == topic_sha
-    assert json.loads((output / "head-config.json").read_text())["paths"] == evidence["head_paths"]
+    staged = tmp_path / "codeql-source"
+    assert sorted(path.name for path in (staged / "head").iterdir()) == ["added.py", "changed.py"]
+    assert sorted(path.name for path in (staged / "base").iterdir()) == ["changed.py"]
+    assert (staged / "head/changed.py").read_bytes() == (head / "changed.py").read_bytes()
     assert outputs.read_text() == "head=true\nbase=true\n"
