@@ -90,7 +90,8 @@ class MrtrCleanupSpec extends ToolSpecBase {
         20.times { script._mrtrEnsureCleanupScheduled() }
 
         then:
-        mcpDriver.parseResponseJson().result == [:]
+        mcpDriver.parseResponseJson().error == null
+        mcpDriver.parseResponseJson().result instanceof Map
         jobs().size() == 1
         jobs().first()[0] == 1
         atomicStateMap.mrtrRequests.containsKey('old')
@@ -158,8 +159,9 @@ class MrtrCleanupSpec extends ToolSpecBase {
         given:
         long at = script.now()
         int attempts = 0
-        List warnings = []
-        script.metaClass.mcpLog = { level, category, message -> warnings << [level, category, message] }
+        def buffer = script.initDebugLogs()
+        buffer.config.logLevel = 'warn'
+        List warnings = buffer.entries
         RUN_IN_OVERRIDE.set({ List call ->
             attempts++
             throw new IllegalStateException('scheduler unavailable')
@@ -173,7 +175,8 @@ class MrtrCleanupSpec extends ToolSpecBase {
         attempts == 1
         atomicStateMap.mrtrRequests.containsKey('saved')
         warnings.size() == 1
-        warnings.first()[0..1] == ['warn', 'mrtr']
+        warnings.first().entry.level == 'warn'
+        warnings.first().entry.component == 'mrtr'
 
         when:
         NOW_OVERRIDE.set({ at + 60000L })

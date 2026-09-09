@@ -133,12 +133,13 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
     def "cleanup retries a failed removal and warm calls stop accessing state"() {
         given:
         long clock = 1000L
-        def warnings = []
         def persisted = new FailingLegacyState()
         persisted.toolSearchCorpus = ['old']
         def peer = newCompiledScriptInstance(app: new TestChildApp(id: 402L), state: [:], atomicState: persisted)
         NOW_OVERRIDE.set({ clock })
-        peer.metaClass.mcpLog = { level, category, message -> warnings << [level, category, message] }
+        def buffer = peer.initDebugLogs()
+        buffer.config.logLevel = 'warn'
+        def warnings = buffer.entries
 
         when:
         peer._cleanupRetiredToolState()
@@ -146,7 +147,7 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         then:
         persisted.toolSearchCorpus == ['old']
         warnings.size() == 1
-        warnings[0][0] == 'warn'
+        warnings[0].entry.level == 'warn'
 
         when: 'requests during backoff neither retry nor repeat the warning'
         10.times { peer._cleanupRetiredToolState() }
