@@ -1252,7 +1252,9 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         registerFixture(model, false)
         def events = []
         hubGet.register('/device/fullJson/10') { events << 'read'; JsonOutput.toJson(model) }
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            assert path == '/device/disable'
+            assert new JsonSlurper().parseText(body) == [id: 10, disable: true]
             events << 'disable'
             model.device.disabled = true
             ''
