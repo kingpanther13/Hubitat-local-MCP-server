@@ -2,6 +2,7 @@ package server
 
 import support.ToolSpecBase
 import support.TestChildApp
+import spock.lang.Unroll
 
 /**
  * Direct-call coverage for the BM25 hub_search_tools path after the PR2c perf change
@@ -52,6 +53,50 @@ class ToolSearchToolsSpec extends ToolSpecBase {
 
         then: 'the deny-list filter (getHiddenToolNames) removes it from the searchable corpus'
         !(result.results*.tool.contains("hub_manage_mode"))
+    }
+
+    @Unroll
+    def "a warm search applies #setting visibility to gateway introductions without changing its cached corpus"() {
+        given:
+        searchEnabled()
+        script.toolSearchTools([query: 'device configuration summary', maxResults: 50])
+        def cachedCorpus = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus
+        def cachedTokens = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens
+
+        when:
+        settingsMap[setting] = value
+        def result = script.toolSearchTools([query: 'device configuration summary', maxResults: 50])
+        def device = result.results.find { it.tool == 'hub_get_device' }
+        def listedGateway = script.getToolDefinitions().find { it.name == device?.gateway }
+
+        then:
+        device != null
+        !device.description.contains('device commands and updates live')
+        !device.description.contains('send commands')
+        device.description.endsWith('[' + listedGateway.description.split('\\n\\n')[0] + ']')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.is(cachedCorpus)
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.is(cachedTokens)
+
+        where:
+        setting          | value
+        'enableWrite'    | false
+        'disabled_tools' | ['hub_call_device_command']
+    }
+
+    def "an unrelated visibility override retains rich room introductions in search and tools list"() {
+        given:
+        searchEnabled()
+        settingsMap.disabled_tools = ['hub_call_device_command']
+
+        when:
+        def result = script.toolSearchTools([query: 'room rooms create rename', maxResults: 25])
+        def room = result.results.find { it.tool == 'hub_create_room' }
+        def gateway = script.getToolDefinitions().find { it.name == room?.gateway }
+
+        then:
+        room != null
+        room.description.contains('Manage hub rooms: list, view details, create, delete, and rename rooms.')
+        room.description.endsWith('[' + gateway.description.split('\\n\\n')[0] + ']')
     }
 
     def "the corpus + tokens are built once into the class static -- never atomicState -- and a second identical query is served from it"() {
