@@ -4,17 +4,19 @@
   "replacementDriver": "E2E_PERM_Configuration_Alternate",
   "profiles": [
     {"path": "child-sdk", "label": "BAT_E2E_KEEP_Configuration_Child", "authorized": true},
-    {"path": "standalone-sdk", "label": "BAT_E2E_KEEP_Configuration_StandaloneSDK", "authorized": true},
-    {"path": "standalone-bypass", "label": "BAT_E2E_KEEP_Configuration_StandaloneBypass", "authorized": false}
+    {"path": "standalone-sdk", "label": "BAT_E2E_KEEP_Configuration_StandaloneSDK", "authorized": true,
+      "nativeFields": {"zigbeeId": {"expectation": "positive", "target": "0200000000016859"}}},
+    {"path": "standalone-bypass", "label": "BAT_E2E_KEEP_Configuration_StandaloneBypass", "authorized": false,
+      "nativeFields": {"zigbeeId": {"expectation": "positive", "target": "0200000000016860"}}}
   ],
   "nativeFields": {
-    "zigbeeId": {"expectation": "pending"},
-    "dashboardIds": {"expectation": "pending"},
-    "meshEnabled": {"expectation": "pending"},
-    "meshFullSync": {"expectation": "pending"},
-    "homeKitEnabled": {"expectation": "pending"},
-    "amazonAlexaEnabled": {"expectation": "pending"},
-    "googleHomeEnabled": {"expectation": "pending"},
-    "retryEnabled": {"expectation": "pending"}
+    "zigbeeId": {"expectation": "unavailable", "target": "0200000000016858"},
+    "dashboardIds": {"expectation": "positive", "target": [36461]},
+    "meshEnabled": {"expectation": "positive", "target": true},
+    "meshFullSync": {"expectation": "unavailable", "target": false},
+    "homeKitEnabled": {"expectation": "positive", "target": true},
+    "amazonAlexaEnabled": {"expectation": "unavailable", "target": true},
+    "googleHomeEnabled": {"expectation": "unavailable", "target": true},
+    "retryEnabled": {"expectation": "unavailable", "target": true}
   }
 }

@@ -1202,16 +1202,21 @@ private Map _readDevicePreferenceModel(Map fullJson) {
             row.containsKey('deviceId') && row.get('deviceId') == null && row.containsKey('value') && row.get('value') == null
         boolean present = !nativeUnset && ((input instanceof Map && input.containsKey('inputValue')) || row.containsKey('value'))
         def raw = nativeUnset ? null : ((input instanceof Map && input.containsKey('inputValue')) ? input.get('inputValue') : row.get('value'))
-        boolean multiple = row.multiple == true || row.multiple?.toString() == 'true'
-        def normalized = _normalizeDevicePreferenceValue(raw, type, multiple)
+        // Unset enum rows lose stored cardinality even when the driver declares multiple:true.
+        Boolean multiple = type == 'enum' && nativeUnset && !_deviceFlag(row.multiple) ? null : _deviceFlag(row.multiple)
+        def normalized = _normalizeDevicePreferenceValue(raw, type, multiple == true)
         def entry = [name: name, type: type, declared: true, multiple: multiple,
                      valuePresent: present, valueStatus: present ? 'stored' : 'unset',
                      rawValue: raw, value: normalized.value]
+        if (multiple == null) {
+            entry.multipleStatus = 'unavailable'
+            entry.multipleReason = 'Native unset enum metadata does not identify single or multiple selection. Check driverSource or previously read metadata and pass an explicit multiple boolean when setting it.'
+        }
         ['title', 'description', 'options', 'range', 'required'].each { key ->
             if (row.containsKey(key)) entry.put(key, row.get(key))
         }
         if (row.containsKey('defaultValue')) {
-            def defaultValue = _normalizeDevicePreferenceValue(row.get('defaultValue'), type, multiple)
+            def defaultValue = _normalizeDevicePreferenceValue(row.get('defaultValue'), type, multiple == true)
             entry.defaultValue = defaultValue.valid ? defaultValue.value : row.get('defaultValue')
         }
         if (!normalized.valid || duplicates.contains(name)) {
@@ -3849,9 +3854,21 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
                 if ((setting.containsKey('clear') && (!clear || setting.containsKey('value'))) ||
                     (!clear && !setting.containsKey('value')) ||
                     (suppliedType != null && suppliedType.toString() != type) ||
-                    setting.keySet().any { !(it in ['type', 'value', 'clear']) }) {
+                    setting.keySet().any { !(it in ['type', 'value', 'clear', 'multiple']) }) {
                     throw new IllegalArgumentException("Preference '${name}' requires its declared type and either a nonblank value or {clear:true}; clear and value cannot be combined")
                 }
+            }
+            if (setting instanceof Map && setting.containsKey('multiple')) {
+                if (clear || type != 'enum' || !(setting.multiple instanceof Boolean)) {
+                    throw new IllegalArgumentException("Preference '${name}' accepts a multiple boolean only with an enum value")
+                }
+                if (entry.multiple != null && setting.multiple != entry.multiple) {
+                    throw new IllegalArgumentException("Preference '${name}' multiple conflicts with its current native metadata")
+                }
+                entry = entry + [multiple: setting.multiple]
+            }
+            if (!clear && type == 'enum' && entry.multiple == null) {
+                throw new IllegalArgumentException("Preference '${name}' has unavailable selection cardinality; check driverSource or previously read metadata and supply multiple:true or multiple:false with the value")
             }
             if (clear && _deviceFlag(entry.required)) throw new IllegalArgumentException("Required preference '${name}' cannot be cleared")
             def raw = setting instanceof Map ? setting.value : setting
@@ -4347,9 +4364,9 @@ def toolUpdateDevice(args) {
             errors << [property: "enabled", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
-                def disableValue = args.enabled ? "false" : "true"
+                def disableValue = !args.enabled
                 mcpLog("debug", "device", "hub_update_device enabled: POSTing to /device/disable with id=${deviceId}, disable=${disableValue}")
-                hubInternalPost("/device/disable", [id: deviceId, disable: disableValue])
+                hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: disableValue]))
                 // Confirm the flip before recording success -- a 200 from /device/disable does not
                 // prove the state changed, and the request-scoped device handle's disabled flag is
                 // execution-cached (stale to a same-request POST), so confirm via a FRESH re-read.
@@ -4646,7 +4663,7 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
     // a 200 from /device/disable does not by itself prove the state changed.
     if (args.enabled != null) {
         try {
-            hubInternalPost("/device/disable", [id: deviceId, disable: (args.enabled ? "false" : "true")])
+            hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: !args.enabled]))
             def res = _confirmDisabledFlip(deviceId, !args.enabled)
             if (res.fetchFailed) {
                 errors << [property: "enabled", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
@@ -5613,7 +5630,7 @@ Only modify devices user explicitly requested. Pre-flight: read configuration, c
                     enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
                     dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
                         additionalProperties: [type: "string"]],
-                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it. Null, blank strings, empty arrays and clear combined with value are rejected. Booleans, numbers and nonempty multiple-enum arrays retain native types."],
+                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it. Null, blank strings, empty arrays and clear combined with value are rejected. Booleans, numbers and nonempty multiple-enum arrays retain native types. If configuration reports multiple:null for an unset enum, check its driver declaration or pre-clear metadata and supply {value:...,multiple:true/false}; cardinality is never guessed."],
                     showOnHome: [type: "boolean", description: "Show this device on the hub Home page.[[FLAT_TRIM]] Also counts it in the quick status-bar summaries (climate/lights/locks/etc.)[[/FLAT_TRIM]]"],
                     defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column[[FLAT_TRIM]] (Devices/Rooms pages)[[/FLAT_TRIM]], e.g. \"switch\"; \"\" selects None."],
                     tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]],

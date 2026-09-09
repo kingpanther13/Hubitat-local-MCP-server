@@ -68,51 +68,56 @@ preference restoration so observation never depends on a disabled driver running
 Large-state cleanup is independently verified. Every
 restoration failure is recorded in `_fixture_reset_failures` and fails the run.
 
+Clearing an enum removes the native storage identity and can lose its selection
+cardinality. The read tool reports `multiple:null` rather than a false single-
+selection declaration. Restore from the captured declaration using an explicit
+`multiple:true` hint for the fixture's multi-select value. Native saved readback
+must again contain the actual List; no cached metadata is accepted as proof.
+
+Shared discovery, pagination, invalid-preference and explicit-clear checks run
+once on the child profile. Each profile still performs its own grouped native
+field/preference edit, driver change, disabled-state observation and independent
+restoration. Bypass additionally verifies rejection of SDK-only Data writes.
+
+Initialize the persistent legacy dashboard's device selection once: use
+`hub_update_dashboard` to add one owned configuration fixture, then clear its
+`deviceIds` back to `[]`. A newly created dashboard with an untouched selection
+can appear in the native device picker yet ignore device-page assignment saves.
+Verify add/remove through `hub_update_device` during provisioning; routine E2E
+must not repeat this initialization.
+
 ## Native prerequisite decisions
 
-All eight rows below start as `pending` in the manifest. Both positive coverage
-and unavailable/rejected-write coverage are required where appropriate. An
-unavailable expectation on one profile does not waive positive coverage on an
-appropriate owned fixture. The matrix prints native applicability/writability and fails before
-configuration mutations if that profile has any pending row. A run with approved
-unavailable rows must not be reported as positive radio/integration coverage.
-Final delivery remains blocked until every positive prerequisite has evidence;
-a green core run alone does not establish complete field coverage. Additional
-test-hub infrastructure may be provisioned once and retained after direct access
-is supplied and no E2E run is active. Record actual native support before choosing
-fixture targets; do not manufacture availability in driver state.
+The manifest records the provisioned test hub's native support. Positive rows
+must change an owned value and restore it. Unavailable rows must expose a native
+restriction and reject a write. A changed applicability flag fails the scenario
+so firmware or integration changes cannot silently remove coverage.
 
-After direct inspection and user approval, a profile can override `nativeFields`:
+The persistent HomeKit Bridge is the representative assistant integration. All
+three profiles exercise the shared `/device/updateAssistants` save path through
+HomeKit; Alexa and Google Home remain absent and exercise rejection. Account
+pairing and external assistant operation are not prerequisites for this test.
+Do not install/remove integrations during E2E.
 
-```json
-"nativeFields": {
-  "retryEnabled": {"expectation": "unavailable", "target": true},
-  "dashboardIds": {"expectation": "positive", "target": [123]}
-}
-```
-
-`123` is illustrative only: never copy it onto a hub. Positive targets must refer
-to owned fixture resources and change the current value. `unavailable` checks
-native applicability and asserts that an attempted write is refused; it is
-negative-path coverage, not a substitute for a positive integration test. If a
-previously unavailable field becomes applicable, the test requires the manifest
-to be reviewed before proceeding.
-
-| Field | Native prerequisite for positive coverage | Current evidence limit |
+| Field | Standing coverage | Limit |
 |---|---|---|
-| `zigbeeId` | An owned software fixture with a preapproved synthetic, locally administered nonempty identifier and a restorable baseline | A synthetic identifier persisted on personal software mocks without a radio node. That proves property storage, not Zigbee commands or pairing. Never target a paired device's identity. |
-| `dashboardIds` | Native dashboard availability plus a preprovisioned owned test dashboard ID, named with `E2E_PERM_` | Mock software does not create a Dashboard app or justify changing unrelated assignments. The dashboard sweep does not exempt `BAT_E2E_KEEP_`. |
-| `meshEnabled` | Hub Mesh enabled and the device's native mesh-selection flag | A driver alone cannot enable native Mesh service. This toggle does not prove linked-hub propagation. |
-| `meshFullSync` | An actual owned linked-device fixture and native refresh support, generally requiring a second configured hub | The three local core fixtures cannot manufacture linked-device state. A separate approved profile is required; none is provisioned by this change. |
-| `homeKitEnabled` | Installed native HomeKit support and a compatible native device with an editable selection | Personal software mocks did not expose this control. Copying a Boolean into a mock is not positive native coverage. |
-| `amazonAlexaEnabled` | Installed/supported Alexa integration and an owned fixture assignment | Native assignment persistence and external assistant operation are distinct claims. |
-| `googleHomeEnabled` | Installed/supported Google Home integration and an owned fixture assignment | Native assignment persistence and external assistant operation are distinct claims. |
-| `retryEnabled` | Native retry availability/selection support | Adding a synthetic Zigbee ID did not enable retry on personal mocks. Driver declarations cannot force this platform capability. |
+| `zigbeeId` | Selected and bypass standalones have synthetic baseline IDs `0200000000006859` and `0200000000006860`; the child has none and rejects edits. | Native property storage only; no paired identity or radio traffic. The manifest's positive target IDs deliberately differ from the baselines. |
+| `dashboardIds` | Persistent legacy dashboard `E2E_PERM_Configuration_Dashboard`, ID `36461`; all fixtures start unassigned. | Assignment persistence, not dashboard rendering. If provisioned on another hub, use that hub's owned dashboard ID. |
+| `meshEnabled` | Native per-device selection control is available on the local mocks. | Test the stored selection only. Hub Mesh service remains disabled; propagation is not tested. |
+| `meshFullSync` | Rejected on the three local, unlinked devices. | Positive linked-device sync coverage is explicitly excluded; no second hub is required. |
+| `homeKitEnabled` | Enabled persistent HomeKit Bridge, ID `36462`; all fixtures start unassigned and are assignable. | Native assignment and preservation of other assistant flags, not Apple pairing or external control. |
+| `amazonAlexaEnabled` | Rejected while the native integration is absent. | Positive Alexa-specific behavior is an accepted gap; HomeKit covers the shared save mechanism. |
+| `googleHomeEnabled` | Rejected while the native integration is absent. | Positive Google-specific behavior is an accepted gap; HomeKit covers the shared save mechanism. |
+| `retryEnabled` | Rejected because the software fixtures do not have native retry support. | Positive retry coverage is an accepted gap; no paired hardware is required. |
 
-The initial manifest supports the three independent core profiles. Do not append
-a linked Mesh device to that core list: linked devices deliberately cannot run
-the ordinary writable-preference/identity lifecycle. Once such infrastructure is
-approved, give its field-specific scenario separate preconditions and evidence.
+Provisioning uses the native user-driver create route. Live native readback on
+firmware 2.5.1.174 reports `virtual=false`, non-component devices, a null parent
+for both standalones, and the MCP app as the child's parent. Saving the complete
+native device form normalizes absent controller/identity strings to empty
+strings; baseline snapshots must reflect the saved native form. A synthetic ID
+does not change the software fixture into a radio device. These fixtures exercise
+real native device storage and the selected/child/bypass dispatch paths without
+claiming equivalence to every physical driver or protocol.
 
 ## Separate asynchronous LAN proof
 

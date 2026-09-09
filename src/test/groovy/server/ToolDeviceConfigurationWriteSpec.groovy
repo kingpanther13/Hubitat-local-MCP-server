@@ -1342,4 +1342,67 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('new-fixture-secret')
         !JsonOutput.toJson(result).contains('old-fixture-secret')
     }
+    def 'unset enum cardinality is unknown and a mixed write requires an explicit hint'() {
+        given:
+        def model = fixture()
+        model.settings.find { it.name == 'modes' }.putAll([id: null, deviceId: null, value: null, multiple: false])
+        registerFixture(model, false)
+
+        when:
+        def metadata = script._readDevicePreferenceModel(model).entries.find { it.name == 'modes' }
+
+        then:
+        metadata.multiple == null
+        metadata.multipleStatus == 'unavailable'
+        metadata.valueStatus == 'unset'
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', label: 'must not change', preferences: [modes: [value: ['a']]]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('multiple:true or multiple:false')
+        childDevicesList[0].label == 'Fixture'
+    }
+
+    @Unroll
+    def 'explicit enum cardinality #multiple restores an unset preference without guessing'() {
+        given:
+        def model = fixture()
+        model.settings.find { it.name == 'modes' }.putAll([id: null, deviceId: null, value: null, multiple: false])
+        registerFixture(model, false)
+
+        when:
+        def prepared = script._prepareDeviceUpdatePatch([deviceId: '10', preferences: [modes: [value: value, multiple: multiple]]], '10', model)
+
+        then:
+        prepared.args.preferences.modes.value == value
+
+        where:
+        multiple | value
+        true     | ['a', 'b']
+        false    | 'a'
+    }
+
+    @Unroll
+    def 'invalid cardinality hint #hint never overrides known declaration or input type'() {
+        given:
+        def model = fixture()
+        registerFixture(model, false)
+
+        when:
+        script._prepareDeviceUpdatePatch([deviceId: '10', preferences: [(name): hint]], '10', model)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        name    | hint
+        'modes' | [value: ['a'], multiple: false]
+        'modes' | [value: ['a'], multiple: 'true']
+        'modes' | [clear: true, multiple: true]
+        'modes' | [value: ['unknown'], multiple: true]
+        'offset'| [value: 1, multiple: true]
+    }
+
 }

@@ -3035,6 +3035,8 @@ class TestRunner:
             )
 
     def _device_configuration_profile(self, profile, device_id, observer_id, manifest, driver_types, expected, room_name):
+        common_contract = profile["path"] == "child-sdk"
+
         def configuration(**selection):
             return self.client.call_tool("hub_read_devices", {
                 "tool": "hub_get_device", "args": {"deviceId": device_id, "mode": "configuration", **selection},
@@ -3079,7 +3081,7 @@ class TestRunner:
             if key == "tags":
                 return [part.strip() for part in (value.split(",") if isinstance(value, str) else value or [])
                         if part.strip()]
-            if key in ("room", "roomName", "defaultCurrentState", "notes", "defaultIcon"):
+            if key in ("room", "roomName", "defaultCurrentState", "notes", "defaultIcon", "zigbeeId", "controllerType"):
                 return "" if value is None else value
             return value
 
@@ -3098,7 +3100,9 @@ class TestRunner:
             for key in ("deviceTypeId", "deviceNetworkId", "retryEnabled", "zigbeeId", "dashboardIds",
                         "meshEnabled", "meshFullSync", "homeKitEnabled", "amazonAlexaEnabled", "googleHomeEnabled"):
                 if key in baseline and key not in wanted:
-                    assert native_info.get(key) == baseline[key], f"Unrequested {key} changed: {native_info}"
+                    assert normalized(key, native_info.get(key)) == normalized(key, baseline[key]), (
+                        f"Unrequested {key} changed: {native_info}"
+                    )
 
         native, baseline = capture()
         cfg = configuration()
@@ -3127,33 +3131,34 @@ class TestRunner:
         assert prefs["probeMultiple"].get("multiple") is True and prefs["probeEnum"].get("options"), (
             f"Preference metadata missing: {prefs}"
         )
-        reference = cfg.get("driverSource") or {}
-        assert reference.get("status") == "available" and reference.get("gateway") == "hub_read_apps_code", (
-            f"Custom driver source reference is unavailable: {reference}"
-        )
-        source = self.client.call_tool(reference["gateway"], {"tool": reference["tool"], "args": reference["args"]})
-        assert manifest["driver"] in source.get("source", "") and "defaultValue: true" in source["source"], (
-            f"Source reference returned a different driver: {reference}"
-        )
-        details = self.client.call_tool("hub_get_device", {
-            "deviceId": device_id, "mode": "details", "sections": ["configuration", "identity", "commands"],
-        })
-        assert set(details.get("sections", {})) == {"configuration", "identity", "commands"} and "preferences" not in details
-        assert_native_preferences(native, details["sections"]["configuration"], expected)
-        all_details = self.client.call_tool("hub_get_device", {"deviceId": device_id, "mode": "details"})
-        assert all_details.get("sourceCoverage", {}).get("status") == "complete", (
-            f"Unmapped native fields: {all_details.get('sourceCoverage')}"
-        )
-        assert set(all_details.get("sections", {})) == {
-            "configuration", "identity", "attributes", "commands", "data", "state",
-            "relationships", "jobs", "integrations", "metadata",
-        }, "Complete details lost a section"
-        index = configuration(fields=[])
-        assert index.get("preferences") == [] and index.get("editableFields") == [], f"Field index includes values: {index}"
-        assert set(expected) <= set(index.get("availableFields", {}).get("preferences", [])), "Field index lost names"
-        selected = configuration(fields=["probeBool"])
-        assert [row["name"] for row in selected.get("preferences", [])] == ["probeBool"]
-        assert_native_preferences(native, selected, {"probeBool": expected["probeBool"]})
+        if common_contract:
+            reference = cfg.get("driverSource") or {}
+            assert reference.get("status") == "available" and reference.get("gateway") == "hub_read_apps_code", (
+                f"Custom driver source reference is unavailable: {reference}"
+            )
+            source = self.client.call_tool(reference["gateway"], {"tool": reference["tool"], "args": reference["args"]})
+            assert manifest["driver"] in source.get("source", "") and "defaultValue: true" in source["source"], (
+                f"Source reference returned a different driver: {reference}"
+            )
+            details = self.client.call_tool("hub_get_device", {
+                "deviceId": device_id, "mode": "details", "sections": ["configuration", "identity", "commands"],
+            })
+            assert set(details.get("sections", {})) == {"configuration", "identity", "commands"} and "preferences" not in details
+            assert_native_preferences(native, details["sections"]["configuration"], expected)
+            all_details = self.client.call_tool("hub_get_device", {"deviceId": device_id, "mode": "details"})
+            assert all_details.get("sourceCoverage", {}).get("status") == "complete", (
+                f"Unmapped native fields: {all_details.get('sourceCoverage')}"
+            )
+            assert set(all_details.get("sections", {})) == {
+                "configuration", "identity", "attributes", "commands", "data", "state",
+                "relationships", "jobs", "integrations", "metadata",
+            }, "Complete details lost a section"
+            index = configuration(fields=[])
+            assert index.get("preferences") == [] and index.get("editableFields") == [], f"Field index includes values: {index}"
+            assert set(expected) <= set(index.get("availableFields", {}).get("preferences", [])), "Field index lost names"
+            selected = configuration(fields=["probeBool"])
+            assert [row["name"] for row in selected.get("preferences", [])] == ["probeBool"]
+            assert_native_preferences(native, selected, {"probeBool": expected["probeBool"]})
 
         edits = {
             "notes": "Native persistence: café & + =", "tags": ["configuration-probe"],
@@ -3207,12 +3212,14 @@ class TestRunner:
         dirty = large_dirty = driver_dirty = enabled_dirty = False
         try:
             dirty = True
-            for patch in (
+            invalid_patches = [
                 {"preferences": {"missingProbe": {"type": "bool", "value": True}}},
                 {"preferences": {"probeBool": {"type": "bool", "value": "perhaps"}}},
                 {"preferences": {"probeText": {"type": "text", "value": ""}}},
-                *({key: target, "confirm": True} for key, target in negative_fields),
-            ):
+            ] if common_contract else []
+            invalid_patches.extend({key: target, "confirm": True} for key, target in negative_fields
+                                   if common_contract or key == "dataValues")
+            for patch in invalid_patches:
                 try:
                     refused = self._write_once("hub_manage_devices", "hub_update_device", {
                         "deviceId": device_id, **patch,
@@ -3225,27 +3232,28 @@ class TestRunner:
             assert_native_preferences(native, configuration(), expected)
             assert_fields(unchanged, cfg, restore)
 
-            large_dirty = True
-            command("seedLargeReadProbe")
-            read_args = {"deviceId": device_id, "mode": "details", "sections": ["state"], "fields": ["largeReadProbe"]}
-            fragments, cursor = [], None
-            for page_number in range(30):
-                page = self.client.call_tool("hub_get_device", {
-                    **read_args, **({"cursor": cursor} if cursor else {}),
-                })
-                assert page.get("contentFormat") == "json-fragment", f"Oversized read was not paged: {page.keys()}"
-                fragments.append(page["content"])
-                cursor = page.get("nextCursor")
-                if page_number == 0:
-                    command("changeLargeReadProbe")
-                if not cursor:
-                    break
-            assert not cursor and len(fragments) > 1, "Device continuation did not terminate"
-            assert json.loads("".join(fragments))["sections"]["state"]["largeReadProbe"] == "x" * 180000, (
-                "Continuation mixed changing native state into the original snapshot"
-            )
-            command("clearLargeReadProbe")
-            large_dirty = False
+            if common_contract:
+                large_dirty = True
+                command("seedLargeReadProbe")
+                read_args = {"deviceId": device_id, "mode": "details", "sections": ["state"], "fields": ["largeReadProbe"]}
+                fragments, cursor = [], None
+                for page_number in range(30):
+                    page = self.client.call_tool("hub_get_device", {
+                        **read_args, **({"cursor": cursor} if cursor else {}),
+                    })
+                    assert page.get("contentFormat") == "json-fragment", f"Oversized read was not paged: {page.keys()}"
+                    fragments.append(page["content"])
+                    cursor = page.get("nextCursor")
+                    if page_number == 0:
+                        command("changeLargeReadProbe")
+                    if not cursor:
+                        break
+                assert not cursor and len(fragments) > 1, "Device continuation did not terminate"
+                assert json.loads("".join(fragments))["sections"]["state"]["largeReadProbe"] == "x" * 180000, (
+                    "Continuation mixed changing native state into the original snapshot"
+                )
+                command("clearLargeReadProbe")
+                large_dirty = False
 
             desired = {
                 "probeBool": ("bool", True), "probeNumber": ("number", 0),
@@ -3262,43 +3270,49 @@ class TestRunner:
             assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == ["red", "blue"], (
                 f"Driver did not receive a List: {native}"
             )
-            try:
-                refused = self._write_once("hub_manage_devices", "hub_update_device", {
-                    "deviceId": device_id,
-                    "preferences": {"probeBool": {"value": False}, "probeMultiple": {"value": []}},
-                }, "empty multiple must refuse the entire preference patch")
-                assert refused.get("success") is False, f"Implicit empty-list clear succeeded: {refused}"
-            except (McpToolError, McpError) as exc:
-                assert "probeMultiple" in str(exc), f"Refusal did not identify the empty preference: {exc}"
-            native, changed = capture()
-            current = configuration()
-            assert_native_preferences(native, current, desired)
-            assert_fields(changed, current, edits)
-            update({"preferences": {"probeBool": {"value": False}, "probeMultiple": {"value": ["blue"]}}})
-            native, changed = capture(explicit_summary=True)
-            current = configuration()
-            desired.update(probeBool=("bool", False), probeMultiple=("enum", ["blue"]))
-            assert_native_preferences(native, current, desired)
-            assert_fields(changed, current, edits)
-            assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == ["blue"], (
-                f"Single selection did not remain a stored runtime List: {native}"
-            )
-            update({"preferences": {"probeText": {"clear": True}, "probeMultiple": {"clear": True}}})
-            native, changed = capture()
-            current = configuration()
-            remaining = {key: value for key, value in desired.items() if key not in ("probeText", "probeMultiple")}
-            assert_native_preferences(native, current, remaining)
-            assert_fields(changed, current, edits)
-            for key in ("probeText", "probeMultiple"):
-                pref = next(row for row in current["preferences"] if row["name"] == key)
-                row = next(row for row in native["settings"] if row["name"] == key)
-                assert pref["valuePresent"] is False and pref["valueStatus"] == "unset", (
-                    f"Explicit clear did not remove saved {key}: {pref}"
+            remaining = desired
+            if common_contract:
+                try:
+                    refused = self._write_once("hub_manage_devices", "hub_update_device", {
+                        "deviceId": device_id,
+                        "preferences": {"probeBool": {"value": False}, "probeMultiple": {"value": []}},
+                    }, "empty multiple must refuse the entire preference patch")
+                    assert refused.get("success") is False, f"Implicit empty-list clear succeeded: {refused}"
+                except (McpToolError, McpError) as exc:
+                    assert "probeMultiple" in str(exc), f"Refusal did not identify the empty preference: {exc}"
+                native, changed = capture()
+                current = configuration()
+                assert_native_preferences(native, current, desired)
+                assert_fields(changed, current, edits)
+                update({"preferences": {"probeBool": {"value": False}, "probeMultiple": {"value": ["blue"]}}})
+                native, changed = capture(explicit_summary=True)
+                current = configuration()
+                desired.update(probeBool=("bool", False), probeMultiple=("enum", ["blue"]))
+                assert_native_preferences(native, current, desired)
+                assert_fields(changed, current, edits)
+                assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == ["blue"], (
+                    f"Single selection did not remain a stored runtime List: {native}"
                 )
-                assert row["storageIdPresent"] and row["storageDeviceIdPresent"], f"Native clear is unverifiable: {row}"
-                assert row["storageId"] is None and row["storageDeviceId"] is None and row["value"] is None, (
-                    f"Native storage still contains {key}: {row}"
-                )
+                update({"preferences": {"probeText": {"clear": True}, "probeMultiple": {"clear": True}}})
+                native, changed = capture()
+                current = configuration()
+                remaining = {key: value for key, value in desired.items() if key not in ("probeText", "probeMultiple")}
+                assert_native_preferences(native, current, remaining)
+                assert_fields(changed, current, edits)
+                for key in ("probeText", "probeMultiple"):
+                    pref = next(row for row in current["preferences"] if row["name"] == key)
+                    row = next(row for row in native["settings"] if row["name"] == key)
+                    assert pref["valuePresent"] is False and pref["valueStatus"] == "unset", (
+                        f"Explicit clear did not remove saved {key}: {pref}"
+                    )
+                    assert row["storageIdPresent"] and row["storageDeviceIdPresent"], f"Native clear is unverifiable: {row}"
+                    assert row["storageId"] is None and row["storageDeviceId"] is None and row["value"] is None, (
+                        f"Native storage still contains {key}: {row}"
+                    )
+                    if key == "probeMultiple":
+                        assert pref["multiple"] is None and pref.get("multipleStatus") == "unavailable", (
+                            f"Cleared enum cardinality was guessed: {pref}"
+                        )
             driver_dirty = True
             update({"deviceTypeId": driver_types[manifest["replacementDriver"]], "confirm": True})
             native, changed = capture()
@@ -3338,7 +3352,8 @@ class TestRunner:
             if dirty:
                 try:
                     update({**restore, "confirm": True, "preferences": {
-                        name: {"type": kind, "value": value} for name, (kind, value) in expected.items()
+                        name: {"type": kind, "value": value, **({"multiple": True} if isinstance(value, list) else {})}
+                        for name, (kind, value) in expected.items()
                     }})
                 except Exception as exc:
                     errors.append(f"grouped restoration: {exc}")
@@ -3353,7 +3368,9 @@ class TestRunner:
                 assert_native_preferences(native, current, expected)
                 assert_fields(restored, current, restore)
                 for key in ("deviceTypeId", "deviceNetworkId", "retryEnabled", "parentAppId", "controllerType", "enabled", "dataValues"):
-                    assert restored.get(key) == baseline.get(key), f"Restoration changed {key}: {restored}"
+                    assert normalized(key, restored.get(key)) == normalized(key, baseline.get(key)), (
+                        f"Restoration changed {key}: {restored}"
+                    )
                 assert not restored.get("largeReadProbePresent"), "Large native probe state remains"
                 assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == ["red"], (
                     f"Runtime selection was not restored: {native}"

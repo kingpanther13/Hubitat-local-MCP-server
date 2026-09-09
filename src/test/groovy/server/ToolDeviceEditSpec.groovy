@@ -80,7 +80,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the /device/disable POST is a no-op; the FRESH fullJson re-read still shows the device enabled (disabled:false) so the requested disable did not land'
         def device = new TestDevice(id: 10, name: 'Sw', label: 'Switch')
         childDevicesList << device
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
         hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Switch","disabled":false}}' }
 
         when: 'request disable; the re-fetch reports enabled -> mismatch'
@@ -96,7 +97,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the FRESH fullJson re-read shows the device now disabled -- the flip landed'
         def device = new TestDevice(id: 10, name: 'Sw', label: 'Switch')
         childDevicesList << device
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
         hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Switch","disabled":true}}' }
 
         when: 'request disable; the re-fetch confirms disabled'
@@ -112,7 +114,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the /device/disable POST is accepted but the read-back fullJson fetch yields nothing'
         def device = new TestDevice(id: 10, name: 'Sw', label: 'Switch')
         childDevicesList << device
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
         hubGet.register('/device/fullJson/10') { params -> '' }
 
         when:

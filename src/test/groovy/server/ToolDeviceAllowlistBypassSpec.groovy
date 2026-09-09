@@ -727,9 +727,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             JsonOutput.toJson(m)
         }
         def posted = null
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false ->
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json);
             posted = [path: path, body: body]
-            if (path == '/device/disable') disabledState = (body.disable == 'true')
+            if (path == '/device/disable') disabledState = (body.disable == true)
             return ''
         }
 
@@ -739,7 +740,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         then: 'disable:true disables the device and the read-back confirms it'
         result.success == true
         posted.path == '/device/disable'
-        posted.body.disable == 'true'
+        posted.body.disable == true
+        posted.body.id instanceof Number
         result.changes.find { it.property == 'enabled' }?.newValue == false
     }
 
@@ -747,7 +749,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         given: 'the POST is a no-op; fullJson still reports disabled:false so the requested disable did not land'
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()   // device.disabled stays false
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
@@ -767,7 +770,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             calls++
             (calls >= 2) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
         }
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
@@ -786,7 +790,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             m.device.disabled = 'true'   // string, not Boolean
             JsonOutput.toJson(m)
         }
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
 
         when: 'request disable; the re-fetch reports disabled:"true" -> confirmed, no false mismatch error'
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
@@ -1341,7 +1346,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, name: 'Listed', label: 'Listed Switch')
         childDevicesList << device
         def posted = null
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false ->
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json);
             posted = [path: path, body: body]; return ''
         }
         // Both the listed and the bypass enabled paths now confirm the flip via a FRESH /device/fullJson
