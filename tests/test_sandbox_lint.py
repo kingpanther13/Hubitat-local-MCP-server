@@ -250,6 +250,7 @@ private def {function_name}(value) {{
 """
     findings = sandbox_map_findings(source)
     assert {f["rule"] for f in findings} == {"sandbox-map-key-subscript"}
+    assert {f["severity"] for f in findings} == {"warning"}
 
 
 def test_sandbox_map_guard_catches_known_colliding_literal_key():
@@ -262,6 +263,7 @@ private def renderCatalog(Map response) {
 """
     findings = sandbox_map_findings(source)
     assert {f["rule"] for f in findings} == {"sandbox-map-key-subscript"}
+    assert {f["severity"] for f in findings} == {"error"}
 
 
 def test_sandbox_map_guard_accepts_get_put_for_arbitrary_and_colliding_keys():
@@ -321,7 +323,7 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {{
     findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
     assert len(findings) == 1
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
-    assert findings[0]["severity"] == "error"
+    assert findings[0]["severity"] == "warning"
     assert findings[0]["source"] == f"snapshot[{key}] = [value: st.value, timestamp: null]"
 
 
@@ -345,7 +347,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
     findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
     assert len(findings) == 1
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
-    assert findings[0]["severity"] == "error"
+    assert findings[0]["severity"] == "warning"
     assert findings[0]["source"] == "snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]"
 
 
@@ -364,7 +366,7 @@ private {function_name}(value, key = '') {{
 """
     findings = sandbox_map_findings(source)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "error"
+    assert findings[0]["severity"] == "warning"
 
 
 def test_sandbox_map_guard_catches_map_parameter_without_copy_name():
@@ -374,7 +376,7 @@ private def storeDriverValue(Map destination, String key, value) {
 }
 """)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "error"
+    assert findings[0]["severity"] == "warning"
 
 
 @pytest.mark.parametrize("function_name", ["copyRows", "_publicToolResultValue", "transformDriverValue"])

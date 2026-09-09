@@ -835,16 +835,13 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains('selection')
     }
 
-    def "one over-budget device selection fails with narrower-selection guidance without caching it"() {
+    def "one over-budget expanded result fails with narrower-selection guidance without caching it"() {
         given:
-        addListedDevice()
-        def full = fixture()
-        full.deviceState = [large: 'x' * 2200000]
-        // Exercise the public read and budget guard without duplicating this payload in the HTTP fixture encoder.
-        script.metaClass._fetchDeviceFullJson = { ignored -> full }
+        // The public read/continuation cases above exercise native fetching; isolate the hard allocation bound here.
+        def expanded = [id: DEVICE_ID, mode: 'details', sections: [state: [large: 'x' * 2200000]]]
 
         when:
-        script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+        script._deviceReadPage(expanded, 'oversized-selection')
 
         then:
         def ex = thrown(IllegalArgumentException)
