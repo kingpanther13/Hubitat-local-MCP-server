@@ -225,7 +225,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
     }
 
     def "tool result rendering preserves nested fields and arbitrary driver keys without mutating the source"() {
-        given: 'a device-catalog-shaped result containing reflection-colliding and driver-controlled keys'
+        given: 'a device-catalog-shaped result containing fields and other driver-controlled keys'
         def preferenceValues = new LinkedHashMap()
         preferenceValues.put('fields', [value: 'all'])
         preferenceValues.put('getClass', [value: 'driver supplied'])

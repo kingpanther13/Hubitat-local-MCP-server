@@ -1,0 +1,1529 @@
+{
+  "firmware": "2.5.1.181",
+  "installedCommit": "325d472ffbdcca85bd640532c18ce2907609b9fd",
+  "note": "Isolated sandbox fragments are not proof of production reachability. See per-row ledger.",
+  "basic": [
+    {
+      "key": "ordinary",
+      "operation": "read",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "ordinary",
+      "operation": "write",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "ordinary",
+      "operation": "get",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "ordinary",
+      "operation": "put",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "ordinary",
+      "operation": "eachWrite",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "fields",
+      "operation": "read",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "fields",
+      "operation": "write",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "fields",
+      "operation": "get",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "fields",
+      "operation": "put",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "fields",
+      "operation": "eachWrite",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "key": "getClass",
+      "operation": "read",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "getClass",
+      "operation": "write",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "getClass",
+      "operation": "get",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "getClass",
+      "operation": "put",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "getClass",
+      "operation": "eachWrite",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "class",
+      "operation": "read",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "class",
+      "operation": "write",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "class",
+      "operation": "get",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "class",
+      "operation": "put",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "class",
+      "operation": "eachWrite",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "key": "metaClass",
+      "operation": "read",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "metaClass",
+      "operation": "write",
+      "success": false,
+      "error": "org.codehaus.groovy.runtime.typehandling.GroovyCastException: Cannot cast object '0' with class 'java.lang.Integer' to class 'groovy.lang.MetaClass'"
+    },
+    {
+      "key": "metaClass",
+      "operation": "get",
+      "success": true,
+      "result": false
+    },
+    {
+      "key": "metaClass",
+      "operation": "put",
+      "success": true,
+      "result": 0
+    },
+    {
+      "key": "metaClass",
+      "operation": "eachWrite",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "1",
+      "key": "ordinary",
+      "result": {
+        "ordinary": {
+          "value": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "2",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "3",
+      "key": "ordinary",
+      "result": {
+        "ordinary": {
+          "type": "bool"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "4",
+      "key": "ordinary",
+      "result": {
+        "ordinary": [
+          "owned"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "5",
+      "key": "ordinary",
+      "result": [
+        {
+          "ordinary": "label"
+        }
+      ],
+      "success": true
+    },
+    {
+      "id": "6",
+      "key": "ordinary",
+      "result": {
+        "ordinary": "label"
+      },
+      "success": true
+    },
+    {
+      "id": "7",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "8",
+      "key": "ordinary",
+      "result": {
+        "ordinary": 0
+      },
+      "success": true
+    },
+    {
+      "id": "9",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "10",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "11",
+      "key": "ordinary",
+      "result": {
+        "deviceId": "mapped"
+      },
+      "success": true
+    },
+    {
+      "id": "12",
+      "key": "ordinary",
+      "result": {
+        "deviceIds": [
+          "mapped",
+          null,
+          "missing"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "13",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "14",
+      "key": "ordinary",
+      "result": {
+        "id": 0,
+        "ordinary": 0
+      },
+      "success": true
+    },
+    {
+      "id": "15",
+      "key": "ordinary",
+      "result": {
+        "2311": {
+          "label": "owned"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "16",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "17",
+      "key": "ordinary",
+      "result": {
+        "ordinary": 0
+      },
+      "success": true
+    },
+    {
+      "id": "18",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "19",
+      "key": "ordinary",
+      "result": {
+        "ordinary": ""
+      },
+      "success": true
+    },
+    {
+      "id": "20",
+      "key": "ordinary",
+      "result": {
+        "ordinary": ""
+      },
+      "success": true
+    },
+    {
+      "id": "21",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "22",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "23",
+      "key": "ordinary",
+      "result": {
+        "ordinary": 0
+      },
+      "success": true
+    },
+    {
+      "id": "24",
+      "key": "ordinary",
+      "result": {
+        "latitude": 0
+      },
+      "success": true
+    },
+    {
+      "id": "gap_savedSchema",
+      "key": "ordinary",
+      "result": {
+        "ordinary": {
+          "name": "ordinary",
+          "type": "text",
+          "multiple": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "gap_layout",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "untyped_read",
+      "key": "ordinary",
+      "result": false,
+      "success": true
+    },
+    {
+      "id": "typed_each_read",
+      "key": "ordinary",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "untyped_each_read",
+      "key": "ordinary",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "typed_each_write",
+      "key": "ordinary",
+      "result": {
+        "ordinary": false
+      },
+      "success": true
+    },
+    {
+      "id": "null_safe_put",
+      "key": "ordinary",
+      "result": {
+        "ordinary": {
+          "nested": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "1",
+      "key": "fields",
+      "result": {
+        "fields": {
+          "value": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "2",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "3",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "4",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "5",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "6",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "7",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "8",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "9",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "10",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "11",
+      "key": "fields",
+      "result": {
+        "deviceId": "mapped"
+      },
+      "success": true
+    },
+    {
+      "id": "12",
+      "key": "fields",
+      "result": {
+        "deviceIds": [
+          "mapped",
+          null,
+          "missing"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "13",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "14",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "15",
+      "key": "fields",
+      "result": {
+        "2311": {
+          "label": "owned"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "16",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "17",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "18",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "19",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "20",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "21",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "22",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "23",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "24",
+      "key": "fields",
+      "result": {
+        "latitude": 0
+      },
+      "success": true
+    },
+    {
+      "id": "gap_savedSchema",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "gap_layout",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "untyped_read",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "typed_each_read",
+      "key": "fields",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "untyped_each_read",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "typed_each_write",
+      "key": "fields",
+      "result": {
+        "fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "null_safe_put",
+      "key": "fields",
+      "result": {
+        "fields": {
+          "nested": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "1",
+      "key": "getClass",
+      "result": {
+        "getClass": {
+          "value": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "2",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "3",
+      "key": "getClass",
+      "result": {
+        "getClass": {
+          "type": "bool"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "4",
+      "key": "getClass",
+      "result": {
+        "getClass": [
+          "owned"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "5",
+      "key": "getClass",
+      "result": [
+        {
+          "getClass": "label"
+        }
+      ],
+      "success": true
+    },
+    {
+      "id": "6",
+      "key": "getClass",
+      "result": {
+        "getClass": "label"
+      },
+      "success": true
+    },
+    {
+      "id": "7",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "8",
+      "key": "getClass",
+      "result": {
+        "getClass": 0
+      },
+      "success": true
+    },
+    {
+      "id": "9",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "10",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "11",
+      "key": "getClass",
+      "result": {
+        "deviceId": "mapped"
+      },
+      "success": true
+    },
+    {
+      "id": "12",
+      "key": "getClass",
+      "result": {
+        "deviceIds": [
+          "mapped",
+          null,
+          "missing"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "13",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "14",
+      "key": "getClass",
+      "result": {
+        "id": 0,
+        "getClass": 0
+      },
+      "success": true
+    },
+    {
+      "id": "15",
+      "key": "getClass",
+      "result": {
+        "2311": {
+          "label": "owned"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "16",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "17",
+      "key": "getClass",
+      "result": {
+        "getClass": 0
+      },
+      "success": true
+    },
+    {
+      "id": "18",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "19",
+      "key": "getClass",
+      "result": {
+        "getClass": ""
+      },
+      "success": true
+    },
+    {
+      "id": "20",
+      "key": "getClass",
+      "result": {
+        "getClass": ""
+      },
+      "success": true
+    },
+    {
+      "id": "21",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "22",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "23",
+      "key": "getClass",
+      "result": {
+        "getClass": 0
+      },
+      "success": true
+    },
+    {
+      "id": "24",
+      "key": "getClass",
+      "result": {
+        "latitude": 0
+      },
+      "success": true
+    },
+    {
+      "id": "gap_savedSchema",
+      "key": "getClass",
+      "result": {
+        "getClass": {
+          "name": "getClass",
+          "type": "text",
+          "multiple": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "gap_layout",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "untyped_read",
+      "key": "getClass",
+      "result": false,
+      "success": true
+    },
+    {
+      "id": "typed_each_read",
+      "key": "getClass",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "untyped_each_read",
+      "key": "getClass",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "typed_each_write",
+      "key": "getClass",
+      "result": {
+        "getClass": false
+      },
+      "success": true
+    },
+    {
+      "id": "null_safe_put",
+      "key": "getClass",
+      "result": {
+        "getClass": {
+          "nested": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "1",
+      "key": "class",
+      "result": {
+        "class": {
+          "value": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "2",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "3",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "4",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "5",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "6",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "7",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "8",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "9",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "10",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "11",
+      "key": "class",
+      "result": {
+        "deviceId": "mapped"
+      },
+      "success": true
+    },
+    {
+      "id": "12",
+      "key": "class",
+      "result": {
+        "deviceIds": [
+          "mapped",
+          null,
+          "missing"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "13",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "14",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "15",
+      "key": "class",
+      "result": {
+        "2311": {
+          "label": "owned"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "16",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "17",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "18",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "19",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "20",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "21",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "22",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "23",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "24",
+      "key": "class",
+      "result": {
+        "latitude": 0
+      },
+      "success": true
+    },
+    {
+      "id": "gap_savedSchema",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "gap_layout",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "untyped_read",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "typed_each_read",
+      "key": "class",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "untyped_each_read",
+      "key": "class",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'class' is not allowed from app or driver code"
+    },
+    {
+      "id": "typed_each_write",
+      "key": "class",
+      "result": {
+        "class": false
+      },
+      "success": true
+    },
+    {
+      "id": "null_safe_put",
+      "key": "class",
+      "result": {
+        "class": {
+          "nested": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "1",
+      "key": "metaClass",
+      "success": false,
+      "error": "org.codehaus.groovy.runtime.typehandling.GroovyCastException: Cannot cast object '{value=false}' with class 'java.util.LinkedHashMap' to class 'groovy.lang.MetaClass' due to: groovy.lang.GroovyRuntimeException: Could not find matching constructor for: groovy.lang.MetaClass(java.util.LinkedHashMap)"
+    },
+    {
+      "id": "2",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "3",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "4",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "5",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "6",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "7",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "8",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "9",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "10",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "11",
+      "key": "metaClass",
+      "result": {
+        "deviceId": "mapped"
+      },
+      "success": true
+    },
+    {
+      "id": "12",
+      "key": "metaClass",
+      "result": {
+        "deviceIds": [
+          "mapped",
+          null,
+          "missing"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "13",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "14",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "15",
+      "key": "metaClass",
+      "result": {
+        "2311": {
+          "label": "owned"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "16",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "17",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "18",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "19",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "20",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "21",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "22",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "23",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "24",
+      "key": "metaClass",
+      "result": {
+        "latitude": 0
+      },
+      "success": true
+    },
+    {
+      "id": "gap_savedSchema",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "gap_layout",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "untyped_read",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "typed_each_read",
+      "key": "metaClass",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "untyped_each_read",
+      "key": "metaClass",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'metaClass' is not allowed from app or driver code"
+    },
+    {
+      "id": "typed_each_write",
+      "key": "metaClass",
+      "success": false,
+      "error": "org.codehaus.groovy.runtime.typehandling.GroovyCastException: Cannot cast object 'false' with class 'java.lang.Boolean' to class 'groovy.lang.MetaClass'"
+    },
+    {
+      "id": "null_safe_put",
+      "key": "metaClass",
+      "result": {
+        "metaClass": {
+          "nested": false
+        }
+      },
+      "success": true
+    }
+  ],
+  "controls": [
+    {
+      "id": "rendererBefore",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "rendererAfter",
+      "key": "fields",
+      "result": {
+        "nested": [
+          {
+            "fields": false,
+            "ordinary": 0,
+            "nullable": null,
+            "items": []
+          }
+        ],
+        "getClass": "plain-data"
+      },
+      "success": true
+    },
+    {
+      "id": "canonicalBefore",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "canonicalAfter",
+      "key": "fields",
+      "result": {
+        "fields": [
+          "id",
+          "label"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "normalizerBefore",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "normalizerAfter",
+      "key": "fields",
+      "result": {
+        "nested": [
+          {
+            "fields": false,
+            "ordinary": 0,
+            "nullable": null,
+            "items": []
+          }
+        ],
+        "getClass": "plain-data"
+      },
+      "success": true
+    },
+    {
+      "id": "renamedNormalizer",
+      "key": "fields",
+      "result": {
+        "nested": [
+          {
+            "fields": false,
+            "ordinary": 0,
+            "nullable": null,
+            "items": []
+          }
+        ],
+        "getClass": "plain-data"
+      },
+      "success": true
+    },
+    {
+      "id": "recursiveMapping",
+      "key": "fields",
+      "success": false,
+      "error": "java.lang.SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+    },
+    {
+      "id": "mappingBounded",
+      "key": "deviceIds",
+      "result": {
+        "deviceId": "mapped",
+        "deviceIds": [
+          "mapped",
+          null,
+          "missing"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "coordinate",
+      "key": "latitude",
+      "result": {
+        "latitude": 0,
+        "longitude": 0
+      },
+      "success": true
+    },
+    {
+      "id": "snapshotBefore",
+      "key": "currentStates",
+      "result": {
+        "snapshot": null,
+        "errors": [
+          "SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "snapshotAfter",
+      "key": "currentStates",
+      "result": {
+        "snapshot": {
+          "getClass": {
+            "value": "owned-getClass",
+            "timestamp": "2026-09-09 09:31:57"
+          },
+          "ordinary": {
+            "value": "0",
+            "timestamp": "2026-09-09 09:31:57"
+          },
+          "fields": {
+            "value": "owned-fields",
+            "timestamp": "2026-09-09 09:31:57"
+          }
+        },
+        "errors": []
+      },
+      "success": true
+    },
+    {
+      "id": "snapshotBefore",
+      "key": "fallback",
+      "result": {
+        "snapshot": null,
+        "errors": [
+          "SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "snapshotAfter",
+      "key": "fallback",
+      "result": {
+        "snapshot": {
+          "ordinary": {
+            "value": 0,
+            "timestamp": null
+          },
+          "fields": {
+            "value": "owned-fields",
+            "timestamp": null
+          },
+          "getClass": {
+            "value": "owned-getClass",
+            "timestamp": null
+          }
+        },
+        "errors": []
+      },
+      "success": true
+    },
+    {
+      "id": "bypassBefore",
+      "key": "fullJson",
+      "result": {
+        "snapshot": null,
+        "errors": [
+          "SecurityException: Subscript property 'fields' is not allowed from app or driver code"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "bypassAfter",
+      "key": "fullJson",
+      "result": {
+        "snapshot": {
+          "getClass": {
+            "value": "owned-getClass",
+            "timestamp": "2026-09-09T13:31:57+0000"
+          },
+          "ordinary": {
+            "value": "0",
+            "timestamp": "2026-09-09T13:31:57+0000"
+          },
+          "fields": {
+            "value": "owned-fields",
+            "timestamp": "2026-09-09T13:31:57+0000"
+          }
+        },
+        "errors": []
+      },
+      "success": true
+    }
+  ]
+}

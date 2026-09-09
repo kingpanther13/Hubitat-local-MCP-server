@@ -248,7 +248,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.state.level.value == 75
         result.state.level.timestamp == null
 
-        and: 'driver attribute names that collide with protected properties retain their values'
+        and: 'fields and ordinary driver attribute names retain their values'
         result.state.get('fields') == [value: 'driver fields', timestamp: null]
         result.state.get('getClass') == [value: 42, timestamp: null]
     }
