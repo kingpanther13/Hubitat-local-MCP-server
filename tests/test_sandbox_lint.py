@@ -715,6 +715,153 @@ def test_call_before_control_block_does_not_become_a_method():
     assert len(findings) == 1
     assert "in update;" in findings[0]["message"]
 
+
+@pytest.mark.parametrize("default", ["([] as Set)", "chooseDefaults()", "wrap(chooseDefaults())"])
+def test_map_guard_scans_methods_with_parenthesized_defaults(default):
+    source = f"""private def update(Map input, Set ignored = {default}) {{
+ def result = [:]
+ result[input.name] = false
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "in update;" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("expression", [
+    "container.ids", "container?.ids", "container['ids']", "container[key]",
+    "container == null", "container ? [] : []", "[ids: []]['ids']",
+    "leaf()['ids']", "new HashMap().values()",
+])
+def test_return_expression_does_not_inherit_its_map_prefix(expression):
+    source = f"""def leaf() {{ return [:] }}
+def values(Map container, String key) {{
+ return {expression}
+}}
+def consume(int index) {{
+ def result = values()
+ return result[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("expression", ["container['ids']", "container == null", "leaf()['ids']"])
+def test_assignment_expression_does_not_inherit_its_map_prefix(expression):
+    source = f"""def leaf() {{ return [:] }}
+def consume(Map container, int index) {{
+ def result = {expression}
+ return result[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("closure", [
+    "input.each { return [:] }",
+    "input.each { value -> if (value) { return [:] } }",
+    "def callback = { return [:] }",
+])
+def test_closure_returns_do_not_establish_the_enclosing_method_return_type(closure):
+    source = f"""def values(List input) {{
+ {closure}
+ return []
+}}
+def consume(int index) {{
+ def result = values()
+ return result[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("body", [
+    "if (flag) { return [:] }\n return null",
+    "try { return [:] } finally { cleanup() }",
+    "def result = [:]\n return (result)",
+])
+def test_method_control_flow_map_returns_remain_inferred(body):
+    source = f"""def values(boolean flag) {{
+ {body}
+}}
+def consume(String key) {{
+ def result = values()
+ result[key] = false
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "result[key]" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("mutation", [
+    "key = input.name", "key += input.name", "key <<= 1", "++key", "key--",
+])
+@pytest.mark.parametrize("wrapper", ["if (key == 'safe')", "['safe'].each"])
+def test_bounded_key_exception_is_invalidated_by_assignment(mutation, wrapper):
+    header = f"{wrapper} {{" + (" key ->" if wrapper.endswith("each") else "")
+    source = f"""def copy(input, key) {{
+ def result = [:]
+ {header}
+  {mutation}
+  result[key] = false
+ }}
+}}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_assignment_in_bounded_condition_invalidates_the_exception():
+    source = """def copy(key) {
+ def result = [:]
+ if (key == 'safe' && (key = 'fields')) {
+  result[key] = false
+ }
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+@pytest.mark.parametrize("nested", [
+    "input.each { key, value -> result[key] = value }",
+    "input.each { String key -> result[key] = false }",
+    "for (key in input) { result[key] = false }",
+])
+def test_nested_key_binding_does_not_inherit_the_outer_literal_bounds(nested):
+    source = f"""def copy(input) {{
+ def result = [:]
+ ['safe'].each {{ key ->
+  {nested}
+ }}
+}}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_implicit_it_in_nested_closure_does_not_inherit_outer_literal_bounds():
+    source = """def copy(input) {
+ def result = [:]
+ ['safe'].each { it ->
+  input.each { result[it] = false }
+ }
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+@pytest.mark.parametrize("access", [
+    "data[KEY] = value", "data[KEY] += value", "data[KEY] -= value",
+    "data[KEY] *= value", "data[KEY] /= value", "data[KEY] %= value",
+    "data[KEY] **= value", "data[KEY] &= value", "data[KEY] |= value",
+    "data[KEY] ^= value", "data[KEY] <<= value", "data[KEY] >>= value",
+    "data[KEY] >>>= value", "data[KEY]++", "data[KEY]--",
+    "++data[KEY]", "--data[KEY]",
+])
+@pytest.mark.parametrize("key", ["key", "'metaClass'"])
+def test_typed_map_write_operators_do_not_receive_the_read_exception(access, key):
+    source = "def update(Map data, String key, value) {\n " + access.replace("KEY", key) + "\n}"
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "write" in findings[0]["message"]
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("operator", ["==", "!=", "=~", "<=", ">="])
+def test_typed_map_comparisons_remain_reads(operator):
+    source = f"def compare(Map data, String key, value) {{\n return data[key] {operator} value\n}}"
+    assert sandbox_map_findings(source) == []
+
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------

@@ -4278,7 +4278,8 @@ def check_sandbox_map_subscripts(
     Explicit Map receivers accept the measured fields/class operations, but
     metaClass writes attempt a cast. getClass and Fields are valid data keys.
     Dynamic accesses require explicit get/put unless their keys are locally
-    bounded. This is a blocking source invariant, not a claim that each match
+    bounded or the measured typed-read exception applies. This is a blocking
+    source invariant, not a claim that each match
     is a reproduced bug or that the measured collision set is exhaustive.
     See tests/fixtures/sandbox-map-probes.md for measurements and inference limits.
     """
@@ -4300,7 +4301,7 @@ def check_sandbox_map_subscripts(
     method_re = re.compile(
         rf"^[ \t]*(?:(?:private|protected|public)\s+)?(?:static\s+)?"
         rf"(?:(?P<type>{ident}(?:<[^{{}}\n]+>)?)\s+)?"
-        rf"(?P<name>(?!(?:if|for|while|switch|catch|synchronized|else)\b){ident})\s*\((?P<params>[^{{}}()]*?)\)\s*\{{",
+        rf"(?P<name>(?!(?:if|for|while|switch|catch|synchronized|else)\b){ident})\s*\(",
         re.MULTILINE,
     )
     map_decl = re.compile(rf"\b{map_type}\s+({ident})\b")
@@ -4318,7 +4319,7 @@ def check_sandbox_map_subscripts(
         rf"@(?:groovy\.transform\.)?Field\s+(?:(?:static|final|private|protected|public)\s+)*"
         rf"{map_type}\s+({ident})\b"
     )
-    alias_re = re.compile(rf"\b({ident})\s*=\s*({ident})\b(?!\s*\??\.)(\s*\()?")
+    alias_re = re.compile(rf"\b({ident})\s*=(?!=)\s*([^\n;{{}}]+)")
     subscript_re = re.compile(
         rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
         rf"(?P<key>{ident}(?:\??\.{ident})*(?:\(\))?)\s*\]"
@@ -4336,13 +4337,95 @@ def check_sandbox_map_subscripts(
     )
     collisions = {"fields", "class", "metaClass"}
 
-    def close_brace(code: str, opening: int) -> int:
+    def close_delimiter(code: str, opening: int, left: str, right: str) -> int:
         depth = 1
         for pos in range(opening + 1, len(code)):
-            depth += (code[pos] == "{") - (code[pos] == "}")
+            depth += (code[pos] == left) - (code[pos] == right)
             if depth == 0:
                 return pos
         return len(code)
+
+    def close_brace(code: str, opening: int) -> int:
+        return close_delimiter(code, opening, "{", "}")
+
+    def method_records(code: str):
+        for match in method_re.finditer(code):
+            params_end = close_delimiter(code, match.end() - 1, "(", ")")
+            opening = params_end + 1
+            while opening < len(code) and code[opening].isspace():
+                opening += 1
+            if opening < len(code) and code[opening] == "{":
+                yield match, code[match.end():params_end], opening, close_brace(code, opening)
+
+    def is_map_expression(expression: str, maps: set[str], returns: set[str]) -> bool:
+        expression = expression.strip()
+        while expression.startswith("(") and close_delimiter(expression, 0, "(", ")") == len(expression) - 1:
+            expression = expression[1:-1].strip()
+        if re.fullmatch(ident, expression):
+            return expression in maps
+        constructor = re.match(rf"new\s+{map_type}\s*\(", expression)
+        call = re.match(rf"({ident})\s*\(", expression)
+        if constructor or (call and call[1] in returns):
+            opening = (constructor or call).end() - 1
+            return close_delimiter(expression, opening, "(", ")") == len(expression) - 1
+        if expression.startswith("[") and close_delimiter(expression, 0, "[", "]") == len(expression) - 1:
+            depth = 0
+            for token in expression[1:-1]:
+                depth += (token in "([{") - (token in ")]}")
+                if token == ":" and depth == 0:
+                    return True
+        return False
+
+    def method_return_expressions(body: str) -> list[str]:
+        # A return inside a closure returns from that closure, not its method.
+        # Keep control blocks, but mask other brace bodies before collecting.
+        visible = list(body)
+        pos = 0
+        while pos < len(body):
+            if body[pos] != "{":
+                pos += 1
+                continue
+            prefix = body[:pos].rstrip()
+            control = bool(re.search(r"\b(?:else|try|finally)\s*$", prefix))
+            if prefix.endswith(")"):
+                depth = 1
+                cursor = len(prefix) - 2
+                while cursor >= 0 and depth:
+                    depth += (prefix[cursor] == ")") - (prefix[cursor] == "(")
+                    cursor -= 1
+                control = bool(re.search(
+                    r"\b(?:if|for|while|switch|catch|synchronized)\s*$", prefix[:cursor + 1]
+                ))
+            if control:
+                pos += 1
+            else:
+                end = close_brace(body, pos)
+                visible[pos:end + 1] = ["\n" if char == "\n" else " " for char in body[pos:end + 1]]
+                pos = end + 1
+        code = "".join(visible)
+        expressions = re.findall(r"\breturn\s+([^\n;{}]+)", code)
+        expressions.extend(re.split(r"[\n;]", code.rstrip())[-1:])
+        return [re.sub(r"^\s*return\s+", "", value).strip() for value in expressions]
+
+    def key_binding_unchanged(key: str, code: str) -> bool:
+        mutation = rf"\b{key}\s*(?:=(?!=|~)|(?:<<|>>>?|\*\*|[+*/%&|^\-])=|\+\+|--)|(?:\+\+|--)\s*\b{key}\b"
+        if re.search(mutation, code):
+            return False
+        if any(re.search(rf"\b{key}\b", match[1])
+               for match in re.finditer(r"\{\s*([^{}\n]*?)->", code)):
+            return False
+        # A nested closure without an arrow has its own implicit `it` binding.
+        # Conservatively reject nested braces for that particular parameter.
+        nested = code[code.index("{") + 1:] if code.lstrip().startswith("if") and "{" in code else code
+        if key == "it" and "{" in nested:
+            return False
+        return not re.search(rf"\bfor\s*\([^)]*\b{key}\b", code)
+
+    def writes_subscript(code: str, start: int, end: int) -> bool:
+        return bool(
+            re.match(r"\s*(?:=(?!=|~)|(?:<<|>>>?|\*\*|[+*/%&|^\-])=|\+\+|--)", code[end:])
+            or re.search(r"(?:\+\+|--)\s*$", code[:start])
+        )
 
     masked = {
         path: "\n".join(
@@ -4360,11 +4443,11 @@ def check_sandbox_map_subscripts(
         return "parent" if path == "hubitat-mcp-server.groovy" else scope(path)
 
     methods = [
-        (path, match, code[match.end():close_brace(code, match.end() - 1)])
-        for path, code in masked.items() for match in method_re.finditer(code)
+        (path, match, params, opening, code[opening + 1:end])
+        for path, code in masked.items() for match, params, opening, end in method_records(code)
     ]
     map_returns: dict[str, set[str]] = {}
-    for path, match, _ in methods:
+    for path, match, _, _, _ in methods:
         known = map_returns.setdefault(return_scope(path), set())
         if re.fullmatch(map_type, match.group("type") or ""):
             known.add(match.group("name"))
@@ -4378,8 +4461,8 @@ def check_sandbox_map_subscripts(
         for _ in range(len(aliases) + 1):
             before = set(maps)
             for alias in aliases:
-                dest, origin, call = alias.groups()
-                if (call and origin in returns) or (not call and origin in maps):
+                dest, expression = alias.groups()
+                if is_map_expression(expression, maps, returns):
                     maps.add(dest)
             if before == maps:
                 break
@@ -4389,19 +4472,13 @@ def check_sandbox_map_subscripts(
     # aliases and transitive calls; unknown external helpers stay unknown.
     for _ in range(len(methods) + 1):
         changed = False
-        for path, method, body in methods:
+        for path, method, params, _, body in methods:
             known = map_returns[return_scope(path)]
             if method.group("name") in known or method.group("type") not in (None, "def"):
                 continue
-            maps = inferred_maps(method.group("params"), body, known)
-            expressions = re.findall(r"\breturn\s+([^\n;]+)", body)
-            expressions.extend(body.rstrip().splitlines()[-1:])
-            for expression in expressions:
-                expression = re.sub(r"^\s*return\s+", "", expression).strip()
-                head = re.match(rf"({ident})\b(?!\s*\??\.)\s*(\()?", expression)
-                if (re.match(rf"(?:new\s+{map_type}\s*\(|\[[^\]\n]*:)", expression)
-                        or (head and ((head[2] and head[1] in known)
-                                     or (not head[2] and head[1] in maps)))):
+            maps = inferred_maps(params, body, known)
+            for expression in method_return_expressions(body):
+                if is_map_expression(expression, maps, known):
                     known.add(method.group("name"))
                     changed = True
                     break
@@ -4412,12 +4489,10 @@ def check_sandbox_map_subscripts(
         code = masked[path]
         raw_lines = source.split("\n")
         field_maps = set(field_map.findall(code))
-        for method in method_re.finditer(code):
-            opening = method.end() - 1
-            end = close_brace(code, opening)
+        for method, params, opening, end in method_records(code):
             body = code[opening + 1:end]
             raw_body = source[opening + 1:end]
-            explicit_maps = set(map_decl.findall(method.group("params")))
+            explicit_maps = set(map_decl.findall(params))
             explicit_maps.update(map_decl.findall(body))
             # Locals and parameters can shadow a typed script field. The
             # field's type must not exempt accesses on the shadowing receiver.
@@ -4425,11 +4500,11 @@ def check_sandbox_map_subscripts(
                 rf"\b(?:def|{ident}(?:<[^{{}};=]+>)?)\s+({ident})\s*(?==|;)", body
             ))
             shadowed.update(re.findall(
-                rf"\b({ident})\s*(?:=[^,]*)?(?=,|$)", method.group("params")
+                rf"\b({ident})\s*(?:=[^,]*)?(?=,|$)", params
             ))
             explicit_maps.update(field_maps - shadowed)
             maps = explicit_maps | inferred_maps(
-                method.group("params"), body, map_returns[return_scope(path)]
+                params, body, map_returns[return_scope(path)]
             )
             bounded = []
             # A literal list is a finite key set, but only if its actual values
@@ -4445,14 +4520,18 @@ def check_sandbox_map_subscripts(
                         and not any(value in collisions for _, value in literals)
                         and body[loop.start():].startswith("[")):
                     brace = loop.end() - 1
-                    bounded.append((loop.group("key"), brace, close_brace(body, brace)))
+                    stop = close_brace(body, brace)
+                    if key_binding_unchanged(loop.group("key"), body[loop.end():stop]):
+                        bounded.append((loop.group("key"), brace, stop))
             for branch in bounded_if_re.finditer(raw_body):
                 if branch.group("literal") in collisions:
                     continue
                 if not body[branch.start():].startswith("if"):
                     continue
                 brace = branch.end() - 1
-                bounded.append((branch.group("key"), brace, close_brace(body, brace)))
+                stop = close_brace(body, brace)
+                if key_binding_unchanged(branch.group("key"), body[branch.start():stop]):
+                    bounded.append((branch.group("key"), brace, stop))
 
             def add(pos: int, message: str, severity: str = "error", *,
                     code=code, opening=opening, path=path, raw_lines=raw_lines) -> None:
@@ -4469,7 +4548,7 @@ def check_sandbox_map_subscripts(
                     continue
                 if not body[literal.start():].startswith(receiver):
                     continue
-                writing = bool(re.match(r"\s*=(?!=|~)", body[literal.end():]))
+                writing = writes_subscript(body, literal.start(), literal.end())
                 if receiver in explicit_maps and (key != "metaClass" or not writing):
                     continue
                 add(literal.start(),
@@ -4484,7 +4563,7 @@ def check_sandbox_map_subscripts(
                     continue
                 if receiver not in maps:
                     continue
-                writing = bool(re.match(r"\s*=(?!=|~)", body[access.end():]))
+                writing = writes_subscript(body, access.start(), access.end())
                 if receiver in explicit_maps and not writing:
                     continue
                 if any(key == name and start < access.start() < stop

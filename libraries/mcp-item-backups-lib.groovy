@@ -135,6 +135,8 @@ def toolGetItemBackup(args) {
 
     if (entry.type == "app") {
         result.howToRestore = "To restore via MCP: call 'hub_restore_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
+    } else if (entry.type == "rm-rule") {
+        result.howToRestore = "To restore this rule snapshot via MCP: call 'hub_restore_backup' with backupKey='${args.backupKey}' and confirm=true. The restore reapplies the saved rule configuration."
     } else if (entry.type == "library") {
         result.howToRestore = "Library backups cannot be restored via hub_restore_backup. To restore: call 'hub_update_library' with libraryId='${entry.id}' and sourceFile='${entry.fileName}' (confirm=true). To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > FOR DEVELOPERS > Libraries code > library ID ${entry.id} > paste source > Save."
     } else {
@@ -237,7 +239,7 @@ def toolRestoreItemBackup(args) {
     // Before restoring, back up the CURRENT source under a different filename so it's not overwritten
     // (the original backup file uses the same deterministic name, so backupItemSource would overwrite it)
     def preRestoreFileName = "mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy"
-    def preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
+    String preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}".toString()
     try {
         def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
         def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])

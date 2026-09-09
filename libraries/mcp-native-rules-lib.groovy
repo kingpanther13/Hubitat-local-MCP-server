@@ -9388,7 +9388,7 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
 
     // atomicState read-modify-write: read the full manifest, mutate locally, write back.
     def mfst = atomicState.itemBackupManifest ?: [:]
-    def backupKey = "rm-rule_${ruleId}_${ts}"
+    String backupKey = "rm-rule_${ruleId}_${ts}".toString()
     def entry = [
         type: "rm-rule",
         id: ruleId,
