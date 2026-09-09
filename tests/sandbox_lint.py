@@ -4239,6 +4239,9 @@ def check_sandbox_map_subscripts(
         rf"(?:new\s+{map_type}\s*\(|\[[^\]\n]*:)"
     )
     checked_map = re.compile(rf"\b({ident})\s+(?:instanceof|as)\s+Map\b")
+    conditional_map = re.compile(
+        rf"\b({ident})\s*=\s*[^\n;]*\binstanceof\s+Map\b[^\n;]*:\s*\[:\]"
+    )
     alias_re = re.compile(rf"\b({ident})\s*=\s*({ident})\b(\s*\()?")
     subscript_re = re.compile(
         rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
@@ -4292,7 +4295,8 @@ def check_sandbox_map_subscripts(
             raw_body = source[opening + 1:end]
             explicit_maps = set(map_decl.findall(method.group("params")))
             explicit_maps.update(map_decl.findall(body))
-            maps = explicit_maps | set(map_init.findall(body)) | set(checked_map.findall(body))
+            maps = (explicit_maps | set(map_init.findall(body)) |
+                    set(checked_map.findall(body)) | set(conditional_map.findall(body)))
             aliases = list(alias_re.finditer(body))
             for _ in range(len(aliases) + 1):
                 before = set(maps)
@@ -4316,6 +4320,17 @@ def check_sandbox_map_subscripts(
                 (m.group(1), m.end(), close_brace(body, body.index("{", m.start())))
                 for m in re.finditer(rf"\.each\s*\{{\s*({ident})\s*,\s*{ident}\s*->", body)
             )
+            # Preserve the originating closure's bounds when a key is renamed
+            # or converted to a String (for example dashboard setOptions).
+            key_aliases = list(re.finditer(
+                rf"\b(?:def|String)\s+({ident})\s*=\s*({ident})"
+                rf"(?:\??\.toString\(\))?\s*(?=\n|;|$)", body
+            ))
+            for alias in key_aliases:
+                dest, origin = alias.groups()
+                inherited = [(dest, alias.end(), stop) for name, start, stop in iterations
+                             if name == origin and start <= alias.start() < stop]
+                iterations.extend(inherited)
             bounded = []
             for branch in bounded_if_re.finditer(raw_body):
                 if branch.group("literal") in collisions:

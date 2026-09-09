@@ -507,6 +507,31 @@ def test_map_guard_does_not_scan_control_blocks_as_duplicate_methods():
 }"""
     assert len(sandbox_map_findings(source)) == 1
 
+
+def test_map_guard_tracks_key_alias_within_its_originating_closure():
+    source = """private def options(Map external) {
+ def layout = [:]
+ external.each { k, value ->
+  def key = k?.toString()
+  layout[key] = value
+ }
+ ['status'].each { key -> layout[key] = true }
+}"""
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [5]
+
+
+def test_map_guard_detects_native_settings_conditional_map_read():
+    source = """private def settings(Map cfg, Map schema) {
+ def values = (cfg?.settings instanceof Map) ? cfg.settings : [:]
+ schema.each { name, input ->
+  return values[name]
+ }
+}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "read candidate values[name]" in findings[0]["message"]
+
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------
