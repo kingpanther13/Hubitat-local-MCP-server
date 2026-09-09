@@ -8655,7 +8655,9 @@ Omitted properties are preserved. The complete patch is validated before writes 
 **Preferences format:**
 `{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}`
 
-Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected unless clearing is explicit. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
+Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
+
+If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
 ''',
 
         rules: '''## Rule Structure Reference

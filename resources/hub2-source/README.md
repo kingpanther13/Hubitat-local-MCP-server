@@ -10,7 +10,7 @@ with the hub's HTTP surface. Every file is downloaded verbatim from a hub at
 | File(s) | What it is |
 |---|---|
 | `vue-hub2.min.js` (~3.3 MB, platform 2.5.0.143) | The modern **Vue 3 SPA** as one MONOLITH — every component body inline, so this is the file whose string literals carry the **whole endpoint corpus** (`/hub2/appsList`, `/device/runmethod`, `/app/saveOrUpdateJson`, …). Kept deliberately: the 2.5.1 build is code-split and its shell no longer contains those literals |
-| `vue-hub2-shell-2.5.1.min.js` (~573 KB, platform 2.5.1.181) | The 2.5.1 **shell** — routes, the chunk-filename map (`.u=function(e)`) for every lazily-loaded chunk, and the components that were not split out. Grep it for routing; grep the monolith above for endpoints |
+| `vue-hub2-shell-2.5.1.min.js` (~573 KB, platform 2.5.1.181) | The 2.5.1 **shell** — routes, the chunk-filename map (`.u=function(e)`) for every lazily-loaded chunk, and the components that were not split out. Grep it for routing; use the current chunks below for their endpoints and the monolith as historical reference |
 | `vue-hub2-visual-rule-builder-20.min.js` (~583 KB, platform 2.5.1.181) | The **Visual Rule Builder 2.0** code-split chunk — the entire 2.0 editor: graph compose/decompose, dialogs, and its own endpoints |
 | `vue-hub2-device-details.min.js`, `vue-hub2-device-details-shared.min.js` (platform 2.5.1.181) | Current device details and shared configuration components; use these for device read/write contracts, including preferences and Assistants |
 | `appUI.js`, `main.js`, `helpers.js`, `hub2utils.js`, `hubitat.min.js`, `success-compiled.js` | The **classic server-rendered `dynamicPage` engine** — the client side of the legacy app-config flow that Rule Machine and every other classic app still use |
@@ -168,10 +168,11 @@ moved into lazily-loaded chunks; that shell keeps only the routes and the
 chunk-id → filename map (the `.u=function(e)` map, `"js/vue-hub2-" + {…}[e] +
 ".min.js"`) and is vendored here as `vue-hub2-shell-2.5.1.min.js`. The
 `vue-hub2.min.js` in this folder is deliberately the 2.5.0.143 MONOLITH, because
-it still carries every endpoint literal inline. So: **grep the monolith for
-endpoints, the VRB 2.0 chunk for anything 2.0, the shell for routing** — none of
-the three `ruleBuilder20*` endpoints appear in the shell at all. Only the VRB 2.0
-chunk is vendored; fetch another from `/ui2/js/<name>` when you need it.
+it still carries the historical endpoint corpus inline. **Use the current device
+chunks for device contracts, the VRB 2.0 chunk for that editor, and the shell for
+routing.** The monolith is a historical reference for uncaptured components;
+fetch their current chunk from `/ui2/js/<name>` before relying on its contract.
+The three `ruleBuilder20*` endpoints do not appear in the shell itself.
 
 **There are TWO Vue builder components with different wire formats** behind one
 user-facing app type ("Visual Rules Builder" parent; children are hidden type

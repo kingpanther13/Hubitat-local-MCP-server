@@ -41,6 +41,62 @@ def _watchdog_response(logs):
     )
 
 
+@pytest.mark.parametrize("rejection", ["unknown", "unavailable", "accepted"])
+def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_name_rejection(rejection):
+    prefix = f"{et.PREFIX}UnknownPreference"
+    declared = {"logEnable": True, prefix: False, prefix + "_": True}
+    preferences_before = dict(declared)
+    preference_attempts = []
+    bypass_changes = []
+    bypass = False
+
+    class FakeClient:
+        def call_tool(self, name, arguments=None):
+            arguments = arguments or {}
+            if not bypass:
+                raise et.McpError("Device not found")
+            if name == "hub_get_device":
+                if arguments.get("mode") == "configuration":
+                    assert arguments.get("fields") == []
+                    return {
+                        "preferenceRead": {"status": "complete"},
+                        "availableFields": {"preferences": list(declared)},
+                    }
+                return {"id": "10", "name": "Unlisted", "label": "Original", "commands": []}
+            if name == "hub_list_device_events":
+                return {"events": [], "count": 0}
+            if name == "hub_update_device":
+                if "label" in arguments:
+                    return {"success": True, "changes": [{"property": "label"}]}
+                patch = arguments["preferences"]
+                preference_attempts.append(patch)
+                assert not set(patch) & set(declared), "Boundary probe attempted an existing preference"
+                if rejection == "unknown":
+                    raise et.McpError(f"Invalid params: Unknown preference '{next(iter(patch))}'")
+                if rejection == "unavailable":
+                    raise et.McpError("Unable to read complete preference definitions/storage")
+                return {"success": True}
+            raise AssertionError(f"Unexpected boundary call: {name} {arguments}")
+
+    def set_bypass(value):
+        nonlocal bypass
+        bypass = value
+        bypass_changes.append(value)
+        return {"success": True, "updated": {"bypassDeviceAllowlist": value}}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = FakeClient()
+    if rejection == "unknown":
+        runner._bypass_boundary_checks("10", set_bypass)
+    else:
+        with pytest.raises(AssertionError, match="Undeclared preference|accepted an undeclared"):
+            runner._bypass_boundary_checks("10", set_bypass)
+
+    assert preference_attempts == [{prefix + "__": True}]
+    assert declared == preferences_before
+    assert bypass_changes == [True, False]
+
+
 def test_validation_log_expectation_uses_reactive_gateway_tool_and_exact_reason():
     params = {
         "name": "hub_manage_variables",

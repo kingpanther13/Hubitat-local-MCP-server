@@ -3086,6 +3086,10 @@ class TestRunner:
                     "deviceId": device_id, **group,
                 }, f"{profile['path']} configuration edit")
                 assert result.get("success") is True, f"Configuration edit failed: {result}"
+                assert not result.get("errors"), f"Configuration edit reported success with rejected fields: {result}"
+                changed = {row.get("property") for row in result.get("changes", [])}
+                pane_fields = {"retryEnabled", "showOnHome", "defaultCurrentState"} & group.keys()
+                assert pane_fields <= changed, f"Configuration pane write was not confirmed: {result}"
             return result
 
         def normalized(key, value):
@@ -12565,21 +12569,28 @@ class TestRunner:
                 assert any(c.get("property") == "room" for c in (rr.get("changes") or [])), \
                     f"bypass room change not recorded: {rr}"
 
-            # (d) preferences via /device/preference/save -- the ARRAY-shape + read-back leg (the
-            # B-PREF bug: a flat key is a silent {success:true} no-op). logEnable is a near-universal
-            # driver pref; BOTH outcomes prove the live contract -- if the device HAS it the change
-            # lands (array shape works), and if it LACKS it the read-back guard fires a structured
-            # "read back as" error so the no-op can never masquerade as success.
-            pref_res = self.client.call_tool("hub_update_device", {"deviceId": unauth, "preferences": {"logEnable": True}})
-            pref_changed = any(c.get("property") == "preference.logEnable" for c in (pref_res.get("changes") or []))
-            if pref_changed:
-                assert pref_res.get("success") is True, f"pref change recorded but result not success: {pref_res}"
-                # restore to the Hubitat default (logging off)
-                self.client.call_tool("hub_update_device", {"deviceId": unauth, "preferences": {"logEnable": False}})
-            else:
-                err = next((e for e in (pref_res.get("errors") or []) if e.get("property") == "preference.logEnable"), None)
-                assert err and "read back as" in (err.get("error") or ""), \
-                    f"a pref no-op must surface the read-back guard error, not a false success: {pref_res}"
+            # (d) reject a guaranteed undeclared preference before mutation. Positive native
+            # saves/readback run on the persistent configuration fixtures; an arbitrary
+            # unlisted device's existing preferences must remain untouched here.
+            configuration = self.client.call_tool("hub_get_device", {
+                "deviceId": unauth, "mode": "configuration", "fields": [],
+            })
+            assert configuration.get("preferenceRead", {}).get("status") == "complete", \
+                f"Cannot establish an undeclared preference from incomplete configuration: {configuration}"
+            names = configuration.get("availableFields", {}).get("preferences")
+            assert isinstance(names, list) and all(isinstance(name, str) for name in names), \
+                f"Configuration preference name index is unavailable: {configuration}"
+            unknown_name = f"{PREFIX}UnknownPreference"
+            while unknown_name in names:
+                unknown_name += "_"
+            try:
+                self.client.call_tool("hub_update_device", {
+                    "deviceId": unauth, "preferences": {unknown_name: True},
+                })
+                raise AssertionError("Bypass update accepted an undeclared preference")
+            except McpError as exc:
+                assert f"Unknown preference '{unknown_name}'" in str(exc), \
+                    f"Undeclared preference must be rejected before native writes: {exc}"
             # NOTE: the `enabled` read-back (_confirmDisabledFlip, the same helper on the bypass and
             # listed write legs) is proven live by the LISTED-device toggle near the top of this test
             # on a controlled mcp-managed virtual device. It is NOT re-exercised on the arbitrary

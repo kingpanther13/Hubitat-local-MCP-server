@@ -333,8 +333,7 @@ mandatory best-practice acknowledgment is enabled, read the guide first and put
 | `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` | Supported and installed assistant assignments; confirmation and backup required. |
 
 Configuration mode identifies each field's applicability and readback source.
-The [editable-field inventory](docs/superpowers/plans/2026-09-08-device-editable-field-matrix.md)
-records the current Vue controls and native payloads. Omitted properties are
+Omitted properties are
 preserved. The complete patch is validated before writes begin; runtime failures
 report per-property successes and errors, so inspect the result before retrying.
 
@@ -351,10 +350,15 @@ mode. Unknown names are refused. An unreadable schema/readback is reported
 separately from an unknown name or a value that did not persist. Omit a preference
 to preserve it. To clear an optional preference, pass an explicit entry such as
 `"debugLogging": {"clear": true}`. Null, empty strings, whitespace and empty arrays
-are rejected unless clearing is explicit; required preferences cannot be cleared.
+are rejected; do not combine `clear` with `value`. Required preferences cannot be cleared.
 Both `bool` and `boolean` declarations are supported. A driver default displayed
 afterward remains a default, not a saved value. Preference saves preserve Home visibility, status
 display and command-retry settings unless the patch explicitly changes them.
+
+If an unset enum reports `multiple: null`, check `driverSource` or metadata captured
+before clearing, then supply `multiple: true` or `multiple: false` alongside `value`
+when restoring it. For example, `{"colors": {"value": ["red"], "multiple": true}}`
+restores a declared multi-select enum; do not guess its selection cardinality.
 
 **Room assignment:** Existing names use case-insensitive exact matching; an empty string removes the assignment.
 
