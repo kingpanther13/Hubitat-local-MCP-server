@@ -68,6 +68,30 @@ class CapturedStateStorageSpec extends ToolSpecBase {
         !staleState.containsKey('capturedDeviceStates')
     }
 
+    @Unroll
+    def "initialize removes empty legacy capture keys from #legacyLocation (value #legacyValue)"() {
+        given:
+        stateMap.accessToken = 'tok'
+        stateMap.updateCheck = [checkedAt: 1L]
+        script.metaClass._subscribeToAllHubVariables = { -> }
+        script.metaClass._refreshHubVarInUseRegistrations = { -> }
+        if (legacyLocation in ['state', 'both']) stateMap.capturedDeviceStates = legacyValue
+        if (legacyLocation in ['atomicState', 'both']) atomicStateMap.capturedDeviceStates = legacyValue
+        forbidFiles(script)
+
+        when:
+        script.initialize()
+
+        then:
+        !stateMap.containsKey('capturedDeviceStates')
+        !atomicStateMap.containsKey('capturedDeviceStates')
+        script.countCapturedStates() == 0
+
+        where:
+        legacyLocation << ['state', 'atomicState', 'both', 'state', 'atomicState', 'both']
+        legacyValue << [[:], [:], [:], null, null, null]
+    }
+
     def "class reload loses captures without rehydrating persisted payloads"() {
         given:
         atomicStateMap.capturedDeviceStates = [old: [devices: ['1': [level: 37]], timestamp: 1L]]

@@ -674,7 +674,9 @@ def initialize() {
     // longer referenced (rule edited away from the var, rule deleted).
     _refreshHubVarInUseRegistrations()
     // Shed persisted legacy payloads even when no rule accesses captures again.
-    if (state.capturedDeviceStates || atomicState.capturedDeviceStates) countCapturedStates()
+    if (state.containsKey("capturedDeviceStates") || atomicState.containsKey("capturedDeviceStates")) {
+        countCapturedStates()
+    }
 }
 
 

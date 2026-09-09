@@ -43,6 +43,6 @@
 - [ ] **e2e tests added for new tools and/or regression tests added for any bug fix** (see `tests/e2e_test.py`)
 - [ ] Sandbox lint passes: `python tests/sandbox_lint.py`
 - [ ] `./gradlew test` passes locally (or CI confirms)
-- [ ] Relevant existing live-hub BAT scenarios run and results recorded (or pending execution noted); scenarios added/updated only for missing coverage (see `tests/BAT-v2.md`)
+- [ ] Relevant existing live-hub BAT scenarios run, with the tested revision and results recorded (or an explicit pending-execution note); scenarios added/updated only for missing coverage (see `tests/BAT-v2.md`)
 - [ ] Documentation updated if user-facing behaviour or tool surface changed
 - [ ] New/renamed MCP tools follow `AGENTS.md` Tool Design Rules (naming, annotations, schema)
