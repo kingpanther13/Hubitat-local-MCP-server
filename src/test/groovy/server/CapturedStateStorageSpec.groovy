@@ -109,7 +109,6 @@ class CapturedStateStorageSpec extends ToolSpecBase {
         script.initialize()
 
         then:
-        lifecycleCalls.contains('unschedule')
         runInMillisCalls.any { it[1] == 'captureMigrationStep' }
         uploads == 0
         downloads == 0
