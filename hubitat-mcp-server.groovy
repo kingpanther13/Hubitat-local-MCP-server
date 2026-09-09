@@ -2297,7 +2297,7 @@ private void _mrtrScheduleCleanupLocked(long expiry) {
         hint.remove("retryAt")
     } catch (Exception scheduleErr) {
         hint.retryAt = at + 60000L
-        _cleanupWarn("mrtr", "Expiry cleanup scheduling deferred for 60 seconds: ${scheduleErr.message}")
+        _cleanupWarn("mrtr", "Expiry cleanup scheduling deferred for 60 seconds: ${_cleanupFailureDetail(scheduleErr)}")
     }
 }
 
@@ -2337,7 +2337,7 @@ def _mrtrEnsureCleanupScheduled(boolean reset = false) {
             _mrtrScheduleNextCleanupLocked()
         } catch (Exception loadErr) {
             hint.retryAt = at + 60000L
-            _cleanupWarn("mrtr", "Expiry cleanup bootstrap deferred for 60 seconds: ${loadErr.message}")
+            _cleanupWarn("mrtr", "Expiry cleanup bootstrap deferred for 60 seconds: ${_cleanupFailureDetail(loadErr)}")
         }
     }
 }
@@ -2357,7 +2357,7 @@ def runMrtrCleanup() {
             // Required eviction failures remain errors on reservation/replay paths.
             // Background work has no caller to fail, so preserve records and retry.
             _mrtrScheduleCleanupLocked(now() + 60000L)
-            _cleanupWarn("mrtr", "Expiry cleanup deferred for 60 seconds: ${sweepErr.message}")
+            _cleanupWarn("mrtr", "Expiry cleanup deferred for 60 seconds: ${_cleanupFailureDetail(sweepErr)}")
         }
     }
     cleanup.each { _mrtrCleanupRecord(it as Map) }
@@ -2514,7 +2514,7 @@ private List _mrtrSweepLocked() {
                 // Keep the already-committed eviction, while replay uses durable survivors.
                 hint.compactRetryAt = at + 60000L
                 _mrtrScheduleCleanupLocked(at + 60000L)
-                _cleanupWarn("mrtr", "Terminal record compaction deferred for 60 seconds: ${compactErr.message}")
+                _cleanupWarn("mrtr", "Terminal record compaction deferred for 60 seconds: ${_cleanupFailureDetail(compactErr)}")
             }
         } else {
             hint.remove("compactRetryAt")
@@ -3616,13 +3616,18 @@ def _invalidateToolMetadata() {
     synchronized (TOOL_METADATA_CACHE) { TOOL_METADATA_CACHE.clear() }
 }
 
+private String _cleanupFailureDetail(Exception error) {
+    // Delegated API calls can wrap the actual storage/scheduler failure without a message.
+    return error.message ?: error.cause?.message ?: error.toString()
+}
+
 private void _cleanupWarn(String component, String message) {
     try {
         mcpLog("warn", component, message)
     } catch (Exception loggingErr) {
         // Cold MCP logging accesses durable configuration, which may be the failed store.
         // Native logging is the fallback; diagnostics must not change a committed outcome.
-        try { log.warn "[${component}] ${message} (MCP logging unavailable: ${loggingErr.message})" }
+        try { log.warn "[${component}] ${message} (MCP logging unavailable: ${_cleanupFailureDetail(loggingErr)})" }
         catch (Exception ignored) { /* Both logging sinks are unavailable; preserve recovery. */ }
     }
 }
@@ -3644,7 +3649,7 @@ def _cleanupRetiredToolState() {
             RETIRED_TOOL_STATE_RETRY_AT.remove(appKey)
         } catch (Exception e) {
             RETIRED_TOOL_STATE_RETRY_AT.put(appKey, now() + 60000L)
-            _cleanupWarn("server", "Retired tool metadata cleanup deferred for 60 seconds: ${e.message}")
+            _cleanupWarn("server", "Retired tool metadata cleanup deferred for 60 seconds: ${_cleanupFailureDetail(e)}")
         }
     }
 }
