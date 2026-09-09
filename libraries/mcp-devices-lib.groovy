@@ -1746,7 +1746,31 @@ private Map _deviceReadContinuation(String cursor, String selection) {
     return _deviceReadFragment(snapshot, parts[1], start)
 }
 
+// A lower bound, not an encoded size: stop before copying obviously oversized strings
+// into the JSON encoder. The exact encoded bound below still accounts for escaping.
+private int _deviceReadRawCharacters(value, int remaining) {
+    if (value instanceof CharSequence) return Math.min(value.length(), remaining + 1)
+    int count = 0
+    if (value instanceof Map) {
+        for (def entry : value.entrySet()) {
+            count += entry.key.toString().length()
+            if (count > remaining) return remaining + 1
+            count += _deviceReadRawCharacters(entry.value, remaining - count)
+            if (count > remaining) return remaining + 1
+        }
+    } else if (value instanceof List) {
+        for (def item : value) {
+            count += _deviceReadRawCharacters(item, remaining - count)
+            if (count > remaining) return remaining + 1
+        }
+    }
+    return count
+}
+
 private Map _deviceReadPage(Map result, String selection) {
+    if (_deviceReadRawCharacters(result, 2097152) > 2097152) {
+        throw new IllegalArgumentException('Device information exceeds the snapshot budget. Select fewer sections or fields, then read each selection separately.')
+    }
     // Size the actual text-content envelope, including escaped JSON, before the shared guard.
     String serialized = groovy.json.JsonOutput.toJson(result)
     // Bound retained UTF-16 content to 4 MiB across at most eight snapshots, outside persisted app state.

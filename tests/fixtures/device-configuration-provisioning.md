@@ -68,6 +68,12 @@ preference restoration so observation never depends on a disabled driver running
 Large-state cleanup is independently verified. Every
 restoration failure is recorded in `_fixture_reset_failures` and fails the run.
 
+The native-bypass profile divides its large edit and restoration into two grouped
+requests: device metadata, then preferences/pane controls/room. This keeps the
+multiple native endpoint calls within the cloud relay budget. It adds two tool
+calls per matrix, preserves the complete final readback, and never retries a
+write whose response was lost.
+
 Clearing an enum removes the native storage identity and can lose its selection
 cardinality. The read tool reports `multiple:null` rather than a false single-
 selection declaration. Restore from the captured declaration using an explicit

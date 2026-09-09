@@ -3071,10 +3071,21 @@ class TestRunner:
             return snapshots
 
         def update(patch):
-            result = self._write_once("hub_manage_devices", "hub_update_device", {
-                "deviceId": device_id, **patch,
-            }, f"{profile['path']} configuration edit")
-            assert result.get("success") is True, f"Configuration edit failed: {result}"
+            groups = [patch]
+            if profile["path"] == "standalone-bypass":
+                # Native bypass uses several distinct endpoints. Keep each grouped request
+                # below the cloud relay budget instead of retrying a lost write response.
+                pane_keys = {"preferences", "showOnHome", "defaultCurrentState", "room"}
+                pane = {key: value for key, value in patch.items() if key in pane_keys}
+                other = {key: value for key, value in patch.items() if key not in pane_keys and key != "confirm"}
+                if pane and other:
+                    confirmation = {"confirm": patch["confirm"]} if "confirm" in patch else {}
+                    groups = [{**other, **confirmation}, {**pane, **confirmation}]
+            for group in groups:
+                result = self._write_once("hub_manage_devices", "hub_update_device", {
+                    "deviceId": device_id, **group,
+                }, f"{profile['path']} configuration edit")
+                assert result.get("success") is True, f"Configuration edit failed: {result}"
             return result
 
         def normalized(key, value):
