@@ -1153,6 +1153,36 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('fixture-secret-in-exception')
     }
 
+    @Unroll
+    def 'native preference #responseKind remains a failure even when the desired value already exists'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            posts << path
+            nativeResponse
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [offset: 0]])
+
+        then:
+        noExceptionThrown()
+        posts == ['/device/preference/save']
+        result.success == false
+        !result.changes.find { it.property == 'preference.offset' }
+        def failure = result.errors.find { it.property == 'preference.offset' }
+        failure.stage == 'write'
+        failure.status == expectedStatus
+        !JsonOutput.toJson(result).contains('fixture-secret-in-response')
+
+        where:
+        responseKind    | nativeResponse                                                    | expectedStatus
+        'rejection'     | [success: false, message: 'fixture-secret-in-response']             | 'failed'
+        'invalid-body'  | [_unparseable: true, message: 'fixture-secret-in-response']         | 'unavailable'
+    }
+
     def 'secret preference saved value is never echoed in the changes response'() {
         given:
         def model = fixture()

@@ -1129,7 +1129,10 @@ private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple =
     }
     if (type in ['number', 'decimal']) {
         if (raw instanceof Number) return [valid: true, value: raw]
-        if (raw instanceof String && raw.isNumber()) return [valid: true, value: new BigDecimal(raw)]
+        if (raw instanceof String) {
+            try { return [valid: true, value: new BigDecimal(raw.trim())] }
+            catch (Exception ignored) { return [valid: false, value: null] }
+        }
         return [valid: false, value: null]
     }
     return [valid: !(raw instanceof Map || raw instanceof List), value: raw?.toString()]
@@ -1142,16 +1145,18 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         return [status: 'unavailable', source: 'settings', entries: [],
                 reason: 'Native device details did not contain a recognized top-level settings array.']
     }
-    def model = [status: 'complete', source: 'settings', entries: []]
+    def model = [status: 'complete', source: 'settings', entries: [], writeSafe: true]
     def inputs = [:]
     def duplicates = []
     def rawInputs = fullJson.get('inputValues')
     if (rawInputs != null && !(rawInputs instanceof List)) {
+        model.writeSafe = false
         model.status = 'partial'
         model.reason = 'Native inputValues is not a recognized array; stored values may be incomplete.'
     } else {
         (rawInputs ?: []).each { row ->
             if (!(row instanceof Map) || row.name == null) {
+                model.writeSafe = false
                 model.status = 'partial'
                 model.reason = 'Native inputValues contains an unnamed or malformed value.'
             } else {
@@ -1164,6 +1169,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
     def names = []
     definitions.each { row ->
         if (!(row instanceof Map) || row.name == null || row.type == null) {
+            model.writeSafe = false
             model.status = 'partial'
             model.reason = 'Native settings contains an unnamed or malformed declaration.'
             return
@@ -1171,6 +1177,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         String name = row.name.toString()
         String type = row.type.toString()
         if (names.contains(name)) {
+            model.writeSafe = false
             model.status = 'partial'
             model.reason = 'Native settings contains duplicate preference names.'
             model.entries.removeAll { it.name == name }
@@ -1197,6 +1204,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
             entry.defaultValue = defaultValue.valid ? defaultValue.value : row.get('defaultValue')
         }
         if (!normalized.valid || duplicates.contains(name)) {
+            model.writeSafe = false
             entry.valueStatus = duplicates.contains(name) ? 'unknown' : 'invalid'
             entry.value = null
             model.status = 'partial'
@@ -1205,6 +1213,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         model.entries << entry
     }
     if (duplicates || inputs.keySet().any { key -> !names.contains(key) }) {
+        if (duplicates) model.writeSafe = false
         model.status = 'partial'
         model.reason = 'Native inputValues contains duplicate or undeclared preference names.'
     }
@@ -1334,7 +1343,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
             field.readStatus = preferences.status
             field.valuePresent = preferences.status != 'unavailable'
             field.applicable = !_deviceFlag(d.linkedDevice)
-            field.writable = field.applicable && preferences.status == 'complete'
+            field.writable = field.applicable && preferences.writeSafe == true
             field.remove('reason')
             if (!field.applicable) field.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
             else if (preferences.reason) field.reason = preferences.reason
@@ -1417,7 +1426,7 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean l
             editableFields: _deviceConfigurationEditableFields(fj, model, listed),
             preferences: model.entries.collect {
                 def entry = _publicDevicePreference(it)
-                entry.writable = !linkedDevice && model.status == 'complete' && entry.writable
+                entry.writable = !linkedDevice && model.writeSafe == true && entry.writable
                 if (linkedDevice) {
                     entry.applicable = false
                     entry.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
@@ -3634,24 +3643,34 @@ private boolean _deviceFlag(value) {
 }
 
 private _normalizedDevicePreferenceValue(Map entry, value) {
-    if (value == null || value == "") return _deviceFlag(entry.multiple) ? [] : null
+    if (value == null || (value instanceof String && !value.trim()) || (value instanceof List && value.isEmpty())) {
+        throw new IllegalArgumentException("Preference '${entry.name}' cannot use a blank value; omit it to preserve the setting or use {clear:true} to remove an optional setting")
+    }
     def type = entry.type?.toString()
-    if (type == "bool") {
+    if (type in ["bool", "boolean"]) {
         if (value instanceof Boolean) return value
         if (value?.toString() in ["true", "false"]) return value.toString() == "true"
         throw new IllegalArgumentException("Preference '${entry.name}' requires a boolean value")
     }
     if (type in ["number", "decimal"]) {
         def number
-        try { number = new BigDecimal(value.toString()) }
+        try { number = new BigDecimal(value.toString().trim()) }
         catch (Exception ignored) { throw new IllegalArgumentException("Preference '${entry.name}' requires a numeric value") }
         def range = entry.range?.toString()
         if (range && range.contains("..")) {
             def bounds = range.split("\\.\\.", -1)
-            if (bounds.size() == 2) {
-                if (bounds[0] && number < new BigDecimal(bounds[0])) throw new IllegalArgumentException("Preference '${entry.name}' is below its declared range ${range}")
-                if (bounds[1] && number > new BigDecimal(bounds[1])) throw new IllegalArgumentException("Preference '${entry.name}' is above its declared range ${range}")
+            if (bounds.size() != 2) throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration")
+            def limits = []
+            bounds.each { bound ->
+                def token = bound.trim()
+                if (!token || token == '*') limits << null
+                else {
+                    try { limits << new BigDecimal(token) }
+                    catch (Exception ignored) { throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration") }
+                }
             }
+            if (limits[0] != null && number < limits[0]) throw new IllegalArgumentException("Preference '${entry.name}' is below its declared range ${range}")
+            if (limits[1] != null && number > limits[1]) throw new IllegalArgumentException("Preference '${entry.name}' is above its declared range ${range}")
         }
         return number
     }
@@ -3773,20 +3792,28 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
         if (args.containsKey("deviceTypeId") && args.deviceTypeId?.toString() != d.deviceTypeId?.toString()) throw new IllegalArgumentException("Change the driver first, then read its new preference definitions before updating preferences")
         if (_deviceFlag(d?.linkedDevice)) throw new IllegalArgumentException("Driver preferences cannot be saved on a linked device; edit the source device")
         def model = _readDevicePreferenceModel(full)
-        if (model.status != "complete") throw new IllegalArgumentException("Unable to read complete preference definitions/storage before updating; inspect hub_get_device(mode='configuration')")
+        if (model.writeSafe != true) throw new IllegalArgumentException("Unable to read complete preference definitions/storage before updating; inspect hub_get_device(mode='configuration')")
         def normalized = [:]
         args.preferences.each { key, setting ->
             def name = key.toString()
             def entry = _lookupDevicePreference(model, name)
             if (!entry) throw new IllegalArgumentException("Unknown preference '${name}'; read hub_get_device(mode='configuration') for declared names")
             if (entry.type in ["hidden", "paragraph"]) throw new IllegalArgumentException("Preference '${name}' is not an editable input")
-            if (setting instanceof Map && (!setting.containsKey("value") || (setting.type != null && setting.type.toString() != entry.type))) {
-                throw new IllegalArgumentException("Preference '${name}' must contain value and its declared type '${entry.type}'")
+            def type = entry.type in ['bool', 'boolean'] ? 'bool' : entry.type
+            boolean clear = setting instanceof Map && setting.get('clear') == true
+            if (setting instanceof Map) {
+                def suppliedType = setting.type in ['bool', 'boolean'] ? 'bool' : setting.type
+                if ((setting.containsKey('clear') && (!clear || setting.containsKey('value'))) ||
+                    (!clear && !setting.containsKey('value')) ||
+                    (suppliedType != null && suppliedType.toString() != type) ||
+                    setting.keySet().any { !(it in ['type', 'value', 'clear']) }) {
+                    throw new IllegalArgumentException("Preference '${name}' requires its declared type and either a nonblank value or {clear:true}; clear and value cannot be combined")
+                }
             }
+            if (clear && _deviceFlag(entry.required)) throw new IllegalArgumentException("Required preference '${name}' cannot be cleared")
             def raw = setting instanceof Map ? setting.value : setting
-            def value = _normalizedDevicePreferenceValue(entry, raw)
-            if (_deviceFlag(entry.required) && (value == null || (value instanceof List && value.isEmpty()))) throw new IllegalArgumentException("Required preference '${name}' cannot be cleared")
-            normalized.put(name, [type: entry.type, value: value])
+            def value = clear ? null : _normalizedDevicePreferenceValue(entry, raw)
+            normalized.put(name, clear ? [type: type, clear: true, value: null] : [type: type, value: value])
         }
         args.preferences = normalized
     }
@@ -3794,24 +3821,88 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     return [args: args, fullJson: full]
 }
 
-private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, List changes, List errors) {
+private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List changes, List errors) {
     def full = _fetchDeviceFullJson(deviceId)
     if (!(full?.device instanceof Map)) {
-        errors << [property: "preference.${name}", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
+        preferences.each { name, setting ->
+            errors << [property: "preference.${name}", stage: "verify", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
+        }
         return
     }
     def model = _readDevicePreferenceModel(full)
+    preferences.each { name, setting ->
+        _verifyDevicePreferenceWrite(deviceId, name.toString(), setting, changes, errors, model)
+    }
+}
+
+private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, List changes, List errors, Map model = null) {
+    if (model == null) {
+        _verifyDevicePreferenceWrites(deviceId, [(name): setting], changes, errors)
+        return
+    }
     def entry = _lookupDevicePreference(model, name)
-    if (model.status != "complete" || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
-        errors << [property: "preference.${name}", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Update accepted but could not confirm the preference -- saved-value storage is unavailable or invalid."]
+    if (model.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
+        errors << [property: "preference.${name}", stage: "verify", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Update accepted but could not confirm the preference -- saved-value storage is unavailable or invalid."]
         return
     }
     def expected = setting.value
-    def actual = _normalizedDevicePreferenceValue(entry, entry.value)
-    if (actual == expected && (entry.valuePresent || (expected == null && entry.valueStatus == "unset"))) {
+    def actual = entry.value
+    boolean matches = setting.clear == true ? (!entry.valuePresent && entry.valueStatus == 'unset') :
+        (entry.valuePresent && entry.valueStatus == 'stored' && actual == expected)
+    if (matches) {
         changes << [property: "preference.${name}", newValue: _devicePreferenceIsSecret(entry) ? [type: entry.type, value: "[REDACTED]"] : setting]
     } else {
-        errors << [property: "preference.${name}", status: "mismatch", error: "Update accepted but the preference read back as a different saved value. Inspect configuration and retry; no driver command was invoked."]
+        errors << [property: "preference.${name}", stage: "verify", status: "mismatch", error: "Update accepted but the preference read back as a different saved value. Inspect configuration and retry; no driver command was invoked."]
+    }
+}
+
+private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List changes, List errors) {
+    def accepted = [:]
+    def nativeSettings = [:]
+    preferences.each { name, setting ->
+        if (device == null || setting.clear == true) {
+            nativeSettings.put(name, setting)
+        } else {
+            try {
+                device.updateSetting(name.toString(), [type: setting.type, value: setting.value])
+                accepted.put(name, setting)
+            } catch (Exception ignored) {
+                errors << [property: "preference.${name}", stage: 'write', status: 'failed',
+                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+            }
+        }
+    }
+    if (nativeSettings) {
+        def stage = 'prepare'
+        try {
+            // Validation already limits enum Lists to multiple selections. Their native wire
+            // representation is a JSON string; a raw array can collapse to scalar storage.
+            def rows = nativeSettings.collect { name, setting ->
+                def value = setting.clear == true ? '' :
+                    (setting.type == 'enum' && setting.value instanceof List ? groovy.json.JsonOutput.toJson(setting.value) : setting.value)
+                [name: name.toString(), type: setting.type, value: value]
+            }
+            def payload = _devicePreferencePanePayload(deviceId, [:], rows)
+            stage = 'write'
+            hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
+            accepted.putAll(nativeSettings)
+        } catch (Exception ignored) {
+            nativeSettings.each { name, setting ->
+                errors << [property: "preference.${name}", stage: stage, status: stage == 'write' ? 'failed' : 'unavailable',
+                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+            }
+        }
+    }
+    if (accepted) {
+        def ordered = preferences.findAll { name, setting -> accepted.containsKey(name) }
+        try {
+            _verifyDevicePreferenceWrites(deviceId, ordered, changes, errors)
+        } catch (Exception ignored) {
+            ordered.each { name, setting ->
+                errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
+                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+            }
+        }
     }
 }
 
@@ -3991,21 +4082,7 @@ def toolUpdateDevice(args) {
     }
 
     if (args.preferences) {
-        args.preferences.each { key, setting ->
-            def name = key.toString()
-            try {
-                if (setting.value == null) {
-                    def row = [name: name, type: setting.type, value: ""]
-                    def payload = _devicePreferencePanePayload(deviceId, [:], [row])
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
-                } else {
-                    device.updateSetting(name, [type: setting.type, value: setting.value])
-                }
-                _verifyDevicePreferenceWrite(deviceId, name, setting, changes, errors)
-            } catch (Exception e) {
-                errors << [property: "preference.${name}", error: "Preference update or verification failed; inspect the device configuration before retrying."]
-            }
-        }
+        _applyDevicePreferencePatch(deviceId, device, args.preferences, changes, errors)
     }
 
     // Room (internal API — write; Write master enforced centrally in executeTool)
@@ -4482,26 +4559,7 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
     }
 
     if (args.preferences) {
-        def preferenceModel = _readDevicePreferenceModel(fj)
-        args.preferences.each { key, setting ->
-            def name = key.toString()
-            try {
-                def declaration = _lookupDevicePreference(preferenceModel, name)
-                // Native JSON arrays collapse to scalar driver values (and [] also deletes the
-                // stored row). The SDK wire representation is a JSON-array String: it preserves
-                // the multi-select declaration and the driver receives an actual List.
-                def multipleEnumList = declaration?.type == "enum" && declaration?.multiple == true &&
-                    setting.value instanceof List
-                def wireValue = multipleEnumList ? groovy.json.JsonOutput.toJson(setting.value) :
-                    (setting.value == null ? "" : setting.value)
-                def row = [name: name, type: setting.type, value: wireValue]
-                def payload = _devicePreferencePanePayload(deviceId, [:], [row])
-                hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
-                _verifyDevicePreferenceWrite(deviceId, name, setting, changes, errors)
-            } catch (Exception e) {
-                errors << [property: "preference.${name}", error: "Preference update or verification failed; inspect the device configuration before retrying."]
-            }
-        }
+        _applyDevicePreferencePatch(deviceId, null, args.preferences, changes, errors)
     }
 
     // Room. /device/updateRoom takes the room NAME (NOT the id -- live-verified: sending an id
@@ -5502,7 +5560,7 @@ Only modify devices user explicitly requested. Pre-flight: read configuration, c
                     enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
                     dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
                         additionalProperties: [type: "string"]],
-                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Typed {type,value} or a compatible bare value. Null clears optional inputs; booleans, numbers and multiple-enum arrays retain native types."],
+                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it. Null, blank strings, empty arrays and clear combined with value are rejected. Booleans, numbers and nonempty multiple-enum arrays retain native types."],
                     showOnHome: [type: "boolean", description: "Show this device on the hub Home page.[[FLAT_TRIM]] Also counts it in the quick status-bar summaries (climate/lights/locks/etc.)[[/FLAT_TRIM]]"],
                     defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column[[FLAT_TRIM]] (Devices/Rooms pages)[[/FLAT_TRIM]], e.g. \"switch\"; \"\" selects None."],
                     tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]],

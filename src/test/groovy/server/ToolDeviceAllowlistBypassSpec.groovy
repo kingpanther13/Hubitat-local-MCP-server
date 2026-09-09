@@ -1164,19 +1164,21 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "bypass ON: toolUpdateDevice preferences CLEAR (#clearVal) succeeds and is NOT a false error"() {
-        given: 'clearing a pref -- the hub applies it and the read-back shows it cleared (empty/null)'
+        given: 'clearing a pref removes its stored identity while retaining its declaration'
         settingsMap.bypassDeviceAllowlist = true
-        def applied = [logEnable: 'true']   // starts set
+        def applied = [logEnable: [value: 'true', id: 1, deviceId: 555]]
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
             def m = fullJsonModel()
-            m.settings = applied.collect { k, v -> [name: k, type: 'bool', value: v] }
+            m.settings = applied.collect { k, v -> [name: k, type: 'bool'] + v }
             JsonOutput.toJson(m)
         }
         def posts = []
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             posts << body
             def parsed = new JsonSlurper().parseText(body)
-            if (parsed.preferences instanceof List) parsed.preferences.each { p -> applied[p.name] = p.value?.toString() }
+            if (parsed.preferences instanceof List) parsed.preferences.each { p ->
+                applied[p.name] = p.value == '' ? [value: null, id: null, deviceId: null] : [value: p.value, id: 1, deviceId: 555]
+            }
             return [success: true]
         }
 
@@ -1191,8 +1193,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         and: 'the wire body sends value:"" (not null) for the clear'
         new JsonSlurper().parseText(posts[0]).preferences[0].value == ''
 
-        where: 'a bare null and a Map {value:null} both mean clear'
-        clearVal << [null, [value: null]]
+        where: 'only the explicit marker requests a clear, with an optional declared type'
+        clearVal << [[clear: true], [type: 'bool', clear: true]]
     }
 
     def "bypass ON: toolUpdateDevice preferences read-back MISMATCH records a structured error (no false success on a silent no-op)"() {
@@ -1221,13 +1223,16 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [tempOffset: [type: 'number', value: 3]]])
 
-        then: 'the per-key error carries the cause (with the e.message ?: e.toString() fallback)'
+        then: 'the per-key error identifies the failed stage without exposing a raw exception'
         result.success == false
+        result.errors.find { it.property == 'preference.tempOffset' }?.stage == 'write'
+        result.errors.find { it.property == 'preference.tempOffset' }?.status == 'failed'
         result.errors.find { it.property == 'preference.tempOffset' }?.error?.contains('Preference update or verification failed')
+        !result.toString().contains('pref save rejected')
     }
 
     def "bypass ON: toolUpdateDevice preference CLEAR with a FAILED read-back fetch records the distinct could-not-confirm error (no false success)"() {
-        given: 'a CLEAR (null value); the POST is accepted but the confirming fullJson re-fetch returns no device'
+        given: 'an explicit CLEAR; the POST is accepted but the confirming fullJson re-fetch returns no device'
         settingsMap.bypassDeviceAllowlist = true
         def calls = 0
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
@@ -1239,7 +1244,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: true] }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [logEnable: [value: null]]])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [logEnable: [clear: true]]])
 
         then: 'a CLEAR whose read-back fetch failed is a DISTINCT error, never a recorded change'
         result.success == false
