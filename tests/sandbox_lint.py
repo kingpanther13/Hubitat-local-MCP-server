@@ -4407,8 +4407,10 @@ def check_sandbox_map_subscripts(
         expressions.extend(re.split(r"[\n;]", code.rstrip())[-1:])
         return [re.sub(r"^\s*return\s+", "", value).strip() for value in expressions]
 
+    mutation_operator = r"(?:=(?!=|~)|(?:<<|>>>?|\*\*|[+*/%&|^\-])=|\+\+|--)"
+
     def key_binding_unchanged(key: str, code: str) -> bool:
-        mutation = rf"\b{key}\s*(?:=(?!=|~)|(?:<<|>>>?|\*\*|[+*/%&|^\-])=|\+\+|--)|(?:\+\+|--)\s*\b{key}\b"
+        mutation = rf"\b{key}\s*{mutation_operator}|(?:\+\+|--)\s*\b{key}\b"
         if re.search(mutation, code):
             return False
         if any(re.search(rf"\b{key}\b", match[1])
@@ -4423,8 +4425,8 @@ def check_sandbox_map_subscripts(
 
     def writes_subscript(code: str, start: int, end: int) -> bool:
         return bool(
-            re.match(r"\s*(?:=(?!=|~)|(?:<<|>>>?|\*\*|[+*/%&|^\-])=|\+\+|--)", code[end:])
-            or re.search(r"(?:\+\+|--)\s*$", code[:start])
+            re.match(rf"\s*{mutation_operator}", code[end:])
+            or re.search(r"(?:^|[\n=;{}(,:]|\breturn)\s*(?:\+\+|--)\s*$", code[:start])
         )
 
     masked = {
