@@ -73,6 +73,8 @@
 // on every execution, so every tool call paid for the search index. Cleared, never reassigned,
 // so the harness can reset it the way it resets the other statics.
 @groovy.transform.Field static final Map TOOL_SEARCH_INDEX = new java.util.HashMap()
+@groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
+@groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
 
 definition(
     name: "MCP Rule Server",
@@ -563,6 +565,8 @@ def getChildAppById(appId) {
 
 def installed() {
     log.info "MCP Rule Server installed"
+    _invalidateToolMetadata()
+    synchronized (RETIRED_TOOL_STATE_CLEANED) { RETIRED_TOOL_STATE_CLEANED.clear() }
     // A reinstall on an already-loaded class starts from an empty atomicState, so
     // drop the write-reservation leases and snapshot the removed instance left in
     // the statics.
@@ -576,6 +580,8 @@ def installed() {
 
 def updated() {
     log.info "MCP Rule Server updated"
+    _invalidateToolMetadata()
+    synchronized (RETIRED_TOOL_STATE_CLEANED) { RETIRED_TOOL_STATE_CLEANED.clear() }
     // Shed the retired publication toggle and its migration marker on upgraded hubs.
     app.removeSetting("publishOutputSchemas")
     atomicState.remove("publishOutputSchemasForcedOff")
@@ -585,8 +591,8 @@ def updated() {
     atomicState.remove("toolSearchCorpusFingerprint")  // ...and the corpus content fingerprint in lockstep
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
     synchronized (TOOL_SEARCH_INDEX) { TOOL_SEARCH_INDEX.clear() }   // ...and the in-JVM index itself
-    atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
-    atomicState.remove("requiredParamsByToolFingerprint")  // ...and its content fingerprint in lockstep
+    atomicState.remove("requiredParamsByTool")    // Shed the retired persisted required-param memo
+    atomicState.remove("requiredParamsByToolFingerprint")  // ...and its retired fingerprint
     initialize()
 
     // ===== One-time custom-engine rename migration =====
@@ -754,6 +760,7 @@ def handleMcpRequest() {
         }
     }
 
+    _cleanupRetiredToolState()
     def requestBody
     try {
         // Content-Type is intentionally left unvalidated: a wrong content-type
@@ -2339,10 +2346,17 @@ private List _mrtrSweepLocked() {
     // worker. Expiring it would lose its terminal result and admit an overlapping write.
     def kept = [:]
     def cleanup = []
+    boolean compactedTerminal = false
     stored.each { k, v ->
         def recovered = _mrtrRecoverTerminalEvidenceLocked(k?.toString(),
             v instanceof Map ? v as Map : null)
         if (recovered instanceof Map) v = recovered
+        if (v instanceof Map && v.status == "terminal" && v.containsKey("terminalResult")
+                && v.containsKey("aggregate")) {
+            v = [:] + (v as Map)
+            v.remove("aggregate")
+            compactedTerminal = true
+        }
         boolean executing = v instanceof Map && v.status == "active" &&
             _writeExecutionLiveLocked(v.claimId)
         if (v instanceof Map && (executing ||
@@ -2366,7 +2380,18 @@ private List _mrtrSweepLocked() {
         }
         removable.take(Math.min(removable.size(), sameClass.size() - cap)).each { kept.remove(it.key) }
     }
-    if (kept.size() != stored.size()) _writeStateSetLocked("mrtrRequests", kept)
+    if (kept.size() != stored.size()) {
+        _writeStateSetLocked("mrtrRequests", kept)
+    } else if (compactedTerminal) {
+        try {
+            _writeStateSetLocked("mrtrRequests", kept)
+        } catch (Exception compactErr) {
+            // Compaction is opportunistic. Reload the durable legacy shape and retry on a
+            // later request rather than turning an otherwise valid replay into a failure.
+            _writeStateCacheInvalidate()
+            mcpLog("debug", "mrtr", "Terminal record compaction deferred: ${compactErr.message}")
+        }
+    }
     _mrtrSweepWorkItemsLocked()
     return cleanup
 }
@@ -2927,6 +2952,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             boolean readLeaf = _mrtrReadTools().contains(rec.leafTool?.toString())
             rec.terminalResult = (readLeaf && !isError)
                 ? [__slowReadReplay: true, tool: rec.leafTool] : result
+            rec.remove("aggregate")
             rec.terminalIsError = isError
             rec.finishedAt = now()
             rec.updatedAt = rec.finishedAt
@@ -3440,8 +3466,51 @@ def _paginateList(List fullList, cursor, int pageSize, String toolName) {
 // Each gateway: call with no args → catalog of tool schemas; call with tool + args → execute.
 // Modeled after ha-mcp PR #637 (category gateway proxy pattern).
 
+private def _toolMetadataGet(String key) {
+    synchronized (TOOL_METADATA_CACHE) { return TOOL_METADATA_CACHE[key] }
+}
+
+private def _immutableToolMetadata(value) {
+    if (value instanceof Map) return value.collectEntries { k, v -> [(k): _immutableToolMetadata(v)] }.asImmutable()
+    if (value instanceof Set) return (value.collect { _immutableToolMetadata(it) } as Set).asImmutable()
+    if (value instanceof List) return value.collect { _immutableToolMetadata(it) }.asImmutable()
+    return value
+}
+
+private def _toolMetadataPut(String key, value) {
+    def immutable = _immutableToolMetadata(value)
+    synchronized (TOOL_METADATA_CACHE) {
+        if (!TOOL_METADATA_CACHE.containsKey(key)) TOOL_METADATA_CACHE[key] = immutable
+        return TOOL_METADATA_CACHE[key]
+    }
+}
+
+def _invalidateToolMetadata() {
+    synchronized (TOOL_METADATA_CACHE) { TOOL_METADATA_CACHE.clear() }
+}
+
+def _cleanupRetiredToolState() {
+    String appKey = app?.id?.toString() ?: 'unidentified'
+    synchronized (RETIRED_TOOL_STATE_CLEANED) {
+        if (RETIRED_TOOL_STATE_CLEANED.contains(appKey)) return
+        try {
+            ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
+             'toolSearchCorpusFingerprint', 'requiredParamsByTool',
+             'requiredParamsByToolFingerprint'].each { key ->
+                atomicState.remove(key)
+                state.remove(key)
+            }
+            RETIRED_TOOL_STATE_CLEANED.add(appKey)
+        } catch (Exception e) {
+            log.warn "Retired tool metadata cleanup will retry: ${e.message}"
+        }
+    }
+}
+
 def getGatewayConfig() {
-    return [
+    def cached = _toolMetadataGet("getGatewayConfig")
+    if (cached != null) return cached
+    def built = [
         hub_manage_custom_rules: [
             description: "Legacy MCP custom-rule engine (sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI): create, read, update, delete, test, export, import, and clone. Write ops (create/delete/export/import/clone) require the Custom Rule Engine toggle ON in MCP settings; when OFF only get/test (and the enabled toggle via update) work. For native Rule Machine rules visible in the hub UI use hub_manage_rule_machine / hub_manage_native_rules_and_apps instead. Read-only views are also in hub_read_rules.",
             tools: ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"],
@@ -3908,6 +3977,7 @@ def getGatewayConfig() {
             ]
         ]
     ]
+    return _toolMetadataPut("getGatewayConfig", built)
 }
 
 // ==================== MCP TOOL ANNOTATIONS ====================
@@ -3970,7 +4040,7 @@ def getHiddenToolNames() {
     // Masters default ON: only an explicit `== false` hides a class.
     if (settings.enableRead == false) hide.addAll(readOnly)
     if (settings.enableWrite == false) {
-        getAllToolDefinitions().each { if (!readOnly.contains(it.name)) hide << (it.name as String) }
+        _toolCatalogIndexes().names.each { if (!readOnly.contains(it)) hide << it }
     }
     // Legacy custom-rule engine visibility.
     def mode = getCustomEngineMode()
@@ -3999,14 +4069,19 @@ def getHiddenToolNames() {
 // String names; getHiddenToolNames folds them into `hide` when settings.enableDeveloperMode
 // is falsy.
 def getDeveloperModeOnlyToolNames() {
-    return ([
+    def cached = _toolMetadataGet("getDeveloperModeOnlyToolNames")
+    if (cached != null) return cached
+    def built = ([
     ]
         + _developerModeOnlyToolNames_partSelfAdmin()
     ) as Set
+    return _toolMetadataPut("getDeveloperModeOnlyToolNames", built)
 }
 
 def getReadOnlyToolNames() {
-    return ([
+    def cached = _toolMetadataGet("getReadOnlyToolNames")
+    if (cached != null) return cached
+    def built = ([
     ]
         + _readOnlyToolNames_partNativeRM()
         + _readOnlyToolNames_partRooms()
@@ -4025,6 +4100,7 @@ def getReadOnlyToolNames() {
         + _readOnlyToolNames_partDiscovery()
         + _readOnlyToolNames_partDashboards()
     ) as Set
+    return _toolMetadataPut("getReadOnlyToolNames", built)
 }
 
 // Write tools that are SAFE TO RETRY with identical args (MCP `idempotentHint`):
@@ -4052,7 +4128,9 @@ def getReadOnlyToolNames() {
 //   * hub_set_rule / hub_set_native_app are upserts whose no-appId mode
 //     CREATES -- classified non-idempotent for that mode.
 def getIdempotentWriteToolNames() {
-    return ([
+    def cached = _toolMetadataGet("getIdempotentWriteToolNames")
+    if (cached != null) return cached
+    def built = ([
     ]
         + _idempotentWriteToolNames_partNativeRM()
         + _idempotentWriteToolNames_partRooms()
@@ -4071,6 +4149,7 @@ def getIdempotentWriteToolNames() {
         + _idempotentWriteToolNames_partAppCloner()
         + _idempotentWriteToolNames_partDashboards()
     ) as Set
+    return _toolMetadataPut("getIdempotentWriteToolNames", built)
 }
 
 // The COMPLETE idempotent surface consumed by the annotation helpers: every
@@ -4079,7 +4158,9 @@ def getIdempotentWriteToolNames() {
 // read tools (e.g. hub_get_metrics' recordSnapshot CSV trend row) are by
 // maintainer decision NOT writes and do not break the read classification.
 def getIdempotentToolNames() {
-    return getReadOnlyToolNames() + getIdempotentWriteToolNames()
+    def cached = _toolMetadataGet("getIdempotentToolNames")
+    if (cached != null) return cached
+    return _toolMetadataPut("getIdempotentToolNames", getReadOnlyToolNames() + getIdempotentWriteToolNames())
 }
 
 // Tools that reach BEYOND the hub to the open internet (MCP `openWorldHint`):
@@ -4088,7 +4169,9 @@ def getIdempotentToolNames() {
 // closed-world -- the hub, its devices, and its radios ARE the system, and
 // hub-local HTTP endpoints (/hub2/*, File Manager) do not leave it.
 def getOpenWorldToolNames() {
-    return ([
+    def cached = _toolMetadataGet("getOpenWorldToolNames")
+    if (cached != null) return cached
+    def built = ([
     ]
         + _openWorldToolNames_partBundles()
         + _openWorldToolNames_partDiagnostics()
@@ -4097,6 +4180,7 @@ def getOpenWorldToolNames() {
         + _openWorldToolNames_partSelfAdmin()
         + _openWorldToolNames_partItemBackups()
     ) as Set
+    return _toolMetadataPut("getOpenWorldToolNames", built)
 }
 
 // Human-facing display metadata for every leaf tool AND every gateway:
@@ -4109,6 +4193,8 @@ def getOpenWorldToolNames() {
 // stay in the tool definitions; these are for humans scanning a settings UI.
 // Completeness (every tool + gateway covered, no stale entries) is spec-guarded.
 def getToolDisplayMeta() {
+    def cached = _toolMetadataGet("getToolDisplayMeta")
+    if (cached != null) return cached
     // Every extracted library contributes its own tools' entries via
     // _toolDisplayMeta_part<Name>() (issue #209: per-tool metadata lives with the tool);
     // this file keeps only the gateway entries (gateway membership is cross-domain
@@ -4159,7 +4245,7 @@ def getToolDisplayMeta() {
         hub_manage_mcp: [title: "Manage MCP Server", summary: "Self-administer the MCP app's own settings (Developer Mode)."],
         hub_manage_dashboards: [title: "Manage Dashboards", summary: "List, view, create, update, delete, and clone Easy and legacy Hubitat® Dashboards."]
     ])
-    return meta
+    return _toolMetadataPut("getToolDisplayMeta", meta)
 }
 
 // Returns the MCP `annotations` map for a leaf tool name. readOnlyHint,
@@ -4308,12 +4394,9 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     // Only a Map can carry it; a present value is never overwritten.
     if (reqT0 != null && safeArgs instanceof Map && safeArgs.__reqT0 == null
             && _budgetAwareTools().contains(toolName)) safeArgs.__reqT0 = reqT0
-    // Read this tool's required-param list from the memoized map. Computing the
-    // memo key walks the catalog once per gateway call; the memo saves the per-tool
-    // map re-derivation, not the catalog walk. A missing key means the tool has no
-    // required params. The full catalog (with the [[FLAT_TRIM]]-stripped param
-    // descriptions for the hint) is rebuilt lazily only inside the if (missing)
-    // branch below, which fires rarely.
+    // Warm lookups use immutable class metadata without rebuilding the catalog.
+    // An absent entry means no required params. Missing-param hints below still
+    // build fresh definitions for their descriptions.
     def required = requiredParamsByTool()[toolName]
     // Gate-bypassing meta-calls return pure static content with NO hub mutation and
     // short-circuit at the very top of their handler (before any gate / appId check),
@@ -4580,49 +4663,23 @@ def getAllToolDefinitions() {
     return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
-// Content fingerprint of the catalog's name -> required-params shape, used as
-// the memo key in requiredParamsByTool(). A code deploy (HPM update,
-// hub_update_app) recompiles the class without firing updated() or bumping
-// currentVersion() (PRs ride the same version), so neither updated() invalidation
-// nor a version stamp catches a same-version required-array change -- a content
-// fingerprint does. Operates on a pre-fetched defs list so the caller can build
-// both the key and the memo from one catalog walk; kept as the raw string (no
-// sandbox digest API assumed, String equality is cheap).
-def requiredParamsCatalogFingerprint(List defs) {
-    def sb = new StringBuilder()
-    defs.each { tool ->
+// Only names and required parameter lists are shared; raw definitions stay mutable per call.
+private Map _toolCatalogIndexes() {
+    def cached = _toolMetadataGet("catalogIndexes")
+    if (cached != null) return cached as Map
+    def required = [:]
+    def names = [] as Set
+    getAllToolDefinitions().each { tool ->
+        String name = tool.name as String
+        names << name
         def req = tool?.inputSchema?.required
-        if (req instanceof List && !req.isEmpty()) {
-            sb.append(tool.name as String).append(':').append(req.join(',')).append(';')
-        }
+        if (req instanceof List && !req.isEmpty()) required[name] = req.collect { it as String }
     }
-    return sb.toString()
+    return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
 }
 
-// Memo of each tool's required-params array (fresh String copies, never the
-// mutable raw def list) for the gateway missing-param pre-check. The full catalog
-// is walked once per call to compute the fingerprint key; the memo saves the
-// per-tool map re-derivation (the String-copy allocation), not the catalog build.
-// Keyed on the catalog fingerprint so it self-heals on a same-version code deploy,
-// and cleared in updated() alongside the BM25 corpus. Tools with no/empty
-// inputSchema.required are omitted, so a miss == "no required params".
 def requiredParamsByTool() {
-    def defs = getAllToolDefinitions()
-    def fp = requiredParamsCatalogFingerprint(defs)
-    def cached = atomicState.requiredParamsByTool
-    if (cached instanceof Map && atomicState.requiredParamsByToolFingerprint == fp) {
-        return cached
-    }
-    def built = [:]
-    defs.each { tool ->
-        def req = tool?.inputSchema?.required
-        if (req instanceof List && !req.isEmpty()) {
-            built[tool.name as String] = req.collect { it as String }
-        }
-    }
-    atomicState.requiredParamsByTool = built
-    atomicState.requiredParamsByToolFingerprint = fp
-    return built
+    return _toolCatalogIndexes().required
 }
 
 // hub_call_device_replace(list_options: true) short-circuits to a candidate READ before any

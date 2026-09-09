@@ -140,9 +140,7 @@ def toolSearchTools(args) {
 // param keys, friendly titles, gateway summaries and search hints. Walks the same three
 // sources buildToolSearchCorpus does, folding each field into a 64-bit rolling hash rather
 // than materializing the ~98 KB concatenation of this catalog, and skipping the per-entry
-// regex tokenize and corpus map allocation. Unlike requiredParamsCatalogFingerprint, which
-// touches only inputSchema.required and stays small enough to keep as a raw string, this
-// one returns the hash as a decimal String.
+// regex tokenize and corpus map allocation. Returns the hash as a decimal String.
 //
 // A hash admits collisions that exact string equality would not: two different catalogs can
 // in principle fold to the same value, and no field framing changes that. Accepted here --
@@ -151,7 +149,7 @@ def toolSearchTools(args) {
 // separate concern: it stops adjacent fields from being reordered or re-split into the same
 // input, which is a structural ambiguity rather than a hash property.
 //
-// NOT pure, unlike requiredParamsCatalogFingerprint: applyDescriptionTransform rewrites the
+// NOT pure: applyDescriptionTransform rewrites the
 // descriptions of the defs list IN PLACE. A caller that passes its own list gets it back
 // already stripped, and a later applyDescriptionTransform(defs, true) on that same list is a
 // no-op -- which would ship every [[FLAT_TRIM]] block inline and blow the flat catalog's
@@ -174,13 +172,8 @@ def toolSearchCorpusFingerprint(List defs = null) {
             h = _fpField(h, config.searchHints?."${toolName}")
         }
     }
-    // The cached TOKENS are only length-checked against the corpus, so a tokenizer change
-    // moves neither the corpus content nor its size and the hub keeps serving tokens built
-    // by the old one. The probe runs a synthetic entry through the SAME two functions the
-    // real tokenize line uses -- _bm25DocText for the field template, bm25Tokenize for the
-    // split -- so editing either invalidates. Probing bm25Tokenize on a bare literal would
-    // cover the split only and miss a template edit entirely (dropping `hints` from the
-    // template changes no corpus content, so nothing else in this guard would notice).
+    // Include representative field-template and tokenizer output in the cold-build fingerprint.
+    // A bare tokenizer input would omit the template's choice of searchable fields.
     h = _fpField(h, bm25Tokenize(_bm25DocText(
         [name: 'hub_x-1', title: 'A_b', description: 'cd', params: 'ef', hints: 'gh',
          gateway: 'ij'])).join(','))
@@ -194,13 +187,8 @@ private String _bm25DocText(entry) {
     return "${entry.name} ${entry.title ?: ''} ${entry.description} ${entry.params ?: ''} ${entry.hints ?: ''}"
 }
 
-// Accumulate rather than materialize: the concatenated form of this catalog is ~98 KB, and
-// it would be rebuilt and re-compared on EVERY hub_search_tools call plus stored in
-// atomicState. Length-prefix each field before folding it in -- plain delimiters would be
-// ambiguous, because the summaries genuinely contain them (an alternatives list reads
-// "source|sourceFile|importUrl"), so content could impersonate a field boundary and two
-// different catalogs could fingerprint identically, serving the stale corpus this exists
-// to invalidate.
+// Cold builds fold fields without allocating a concatenated catalog. Include each field's
+// length so delimiter text such as "source|sourceFile|importUrl" cannot erase field boundaries.
 private long _fpField(long h, value) {
     String s = (value == null) ? "" : value.toString()
     // String.hashCode(), not a hand-rolled character loop. Nothing here is @CompileStatic,

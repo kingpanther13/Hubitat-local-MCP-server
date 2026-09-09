@@ -248,6 +248,8 @@ abstract class HarnessSpec extends Specification {
         // feature's claimId collide with a stale one.
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        (scriptStaticField('TOOL_METADATA_CACHE') as Map).clear()
+        (scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set).clear()
         (scriptStaticField('CAPTURE_STORES') as Map).clear()
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
         (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()

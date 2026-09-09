@@ -295,26 +295,22 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.count == 1
     }
 
-    // ---- pr2c-cat-1: cached required-param memo on the gateway dispatch path ----
-    // handleGateway no longer rebuilds the full ~111-tool catalog for the required-param
-    // pre-check; it reads from the memoized requiredParamsByTool() map cached in atomicState.
+    // The class cache must preserve required-parameter validation without durable catalog metadata.
 
-    def "memo is populated in atomicState after the first gateway call; a repeat call throws the identical missing-param error"() {
-        given: 'a clean atomicState so the memo builds fresh on the first call'
-        atomicStateMap.remove('requiredParamsByTool')
-
+    def "memo stays outside persisted state after the first gateway call; a repeat call throws the identical missing-param error"() {
         when: 'first call with a missing required param (hub_get_room requires room)'
         def firstEx = null
         try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { firstEx = e }
 
-        then: 'thrown missing-param error AND the memo is now cached in atomicState'
+        then: 'thrown missing-param error AND the memo remains outside persisted state'
         firstEx instanceof IllegalArgumentException
         firstEx.message.contains('Missing required parameter for hub_get_room:')
         firstEx.message.contains('room')
-        atomicStateMap.requiredParamsByTool instanceof Map
-        atomicStateMap.requiredParamsByTool['hub_get_room'] == ['room']
+        script.requiredParamsByTool() instanceof Map
+        !atomicStateMap.containsKey('requiredParamsByTool')
+        script.requiredParamsByTool()['hub_get_room'] == ['room']
         // omission contract: a no-required-param tool is absent from the map
-        !atomicStateMap.requiredParamsByTool.containsKey('hub_list_rooms')
+        !script.requiredParamsByTool().containsKey('hub_list_rooms')
 
         when: 'a second identical call now served from the cached memo'
         def secondEx = null
@@ -325,9 +321,8 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "the missing-param message stays intact (no FLAT_TRIM leak) even after a flat-mode tools/list strip"() {
-        given: 'flat mode drives the in-place [[FLAT_TRIM]] strip path; clean memo'
+        given: 'flat mode drives the in-place [[FLAT_TRIM]] strip path'
         settingsMap.useGateways = false
-        atomicStateMap.remove('requiredParamsByTool')
 
         when: 'run the flat strip path first (mutates fresh def copies in place), then a gateway missing-param call'
         script.getToolDefinitions()
@@ -340,9 +335,6 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "two-missing-required path rebuilds the full catalog for the hint and caches the two-element required list"() {
-        given:
-        atomicStateMap.remove('requiredParamsByTool')
-
         when: 'hub_create_room requires both name and confirm; omit both'
         Exception ex = null
         try { script.handleGateway('hub_manage_rooms', 'hub_create_room', [:]) } catch (Exception e) { ex = e }
@@ -352,28 +344,14 @@ class HandleGatewaySpec extends ToolSpecBase {
         ex.message.contains('Missing required parameters for hub_create_room:')
         ex.message.contains('name')
         ex.message.contains('confirm')
-        (atomicStateMap.requiredParamsByTool['hub_create_room'] as Set) == (['name', 'confirm'] as Set)
+        (script.requiredParamsByTool()['hub_create_room'] as Set) == (['name', 'confirm'] as Set)
     }
 
-    // ---- content-fingerprint self-heal of the required-param memo ----
-    // A code-update deploy (HPM update, hub_update_app, the e2e HPM-repair install)
-    // recompiles the class but does NOT fire updated() (the memo's only other
-    // invalidation) AND rides the SAME currentVersion() (PRs don't bump version), so
-    // neither updated() nor a version stamp catches a same-version required-array change.
-    // The memo is keyed on requiredParamsCatalogFingerprint() -- a content signature of
-    // the live name->required shape -- so a memo whose fingerprint != the live catalog's
-    // is rebuilt from the live definitions. The discriminator is that fingerprint check:
-    // reverting it makes the stale memo authoritative, so the load-bearing spec below
-    // rejects on the stale `legacy_param` (RED) instead of the live `room` (GREEN). The
-    // pre-check rejects before any tool impl runs, so the spec needs no hub-method stubs.
+    // Retired persisted indexes must never override the current compiled tool definitions.
 
-    def "a same-version stale memo is rebuilt from live definitions (live required honored, not the stale entry)"() {
-        given: 'an old build memoized a different required list for hub_get_room; version is UNCHANGED but the catalog fingerprint no longer matches'
-        // hub_get_room requires ['room'] in the live (current) catalog. The seeded memo
-        // simulates an older same-version build that required `legacy_param` instead. The
-        // stamped fingerprint is a stale string that cannot match the live fingerprint --
-        // the exact same-version code-deploy scenario the e2e caught (a relaxed required
-        // array served stale because currentVersion() did not change).
+    def "compiled required parameters supersede a same-version persisted memo"() {
+        given: 'an old build persisted a different required list for hub_get_room'
+        // Retired metadata is ignored even when currentVersion() has not changed.
         atomicStateMap.requiredParamsByTool = ['hub_get_room': ['legacy_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint-from-an-older-same-version-build'
 
@@ -381,26 +359,18 @@ class HandleGatewaySpec extends ToolSpecBase {
         Exception ex = null
         try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { ex = e }
 
-        then: 'the fingerprint mismatch forces a rebuild -- rejection names the LIVE required param, never the stale one'
+        then: 'the compiled catalog supersedes the persisted memo -- rejection names the LIVE required param, never the stale one'
         ex instanceof IllegalArgumentException
         ex.message.contains('room')
         !ex.message.contains('legacy_param')
 
-        and: 'the memo + fingerprint were healed to the live catalog (live required restored)'
-        atomicStateMap.requiredParamsByToolFingerprint == script.requiredParamsCatalogFingerprint(script.getAllToolDefinitions())
-        atomicStateMap.requiredParamsByTool['hub_get_room'] == ['room']
+        and: 'the live required parameters are used'
+        script.requiredParamsByTool()['hub_get_room'] == ['room']
     }
 
-    def "a relaxed-required tool with a stale fingerprint is NOT rejected for the now-optional params (the e2e failure, abstracted)"() {
-        given: 'a stale memo lists params as required that the live build relaxed away; fingerprint is stale (same-version deploy)'
-        // Directly models the failing e2e: a tool whose required array was relaxed (here
-        // hub_get_room, whose live required is only ['room']) must not be rejected for a
-        // param the OLD build still listed. With the fix, supplying the live-required
-        // `room` passes the pre-check and dispatch reaches the impl; reverting the
-        // fingerprint guard would reject on the stale `extra_param` before dispatch even
-        // though `room` was supplied. Stub getRooms() to return a matching room so the
-        // impl resolves cleanly to a real result (bucket-1 per-test metaClass stub;
-        // setup() wipes it next test).
+    def "retired persisted requirements cannot reject a now-optional parameter"() {
+        given: 'a stale memo lists an extra requirement removed from the compiled catalog'
+        // Supplying the current requirements must reach dispatch without extra_param.
         script.metaClass.getRooms = { [[id: 7, name: 'Kitchen', deviceIds: []]] }
         atomicStateMap.requiredParamsByTool = ['hub_get_room': ['room', 'extra_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint'
@@ -412,44 +382,21 @@ class HandleGatewaySpec extends ToolSpecBase {
         notThrown(IllegalArgumentException)
         result.name == 'Kitchen'
 
-        and: 'the memo healed to the live shape (the stale extra param is gone)'
-        atomicStateMap.requiredParamsByTool['hub_get_room'] == ['room']
+        and: 'the in-memory memo has the live shape'
+        script.requiredParamsByTool()['hub_get_room'] == ['room']
     }
 
-    def "the fingerprint discriminates: two catalogs with different required shapes produce different fingerprints"() {
-        given: 'two catalogs identical except for one tool required array -- the only property the self-heal rests on'
-        // If requiredParamsCatalogFingerprint() returned a constant, the three tests
-        // above would all still pass (each seeds a deliberately-mismatched literal). This
-        // proves the fingerprint is actually a function of the required shape, so a
-        // same-version required-array change yields a fresh key and forces a rebuild.
-        def catalogA = [[name: 'hub_get_room', inputSchema: [required: ['room']]]]
-        def catalogB = [[name: 'hub_get_room', inputSchema: [required: ['room', 'extra_param']]]]
+    def "retired persisted metadata is ignored even if it claims a matching fingerprint"() {
+        given:
+        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['sentinel_param']]
+        atomicStateMap.requiredParamsByToolFingerprint = 'claimed-current'
 
         when:
-        def fpA = script.requiredParamsCatalogFingerprint(catalogA)
-        def fpB = script.requiredParamsCatalogFingerprint(catalogB)
+        script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
 
-        then: 'a changed required array yields a different fingerprint (a constant return would make these equal)'
-        fpA != fpB
-
-        and: 'the fingerprint is stable for an unchanged shape'
-        fpA == script.requiredParamsCatalogFingerprint([[name: 'hub_get_room', inputSchema: [required: ['room']]]])
-    }
-
-    def "a memo whose fingerprint matches the live catalog is served as-is (no rebuild)"() {
-        given: 'a memo carrying a deliberately wrong required list but stamped with the LIVE fingerprint'
-        // Proves the fingerprint is the gate: a matching fingerprint trusts the cached
-        // value verbatim (the build-once/read-many fast path the memo exists for).
-        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['sentinel_param']]
-        atomicStateMap.requiredParamsByToolFingerprint = script.requiredParamsCatalogFingerprint(script.getAllToolDefinitions())
-
-        when: 'omit the sentinel param the cached (matching-fingerprint) memo lists as required'
-        Exception ex = null
-        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { ex = e }
-
-        then: 'the matching-fingerprint cache is honored verbatim -- the sentinel rejection fires (no rebuild)'
-        ex instanceof IllegalArgumentException
-        ex.message.contains('sentinel_param')
-        atomicStateMap.requiredParamsByTool['hub_get_room'] == ['sentinel_param']
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('room')
+        !ex.message.contains('sentinel_param')
     }
 }
