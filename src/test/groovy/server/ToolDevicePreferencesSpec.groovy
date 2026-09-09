@@ -704,7 +704,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         full.deviceState = [large: 'x' * 180000]
         registerFixture(DEVICE_ID, full)
         long clock = 1000000L
-        script.metaClass.now = { -> clock }
+        NOW_OVERRIDE.set({ -> clock })
         def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
         clock += 301000L
 
@@ -759,6 +759,33 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('restart')
+    }
+
+    def "snapshot budget includes retained caller selection metadata"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 250000]
+        registerFixture(DEVICE_ID, full)
+        def fields = ['large', 'unknown_' + ('x' * 60000)]
+        def newest
+        8.times { newest = script.toolGetDevice(DEVICE_ID, 'details', ['state'], fields) }
+
+        when:
+        def snapshots = scriptStaticField('DEVICE_READ_SNAPSHOTS') as Map
+        def retainedCharacters = snapshots.values().sum { it.content.length() + it.selection.length() }
+        def continued = script.toolGetDevice(DEVICE_ID, 'details', ['state'], fields, newest.nextCursor)
+
+        then:
+        retainedCharacters <= 2097152
+        continued.offset == 18000
+
+        when: 'bounding selection metadata must preserve its argument binding'
+        script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], newest.nextCursor)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('selection')
     }
 
     def "one over-budget device selection fails with narrower-selection guidance without caching it"() {

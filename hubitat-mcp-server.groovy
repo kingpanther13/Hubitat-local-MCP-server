@@ -3281,6 +3281,17 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     // its JSON round-trip would throw on a non-serializable tool result before the
     // guarded serialization below can turn that tool bug into a valid MCP error.
     def rendered = _publicToolResultValue(result)
+    boolean failureFlag = rendered instanceof Map && (rendered.isError == true || rendered.success == false)
+    boolean stateReadbackFailed = rendered instanceof Map && rendered.stateError instanceof CharSequence &&
+        rendered.stateError.toString().trim()
+    if (isErrorOverride || failureFlag || stateReadbackFailed) {
+        // Returned error text and arguments may contain secrets; log only safe failure context.
+        mcpLog("error", "server", "Tool ${reactiveToolName} returned a failure result", null, [
+            details: [tool: reactiveToolName,
+                      gateway: (reactiveToolName != toolName) ? toolName : null,
+                      failureKind: stateReadbackFailed ? "state_readback_failed" : "tool_failed"]
+        ])
+    }
     if (rendered instanceof Map && (rendered.isError == true || rendered.success == false)) {
         try { _applyReactiveBpsWarning(reactiveToolName, args, rendered) }
         catch (Exception bpErr) {

@@ -1026,12 +1026,23 @@ private boolean _bypassEnabled() {
 // attribute list, and the command set from this -- the Groovy device object is unavailable for
 // an unlisted device (the device model is authorization-scoped).
 private Map _fetchDeviceFullJson(deviceId) {
+    String stage = 'fetch'
     try {
         def txt = hubInternalGet("/device/fullJson/${deviceId}")
-        def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        return (parsed instanceof Map) ? parsed : null
+        if (!txt) {
+            mcpLog("error", "device", "bypass: /device/fullJson/${deviceId} returned an empty response")
+            return null
+        }
+        stage = 'parse'
+        def parsed = new groovy.json.JsonSlurper().parseText(txt)
+        if (!(parsed instanceof Map)) {
+            mcpLog("error", "device", "bypass: /device/fullJson/${deviceId} returned a non-object JSON response")
+            return null
+        }
+        return parsed
     } catch (Exception e) {
-        mcpLog("warn", "device", "bypass: /device/fullJson/${deviceId} fetch/parse failed: ${e.message ?: e.toString()}")
+        // Parser and transport messages can contain native settings or response bodies.
+        mcpLog("error", "device", "bypass: /device/fullJson/${deviceId} ${stage} failed (${e.class.simpleName})")
         return null
     }
 }
@@ -2464,6 +2475,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
         def fj = _fetchDeviceFullJson(deviceId)
         def cs = fj?.device?.currentStates
         if (!(cs instanceof Map)) {
+            mcpLog("error", "send-command", "bypass: fullJson currentStates unavailable for device ${deviceId}")
             if (errOut != null) errOut << "fullJson currentStates unavailable for ${deviceId}"
             return null
         }
