@@ -1081,6 +1081,78 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         storage << [[value: null], [:], [value: null, id: null, deviceId: null]]
     }
 
+    @Unroll
+    def 'preference patch uses one final readback and batches native rows in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        registerFixture(model, bypass)
+        def events = []
+        hubGet.register('/device/fullJson/10') {
+            events << 'read'
+            JsonOutput.toJson(model)
+        }
+        def applyPreference = { String name, setting ->
+            model.settings.find { it.name == name }.value = setting.value.toString()
+        }
+        if (!bypass) childDevicesList[0].metaClass.updateSetting = { String name, setting ->
+            events << "sdk:${name}".toString()
+            applyPreference(name, setting)
+        }
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            def payload = new JsonSlurper().parseText(body)
+            events << 'post'
+            posts << payload
+            payload.preferences.each { applyPreference(it.name, it) }
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: false, offset: 2]])
+
+        then:
+        result.success == true
+        result.changes*.property == ['preference.logEnable', 'preference.offset']
+        events == expectedEvents
+        if (bypass) {
+            assert posts == [[deviceId: 10, defaultCurrentState: '', commandRetry: false, showOnHome: false,
+                preferences: [[name: 'logEnable', type: 'bool', value: false], [name: 'offset', type: 'number', value: 2]]]]
+        } else {
+            assert posts.empty
+        }
+
+        where:
+        bypass | expectedEvents
+        false  | ['read', 'sdk:logEnable', 'sdk:offset', 'read']
+        true   | ['read', 'read', 'post', 'read']
+    }
+
+    def 'listed preference setters continue after a safe write failure and verify successful writes together'() {
+        given:
+        def model = fixture()
+        model.settings << [name: 'probeText', type: 'text', value: 'old']
+        registerFixture(model, false)
+        def events = []
+        hubGet.register('/device/fullJson/10') { events << 'read'; JsonOutput.toJson(model) }
+        childDevicesList[0].metaClass.updateSetting = { String name, setting ->
+            events << name
+            if (name == 'logEnable') throw new RuntimeException('fixture-secret-in-exception')
+            model.settings.find { it.name == name }.value = setting.value.toString()
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: false, offset: 2, probeText: 'new']])
+
+        then:
+        result.success == false
+        events == ['read', 'logEnable', 'offset', 'probeText', 'read']
+        result.changes*.property == ['preference.offset', 'preference.probeText']
+        def failure = result.errors.find { it.property == 'preference.logEnable' }
+        failure.stage == 'write'
+        failure.status == 'failed'
+        !JsonOutput.toJson(result).contains('fixture-secret-in-exception')
+    }
+
     def 'secret preference saved value is never echoed in the changes response'() {
         given:
         def model = fixture()
