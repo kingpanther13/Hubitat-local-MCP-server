@@ -1922,7 +1922,11 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // array-or-null response contract (a non-blank String always normalizes to a List).
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
-        parameters = normalizeCommandParams(parameters)
+        def declaration = bypass ? fullJson.commands?.find { it?.name == command }
+                                 : device.supportedCommands?.find { it.name == command }
+        // SDK Command exposes arguments, while native JSON also carries richer parameters.
+        def declaredTypes = _commandParamTypes(bypass ? declaration : [arguments: declaration?.arguments])
+        parameters = normalizeCommandParams(parameters, declaredTypes)
     }
     if (bypass) {
         // Single bypass branch: fire via runmethod (empty arg list for a no-parameter command).
@@ -2518,15 +2522,29 @@ private String _formatBypassStateDate(rawDate) {
     }
 }
 
-def normalizeCommandParams(params) {
+def normalizeCommandParams(params, List declaredTypes = []) {
     // Case 1: Already a List (Hubitat parsed it successfully) — go straight to element conversion
     if (params instanceof List) {
-        return convertParamElements(params)
+        return convertParamElements(params, declaredTypes)
     }
 
     // Case 2: String (Hubitat parser failed on nested JSON)
     // Example: '["{"hue":0,"saturation":100,"level":50}"]'
     def s = params.toString().trim()
+
+    if (declaredTypes) {
+        // Decode a valid outer array before legacy repair so literal JSON text stays text.
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(s)
+            if (parsed instanceof List) return convertParamElements(parsed, declaredTypes)
+        } catch (Exception ignored) {}
+        if (declaredTypes[0]?.toString()?.toUpperCase() in ['STRING', 'ENUM']) {
+            if (s.startsWith('["') && s.endsWith('"]')) {
+                return convertParamElements(s.substring(2, s.length() - 2).split('","').toList(), declaredTypes)
+            }
+            return convertParamElements([s], declaredTypes)
+        }
+    }
 
     // Try to extract an embedded JSON object between first { and last }
     def firstBrace = s.indexOf("{")
@@ -2535,7 +2553,7 @@ def normalizeCommandParams(params) {
         def jsonContent = s.substring(firstBrace, lastBrace + 1)
         try {
             def parsed = new groovy.json.JsonSlurper().parseText(jsonContent)
-            return [parsed]
+            return convertParamElements([parsed], declaredTypes)
         } catch (Exception e) {
             // Not valid JSON object, fall through
         }
@@ -2544,16 +2562,18 @@ def normalizeCommandParams(params) {
     // No JSON object found — strip outer ["..."] wrapper and split into string params
     if (s.startsWith("[\"") && s.endsWith("\"]")) {
         def inner = s.substring(2, s.length() - 2)
-        return convertParamElements(inner.split('","').toList())
+        return convertParamElements(inner.split('","').toList(), declaredTypes)
     }
 
     // Last resort: treat the whole string as a single parameter
-    return convertParamElements([s])
+    return convertParamElements([s], declaredTypes)
 }
 
-def convertParamElements(List params) {
-    return params.collect { param ->
+def convertParamElements(List params, List declaredTypes = []) {
+    return params.withIndex().collect { param, index ->
         if (param == null) return param
+        def declaredType = index < declaredTypes.size() ? declaredTypes[index]?.toString()?.toUpperCase() : null
+        if (declaredType in ['STRING', 'ENUM'] && param instanceof CharSequence) return param.toString()
         if (param instanceof Map || param instanceof List) return param
         def s = param.toString()
         // Numeric conversion
