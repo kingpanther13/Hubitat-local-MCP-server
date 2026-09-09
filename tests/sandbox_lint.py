@@ -4272,7 +4272,7 @@ def check_sandbox_map_subscripts(
     masked = {
         path: "\n".join(
             clean.ljust(len(raw))
-            for raw, clean in zip(source.split("\n"), strip_comments_and_strings(source))
+            for raw, clean in zip(source.split("\n"), strip_comments_and_strings(source), strict=True)
         )
         for path, source in sources.items()
     }
@@ -4325,7 +4325,8 @@ def check_sandbox_map_subscripts(
                 brace = branch.end() - 1
                 bounded.append((branch.group("key"), brace, close_brace(body, brace)))
 
-            def add(pos: int, message: str, severity: str = "error") -> None:
+            def add(pos: int, message: str, severity: str = "error", *,
+                    code=code, opening=opening, path=path, raw_lines=raw_lines) -> None:
                 line = code.count("\n", 0, opening + 1 + pos)
                 findings.append({
                     "file": path, "line": line + 1, "severity": severity,

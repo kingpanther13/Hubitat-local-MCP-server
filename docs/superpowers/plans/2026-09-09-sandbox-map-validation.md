@@ -113,4 +113,24 @@ Files: focused src/test/groovy/server specs; tests/e2e_test.py; tests/BAT-v2.md;
 
 ## Evidence location
 
+Preparation cleanup is complete: the owned RM rule, legacy dashboard, probe app
+instance, room, virtual device, Apps Code and Driver Code were deleted. All 34
+owned probe files and generated scratch backups were removed and File Manager
+readback found none. All 127 baseline device IDs remain; all 113 baseline visible
+app rows (including disabled/parent metadata) compare unchanged. A final query
+including hidden apps additionally returned two existing hidden integrations;
+these are not newly created resources. This is inventory verification, not a
+claim that naturally changing household device states were frozen.
+
+Firmware remains 2.5.1.181 and lastSelfDeploy still identifies the same successful
+325d472ffbdcca85bd640532c18ce2907609b9fd deployment. The hub backup created before
+testing was retained. No household rule, device, dashboard or configuration was
+written by this investigation.
+
+Eight numbered rows are bounded cases (1, 2, 3, 11, 12, 15, 21, 24). Twelve have
+reachable unsafe inputs (4, 5, 7–10, 13, 14, 16, 17, 22, 23), with earlier blockers
+and disabled legacy-engine limits recorded individually above. Four remain
+unproven at the exact production branch (6, 18–20), despite isolated failures.
+Do not describe this as 24 reproduced production bugs or as completed remediation.
+
 Raw connector responses and household baseline inventories are retained only in local `validation/issue-415/`; they must not be published in the PR. Publish sanitized probe matrices, source hashes and this ledger. Probe infrastructure is disposable on the personal hub; any infrastructure installed for the shared CI hub must follow its persistent-fixture lifecycle.
