@@ -1658,6 +1658,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.2.6** - build(deps): bump httpx2 from 2.10.0 to 2.12.0 in /tests in the pip group across 1 directory ([#413](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/413), @app/dependabot); refactor: keep legacy device captures in memory; fix: reduce request metadata and terminal state overhead. PRs: [#413](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/413), [#414](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/414), [#412](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/412)
 - **v4.2.5** - fix: checkpoint MRTR batches and preserve continuation results. PRs: [#410](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/410)
 - **v4.2.4** - feat: make every hub_get_tool_guide call answerable. PRs: [#409](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/409)
 - **v4.2.3** - fix: preserve rule names and unify clone/import staging safeguards. PRs: [#408](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/408)
