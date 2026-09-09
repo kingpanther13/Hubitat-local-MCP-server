@@ -10,7 +10,7 @@ Before you push a PR:
 2. `python tests/sandbox_lint.py` passes — catches sandbox-blocked JVM features before the hub does.
 3. New MCP tools ship with unit tests (golden path + error path) under `src/test/groovy/server/` (or `src/test/groovy/rules/` for rule-engine work). See [docs/testing.md](docs/testing.md).
 4. PR title starts with one of the prefixes below and matches the ticked **Type of change** box in the PR template.
-5. Live-hub BAT scenarios in [`tests/BAT-v2.md`](tests/BAT-v2.md) updated if tool behaviour changed.
+5. Relevant existing live-hub BAT scenarios in [`tests/BAT-v2.md`](tests/BAT-v2.md) run and results recorded if tool behaviour changed; scenarios edited only for missing coverage.
 
 ## Local dev setup
 
@@ -42,7 +42,7 @@ Use [`.github/pull_request_template.md`](.github/pull_request_template.md) and k
 - **Changes** — key changes; reference issues with `Closes #N` / `Fixes #N` / `Part of #N`.
 - **Release Notes** — bulleted, end-user-facing (see next section).
 - **Testing** — how you verified the change.
-- **Checklist** — unit tests, sandbox lint, `./gradlew test`, BAT updates, doc updates.
+- **Checklist** — unit tests, sandbox lint, `./gradlew test`, recorded BAT results or pending execution, doc updates.
 
 Open the PR as a draft (`gh pr create --draft`). The maintainer flips it to ready-for-review once it looks good.
 
@@ -90,7 +90,7 @@ Every new MCP tool needs both a direct-call (unit) test and a dispatch-envelope 
 
 [`tests/BAT-v2.md`](tests/BAT-v2.md) is the behaviour-acceptance suite — scripted JSON scenarios (`setup_prompt` → `test_prompt` → `teardown_prompt`) run against the MCP server via an AI client on a real hub. Every artifact is prefixed `BAT` and every rule is marked `testRule: true` so cleanup is unambiguous.
 
-If your PR changes tool behaviour, add or update the matching BAT scenarios in the same PR.
+If your PR changes tool behaviour, run the relevant existing BAT scenarios and record the tested revision and results. Add or update scenarios only when existing coverage does not exercise the changed behaviour. If execution is pending, say so explicitly; adding scenario documentation or unit tests does not establish live-hub acceptance.
 
 ### PR review flow
 
