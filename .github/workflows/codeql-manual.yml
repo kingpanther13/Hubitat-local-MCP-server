@@ -6,7 +6,9 @@ on:
     paths:
       - '.github/workflows/codeql-manual.yml'
       - '.github/scripts/codeql_gate.py'
+      - '.github/scripts/codeql_scope.py'
       - 'tests/test_codeql_gate.py'
+      - 'tests/test_codeql_scope.py'
 
 permissions:
   contents: read
@@ -31,6 +33,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: head
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -40,7 +43,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
+      - name: Select changed source files against main
+        id: scope
+        run: python head/.github/scripts/codeql_scope.py head base "$LANGUAGE" "$RUNNER_TEMP/reports"
       - name: Install the pinned official CodeQL bundle
+        if: steps.scope.outputs.head == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -51,14 +58,20 @@ jobs:
           sha256sum --check codeql-bundle-linux64.tar.zst.checksum.txt
           tar --zstd -xf codeql-bundle-linux64.tar.zst
           echo "$RUNNER_TEMP/codeql" >> "$GITHUB_PATH"
-      - name: Scan branch and main with the same default security suite
+      - name: Scan only changed files with the default security suite
+        if: steps.scope.outputs.head == 'true'
+        env:
+          HAS_BASE_SOURCES: ${{ steps.scope.outputs.base }}
         run: |
           codeql version
-          mkdir -p "$RUNNER_TEMP/reports"
           for revision in head base; do
+            if [[ "$revision" == base && "$HAS_BASE_SOURCES" != true ]]; then
+              continue
+            fi
             git -C "$revision" rev-parse HEAD | tee "$RUNNER_TEMP/reports/$revision.sha"
             codeql database create "$RUNNER_TEMP/codeql-db-$revision" \
-              --language="$LANGUAGE" --build-mode=none --source-root "$revision" --threads=2
+              --language="$LANGUAGE" --build-mode=none --source-root "$revision" --threads=2 \
+              --codescanning-config="$RUNNER_TEMP/reports/$revision-config.json"
             codeql database analyze "$RUNNER_TEMP/codeql-db-$revision" \
               "codeql/${LANGUAGE}-queries:codeql-suites/${LANGUAGE}-code-scanning.qls" \
               --format=sarif-latest --output "$RUNNER_TEMP/reports/$revision.sarif" --threads=2
@@ -66,7 +79,11 @@ jobs:
       # Managed default setup rejects CodeQL SARIF uploads. Keep an independent
       # Actions gate and artifact instead of changing the repository's setup.
       - name: Require successful scans with no new findings
-        run: python head/.github/scripts/codeql_gate.py "$RUNNER_TEMP/reports/head.sarif" "$RUNNER_TEMP/reports/base.sarif"
+        if: steps.scope.outputs.head == 'true'
+        run: python head/.github/scripts/codeql_gate.py "$RUNNER_TEMP/reports/head.sarif" "$RUNNER_TEMP/reports/base.sarif" "$RUNNER_TEMP/reports/scope.json"
+      - name: No changed source files for this language
+        if: steps.scope.outputs.head == 'false'
+        run: echo "No branch-changed $LANGUAGE sources; analysis is not needed. See scope.json."
       - uses: actions/upload-artifact@v7
         if: always()
         with:

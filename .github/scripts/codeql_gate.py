@@ -47,12 +47,25 @@ def new_findings(head, base):
     return Counter(map(finding_key, head)) - Counter(map(finding_key, base))
 
 
+def scoped_findings(findings, paths):
+    # Keep extraction context from becoming an out-of-scope finding.
+    return [finding for finding in findings if finding_key(finding)[1] in paths]
+
+
 def main(argv):
-    if len(argv) != 2:
-        print("Usage: codeql_gate.py <head.sarif> <base.sarif>", file=sys.stderr)
+    if len(argv) != 3:
+        print("Usage: codeql_gate.py <head.sarif> <base.sarif> <scope.json>", file=sys.stderr)
         return 2
     try:
-        head, base = [check_report(json.loads(Path(path).read_text(encoding="utf-8"))) for path in argv]
+        scope = json.loads(Path(argv[2]).read_text(encoding="utf-8"))
+        if not isinstance(scope, dict) or not all(
+            isinstance(scope.get(key), list) and all(isinstance(path, str) and path for path in scope[key])
+            for key in ("head_paths", "base_paths")
+        ) or not scope["head_paths"] or not set(scope["base_paths"]) <= set(scope["head_paths"]):
+            raise ValueError("Invalid changed-source scope")
+        head = scoped_findings(check_report(json.loads(Path(argv[0]).read_text(encoding="utf-8"))), scope["head_paths"])
+        # A branch can add the first selected source file; no baseline scan exists then.
+        base = scoped_findings(check_report(json.loads(Path(argv[1]).read_text(encoding="utf-8"))), scope["base_paths"]) if scope["base_paths"] else []
         added = new_findings(head, base)
     except (OSError, ValueError) as exc:
         print(f"CodeQL evidence error: {exc}", file=sys.stderr)

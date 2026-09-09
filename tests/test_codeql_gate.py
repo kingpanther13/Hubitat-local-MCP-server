@@ -34,7 +34,9 @@ def test_cli_verdict(tmp_path, findings, expected):
     path.write_text(json.dumps(report(findings)), encoding="utf-8")
     base = tmp_path / "base.sarif"
     base.write_text(json.dumps(report()), encoding="utf-8")
-    assert gate.main([str(path), str(base)]) == expected
+    scope = tmp_path / "scope.json"
+    scope.write_text(json.dumps({"head_paths": ["script.py"], "base_paths": ["script.py"]}), encoding="utf-8")
+    assert gate.main([str(path), str(base), str(scope)]) == expected
 
 
 def test_multiple_runs_include_later_findings():
@@ -65,6 +67,27 @@ def test_missing_fingerprint_fails_closed():
         gate.new_findings([{"ruleId": "py/test"}], [])
 
 
+def test_unchanged_files_and_reference_artifacts_are_out_of_scope():
+    findings = [finding(), finding(path="unchanged.py"), finding(path="resources/hub2-source/appUI.js")]
+    assert gate.scoped_findings(findings, ["script.py"]) == [finding()]
+
+
+def test_first_source_file_needs_no_fake_baseline_report(tmp_path):
+    head = tmp_path / "head.sarif"
+    head.write_text(json.dumps(report([finding()])), encoding="utf-8")
+    scope = tmp_path / "scope.json"
+    scope.write_text(json.dumps({"head_paths": ["script.py"], "base_paths": []}), encoding="utf-8")
+    assert gate.main([str(head), str(tmp_path / "absent.sarif"), str(scope)]) == 1
+
+
+def test_required_baseline_cannot_be_missing(tmp_path):
+    head = tmp_path / "head.sarif"
+    head.write_text(json.dumps(report()), encoding="utf-8")
+    scope = tmp_path / "scope.json"
+    scope.write_text(json.dumps({"head_paths": ["script.py"], "base_paths": ["script.py"]}), encoding="utf-8")
+    assert gate.main([str(head), str(tmp_path / "absent.sarif"), str(scope)]) == 2
+
+
 @pytest.mark.parametrize("data", [None, {}, {"version": "2.1.0", "runs": []}])
 def test_missing_scan_evidence(data):
     with pytest.raises(ValueError):
@@ -86,7 +109,7 @@ def test_incomplete_or_failed_analysis(field, value):
 
 def test_cli_missing_or_invalid_report(tmp_path):
     path = tmp_path / "scan.sarif"
-    assert gate.main([str(path), str(path)]) == 2
+    assert gate.main([str(path), str(path), str(path)]) == 2
     path.write_text("invalid json", encoding="utf-8")
-    assert gate.main([str(path), str(path)]) == 2
+    assert gate.main([str(path), str(path), str(path)]) == 2
     assert gate.main([]) == 2

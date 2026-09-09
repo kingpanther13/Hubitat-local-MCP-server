@@ -12,13 +12,20 @@ gh workflow run codeql-manual.yml --ref <branch> --repo kingpanther13/Hubitat-lo
 The narrow push trigger registers and validates this workflow when its own
 files change, allowing the command above to be exercised before the initial
 merge as well. It uses a pinned official CodeQL CLI bundle, runs no application tests,
-and scans both the branch and `main` with the same queries. The gate fails on new
-findings or incomplete analysis. It compares rule, file and CodeQL line
+and selects supported source files changed in `main...HEAD`. Copied reference
+material under `resources/hub2-source/` is excluded; languages with no changed
+sources skip analysis. Exact changed-file paths limit CodeQL extraction, and
+the result gate also restricts findings to those files. The corresponding files
+on `main` are scanned with the same queries to identify existing findings.
+The gate fails on new findings or incomplete analysis. It compares rule, file and CodeQL line
 fingerprint, including duplicate counts, so unrelated line shifts do not reopen
-existing findings. Each language uploads both complete SARIF reports and both
-analyzed SHAs in an artifact named with the branch commit. Existing findings
-remain visible in the reports; no rule or path is blanket-excluded. This is a
-branch regression check, not a replacement for GitHub's alert dismissal policy.
+existing findings. Each language uploads its exact file scope and revision SHAs,
+plus SARIF reports for the sources actually scanned. A newly added file needs
+no synthetic baseline scan. Scope evidence is also retained when a language has
+no changed files. This check covers changed files, including unchanged lines
+inside them; it is not a whole-repository audit or a scan of Groovy. Restricting
+extraction can limit cross-file analysis, so managed CodeQL remains the broader
+security check.
 
 The existing GitHub-managed CodeQL setup continues independently. Default setup
 rejects CodeQL SARIF uploads, so this lane publishes Actions artifacts instead of
