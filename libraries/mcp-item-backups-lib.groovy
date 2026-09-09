@@ -240,31 +240,57 @@ def toolRestoreItemBackup(args) {
     // (the original backup file uses the same deterministic name, so backupItemSource would overwrite it)
     def preRestoreFileName = "mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy"
     String preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}".toString()
+    boolean undoAvailable = false
+    String undoWarning = null
     try {
+        String restoreSourceHash = _mrtrSha256(source)
         def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
         def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])
-        if (responseText) {
-            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-            if (parsed.source == source) {
-                // The live source already equals the backup being restored (a retry
-                // after a dropped response): capturing it now would overwrite the
-                // real pre-restore undo with the just-restored content, silently
-                // destroying the only undo point. Keep the existing undo file.
-                mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
-            } else if (parsed.source) {
-                uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
-                // atomicState read-modify-write: read full map, mutate locally, write back.
-                def mfst = atomicState.itemBackupManifest ?: [:]
-                mfst.put(preRestoreBackupKey, [
-                    type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
-                    version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
-                ])
-                atomicState.itemBackupManifest = mfst
-                mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+        if (!responseText) throw new IllegalStateException("Current source fetch returned an empty response")
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (!(parsed instanceof Map) || !(parsed.source instanceof String) || !parsed.source) {
+            throw new IllegalStateException("Current source fetch did not return source code")
+        }
+        if (parsed.source == source) {
+            // The live source already equals the backup being restored (a retry
+            // after a dropped response): capturing it now would overwrite the
+            // real pre-restore undo with the just-restored content, silently
+            // destroying the only undo point. Keep the existing undo file.
+            def undo = manifest.get(preRestoreBackupKey)
+            if (!(undo instanceof Map) || undo.type != entryCopy.type || undo.id?.toString() != entryCopy.id?.toString()
+                    || undo.fileName?.toString() != preRestoreFileName.toString()
+                    || undo.undoForBackupKey != args.backupKey.toString()
+                    || undo.undoForSourceHash != restoreSourceHash || !undo.sourceHash) {
+                throw new IllegalStateException("Current source already matches this backup, but no matching pre-restore undo is recorded")
             }
+            def undoBytes = downloadHubFile(preRestoreFileName)
+            if (undoBytes == null || _mrtrSha256(new String(undoBytes, "UTF-8")) != undo.sourceHash) {
+                throw new IllegalStateException("The recorded pre-restore undo file is missing or has changed")
+            }
+            undoAvailable = true
+            mcpLog("info", "hub-admin", "Current source already matches this backup -- preserving its verified pre-restore undo")
+        } else {
+            uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
+            String undoSourceHash = _mrtrSha256(parsed.source)
+            def undoBytes = downloadHubFile(preRestoreFileName)
+            if (undoBytes == null || _mrtrSha256(new String(undoBytes, "UTF-8")) != undoSourceHash) {
+                throw new IllegalStateException("Pre-restore backup upload could not be verified by reading the file back")
+            }
+            // atomicState read-modify-write: read full map, mutate locally, write back.
+            def mfst = atomicState.itemBackupManifest ?: [:]
+            mfst.put(preRestoreBackupKey, [
+                type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
+                version: parsed.version, timestamp: now(), sourceLength: parsed.source.length(),
+                undoForBackupKey: args.backupKey.toString(), undoForSourceHash: restoreSourceHash,
+                sourceHash: undoSourceHash
+            ])
+            atomicState.itemBackupManifest = mfst
+            undoAvailable = true
+            mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
         }
     } catch (Exception preBackupErr) {
-        mcpLog("warn", "hub-admin", "Could not create pre-restore backup: ${preBackupErr.message} -- proceeding with restore anyway")
+        undoWarning = "No verified undo backup is available for this restore: ${preBackupErr.message}. The restore will proceed; do not rely on an older pre-restore backup to undo it.".toString()
+        mcpLog("warn", "hub-admin", undoWarning)
     }
 
     // Restoring the MCP server's OWN code drops the response exactly like a self-update
@@ -344,10 +370,15 @@ def toolRestoreItemBackup(args) {
                 type: entryCopy.type,
                 id: entryCopy.id,
                 restoredVersion: entryCopy.version,
-                preRestoreBackup: preRestoreBackupKey,
-                preRestoreFile: preRestoreFileName,
-                undoHint: "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
+                undoAvailable: undoAvailable
             ]
+            if (undoAvailable) {
+                restoreResult.preRestoreBackup = preRestoreBackupKey
+                restoreResult.preRestoreFile = preRestoreFileName
+                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
+            } else {
+                restoreResult.warning = undoWarning
+            }
             if (isSelfRestore && parsed == null) {
                 restoreResult.assumed = true
                 restoreResult.note = "This restored the MCP server's own code, so the hub's response was dropped by the recompile -- success is inferred, not hub-confirmed. Verify via hub_get_info (lastSelfDeploy) or hub_get_source."

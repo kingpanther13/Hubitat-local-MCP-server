@@ -6248,6 +6248,8 @@ class TestRunner:
                 "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
             assert restored.get("success") is True, \
                 f"in-place restore of a rule with a device picker failed: {restored}"
+            assert restored.get("recreated") is False and str(restored.get("ruleId")) == str(app_id), \
+                f"in-place restore unexpectedly created a replacement rule: {restored}"
             assert restored.get("failedStep") is None, restored
             applied = restored.get("settingsApplied") or []
             assert any(str(k).startswith("onOffSwitch.") for k in applied), \
@@ -9235,6 +9237,7 @@ class TestRunner:
                 "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
             })
             assert restored.get("success") is True, f"hub_restore_backup failed: {restored}"
+            assert restored.get("undoAvailable") is True, f"restore did not verify its undo backup: {restored}"
             pre_restore_key = restored.get("preRestoreBackup")
             assert pre_restore_key == f"prerestore_app_{code_app_id}", \
                 f"restore did not return the pre-restore backup key: {restored}"
@@ -9247,6 +9250,23 @@ class TestRunner:
                 f"restore did not bring back the pre-update source: {after_restore}"
             assert int(after_restore["version"]) > version_after, \
                 f"restore reported success but the version did not advance ({version_after} -> {after_restore.get('version')})"
+
+            undo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
+            })
+            assert undo.get("source") == final_src, f"undo did not retain the exact pre-restore source: {undo}"
+            retried = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
+            })
+            assert retried.get("success") is True and retried.get("undoAvailable") is True \
+                and retried.get("preRestoreBackup") == pre_restore_key, \
+                f"restore retry lost the verified undo handle: {retried}"
+            undo_after_retry = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
+            })
+            assert undo_after_retry.get("source") == final_src, \
+                f"restore retry replaced the original undo source: {undo_after_retry}"
 
             # Leg 5 (#259): enable OAuth on the (oauth:true-declaring) code class via the
             # hub_update_app oauth fold -- the programmatic "Enable OAuth in App".

@@ -744,7 +744,12 @@ def consume(int index) {{
     assert sandbox_map_findings(source) == []
 
 
-@pytest.mark.parametrize("expression", ["container['ids']", "container == null", "leaf()['ids']"])
+@pytest.mark.parametrize("expression", [
+    "container['ids']", "container == null", "leaf()['ids']",
+    "[ids: [1, 2]].ids", "[ids: [1, 2]]['ids']", "[ids: [1, 2]].values()",
+    "[\n ids: [1, 2]\n].ids", "[\n ids: [1, 2]\n]['ids']",
+    "new HashMap().values()", "new LinkedHashMap().keySet()",
+])
 def test_assignment_expression_does_not_inherit_its_map_prefix(expression):
     source = f"""def leaf() {{ return [:] }}
 def consume(Map container, int index) {{
@@ -752,6 +757,62 @@ def consume(Map container, int index) {{
  return result[index]
 }}"""
     assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("expression", [
+    "[[id: 1]]", "[\n [id: 1],\n [id: 2]\n]",
+    "[flag ? left : right]", "[flag ? (other ? left : right) : right]",
+    "[entry?.label ?: fallback]",
+])
+def test_list_initializer_and_alias_are_not_inferred_as_maps(expression):
+    source = f"""def read(int index) {{
+ def rows = {expression}
+ def alias = rows
+ rows[index] = alias[index]
+ return rows[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("expression", [
+    "[[id: 1]]", "[flag ? left : right]", "[entry?.label ?: fallback]",
+])
+def test_list_literal_return_is_not_inferred_as_a_map(expression):
+    source = f"""def rows() {{ return {expression} }}
+def read(int index) {{
+ def result = rows()
+ return result[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("receiver", ["result", "state.result"])
+@pytest.mark.parametrize("expression", [
+    "[:]", "[items: [[id: 1]]]", "[\n items: [],\n selected: false\n]",
+    "[selected: flag ? left : right]",
+])
+def test_map_literal_initializers_preserve_property_and_alias_inference(receiver, expression):
+    declaration = "def " if receiver == "result" else ""
+    source = f"""def copy(String key) {{
+ {declaration}{receiver} = {expression}
+ def alias = {receiver}
+ {receiver}[key] = false
+ return alias[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 2
+    assert all(f["severity"] == "error" for f in findings)
+
+
+@pytest.mark.parametrize("expression", ["[:] + values", "[existing: 1] + values", "new HashMap()"])
+def test_whole_map_copy_or_constructor_initializer_remains_inferred(expression):
+    source = f"""def copy(Map values, String key) {{
+ def result = {expression}
+ return result[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
 
 
 @pytest.mark.parametrize("closure", [
@@ -813,6 +874,61 @@ def test_assignment_in_bounded_condition_invalidates_the_exception():
  }
 }"""
     assert len(sandbox_map_findings(source)) == 1
+
+
+@pytest.mark.parametrize("literal", ['"${expected}"', '"$expected"', r'"\u0066ields"', r"'\u0066ields'"])
+def test_interpolated_or_escaped_comparison_does_not_establish_key_bounds(literal):
+    source = f"""def copy(String key, String expected) {{
+ def result = [:]
+ if (key == {literal}) {{
+  result[key] = false
+ }}
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("literal", ['"deviceId"', "'deviceId'", '"Fields"', "'getClass'"])
+def test_plain_noncolliding_comparison_still_establishes_key_bounds(literal):
+    source = f"""def copy(String key) {{
+ def result = [:]
+ if (key == {literal}) {{
+  result[key] = false
+ }}
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("condition", [
+    "key == 'safe' && enabled || override",
+    "key == 'safe' && enabled ? selected : override",
+])
+def test_outer_boolean_alternative_does_not_establish_key_bounds(condition):
+    source = f"""def copy(String key, boolean enabled, boolean override) {{
+ def result = [:]
+ if ({condition}) {{
+  result[key] = false
+ }}
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("condition", [
+    "key == 'safe' && (enabled || override)",
+    "key == 'safe' && (enabled ? selected : override)",
+    "key == 'safe' && enabled && override",
+])
+def test_parenthesized_boolean_alternative_keeps_required_key_comparison(condition):
+    source = f"""def copy(String key, boolean enabled, boolean override) {{
+ def result = [:]
+ if ({condition}) {{
+  result[key] = false
+ }}
+}}"""
+    assert sandbox_map_findings(source) == []
 
 
 @pytest.mark.parametrize("nested", [

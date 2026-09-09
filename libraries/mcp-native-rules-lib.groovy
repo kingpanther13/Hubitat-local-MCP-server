@@ -1127,23 +1127,37 @@ private Map _collectLiveApps() {
         mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList parse failed (${e.message})")
         return null
     }
+    if (!(parsed instanceof Map) || !(parsed.apps instanceof List)) {
+        mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList is missing its apps list")
+        return null
+    }
     def apps = [:]
+    boolean complete = true
     def walk
     walk = { node ->
-        if (node == null) return
-        def idVal = node?.data?.id ?: node?.id
+        if (!(node instanceof Map) || (node.data != null && !(node.data instanceof Map))
+                || (node.containsKey("children") && !(node.children instanceof List))) {
+            complete = false
+            return
+        }
+        def idVal = node.data?.id != null ? node.data.id : node.id
         if (idVal != null) {
             try {
                 // Store the RAW disabled value (may be null when the key is absent) —
                 // coercing to == true here would erase the "field missing" signal that
                 // _rmAnnotateRuleStatus needs to classify the rule as per-entry unknown.
-                apps[(idVal as Integer)] = [name: node?.data?.name, disabled: node?.data?.disabled]
-            } catch (Exception ignored) { /* skip non-int ids */ }
+                if (!(idVal.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
+                apps.put(idVal as Integer, [name: node.data?.name, disabled: node.data?.disabled])
+            } catch (Exception ignored) { complete = false }
+        } else if (node.data || !(node.children instanceof List)) {
+            // An idless structural container is safe only when all its children can be read.
+            complete = false
         }
         (node?.children ?: []).each { walk(it) }
     }
-    (parsed?.apps ?: []).each { walk(it) }
-    return apps
+    parsed.apps.each { walk(it) }
+    if (!complete) mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList contains malformed app nodes; absence cannot be established")
+    return complete ? apps : null
 }
 
 // Normalize an atTime string to the form RM 5.1 expects:
@@ -9114,7 +9128,7 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
         // submit (stale version token, auth, malformed envelope, etc.) instead
         // of just a bare status code.
         def bodyPreview = resp?.data?.toString()?.take(200)
-        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The submit was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via hub_get_app_config(appId=${appId}) and retry). The page may be left in trash-confirmation mode; on this hard-fail path the tool backs it out automatically via cancelTrash. Do NOT treat this as a partial delete.")
+        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The outcome has not been verified. Recovery is best-effort; inspect the rule with hub_get_app_config(appId=${appId}) before retrying.")
     }
     // Surface any non-button inputs the wholesale-replace blanked (absent from
     // currentSettings AND not in extraSettings) so a caller can refuse a
