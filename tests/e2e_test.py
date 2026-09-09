@@ -9831,7 +9831,7 @@ class TestRunner:
             self._delete_variable_safe(var_name)
 
     # -----------------------------------------------------------------------
-    # GROUP 7: action_types (1 batched test -- all action types in one rule)
+    # GROUP 7: action_types
     # -----------------------------------------------------------------------
 
     @test("action_types")
@@ -9872,6 +9872,168 @@ class TestRunner:
             self._delete_rule_safe(rule_id)
         finally:
             self._delete_variable_safe(var_name)
+
+    @test("action_types")
+    def test_capture_state_file_round_trip(self) -> None:
+        """Real child events capture and restore a dedicated dimmer across requests."""
+        state_id = f"{PREFIX}Capture_{_run_artifact_suffix()}"
+        baseline = self.client.call_tool("hub_list_captured_states")
+        original_states = baseline["capturedStates"]
+        if len(original_states) >= baseline["maxLimit"]:
+            raise SkipTest("Capture storage is full; refusing to evict an existing snapshot")
+        assert state_id not in {s["stateId"] for s in original_states}, state_id
+        assert self.server_app_id, "HUBITAT_APP_ID is required for capture-file ownership checks"
+        file_prefix = f"mcp-capture-{self.server_app_id}-"
+        original_files, complete = self._list_all_file_names(file_prefix)
+        assert complete, "Cannot establish an authoritative capture-file baseline"
+        device_dnis: list[str] = []
+        original_rule_ids = set(self.created_rule_ids)
+        observed_files: set[str] = set()
+        unrelated_files = set(original_files)
+
+        def command(device_id: str, name: str, parameters: list | None = None) -> None:
+            result = self.client.call_tool("hub_call_device_command", {
+                "deviceId": device_id, "command": name, "parameters": parameters or []})
+            assert result.get("success") is not False, f"{name} failed: {result}"
+
+        def expect(device_id: str, attribute: str, value: str) -> None:
+            result: dict = {}
+            for _ in range(3):
+                result = self.client.call_tool("hub_get_device_attribute", {
+                    "deviceId": device_id, "attribute": attribute,
+                    "expectedValue": value, "timeoutMs": 4000})
+                if result.get("success") is True and result.get("timedOut") is False:
+                    return
+            raise AssertionError(f"{device_id} did not reach {attribute}={value}: {result}")
+
+        def owned_payloads() -> tuple[dict, set]:
+            files, complete = self._list_all_file_names(file_prefix)
+            assert complete, "Capture-file enumeration was incomplete"
+            owned = {}
+            # Background migration can create files for pre-existing snapshots during this test.
+            for filename in set(files) - unrelated_files:
+                read = self.client.call_tool("hub_read_file", {"fileName": filename})
+                assert read.get("success") is True, f"Capture payload could not be read: {read}"
+                content = read["content"]
+                while read.get("hasMore"):
+                    read = self.client.call_tool("hub_read_file", {
+                        "fileName": filename, "offset": read["nextOffset"]})
+                    assert read.get("success") is True and read.get("chunkLength", 0) > 0, \
+                        f"Capture payload continuation could not be read: {read}"
+                    content += read["content"]
+                payload = json.loads(content)
+                if payload.get("stateId") == state_id:
+                    owned[filename] = (payload, content)
+                else:
+                    unrelated_files.add(filename)
+            observed_files.update(owned)
+            return owned, set(files)
+
+        try:
+            devices = []
+            for suffix, device_type in (("Trigger", "Virtual Switch"), ("Dimmer", "Virtual Dimmer")):
+                dni = f"{state_id}_{suffix}"
+                device_dnis.append(dni)
+                self.created_device_dnis.append(dni)
+                created = self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "create", "deviceType": device_type,
+                    "deviceLabel": dni, "deviceNetworkId": dni, "confirm": True})
+                assert created.get("success") is True, f"Fixture creation failed: {created}"
+                devices.append(str(created["device"]["id"]))
+            trigger_id, dimmer_id = devices
+            command(trigger_id, "off")
+            expect(trigger_id, "switch", "off")
+            for value, action_type in (("on", "capture_state"), ("off", "restore_state")):
+                action = {"type": action_type, "stateId": state_id}
+                if action_type == "capture_state":
+                    action["deviceIds"] = [dimmer_id]
+                self._create_rule_and_verify(f"{state_id}_{action_type}", {
+                    "triggers": [{"type": "device_event", "deviceId": trigger_id,
+                                  "attribute": "switch", "value": value}],
+                    "actions": [action], "enabled": True})
+
+            previous_timestamp = None
+            for level in (37, 68):
+                command(dimmer_id, "setLevel", [str(level)])
+                command(dimmer_id, "on")
+                expect(dimmer_id, "level", str(level))
+                expect(dimmer_id, "switch", "on")
+                started = time.monotonic()
+                command(trigger_id, "on")
+                deadline = time.monotonic() + 20
+                entry = None
+                while time.monotonic() < deadline:
+                    listed = self.client.call_tool("hub_list_captured_states")
+                    entry = next((s for s in listed["capturedStates"] if s["stateId"] == state_id), None)
+                    if entry and entry["timestamp"] != previous_timestamp:
+                        break
+                    time.sleep(0.4)
+                assert entry and entry["timestamp"] != previous_timestamp, \
+                    f"Child capture event did not persist a new generation: {entry}"
+                capture_seconds = time.monotonic() - started
+                assert entry["deviceCount"] == 1, f"Capture lost device count: {entry}"
+                assert len(listed["capturedStates"]) == len(original_states) + 1, \
+                    f"Same-ID capture changed the number of snapshots: {listed}"
+                assert [s for s in listed["capturedStates"] if s["stateId"] != state_id] == original_states, \
+                    "Capture changed an existing snapshot"
+                owned, files = owned_payloads()
+                assert len(owned) == 1, f"Expected one owned generation, found: {list(owned)}"
+                filename, (payload, content) = next(iter(owned.items()))
+                assert payload == {"schema": 1, "appId": str(self.server_app_id),
+                                   "stateId": state_id, "timestamp": entry["timestamp"],
+                                   "devices": {dimmer_id: {"switch": "on", "level": level}}}, \
+                    f"File Manager payload lost capture fidelity: {payload}"
+                assert not (observed_files - {filename}) & set(files), \
+                    "Same-ID overwrite retained an obsolete payload file"
+                previous_timestamp = entry["timestamp"]
+
+                command(dimmer_id, "setLevel", ["12"])
+                command(dimmer_id, "off")
+                expect(dimmer_id, "level", "12")
+                expect(dimmer_id, "switch", "off")
+                started = time.monotonic()
+                command(trigger_id, "off")
+                expect(dimmer_id, "switch", "on")
+                expect(dimmer_id, "level", str(level))
+                print(f"    CAPTURE_FILE level={level} bytes={len(content.encode('utf-8'))} "
+                      f"capture_observed_s={capture_seconds:.3f} "
+                      f"restore_observed_s={time.monotonic() - started:.3f}")
+        finally:
+            primary_error = sys.exc_info()[0] is not None
+            cleanup_errors = []
+            # Remove subscriptions before deleting the snapshot or either device.
+            # Creation records IDs before readback, which can fail after the child is enabled.
+            for rule_id in [r for r in self.created_rule_ids if r not in original_rule_ids]:
+                try:
+                    deleted = self.client.call_tool("hub_delete_custom_rule", {
+                        "ruleId": rule_id, "confirm": True})
+                    assert deleted.get("success") is True, f"Rule cleanup failed: {deleted}"
+                    self.created_rule_ids.remove(rule_id)
+                except Exception as exc:
+                    cleanup_errors.append(str(exc))
+            try:
+                self.client.call_tool("hub_delete_captured_state", {"stateId": state_id})
+                remaining = self.client.call_tool("hub_list_captured_states")["capturedStates"]
+                assert remaining == original_states, f"Capture cleanup changed baseline: {remaining}"
+                owned, files = owned_payloads()
+                assert not owned and not observed_files & files, \
+                    f"Capture cleanup left owned payload files: {list(owned)}"
+            except Exception as exc:
+                cleanup_errors.append(str(exc))
+            for dni in device_dnis:
+                try:
+                    deleted = self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": dni, "confirm": True})
+                    assert deleted.get("success") is True, f"Device cleanup failed: {deleted}"
+                    self.created_device_dnis.remove(dni)
+                except Exception as exc:
+                    cleanup_errors.append(str(exc))
+            if cleanup_errors:
+                message = "Capture cleanup failed: " + " | ".join(cleanup_errors)
+                if primary_error:
+                    print(f"    [WARN] {message}")
+                else:
+                    raise AssertionError(message)
 
     # -----------------------------------------------------------------------
     # GROUP 8: complex_patterns (2 tests)
@@ -13280,6 +13442,17 @@ class TestRunner:
                         print(f"  [WARN] Dashboard sweep delete failed for '{dname}': {exc}")
         except Exception as exc:
             print(f"  [WARN] Dashboard sweep failed: {exc}")
+
+        # Capture payload filenames use app IDs, so reap stranded test snapshots by their owned ID.
+        try:
+            captures = self.client.call_tool("hub_list_captured_states")
+            for capture in captures["capturedStates"]:
+                state_id = str(capture.get("stateId") or "")
+                if state_id.startswith(f"{PREFIX}Capture_"):
+                    deleted = self.client.call_tool("hub_delete_captured_state", {"stateId": state_id})
+                    assert deleted.get("success") is True, f"Capture sweep failed: {deleted}"
+        except Exception as exc:
+            print(f"  [WARN] Capture sweep failed: {exc}")
 
         # Layer 9: File Manager files with the BAT_E2E_ prefix. hub_delete_file auto-backs-up
         # every non-backup file it deletes ("<base>_backup_<ts>.<ext>"), so BAT file litter

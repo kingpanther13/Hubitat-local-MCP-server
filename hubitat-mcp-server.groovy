@@ -41,6 +41,7 @@
 @groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
 // Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
+@groovy.transform.Field static final Map CAPTURE_STORES = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
 // freshly scheduled worker execution can read an atomicState snapshot that predates
@@ -569,6 +570,7 @@ def installed() {
         WRITE_REQUEST_LEASES.clear()
         _writeStateCacheInvalidate()
     }
+    _resetCaptureStore()
     initialize()
 }
 
@@ -610,17 +612,6 @@ def updated() {
     }
     state.customEngineMigrated = true
 
-    // ===== One-time captured-states state -> atomicState migration =====
-    // Captured device states moved from `state` to `atomicState`. Carry any
-    // pre-existing captures across so a restore_state that worked before the
-    // update still finds them -- otherwise they'd be orphaned in `state` and
-    // silently disappear. One-shot: only copies when atomicState is still empty.
-    if (state.capturedDeviceStates && !atomicState.capturedDeviceStates) {
-        atomicState.capturedDeviceStates = state.capturedDeviceStates
-        def migratedCount = atomicState.capturedDeviceStates.size()
-        state.remove("capturedDeviceStates")
-        mcpLog("info", "capture-migration", "Migrated ${migratedCount} captured state(s) from state to atomicState")
-    }
 }
 
 def uninstalled() {
@@ -681,6 +672,9 @@ def initialize() {
     // previously-tracked set so we removeInUseGlobalVar for vars no
     // longer referenced (rule edited away from the var, rule deleted).
     _refreshHubVarInUseRegistrations()
+    if (state.capturedDeviceStates || atomicState.capturedDeviceStates) {
+        _scheduleCaptureMigration(5000)
+    }
 }
 
 

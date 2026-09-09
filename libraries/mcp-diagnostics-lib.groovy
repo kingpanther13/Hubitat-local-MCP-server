@@ -2172,114 +2172,367 @@ def getMaxCapturedStates() {
     return max < 1 ? 1 : (max > 100 ? 100 : max)
 }
 
-// Helper method for child apps to save captured device states (for capture_state action)
-// Returns info about the save operation including any deleted states
-def saveCapturedState(stateId, capturedStates) {
-    // atomicState (not state): the prior in-place mutation of `state` did not reliably persist
-    // (`state` only flushes at handler end, and subscribed event handlers run concurrently), so
-    // captures and evictions were lost. Read into a local, mutate, then write the whole map back
-    // in one assignment -- in-place mutation of a nested atomicState map is not reliably persisted
-    // either. This narrows but does not fully close the race: atomicState has no compare-and-swap,
-    // so two truly-concurrent saves can still lose one. Each write is durable, though -- strictly
-    // better than `state`.
-    def stored = atomicState.capturedDeviceStates ?: [:]
+private String _captureOwner() {
+    String owner = app?.id?.toString()
+    if (!owner) throw new IllegalStateException("Capture storage requires an installed app ID")
+    return owner
+}
 
-    // Add timestamp to the captured state
-    def stateEntry = [
-        devices: capturedStates,
-        timestamp: now(),
-        deviceCount: capturedStates.size()
-    ]
+private Map _captureStore() {
+    String owner = _captureOwner()
+    synchronized (CAPTURE_STORES) {
+        if (!CAPTURE_STORES.containsKey(owner)) {
+            CAPTURE_STORES[owner] = [payloads: [:], sweepAt: 0L, legacyDirty: true]
+        }
+        return CAPTURE_STORES[owner]
+    }
+}
 
-    def deletedStates = []
+private void _resetCaptureStore() {
+    if (!app?.id) return
+    Map store = _captureStore()
+    synchronized (store) {
+        store.clear()
+        store.putAll([payloads: [:], sweepAt: 0L, legacyDirty: true])
+    }
+}
 
-    // Check if we need to remove old entries (only if this is a new stateId)
-    if (!stored.containsKey(stateId)) {
-        while (stored.size() >= getMaxCapturedStates()) {
-            // Find and remove the oldest entry
-            def oldestId = null
-            def oldestTime = Long.MAX_VALUE
-            stored.each { id, entry ->
-                def entryTime = entry.timestamp ?: 0
-                if (entryTime < oldestTime) {
-                    oldestTime = entryTime
-                    oldestId = id
-                }
-            }
-            if (oldestId) {
-                log.warn "Captured states at limit (${getMaxCapturedStates()}): Removing oldest state '${oldestId}' to make room for '${stateId}'"
-                deletedStates << oldestId
-                stored.remove(oldestId)
-            } else {
-                break // Safety: avoid infinite loop
-            }
+private Map _captureLegacy() {
+    // The index becomes authoritative after its first publication; stale state shadows
+    // must never add IDs back to it after deletion or retention.
+    Map merged = [:]
+    if (state.capturedDeviceStates instanceof Map) merged.putAll(state.capturedDeviceStates)
+    if (atomicState.capturedDeviceStates instanceof Map) merged.putAll(atomicState.capturedDeviceStates)
+    return merged
+}
+
+private Map _captureLegacyEntry(raw) {
+    def devices = raw instanceof Map && raw.containsKey("devices") ? raw.devices : raw
+    if (!(devices instanceof Map) && !(devices instanceof List)) {
+        throw new IllegalStateException("Legacy capture has an invalid device payload; original data retained")
+    }
+    return [devices: devices, timestamp: raw instanceof Map ? raw.timestamp : null,
+            deviceCount: devices.size()]
+}
+
+private Map _captureIndexLocked(Map store) {
+    if (store.index != null) return store.index
+    def saved = atomicState.captureIndex
+    if (saved != null) {
+        if (!(saved instanceof Map) || saved.schema != 1 || !saved.revision || !(saved.entries instanceof Map)
+                || saved.entries.values().any { !(it instanceof Map) }) {
+            throw new IllegalStateException("Capture index is corrupt; restore the app backup before changing captures")
+        }
+        store.index = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(saved))
+    } else {
+        Map entries = [:]
+        _captureLegacy().each { id, raw ->
+            Map entry = _captureLegacyEntry(raw)
+            entries[id.toString()] = [timestamp: entry.timestamp, deviceCount: entry.deviceCount, order: entries.size()]
+        }
+        store.index = [schema: 1, entries: entries]
+    }
+    return store.index
+}
+
+private void _capturePublishLocked(Map store, Map entries) {
+    Map next = [schema: 1, revision: java.util.UUID.randomUUID().toString(), entries: entries]
+    // A setter can throw after persisting. Only a direct atomicState readback, never
+    // our JVM mirror, authorizes retiring the prior generation.
+    store.index = null
+    Exception failure = null
+    try { atomicState.captureIndex = next } catch (Exception e) { failure = e }
+    try {
+        if (atomicState.captureIndex == next) {
+            store.index = next
+            return
+        }
+    } catch (Exception e) { failure = e }
+    store.sweepAt = now() + 60000L
+    _scheduleCaptureMigration(60000)
+    throw new IllegalStateException("Capture index publication could not be verified; generations retained for recovery", failure)
+}
+
+private boolean _captureOwnedFile(String name) {
+    String prefix = "mcp-capture-${_captureOwner()}-"
+    return name?.startsWith(prefix) && (name.substring(prefix.length()) ==~ /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json/)
+}
+
+private Map _captureDecode(String text, String id, Map metadata) {
+    try {
+        def value = new groovy.json.JsonSlurper().parseText(text)
+        if (!(value instanceof Map) || value.schema != 1 || value.appId != _captureOwner()
+                || value.stateId != id || value.timestamp != metadata.timestamp
+                || (!(value.devices instanceof Map) && !(value.devices instanceof List))
+                || value.devices.size() != metadata.deviceCount || _mrtrSha256(text) != metadata.digest) {
+            throw new IllegalStateException("payload identity or checksum mismatch")
+        }
+        return value
+    } catch (Exception e) {
+        throw new IllegalStateException("Captured state '${id}' file is corrupt; restore its File Manager backup", e)
+    }
+}
+
+private void _captureCacheLocked(Map store, String name, String text) {
+    int bytes = text.getBytes("UTF-8").length
+    store.payloads.remove(name)
+    if (bytes > 262144) return
+    store.payloads[name] = [text: text, bytes: bytes]
+    while (store.payloads.size() > 4 || (store.payloads.values().sum { it.bytes } ?: 0) > 262144) {
+        store.payloads.remove(store.payloads.keySet().first())
+    }
+}
+
+private Map _captureWriteLocked(Map store, String id, Map entry) {
+    String fileName = "mcp-capture-${_captureOwner()}-${java.util.UUID.randomUUID()}.json"
+    String text = groovy.json.JsonOutput.toJson([schema: 1, appId: _captureOwner(), stateId: id,
+                                                timestamp: entry.timestamp, devices: entry.devices])
+    Map metadata = [timestamp: entry.timestamp, deviceCount: entry.devices.size(),
+                    fileName: fileName, digest: _mrtrSha256(text)]
+    try {
+        uploadHubFile(fileName, text.getBytes("UTF-8"))
+        def bytes = downloadHubFile(fileName)
+        if (bytes == null || new String(bytes, "UTF-8") != text) {
+            throw new IllegalStateException("uploaded bytes did not match readback")
+        }
+        _captureDecode(text, id, metadata)
+        _captureCacheLocked(store, fileName, text)
+        return metadata
+    } catch (Exception e) {
+        store.sweepAt = now() + 60000L
+        _scheduleCaptureMigration(60000)
+        throw new IllegalStateException("Captured state '${id}' could not be stored and verified; prior capture retained", e)
+    }
+}
+
+private boolean _captureDeleteFilesLocked(Map store, Collection names) {
+    boolean complete = true
+    names.findAll { it && _captureOwnedFile(it.toString()) }.unique().each { name ->
+        try {
+            deleteHubFile(name.toString())
+            store.payloads.remove(name)
+        } catch (Exception e) {
+            complete = false
+            store.sweepAt = now() + 60000L
+            _scheduleCaptureMigration(60000)
+            log.warn "Capture file cleanup will retry: ${e.message}"
         }
     }
-
-    stored[stateId] = stateEntry
-    atomicState.capturedDeviceStates = stored
-    def totalStored = stored.size()
-    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${totalStored}/${getMaxCapturedStates()})"
-
-    return [
-        stateId: stateId,
-        deviceCount: capturedStates.size(),
-        totalStored: totalStored,
-        maxLimit: getMaxCapturedStates(),
-        deletedStates: deletedStates,
-        nearLimit: totalStored >= getMaxCapturedStates() - 4
-    ]
+    return complete
 }
 
-// Helper method for child apps to retrieve captured device states (for restore_state action)
+private void _captureSweepLocked(Map store, Map index) {
+    // No cleanup queue: rediscover interrupted uploads and failed deletions from
+    // File Manager, under the same domain lock that protects in-flight uploads.
+    if ((store.sweepAt as Long) > now()) return
+    if (!index.revision && index.entries) return
+    store.sweepAt = now() + 60000L
+    try {
+        Set live = index.entries.values().collect { it.fileName }.findAll { it } as Set
+        def files = toolListFiles([filter: "mcp-capture-${_captureOwner()}-", cursor: store.sweepCursor ?: ""])
+        if (files.manualAccess || files.success == false) throw new IllegalStateException("File Manager inventory unavailable")
+        List orphans = (files.files ?: []).collect { it.name?.toString() }.findAll {
+            _captureOwnedFile(it) && !live.contains(it)
+        }
+        // Deletions shift offset cursors, so restart after each bounded deletion batch.
+        store.sweepCursor = orphans ? "" : files.nextCursor
+        boolean complete = _captureDeleteFilesLocked(store, orphans.take(4))
+        if (!complete || orphans || files.nextCursor) {
+            int delay = complete ? 5000 : 60000
+            store.sweepAt = now() + delay
+            _scheduleCaptureMigration(delay)
+        } else {
+            store.sweepAt = Long.MAX_VALUE
+        }
+    } catch (Exception e) {
+        store.sweepCursor = ""
+        _scheduleCaptureMigration(60000)
+        log.warn "Capture orphan scan will retry: ${e.message}"
+    }
+}
+
+private void _scheduleCaptureMigration(int delayMs) {
+    try { runInMillis(delayMs, "captureMigrationStep", [overwrite: true]) }
+    catch (Exception e) { log.warn "Capture migration scheduling will retry on next capture access: ${e.message}" }
+}
+
+private void _capturePruneLegacyLocked(Map store, Map index) {
+    if (!index.revision || !store.legacyDirty) return
+    try {
+        Set pending = index.entries.findAll { id, row -> !row.fileName }.keySet()
+        Map remaining = _captureLegacy().findAll { id, raw -> pending.contains(id.toString()) }
+        if (pending) {
+            // state and atomicState can refer to the same durable key. Never remove
+            // the state shadow while any legacy payload still needs that key.
+            if (atomicState.capturedDeviceStates != remaining) atomicState.capturedDeviceStates = remaining
+            _scheduleCaptureMigration(5000)
+        } else {
+            atomicState.remove("capturedDeviceStates")
+            state.remove("capturedDeviceStates")
+            store.legacyDirty = false
+        }
+    } catch (Exception e) {
+        _scheduleCaptureMigration(60000)
+        log.warn "Capture legacy cleanup will retry: ${e.message}"
+    }
+}
+
+private boolean _captureMigrateLocked(Map store, Map index, String preferred = null) {
+    def pending = preferred != null && index.entries.containsKey(preferred) && !index.entries[preferred].fileName
+        ? [key: preferred] : index.entries.find { id, row -> !row.fileName }
+    if (pending == null) {
+        _capturePruneLegacyLocked(store, index)
+        return true
+    }
+    try {
+        String id = pending.key.toString()
+        Map entry = _captureLegacyEntry(_captureLegacy()[id])
+        Map next = new LinkedHashMap(index.entries)
+        next[id] = _captureWriteLocked(store, id, entry)
+        next[id].order = index.entries[id].order
+        _capturePublishLocked(store, next)
+        _capturePruneLegacyLocked(store, store.index)
+        return true
+    } catch (Exception e) {
+        _scheduleCaptureMigration(60000)
+        log.warn "Capture migration retained its legacy source and will retry: ${e.message}"
+        return false
+    }
+}
+
+def captureMigrationStep() {
+    try {
+        Map store = _captureStore()
+        synchronized (store) {
+            Map index = _captureIndexLocked(store)
+            _captureSweepLocked(store, index)
+            boolean migrated = _captureMigrateLocked(store, index)
+            long sweepAt = store.sweepAt as Long
+            if (sweepAt > now() && sweepAt < Long.MAX_VALUE) {
+                long delay = sweepAt - now()
+                if (migrated && (store.index ?: index).entries.values().any { !it.fileName }) delay = Math.min(delay, 5000L)
+                _scheduleCaptureMigration(Math.max(1000L, Math.min(60000L, delay)) as Integer)
+            }
+        }
+    } catch (Exception e) {
+        _scheduleCaptureMigration(60000)
+        log.warn "Capture migration will retry: ${e.message}"
+    }
+}
+
+def countCapturedStates() {
+    // Info need not wait behind a capture's File Manager I/O.
+    def index = atomicState.captureIndex
+    return index instanceof Map && index.entries instanceof Map ? index.entries.size() : _captureLegacy().size()
+}
+
+def saveCapturedState(stateId, capturedStates) {
+    String id = stateId?.toString()
+    if (id == null || (!(capturedStates instanceof Map) && !(capturedStates instanceof List))) {
+        throw new IllegalArgumentException("A state ID and device map or list are required")
+    }
+    Map store = _captureStore()
+    synchronized (store) {
+        Map index = _captureIndexLocked(store)
+        _captureSweepLocked(store, index)
+        Map next = new LinkedHashMap(index.entries)
+        next[id] = _captureWriteLocked(store, id, [devices: capturedStates, timestamp: now()])
+        next[id].order = index.entries.containsKey(id) ? index.entries[id].order :
+            ((index.entries.values().collect { it.order ?: 0 }.max() ?: 0) as Long) + 1L
+        List deleted = []
+        while (next.size() > getMaxCapturedStates()) {
+            def oldest = next.findAll { key, row -> key != id }.min { a, b ->
+                ((a.value.timestamp ?: 0) <=> (b.value.timestamp ?: 0)) ?: ((a.value.order ?: 0) <=> (b.value.order ?: 0))
+            }
+            deleted << oldest.key
+            next.remove(oldest.key)
+        }
+        _capturePublishLocked(store, next)
+        _captureDeleteFilesLocked(store, index.entries.values().collect { it.fileName } - next.values().collect { it.fileName })
+        _capturePruneLegacyLocked(store, store.index)
+        return [stateId: stateId, deviceCount: capturedStates.size(), totalStored: next.size(),
+                maxLimit: getMaxCapturedStates(), deletedStates: deleted,
+                nearLimit: next.size() >= getMaxCapturedStates() - 4]
+    }
+}
+
 def getCapturedState(stateId) {
-    def entry = atomicState.capturedDeviceStates?.get(stateId)
-    // Return the devices array for backward compatibility
-    return entry?.devices ?: entry
+    String id = stateId?.toString()
+    Map store = _captureStore()
+    synchronized (store) {
+        Map index = _captureIndexLocked(store)
+        Map row = index.entries[id]
+        if (row == null) return null
+        if (!row.fileName) {
+            def devices = _captureLegacyEntry(_captureLegacy()[id]).devices
+            _captureMigrateLocked(store, index, id)
+            return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(devices))
+        }
+        if (!_captureOwnedFile(row.fileName.toString())) throw new IllegalStateException("Capture file ownership is invalid")
+        String text = store.payloads[row.fileName]?.text
+        if (text == null) {
+            try {
+                def bytes = downloadHubFile(row.fileName)
+                if (bytes == null) throw new IllegalStateException("file missing")
+                text = new String(bytes, "UTF-8")
+            } catch (Exception e) {
+                throw new IllegalStateException("Captured state '${id}' file is missing or unreadable; restore its File Manager backup", e)
+            }
+        }
+        Map envelope = _captureDecode(text, id, row)
+        _captureCacheLocked(store, row.fileName.toString(), text)
+        return envelope.devices
+    }
 }
 
-// Helper method to list all captured states with metadata
 def listCapturedStates() {
-    def stored = atomicState.capturedDeviceStates
-    if (!stored) return []
-
-    return stored.collect { stateId, entry ->
-        [
-            stateId: stateId,
-            deviceCount: entry.deviceCount ?: entry.devices?.size() ?: (entry instanceof List ? entry.size() : 0),
-            timestamp: entry.timestamp ?: null,
-            capturedAt: formatTimestamp(entry.timestamp)
-        ]
-    }.sort { a, b -> (b.timestamp ?: 0) <=> (a.timestamp ?: 0) } // Sort newest first
+    Map store = _captureStore()
+    synchronized (store) {
+        Map index = _captureIndexLocked(store)
+        _captureMigrateLocked(store, index)
+        return index.entries.entrySet().toList().sort { a, b ->
+            ((b.value.timestamp ?: 0) <=> (a.value.timestamp ?: 0)) ?: ((a.value.order ?: 0) <=> (b.value.order ?: 0))
+        }.collect { item ->
+            def id = item.key
+            def row = item.value
+            [stateId: id, deviceCount: row.deviceCount, timestamp: row.timestamp,
+             capturedAt: formatTimestamp(row.timestamp)]
+        }
+    }
 }
 
-// Helper method to delete a specific captured state
 def deleteCapturedState(stateId) {
-    def stored = atomicState.capturedDeviceStates
-    if (!stored) {
-        return [success: false, message: "No captured states exist"]
+    Map store = _captureStore()
+    synchronized (store) {
+        Map index = _captureIndexLocked(store)
+        String id = stateId?.toString()
+        if (!index.entries) return [success: false, message: "No captured states exist"]
+        if (!index.entries.containsKey(id)) return [success: false, message: "Captured state '${stateId}' not found"]
+        Map next = new LinkedHashMap(index.entries)
+        def removed = next.remove(id)
+        _capturePublishLocked(store, next)
+        _captureDeleteFilesLocked(store, [removed.fileName])
+        _capturePruneLegacyLocked(store, store.index)
+        return [success: true, message: "Captured state '${stateId}' deleted", remaining: next.size()]
     }
-
-    if (!stored.containsKey(stateId)) {
-        return [success: false, message: "Captured state '${stateId}' not found"]
-    }
-
-    stored.remove(stateId)
-    atomicState.capturedDeviceStates = stored
-    log.debug "Deleted captured state '${stateId}' (remaining: ${stored.size()})"
-    return [success: true, message: "Captured state '${stateId}' deleted", remaining: stored.size()]
 }
 
-// Helper method to clear all captured states
 def clearAllCapturedStates() {
-    def count = atomicState.capturedDeviceStates?.size() ?: 0
-    atomicState.capturedDeviceStates = [:]
-    log.debug "Cleared all ${count} captured states"
-    return [success: true, message: "Cleared ${count} captured state(s)", cleared: count]
+    Map store = _captureStore()
+    synchronized (store) {
+        Map index = _captureIndexLocked(store)
+        int count = index.entries.size()
+        _capturePublishLocked(store, [:])
+        _captureDeleteFilesLocked(store, index.entries.values().collect { it.fileName })
+        _capturePruneLegacyLocked(store, store.index)
+        return [success: true, message: "Cleared ${count} captured state(s)", cleared: count]
+    }
 }
 
 def toolListCapturedStates(args = null) {
-    def states = listCapturedStates()
+    def states
+    try { states = listCapturedStates() }
+    catch (Exception e) { return [success: false, error: e.message, note: "Captures were retained; retry after checking hub storage."] }
     def count = states.size()
     def cursor = args?.cursor
     def paged = _paginateList(states, cursor, 50, "hub_list_captured_states")
@@ -2308,7 +2561,8 @@ def toolListCapturedStates(args = null) {
 // raw stateId for backward-compatible internal calls.
 def toolDeleteCapturedState(args) {
     def stateId = (args instanceof Map) ? args.stateId : args
-    return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()
+    try { return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates() }
+    catch (Exception e) { return [success: false, error: e.message, note: "Deletion was not verified; list captures before retrying."] }
 }
 
 def _getAllToolDefinitions_partDiagnostics() {
