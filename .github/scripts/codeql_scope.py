@@ -24,9 +24,6 @@ def select_paths(paths, language):
             ),
         }
         if matches[language]:
-            # CodeQL paths are glob patterns; do not silently broaden an odd filename.
-            if any(char in path for char in "*?[]!\\"):
-                raise ValueError(f"Cannot represent this source path as an exact CodeQL filter: {path}")
             selected.append(path)
     return sorted(set(selected))
 

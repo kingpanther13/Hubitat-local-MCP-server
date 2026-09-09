@@ -29,9 +29,8 @@ def test_no_supported_changes_means_no_scan():
     assert scope.select_paths(["README.md", "app.groovy"], "python") == []
 
 
-def test_glob_filename_cannot_expand_scope():
-    with pytest.raises(ValueError):
-        scope.select_paths(["src/all*.py"], "python")
+def test_filenames_are_literal_not_glob_patterns():
+    assert scope.select_paths(["src/all*.py"], "python") == ["src/all*.py"]
 
 
 def test_real_git_diff_excludes_unchanged_deleted_and_upstream_only_files(tmp_path, monkeypatch):
