@@ -1327,7 +1327,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
         deviceNetworkId: (!_deviceFlag(d.isComponent) || _deviceFlag(d.linkedDevice)) && !_deviceFlag(d.linkedLocally),
         dataValues: listed,
         deviceTypeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
-        zigbeeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice) && d.zigbeeId instanceof String,
+        zigbeeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice) && d.zigbeeId instanceof String && !d.zigbeeId.isEmpty(),
         dashboardIds: _deviceFlag(fj?.hasDashboards),
         meshEnabled: _deviceFlag(d.meshSelectionEnabled),
         retryEnabled: _deviceFlag(fj?.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable),
@@ -1744,10 +1744,12 @@ private Map _deviceReadContinuation(String cursor, String selection) {
 private Map _deviceReadPage(Map result, String selection) {
     // Size the actual text-content envelope, including escaped JSON, before the shared guard.
     String serialized = groovy.json.JsonOutput.toJson(result)
-    def envelope = [jsonrpc: '2.0', id: 1, result: [content: [[type: 'text', text: serialized]]]]
-    if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length < 95000) return result
     // Bound retained UTF-16 content to 4 MiB across at most eight snapshots, outside persisted app state.
     if (serialized.length() > 2097152) throw new IllegalArgumentException('Device information exceeds the snapshot budget. Select fewer sections or fields, then read each selection separately.')
+    if (serialized.length() < 95000) {
+        def envelope = [jsonrpc: '2.0', id: 1, result: [content: [[type: 'text', text: serialized]]]]
+        if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length < 95000) return result
+    }
     String token = java.util.UUID.randomUUID().toString()
     Map snapshot = [id: result.id, mode: result.mode, content: serialized, selection: selection, at: now()]
     synchronized (DEVICE_READ_SNAPSHOTS) {

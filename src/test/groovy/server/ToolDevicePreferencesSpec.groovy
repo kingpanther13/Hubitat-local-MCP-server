@@ -840,7 +840,8 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         addListedDevice()
         def full = fixture()
         full.deviceState = [large: 'x' * 2200000]
-        registerFixture(DEVICE_ID, full)
+        // Exercise the public read and budget guard without duplicating this payload in the HTTP fixture encoder.
+        script.metaClass._fetchDeviceFullJson = { ignored -> full }
 
         when:
         script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
