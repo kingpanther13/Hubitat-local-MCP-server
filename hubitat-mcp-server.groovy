@@ -3304,7 +3304,9 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
     if (result instanceof Map && result.__deviceValidation != null) {
         String detail = result.__deviceValidation.toString()
-        mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${detail}")
+        mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${detail}", null,
+            [details: [tool: reactiveToolName,
+                       gateway: (reactiveToolName != toolName) ? toolName : null, error: detail]])
         def hint = _reactiveBpsWarning(reactiveToolName, args, detail)
         return jsonRpcError(id, -32602, "Invalid params: ${detail}${hint ? ' ' + hint : ''}")
     }
