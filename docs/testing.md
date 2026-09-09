@@ -9,9 +9,9 @@ JavaScript/TypeScript and Python on a selected ref, without a PR or hub access:
 gh workflow run codeql-manual.yml --ref <branch> --repo kingpanther13/Hubitat-local-MCP-server
 ```
 
-GitHub enables manual dispatch once this workflow exists on `main`. A narrow
-push trigger also validates edits to the workflow, its gate and gate tests before
-merge. It uses a pinned official CodeQL CLI bundle, runs no application tests,
+The narrow push trigger registers and validates this workflow when its own
+files change, allowing the command above to be exercised before the initial
+merge as well. It uses a pinned official CodeQL CLI bundle, runs no application tests,
 and scans both the branch and `main` with the same queries. The gate fails on new
 findings or incomplete analysis. It compares rule, file and CodeQL line
 fingerprint, including duplicate counts, so unrelated line shifts do not reopen
