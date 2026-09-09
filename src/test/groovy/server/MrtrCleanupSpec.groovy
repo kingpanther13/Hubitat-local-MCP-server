@@ -78,16 +78,18 @@ class MrtrCleanupSpec extends ToolSpecBase {
         jobs().size() == scheduled
     }
 
-    def 'cold bootstrap and lifecycle reset rearm durable records without repeated warm reads'() {
+    def 'ping bootstrap and lifecycle reset rearm durable records without repeated scheduling'() {
         given:
         atomicStateMap.mrtrRequests = [old: terminal(script.now() - 1L)]
         script._writeStateCacheInvalidate()
 
         when:
-        script._mrtrEnsureCleanupScheduled()
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 1, method: 'ping'])
+        script.handleMcpRequest()
         20.times { script._mrtrEnsureCleanupScheduled() }
 
         then:
+        mcpDriver.parseResponseJson().result == [:]
         jobs().size() == 1
         jobs().first()[0] == 1
         atomicStateMap.mrtrRequests.containsKey('old')
@@ -155,6 +157,8 @@ class MrtrCleanupSpec extends ToolSpecBase {
         given:
         long at = script.now()
         int attempts = 0
+        List warnings = []
+        script.metaClass.mcpLog = { level, category, message -> warnings << [level, category, message] }
         RUN_IN_OVERRIDE.set({ List call ->
             attempts++
             throw new IllegalStateException('scheduler unavailable')
@@ -167,6 +171,8 @@ class MrtrCleanupSpec extends ToolSpecBase {
         then:
         attempts == 1
         atomicStateMap.mrtrRequests.containsKey('saved')
+        warnings.size() == 1
+        warnings.first()[0..1] == ['warn', 'mrtr']
 
         when:
         NOW_OVERRIDE.set({ at + 60000L })
@@ -176,6 +182,32 @@ class MrtrCleanupSpec extends ToolSpecBase {
         then:
         jobs().size() == 1
         jobs().last()[0] == 540
+    }
+
+    def 'an accepted callback rearms survivors after a failed replacement during backoff'() {
+        given:
+        long at = script.now()
+        script._mrtrPutLocked('soon', terminal(at + 30000L))
+        script._mrtrPutLocked('later', terminal(at + 600000L))
+        NOW_OVERRIDE.set({ at + 10000L })
+        RUN_IN_OVERRIDE.set({ List call -> throw new IllegalStateException('replacement rejected') })
+        script._mrtrPutLocked('earlier', terminal(at + 20000L))
+
+        when: 'the original accepted job fires while requests are backing off'
+        NOW_OVERRIDE.set({ at + 30000L })
+        RUN_IN_OVERRIDE.set(null)
+        script.runMrtrCleanup()
+
+        then:
+        atomicStateMap.mrtrRequests.keySet() == ['later'] as Set
+        jobs().last()[0] == 570
+
+        when: 'the rearmed callback runs without intervening request traffic'
+        NOW_OVERRIDE.set({ at + 600000L })
+        script.runMrtrCleanup()
+
+        then:
+        atomicStateMap.mrtrRequests.isEmpty()
     }
 
     def 'a missed expiry callback is rearmed by read traffic after its grace interval'() {

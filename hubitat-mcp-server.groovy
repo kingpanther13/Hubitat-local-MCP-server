@@ -31,6 +31,9 @@
 @groovy.transform.Field static final Map WRITE_REQUEST_LEASES = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
+// Per-app scheduler hints only; records remain durable. Class reloads bootstrap
+// from the first request or lifecycle initialization under WRITE_RESERVATION_LOCK.
+@groovy.transform.Field static final Map MRTR_CLEANUP_SCHEDULES = new java.util.HashMap()
 // Per execution: never pass this clock into a destructive inner wizard operation.
 @groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
 // JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
@@ -73,8 +76,13 @@
 // on every execution, so every tool call paid for the search index. Cleared, never reassigned,
 // so the harness can reset it the way it resets the other statics.
 @groovy.transform.Field static final Map TOOL_SEARCH_INDEX = new java.util.HashMap()
+// Code-derived metadata is valid for one compiled class, including same-version deploys:
+// recompilation resets statics without needing updated() or a contributor version bump.
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
+// Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
+// Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
+@groovy.transform.Field static final Map RETIRED_TOOL_STATE_RETRY_AT = new java.util.HashMap()
 
 definition(
     name: "MCP Rule Server",
@@ -566,7 +574,10 @@ def getChildAppById(appId) {
 def installed() {
     log.info "MCP Rule Server installed"
     _invalidateToolMetadata()
-    synchronized (RETIRED_TOOL_STATE_CLEANED) { RETIRED_TOOL_STATE_CLEANED.clear() }
+    synchronized (RETIRED_TOOL_STATE_CLEANED) {
+        RETIRED_TOOL_STATE_CLEANED.clear()
+        RETIRED_TOOL_STATE_RETRY_AT.clear()
+    }
     // A reinstall on an already-loaded class starts from an empty atomicState, so
     // drop the write-reservation leases and snapshot the removed instance left in
     // the statics.
@@ -581,18 +592,16 @@ def installed() {
 def updated() {
     log.info "MCP Rule Server updated"
     _invalidateToolMetadata()
-    synchronized (RETIRED_TOOL_STATE_CLEANED) { RETIRED_TOOL_STATE_CLEANED.clear() }
+    synchronized (RETIRED_TOOL_STATE_CLEANED) {
+        RETIRED_TOOL_STATE_CLEANED.clear()
+        RETIRED_TOOL_STATE_RETRY_AT.clear()
+    }
     // Shed the retired publication toggle and its migration marker on upgraded hubs.
     app.removeSetting("publishOutputSchemas")
     atomicState.remove("publishOutputSchemasForcedOff")
-    atomicState.remove("toolSearchCorpus")        // Invalidate BM25 corpus cache on app update
-    atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
-    atomicState.remove("toolSearchCorpusVersion")  // ...and the retired version stamp, so an upgraded hub sheds it
-    atomicState.remove("toolSearchCorpusFingerprint")  // ...and the corpus content fingerprint in lockstep
+    _cleanupRetiredToolState()
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
     synchronized (TOOL_SEARCH_INDEX) { TOOL_SEARCH_INDEX.clear() }   // ...and the in-JVM index itself
-    atomicState.remove("requiredParamsByTool")    // Shed the retired persisted required-param memo
-    atomicState.remove("requiredParamsByToolFingerprint")  // ...and its retired fingerprint
     initialize()
 
     // ===== One-time custom-engine rename migration =====
@@ -656,6 +665,7 @@ def initialize() {
     // checkForUpdate() so the immediate run still fires.
     try { unschedule() }
     catch (Exception e) { mcpLog("warn", "server", "unschedule() before re-schedule failed: ${e.message} -- duplicate schedules may persist") }
+    _mrtrEnsureCleanupScheduled(true)
     schedule("0 0 3 ? * *", "checkForUpdate")
     // Only egress to GitHub immediately on first install. state.updateCheck is
     // null until the first check completes; once set, routine settings saves
@@ -763,6 +773,7 @@ def handleMcpRequest() {
     }
 
     _cleanupRetiredToolState()
+    _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
         // Content-Type is intentionally left unvalidated: a wrong content-type
@@ -2258,6 +2269,110 @@ def _mrtrScheduleObserveWaitMs(String leafTool = null) {
 
 private void _mrtrPutLocked(String stateId, Map rec) {
     _writeStatePutLocked("mrtrRequests", stateId, rec)
+    _mrtrScheduleCleanupLocked((rec.expiresAt ?: now()) as Long)
+}
+
+private Map _mrtrCleanupScheduleLocked() {
+    String appKey = app?.id?.toString() ?: "unidentified"
+    Map hint = MRTR_CLEANUP_SCHEDULES.get(appKey) as Map
+    if (hint == null) {
+        hint = [:]
+        MRTR_CLEANUP_SCHEDULES.put(appKey, hint)
+    }
+    return hint
+}
+
+// Scheduling errors must not turn an already-durable result into a failed write.
+// A request can retry after backoff; successful scheduling needs no further traffic.
+private void _mrtrScheduleCleanupLocked(long expiry) {
+    Map hint = _mrtrCleanupScheduleLocked()
+    long at = now()
+    if (((hint.retryAt ?: 0L) as Long) > at) return
+    long target = Math.max(at + 1000L, expiry)
+    if (hint.dueAt != null && (hint.dueAt as Long) <= target) return
+    int seconds = Math.max(1L, (target - at + 999L).intdiv(1000L)) as Integer
+    try {
+        runIn(seconds, "runMrtrCleanup", [overwrite: true])
+        hint.dueAt = at + seconds * 1000L
+        hint.remove("retryAt")
+    } catch (Exception scheduleErr) {
+        hint.retryAt = at + 60000L
+        mcpLog("warn", "mrtr", "Expiry cleanup scheduling deferred for 60 seconds: ${scheduleErr.message}")
+    }
+}
+
+// Scan only on cold bootstrap, scheduled cleanup, or a bounded recovery attempt.
+private void _mrtrScheduleNextCleanupLocked() {
+    Map hint = _mrtrCleanupScheduleLocked()
+    Map records = _writeStateMapLocked("mrtrRequests")
+    hint.checked = true
+    if (records.isEmpty()) {
+        hint.remove("retryAt")
+        hint.remove("compactRetryAt")
+        return
+    }
+    long at = now()
+    long earliest = Long.MAX_VALUE
+    records.each { id, rec ->
+        long expiry = rec instanceof Map ? ((rec.expiresAt ?: at) as Long) : at
+        if (rec instanceof Map && rec.status == "active" && _writeExecutionLiveLocked(rec.claimId)) {
+            expiry = Math.max(expiry, at + 60000L)
+        }
+        earliest = Math.min(earliest, expiry)
+    }
+    if (hint.compactRetryAt != null) earliest = Math.min(earliest, hint.compactRetryAt as Long)
+    _mrtrScheduleCleanupLocked(earliest)
+}
+
+def _mrtrEnsureCleanupScheduled(boolean reset = false) {
+    synchronized (WRITE_RESERVATION_LOCK) {
+        Map hint = _mrtrCleanupScheduleLocked()
+        if (reset) hint.clear() // initialize() has just unscheduled this app's jobs.
+        long at = now()
+        if (((hint.retryAt ?: 0L) as Long) > at) return
+        if (hint.retryAt == null && hint.dueAt != null && (hint.dueAt as Long) + 60000L > at) return
+        if (hint.checked == true && hint.dueAt == null && hint.retryAt == null) return
+        hint.remove("dueAt")
+        try {
+            _mrtrScheduleNextCleanupLocked()
+        } catch (Exception loadErr) {
+            hint.retryAt = at + 60000L
+            mcpLog("warn", "mrtr", "Expiry cleanup bootstrap deferred for 60 seconds: ${loadErr.message}")
+        }
+    }
+}
+
+def runMrtrCleanup() {
+    List cleanup = []
+    synchronized (WRITE_RESERVATION_LOCK) {
+        Map hint = _mrtrCleanupScheduleLocked()
+        hint.remove("dueAt")
+        // An older accepted job can fire after its replacement was rejected. It must
+        // rearm survivors even while ordinary requests are backing off that rejection.
+        hint.remove("retryAt")
+        try {
+            cleanup = _mrtrSweepLocked()
+            _mrtrScheduleNextCleanupLocked()
+        } catch (Exception sweepErr) {
+            // Required eviction failures remain errors on reservation/replay paths.
+            // Background work has no caller to fail, so preserve records and retry.
+            mcpLog("warn", "mrtr", "Expiry cleanup deferred for 60 seconds: ${sweepErr.message}")
+            _mrtrScheduleCleanupLocked(now() + 60000L)
+        }
+    }
+    cleanup.each { _mrtrCleanupRecord(it as Map) }
+}
+
+// Eviction must be durable before publishing the cache or releasing helper ownership.
+private void _mrtrSetLocked(Map records) {
+    try {
+        _writeStateDurableWrite("mrtrRequests", records)
+    } catch (Exception persistErr) {
+        _writeStateCacheInvalidate()
+        throw persistErr
+    }
+    WRITE_STATE_CACHE.put("mrtrRequests", records)
+    WRITE_STATE_DURABLE_MAPS.add("mrtrRequests")
 }
 
 // Defensive repair if a cache reload exposes an older active record while exact
@@ -2348,17 +2463,10 @@ private List _mrtrSweepLocked() {
     // worker. Expiring it would lose its terminal result and admit an overlapping write.
     def kept = [:]
     def cleanup = []
-    boolean compactedTerminal = false
     stored.each { k, v ->
         def recovered = _mrtrRecoverTerminalEvidenceLocked(k?.toString(),
             v instanceof Map ? v as Map : null)
         if (recovered instanceof Map) v = recovered
-        if (v instanceof Map && v.status == "terminal" && v.containsKey("terminalResult")
-                && v.containsKey("aggregate")) {
-            v = [:] + (v as Map)
-            v.remove("aggregate")
-            compactedTerminal = true
-        }
         boolean executing = v instanceof Map && v.status == "active" &&
             _writeExecutionLiveLocked(v.claimId)
         if (v instanceof Map && (executing ||
@@ -2383,18 +2491,35 @@ private List _mrtrSweepLocked() {
         removable.take(Math.min(removable.size(), sameClass.size() - cap)).each { kept.remove(it.key) }
     }
     if (kept.size() != stored.size()) {
-        _writeStateSetLocked("mrtrRequests", kept)
-    } else if (compactedTerminal) {
-        try {
-            _writeStateSetLocked("mrtrRequests", kept)
-        } catch (Exception compactErr) {
-            // Compaction is opportunistic. Reload the durable legacy shape and retry on a
-            // later request rather than turning an otherwise valid replay into a failure.
-            _writeStateCacheInvalidate()
-            mcpLog("debug", "mrtr", "Terminal record compaction deferred: ${compactErr.message}")
-        }
+        _mrtrSetLocked(kept)
     }
     _mrtrSweepWorkItemsLocked()
+    Map hint = _mrtrCleanupScheduleLocked()
+    if (((hint.compactRetryAt ?: 0L) as Long) <= at) {
+        Map compacted = [:]
+        boolean changed = false
+        kept.each { k, v ->
+            if (v.status == "terminal" && v.containsKey("terminalResult") && v.containsKey("aggregate")) {
+                v = [:] + (v as Map)
+                v.remove("aggregate")
+                changed = true
+            }
+            compacted.put(k, v)
+        }
+        if (changed) {
+            try {
+                _mrtrSetLocked(compacted)
+                hint.remove("compactRetryAt")
+            } catch (Exception compactErr) {
+                // Keep the already-committed eviction, while replay uses durable survivors.
+                hint.compactRetryAt = at + 60000L
+                mcpLog("warn", "mrtr", "Terminal record compaction deferred for 60 seconds: ${compactErr.message}")
+                _mrtrScheduleCleanupLocked(at + 60000L)
+            }
+        } else {
+            hint.remove("compactRetryAt")
+        }
+    }
     return cleanup
 }
 
@@ -2435,7 +2560,7 @@ private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
     kept.putAll(stored)
     int removeCount = Math.max(1, sameClass.size() - cap + 1)
     removable.take(Math.min(removeCount, removable.size())).each { kept.remove(it.key) }
-    _writeStateSetLocked("mrtrRequests", kept)
+    _mrtrSetLocked(kept)
     return kept.count { k, v -> readSet.contains(v?.leafTool?.toString()) == readLeaf } < cap
 }
 
@@ -3495,16 +3620,20 @@ def _cleanupRetiredToolState() {
     String appKey = app?.id?.toString() ?: 'unidentified'
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         if (RETIRED_TOOL_STATE_CLEANED.contains(appKey)) return
+        def retryAt = RETIRED_TOOL_STATE_RETRY_AT.get(appKey)
+        if (retryAt != null && (retryAt as Long) > now()) return
         try {
             ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
              'requiredParamsByToolFingerprint'].each { key ->
-                atomicState.remove(key)
-                state.remove(key)
+                if (atomicState.containsKey(key)) atomicState.remove(key)
+                if (state.containsKey(key)) state.remove(key)
             }
             RETIRED_TOOL_STATE_CLEANED.add(appKey)
+            RETIRED_TOOL_STATE_RETRY_AT.remove(appKey)
         } catch (Exception e) {
-            log.warn "Retired tool metadata cleanup will retry: ${e.message}"
+            RETIRED_TOOL_STATE_RETRY_AT.put(appKey, now() + 60000L)
+            mcpLog("warn", "server", "Retired tool metadata cleanup deferred for 60 seconds: ${e.message}")
         }
     }
 }

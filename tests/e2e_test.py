@@ -6960,6 +6960,10 @@ class TestRunner:
                 assert error.get("code") == -32602 and "original arguments" in error.get("message", ""), (
                     f"continuation accepted a changed nested value at index {index}: {response.text[:500]}"
                 )
+            # Ordinary read traffic also bootstraps expiry cleanup after a reload;
+            # it must leave this still-valid completed write available for exact replay.
+            pong = self.client._send("ping")
+            assert pong.get("resultType") == "complete", f"ping before terminal replay failed: {pong}"
             replay = self.client._send("tools/call", {
                 "name": "hub_manage_rule_machine",
                 "arguments": {"tool": "hub_set_rule", "args": args},

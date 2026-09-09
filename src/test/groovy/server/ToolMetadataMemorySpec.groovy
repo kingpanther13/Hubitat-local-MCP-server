@@ -137,7 +137,7 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         def persisted = new FailingLegacyState()
         persisted.toolSearchCorpus = ['old']
         def peer = newCompiledScriptInstance(app: new TestChildApp(id: 402L), state: [:], atomicState: persisted)
-        peer.metaClass.now = { clock }
+        NOW_OVERRIDE.set({ clock })
         peer.metaClass.mcpLog = { level, category, message -> warnings << [level, category, message] }
 
         when:
