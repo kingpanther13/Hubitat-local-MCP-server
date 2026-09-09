@@ -47,6 +47,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     declared = {"logEnable": True, prefix: False, prefix + "_": True}
     preferences_before = dict(declared)
     preference_attempts = []
+    label_attempts = []
     bypass_changes = []
     bypass = False
 
@@ -57,16 +58,18 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 raise et.McpError("Device not found")
             if name == "hub_get_device":
                 if arguments.get("mode") == "configuration":
-                    assert arguments.get("fields") == []
+                    assert arguments.get("fields") == ["label"]
                     return {
                         "preferenceRead": {"status": "complete"},
                         "availableFields": {"preferences": list(declared)},
+                        "editableFields": [{"name": "label", "valuePresent": True, "value": "Native original"}],
                     }
                 return {"id": "10", "name": "Unlisted", "label": "Original", "commands": []}
             if name == "hub_list_device_events":
                 return {"events": [], "count": 0}
             if name == "hub_update_device":
                 if "label" in arguments:
+                    label_attempts.append(arguments["label"])
                     return {"success": True, "changes": [{"property": "label"}]}
                 patch = arguments["preferences"]
                 preference_attempts.append(patch)
@@ -89,11 +92,59 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     if rejection == "unknown":
         runner._bypass_boundary_checks("10", set_bypass)
     else:
-        with pytest.raises(AssertionError, match="Undeclared preference|accepted an undeclared"):
+        with pytest.raises(AssertionError, match=r"Undeclared preference|accepted an undeclared"):
             runner._bypass_boundary_checks("10", set_bypass)
 
     assert preference_attempts == [{prefix + "__": True}]
     assert declared == preferences_before
+    assert label_attempts == ["Native original _BWTEST", "Native original"]
+    assert bypass_changes == [True, False]
+
+
+@pytest.mark.parametrize("native_label", ["Native original", ""])
+@pytest.mark.parametrize("failure", ["reported", "exception"])
+def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_failure(native_label, failure):
+    current_label = native_label
+    label_attempts = []
+    bypass_changes = []
+    bypass = False
+
+    class FakeClient:
+        def call_tool(self, name, arguments=None):
+            nonlocal current_label
+            arguments = arguments or {}
+            if not bypass:
+                raise et.McpError("Device not found")
+            if name == "hub_get_device":
+                if arguments.get("mode") == "configuration":
+                    return {"editableFields": [{"name": "label", "valuePresent": True, "value": current_label}]}
+                return {"id": "10", "name": "Fallback name", "label": "Summary fallback", "commands": []}
+            if name == "hub_list_device_events":
+                return {"events": [], "count": 0}
+            if name == "hub_update_device" and "label" in arguments:
+                current_label = arguments["label"]
+                label_attempts.append(current_label)
+                if len(label_attempts) == 1:
+                    if failure == "exception":
+                        raise et.McpError("Reply lost after committed rename")
+                    return {"success": False}
+                return {"success": True}
+            raise AssertionError(f"Unexpected boundary call: {name} {arguments}")
+
+    def set_bypass(value):
+        nonlocal bypass
+        bypass = value
+        bypass_changes.append(value)
+        return {"success": True, "updated": {"bypassDeviceAllowlist": value}}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = FakeClient()
+    error_type = et.McpError if failure == "exception" else AssertionError
+    with pytest.raises(error_type, match=r"Reply lost|rename did not succeed"):
+        runner._bypass_boundary_checks("10", set_bypass)
+
+    assert label_attempts == [f"{native_label} _BWTEST", native_label]
+    assert current_label == native_label
     assert bypass_changes == [True, False]
 
 

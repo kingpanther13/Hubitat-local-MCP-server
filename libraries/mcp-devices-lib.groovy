@@ -1379,7 +1379,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
                     }
                 }
             } catch (Exception ignored) {
-                mcpLog('error', 'device', "Device ${deviceId}: /device/accessibleLinkedDevices choices could not be read; retry configuration discovery.")
+                mcpLog('error', 'device', "Device ${d.id}: /device/accessibleLinkedDevices choices could not be read; retry configuration discovery.")
                 field.optionsStatus = 'unavailable'
                 field.reason = 'Native linked-device choices could not be read; retry configuration discovery before retargeting.'
             }

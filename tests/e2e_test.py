@@ -12535,22 +12535,30 @@ class TestRunner:
             # and /device/updateRoom by test_update_device_room_assign_and_unassign (own fixture
             # room + the scaffold switch). What these legs add is the UNLISTED-device path -- the
             # allowlist bypass itself -- which is why the skip still prints.
-            orig_label = dev.get("label") or dev.get("name")
+            configuration = self.client.call_tool("hub_get_device", {
+                "deviceId": unauth, "mode": "configuration", "fields": ["label"],
+            })
+            label_field = next((field for field in configuration.get("editableFields", [])
+                                if field.get("name") == "label"), {})
+            orig_label = label_field.get("value") if label_field.get("valuePresent") is True else None
             cmd_names = [c.get("name") for c in (dev.get("commands") or []) if isinstance(c, dict)]
             orig_room = dev.get("room")
 
-            # (a) label rename via /device/updateLabel, then restore the original (reversible write).
-            if not orig_label:
-                print(f"    [BYPASS LEG SKIPPED] leg (a): device {unauth} has no label/name, so the "
-                      f"UNLISTED-device path for /device/updateLabel was not exercised this run "
+            # (a) preserve the native label, including an empty string; the summary may substitute
+            # the device name. Restore even if a committed rename reports failure or loses its reply.
+            if not isinstance(orig_label, str):
+                print(f"    [BYPASS LEG SKIPPED] leg (a): device {unauth} has no restorable native label, so the "
+                      f"UNLISTED-device label write was not exercised this run "
                       f"(the endpoint itself is covered unconditionally elsewhere)")
-            if orig_label:
-                up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
-                assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
-                assert any(c.get("property") == "label" for c in (up.get("changes") or [])), \
-                    f"bypass label change not recorded: {up}"
-                restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": orig_label})
-                assert restore.get("success") is True, f"bypass label restore did not succeed: {restore}"
+            else:
+                try:
+                    up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
+                    assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
+                    assert any(c.get("property") == "label" for c in (up.get("changes") or [])), \
+                        f"bypass label change not recorded: {up}"
+                finally:
+                    restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": orig_label})
+                    assert restore.get("success") is True, f"bypass label restore did not succeed: {restore}"
 
             # (b) a non-destructive command via /device/runmethod (only if the device exposes refresh).
             if "refresh" in cmd_names:
@@ -12572,9 +12580,6 @@ class TestRunner:
             # (d) reject a guaranteed undeclared preference before mutation. Positive native
             # saves/readback run on the persistent configuration fixtures; an arbitrary
             # unlisted device's existing preferences must remain untouched here.
-            configuration = self.client.call_tool("hub_get_device", {
-                "deviceId": unauth, "mode": "configuration", "fields": [],
-            })
             assert configuration.get("preferenceRead", {}).get("status") == "complete", \
                 f"Cannot establish an undeclared preference from incomplete configuration: {configuration}"
             names = configuration.get("availableFields", {}).get("preferences")
