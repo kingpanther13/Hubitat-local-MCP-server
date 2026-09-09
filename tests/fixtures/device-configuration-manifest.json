@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "driver": "E2E_PERM_Configuration",
+  "replacementDriver": "E2E_PERM_Configuration_Alternate",
+  "profiles": [
+    {"path": "child-sdk", "label": "BAT_E2E_KEEP_Configuration_Child", "authorized": true},
+    {"path": "standalone-sdk", "label": "BAT_E2E_KEEP_Configuration_StandaloneSDK", "authorized": true},
+    {"path": "standalone-bypass", "label": "BAT_E2E_KEEP_Configuration_StandaloneBypass", "authorized": false}
+  ],
+  "nativeFields": {
+    "zigbeeId": {"expectation": "pending"},
+    "dashboardIds": {"expectation": "pending"},
+    "meshEnabled": {"expectation": "pending"},
+    "meshFullSync": {"expectation": "pending"},
+    "homeKitEnabled": {"expectation": "pending"},
+    "amazonAlexaEnabled": {"expectation": "pending"},
+    "googleHomeEnabled": {"expectation": "pending"},
+    "retryEnabled": {"expectation": "pending"}
+  }
+}

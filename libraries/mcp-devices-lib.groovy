@@ -1719,7 +1719,7 @@ private Map _deviceReadFragment(Map snapshot, String token, int start) {
 }
 
 private String _deviceReadSelection(deviceId, String mode, sections, fields, boolean listed) {
-    return groovy.json.JsonOutput.toJson([app?.id?.toString(), deviceId.toString(), mode, sections, fields, listed])
+    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), deviceId.toString(), mode, sections, fields, listed]))
 }
 
 private Map _deviceReadContinuation(String cursor, String selection) {
