@@ -4304,8 +4304,12 @@ def check_sandbox_map_subscripts(
             raw_body = source[opening + 1:end]
             explicit_maps = set(map_decl.findall(method.group("params")))
             explicit_maps.update(map_decl.findall(body))
-            # A local untyped declaration can shadow a typed script field.
+            # Locals and parameters can shadow a typed script field. The
+            # field's type must not exempt accesses on the shadowing receiver.
             shadowed = set(re.findall(rf"\bdef\s+({ident})\b", body))
+            shadowed.update(re.findall(
+                rf"\b({ident})\s*(?:=[^,]*)?(?=,|$)", method.group("params")
+            ))
             explicit_maps.update(field_maps - shadowed)
             maps = (explicit_maps | set(map_init.findall(body)) |
                     set(checked_map.findall(body)) | set(conditional_map.findall(body)) |

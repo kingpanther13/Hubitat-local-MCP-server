@@ -599,6 +599,15 @@ def write() {
     assert len(sandbox_map_findings(source)) == 1
 
 
+def test_untyped_parameter_shadow_does_not_inherit_script_field_exemption():
+    source = """@groovy.transform.Field static final Map CACHE = new HashMap()
+def write(CACHE) {
+ if (CACHE instanceof Map) CACHE['fields'] = false
+}
+"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
 def test_unknown_helper_return_is_not_assumed_to_be_map():
     source = """def copy(String key) {
  def result = buildThing()
