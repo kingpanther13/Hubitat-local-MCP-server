@@ -2194,7 +2194,7 @@ private def _mrtrCanonicalArgs(value) {
         def canonical = [:]
         value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }.each { entry ->
             String key = entry.key.toString()
-            canonical[key] = _mrtrCanonicalArgs(entry.value)
+            canonical.put(key, _mrtrCanonicalArgs(entry.value))
         }
         return canonical
     }
@@ -3262,7 +3262,7 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
         def copy = new LinkedHashMap()
         (value as Map).each { key, child ->
             if (backupMetadata && key?.toString() == "brokenBefore") return
-            copy[key] = _publicToolResultValue(child, key?.toString() == "backup")
+            copy.put(key, _publicToolResultValue(child, key?.toString() == "backup"))
         }
         return copy
     }

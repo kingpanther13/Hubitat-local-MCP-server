@@ -4204,147 +4204,176 @@ def check_bm25_key_subscripts() -> list[dict]:
 def check_sandbox_map_subscripts(
     src_override: dict[str, str] | None = None,
 ) -> list[dict]:
-    """Guard the verified SandboxSubscriptGuard failure class.
+    """Scan Map reads/writes using the measured Hubitat access contract.
 
-    Hubitat rejects a bracket subscript when a runtime Map key collides with a
-    protected/reflection-like property (the device catalog's ``fields`` key is
-    the reproduced case). Plain Groovy accepts the same source, so this check
-    holds two narrow invariants that ordinary Spock cannot prove:
-
-    * identifiable Maps use ``Map.put`` for keys taken from Map iteration,
-      String parameters, or driver attribute names;
-    * the reproduced literal collision keys are not accessed with bracket
-      syntax in shipped app/library code.
-
-    This is deliberately a source guard: it does not infer return types, follow
-    calls, or prove the safety of every dynamic key. Bounded literal-list keys
-    and numeric indices are not external-key evidence. Live catalog coverage
-    remains the final proof.
+    Lowercase fields/class/metaClass fail on untyped bracket receivers.
+    Explicit Map receivers accept the measured fields/class operations, but
+    metaClass writes attempt a cast. getClass and Fields are valid data keys.
+    Dynamic-key findings remain source candidates: this scanner does not prove
+    interprocedural reachability or infer an exhaustive platform denylist.
     """
     if src_override is None:
-        sources: dict[str, str] = {}
-        candidates = [
+        paths = [
             REPO_ROOT / "hubitat-mcp-server.groovy",
             REPO_ROOT / "hubitat-mcp-rule.groovy",
+            *sorted((REPO_ROOT / "libraries").glob("*.groovy")),
         ]
-        libraries = REPO_ROOT / "libraries"
-        if libraries.is_dir():
-            candidates.extend(sorted(libraries.glob("*.groovy")))
-        for path in candidates:
-            if path.is_file():
-                sources[str(path.relative_to(REPO_ROOT))] = path.read_text(
-                    encoding="utf-8", errors="replace"
-                )
+        sources = {
+            path.relative_to(REPO_ROOT).as_posix(): path.read_text(encoding="utf-8")
+            for path in paths if path.is_file()
+        }
     else:
         sources = src_override
 
-    findings: list[dict] = []
-    identifier = r"[A-Za-z_][A-Za-z0-9_]*"
+    ident = r"[A-Za-z_][A-Za-z0-9_]*"
     map_type = r"(?:Map|LinkedHashMap|HashMap|TreeMap|ConcurrentHashMap)(?:\s*<[^{};=]+?>)?"
-    declaration = re.compile(
-        rf"^\s*(?:(?:private|protected|public)\s+(?:static\s+)?"
-        rf"(?:(?:def|{identifier}(?:<[^{{}}]+>)?)\s+)?|"
-        rf"(?:static\s+)?(?:def|{identifier}(?:<[^{{}}]+>)?)\s+)"
-        rf"(?P<name>{identifier})\s*\((?P<params>[^{{}}]*?)\)\s*\{{",
+    method_re = re.compile(
+        rf"^[ \t]*(?:(?:private|protected|public)\s+)?(?:static\s+)?"
+        rf"(?:(?P<type>{ident}(?:<[^{{}}\n]+>)?)\s+)?"
+        rf"(?P<name>(?!(?:if|for|while|switch|catch|synchronized|else)\b){ident})\s*\((?P<params>[^{{}}]*?)\)\s*\{{",
         re.MULTILINE,
     )
-    dynamic_assignment = re.compile(
-        rf"\b({identifier}(?:\.{identifier})*)\s*\[\s*"
-        rf"({identifier}(?:\??\.{identifier})*)\s*\]\s*=(?!=|~)"
+    map_decl = re.compile(rf"\b{map_type}\s+({ident})\b")
+    map_init = re.compile(
+        rf"\b({ident}(?:\.{ident})*)\s*=\s*"
+        rf"(?:new\s+{map_type}\s*\(|\[[^\]\n]*:)"
     )
-    typed_map = re.compile(rf"\b{map_type}\s+({identifier})\b")
-    constructed_map = re.compile(
-        rf"\b({identifier}(?:\.{identifier})*)\s*=\s*"
-        rf"(?:new\s+{map_type}\s*\(|\[\s*(?:{identifier}\s*)?:)"
+    checked_map = re.compile(rf"\b({ident})\s+(?:instanceof|as)\s+Map\b")
+    alias_re = re.compile(rf"\b({ident})\s*=\s*({ident})\b(\s*\()?")
+    subscript_re = re.compile(
+        rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
+        rf"(?P<key>{ident}(?:\??\.{ident})*(?:\(\))?)\s*\]"
     )
-    checked_map = re.compile(rf"\b({identifier})\s+(?:instanceof|as)\s+Map\b")
-    entry_iteration = re.compile(
-        rf"\??\.each\s*\{{\s*({identifier})\s*,\s*{identifier}\s*->"
+    literal_re = re.compile(
+        rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
+        r"(?P<quote>['\"])(?P<key>fields|class|metaClass)(?P=quote)\s*\]"
     )
-    attribute_alias = re.compile(
-        rf"\b(?:def|String)\s+({identifier})\s*=\s*{identifier}\??\.name\b"
+    each_re = re.compile(
+        rf"(?P<receiver>{ident}(?:\.{ident})*)\??\.each\s*\{{\s*"
+        rf"(?P<key>{ident})\s*,\s*{ident}\s*->"
     )
-    literal_collision = re.compile(
-        r"\b[A-Za-z_][A-Za-z0-9_.]*\s*\[\s*"
-        r"(?P<quote>['\"])(?:fields|getClass)(?P=quote)\s*\]"
+    # The raw literal is correlated against executable code below; a quoted
+    # example in a comment cannot establish a safe branch.
+    bounded_if_re = re.compile(
+        rf"\bif\s*\(\s*(?P<key>{ident})\s*==\s*"
+        r"""(?P<quote>['"])(?P<literal>[^'"\n]+)(?P=quote)"""
+        r"\s*(?:&&[^{}]*?)?\)\s*\{"
     )
+    collisions = {"fields", "class", "metaClass"}
 
-    def add(path: str, line_no: int, source_line: str, message: str) -> None:
-        findings.append({
-            "file": path,
-            "line": line_no,
-            "severity": "error",
-            "rule": "sandbox-map-key-subscript",
-            "message": message,
-            "source": source_line.strip(),
-        })
+    def close_brace(code: str, opening: int) -> int:
+        depth = 1
+        for pos in range(opening + 1, len(code)):
+            depth += (code[pos] == "{") - (code[pos] == "}")
+            if depth == 0:
+                return pos
+        return len(code)
 
+    masked = {
+        path: "\n".join(
+            clean.ljust(len(raw))
+            for raw, clean in zip(source.split("\n"), strip_comments_and_strings(source))
+        )
+        for path, source in sources.items()
+    }
+    map_returns = {
+        match.group("name")
+        for code in masked.values() for match in method_re.finditer(code)
+        if re.fullmatch(map_type, match.group("type") or "")
+    }
+    findings = []
     for path, source in sources.items():
-        original_lines = source.split("\n")
-        stripped_lines = strip_comments_and_strings(source)
-
-        # Literal strings are blanked by strip_comments_and_strings. Correlate
-        # each raw match with the same source offsets in the stripped line: a
-        # match embedded in a comment/string has a blanked receiver and is
-        # ignored, while executable ``map['fields']`` retains its receiver and
-        # opening bracket at those positions.
-        for index, raw_line in enumerate(original_lines):
-            stripped = stripped_lines[index]
-            for match in literal_collision.finditer(raw_line):
-                code_prefix = stripped[match.start():match.end()]
-                if "[" not in code_prefix or not re.search(r"[A-Za-z_]", code_prefix):
-                    continue
-                key_match = re.search(r"['\"](fields|getClass)['\"]", match.group(0))
-                key = key_match.group(1) if key_match else "protected key"
-                add(path, index + 1, raw_line,
-                    f"Map bracket access with sandbox-colliding literal key '{key}'; use Map.get/put.")
-
-        code = "\n".join(stripped_lines)
-
-        def closing_brace(text: str, opening: int) -> int:
-            depth = 1
-            for offset in range(opening + 1, len(text)):
-                if text[offset] == "{":
-                    depth += 1
-                elif text[offset] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        return offset
-            return len(text)
-
-        # Evidence is method-local and independent of the method's name. A
-        # two-argument Map iteration scopes its key to that closure; a later
-        # bounded loop reusing the variable does not inherit that evidence.
-        for method in declaration.finditer(code):
+        code = masked[path]
+        raw_lines = source.split("\n")
+        for method in method_re.finditer(code):
             opening = method.end() - 1
-            end = closing_brace(code, opening)
+            end = close_brace(code, opening)
             body = code[opening + 1:end]
-            maps = set(typed_map.findall(method.group("params")))
-            maps.update(typed_map.findall(body))
-            maps.update(constructed_map.findall(body))
-            maps.update(checked_map.findall(body))
-            parameter_keys = set(re.findall(rf"\bString\s+({identifier})\b", method.group("params")))
-            attribute_keys = set(attribute_alias.findall(body))
-            iteration_keys = [
-                (match.group(1), match.end(), closing_brace(body, body.index("{", match.start())))
-                for match in entry_iteration.finditer(body)
+            raw_body = source[opening + 1:end]
+            explicit_maps = set(map_decl.findall(method.group("params")))
+            explicit_maps.update(map_decl.findall(body))
+            maps = explicit_maps | set(map_init.findall(body)) | set(checked_map.findall(body))
+            aliases = list(alias_re.finditer(body))
+            for _ in range(len(aliases) + 1):
+                before = set(maps)
+                for alias in aliases:
+                    dest, origin, call = alias.groups()
+                    if (call and origin in map_returns) or (not call and origin in maps):
+                        maps.add(dest)
+                if before == maps:
+                    break
+            string_params = set(re.findall(rf"\bString\s+({ident})\b", method.group("params")))
+            attr_names = set(re.findall(
+                rf"\b(?:def|String)\s+({ident})\s*=\s*{ident}\??\.(?:name|key)\b", body
+            ))
+            iterations = [
+                (m.group("key"), m.end(), close_brace(body, body.index("{", m.start())))
+                for m in each_re.finditer(body)
             ]
-            for match in dynamic_assignment.finditer(body):
-                receiver, key = match.groups()
+            # Calls such as (value as Map).each and arbitrary Map-like values
+            # also provide candidate keys; keep their closure scopes local.
+            iterations.extend(
+                (m.group(1), m.end(), close_brace(body, body.index("{", m.start())))
+                for m in re.finditer(rf"\.each\s*\{{\s*({ident})\s*,\s*{ident}\s*->", body)
+            )
+            bounded = []
+            for branch in bounded_if_re.finditer(raw_body):
+                if branch.group("literal") in collisions:
+                    continue
+                if not body[branch.start():].startswith("if"):
+                    continue
+                brace = branch.end() - 1
+                bounded.append((branch.group("key"), brace, close_brace(body, brace)))
+
+            def add(pos: int, message: str, severity: str = "error") -> None:
+                line = code.count("\n", 0, opening + 1 + pos)
+                findings.append({
+                    "file": path, "line": line + 1, "severity": severity,
+                    "rule": "sandbox-map-key-subscript", "message": message,
+                    "source": raw_lines[line].strip(),
+                })
+
+            for literal in literal_re.finditer(raw_body):
+                receiver, key = literal.group("receiver", "key")
                 if receiver not in maps:
                     continue
-                external_key = (
-                    key in parameter_keys or key in attribute_keys or key.endswith(".name") or
-                    any(key == name and start <= match.start() < stop
-                        for name, start, stop in iteration_keys)
-                )
-                if not external_key:
+                if not body[literal.start():].startswith(receiver):
                     continue
-                index = code.count("\n", 0, opening + 1 + match.start())
-                add(path, index + 1, original_lines[index],
-                    f"External key '{key}' assigned through {receiver}[{key}] in {method.group('name')}; use Map.put.")
+                writing = bool(re.match(r"\s*=(?!=|~)", body[literal.end():]))
+                if receiver in explicit_maps and (key != "metaClass" or not writing):
+                    continue
+                add(literal.start(),
+                    f"Measured {'write' if writing else 'read'} collision for '{key}' "
+                    f"on {receiver}; preserve the key with Map.{'put' if writing else 'get'}.")
 
-    return findings
+            for access in subscript_re.finditer(body):
+                receiver, key = access.group("receiver", "key")
+                if receiver not in maps:
+                    continue
+                writing = bool(re.match(r"\s*=(?!=|~)", body[access.end():]))
+                if receiver in explicit_maps and not writing:
+                    continue
+                if any(key == name and start < access.start() < stop
+                       for name, start, stop in bounded):
+                    continue
+                iterated = any(key == name and start <= access.start() < stop
+                               for name, start, stop in iterations)
+                attribute = key in attr_names or bool(re.search(r"\.(?:name|key)(?:\.toString\(\))?$", key))
+                if not (iterated or attribute or key in string_params):
+                    continue
+                # A String parameter alone does not prove its callers admit a
+                # colliding name. Typed writes have a narrower metaClass hazard.
+                # Iteration and String types cannot establish caller bounds.
+                # Keep candidates visible without equating them to literal
+                # collisions; the live-validation ledger supplies reachability.
+                severity = "warning"
+                add(access.start(),
+                    f"Dynamic Map {'write' if writing else 'read'} candidate "
+                    f"{receiver}[{key}] in {method.group('name')}; "
+                    f"use Map.{'put' if writing else 'get'} for unbounded data keys "
+                    "(caller key bounds require separate verification).", severity)
+    return sorted(findings, key=lambda item: (item["file"], item["line"]))
+
 
 def check_logs_json_snapshot_guard() -> list[dict]:
     """Slow-read guard for the hub's /logs/json page. That one document carries every device and

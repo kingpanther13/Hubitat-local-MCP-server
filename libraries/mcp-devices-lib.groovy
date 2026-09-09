@@ -1738,7 +1738,7 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
                             mcpLog("error", "send-command", "date format failed for attribute '${st.name}' on ${deviceLabel}: ${dt.class.simpleName}")
                         }
                     }
-                    snapshot[st.name] = [value: st.value, timestamp: ts]
+                    snapshot.put(st.name, [value: st.value, timestamp: ts])
                 }
             }
         } else {
@@ -1762,7 +1762,7 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
                         // writing) would leave a systemic read failure fully invisible.
                         mcpLog("error", "send-command", "currentValue read failed for attribute '${name}' on ${deviceLabel}: ${cv.class.simpleName}")
                     }
-                    snapshot[name] = [value: val, timestamp: null]
+                    snapshot.put(name, [value: val, timestamp: null])
                 }
             }
         }
@@ -1879,7 +1879,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
             if (name != null) {
                 def val = (st instanceof Map) ? st.value : st
                 def rawDate = (st instanceof Map) ? st.date : null
-                snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]
+                snapshot.put(name, [value: val, timestamp: _formatBypassStateDate(rawDate)])
             }
         }
         return snapshot

@@ -352,7 +352,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     def "bypass ON: toolSendCommand fires via /device/runmethod and snapshots from fullJson"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
-        registerFullJson({ 'on' })
+        def model = fullJsonModel('on')
+        model.device.currentStates.put('fields', [value: 'driver fields', date: null])
+        model.device.currentStates.put('getClass', [value: 42, date: null])
+        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params -> JsonOutput.toJson(model) }
         def posted = null
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             posted = [path: path, body: body]; return [success: true, message: null]
@@ -373,6 +376,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.command == 'on'
         result.device == 'Unlisted Switch'
         result.state.switch.value == 'on'
+        result.state.get('fields') == [value: 'driver fields', timestamp: null]
+        result.state.get('getClass') == [value: 42, timestamp: null]
         // TZ-robust: the snapshot reformats the offset-bearing ISO date in the JVM default zone, so
         // compute the expected from the SAME instant+format (a literal MT string false-fails on UTC CI).
         result.state.switch.timestamp == Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", '2026-06-27T10:30:00.000-0600').format('yyyy-MM-dd HH:mm:ss')
