@@ -672,7 +672,8 @@ def initialize() {
     // previously-tracked set so we removeInUseGlobalVar for vars no
     // longer referenced (rule edited away from the var, rule deleted).
     _refreshHubVarInUseRegistrations()
-    if (state.capturedDeviceStates || atomicState.capturedDeviceStates) {
+    // Re-arm file cleanup too: unschedule() may have canceled a failed-delete retry.
+    if (state.capturedDeviceStates || atomicState.capturedDeviceStates || atomicState.captureIndex != null) {
         _scheduleCaptureMigration(5000)
     }
 }

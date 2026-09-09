@@ -97,6 +97,24 @@ class CapturedStateStorageSpec extends ToolSpecBase {
         downloads == 0
     }
 
+    def "initialization resumes cleanup for an empty committed index without file IO"() {
+        given:
+        atomicStateMap.captureIndex = [schema: 1, revision: 'committed', entries: [:]]
+        stateMap.accessToken = 'tok'
+        stateMap.updateCheck = [checkedAt: 1L]
+        script.metaClass._subscribeToAllHubVariables = { -> }
+        script.metaClass._refreshHubVarInUseRegistrations = { -> }
+
+        when:
+        script.initialize()
+
+        then:
+        lifecycleCalls.contains('unschedule')
+        runInMillisCalls.any { it[1] == 'captureMigrationStep' }
+        uploads == 0
+        downloads == 0
+    }
+
     def "cold orphan cleanup only deletes this app's unreferenced generated files"() {
         given:
         script.saveCapturedState('scene', ['1': [level: 1]])
