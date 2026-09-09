@@ -309,7 +309,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     // checkForUpdate/_subscribe*/_refresh* are class-1 script methods.
     // -----------------------------------------------------------------------
 
-    def "initialize() unschedules BEFORE scheduling the daily checkForUpdate"() {
+    def "initialize() unschedules BEFORE rearming MRTR cleanup and the daily update check"() {
         given:
         lifecycleCalls.clear()
         stateMap.accessToken = 'tok'                  // skip createAccessToken
@@ -317,6 +317,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         script.metaClass.checkForUpdate = { -> }
         script.metaClass._subscribeToAllHubVariables = { -> }
         script.metaClass._refreshHubVarInUseRegistrations = { -> }
+        script.metaClass._mrtrEnsureCleanupScheduled = { boolean reset -> lifecycleCalls << "mrtrCleanup:${reset}".toString() }
 
         when:
         script.initialize()
@@ -324,7 +325,8 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         then: 'both wire-up calls fired, unschedule strictly before schedule'
         lifecycleCalls.indexOf('unschedule') >= 0
         lifecycleCalls.indexOf('schedule') >= 0
-        lifecycleCalls.indexOf('unschedule') < lifecycleCalls.indexOf('schedule')
+        lifecycleCalls.indexOf('mrtrCleanup:true') > lifecycleCalls.indexOf('unschedule')
+        lifecycleCalls.indexOf('mrtrCleanup:true') < lifecycleCalls.indexOf('schedule')
     }
 
     // -----------------------------------------------------------------------

@@ -79,6 +79,26 @@ class MrtrCleanupSpec extends ToolSpecBase {
         jobs().size() == scheduled
     }
 
+    def 'unchanged fractional expiry does not repeatedly replace its rounded cleanup job'() {
+        given:
+        long at = script.now()
+
+        when:
+        script._mrtrPutLocked('write', terminal(at + 1501L))
+        NOW_OVERRIDE.set({ at + 100L })
+        script._mrtrPutLocked('write', terminal(at + 1501L))
+        script._mrtrPutLocked('later', terminal(at + 1601L))
+
+        then:
+        jobs()*.getAt(0) == [2]
+
+        when: 'a deadline needing an earlier actual callback arrives'
+        script._mrtrPutLocked('earlier', terminal(at + 500L))
+
+        then:
+        jobs()*.getAt(0) == [2, 1]
+    }
+
     def 'ping bootstrap and lifecycle reset rearm durable records without repeated scheduling'() {
         given:
         atomicStateMap.mrtrRequests = [old: terminal(script.now() - 1L)]
@@ -296,7 +316,7 @@ class MrtrCleanupSpec extends ToolSpecBase {
         peer._writeStateCacheInvalidate()
 
         when:
-        peer."$operation"()
+        peer."$operation"(*arguments)
 
         then:
         noExceptionThrown()
@@ -304,7 +324,11 @@ class MrtrCleanupSpec extends ToolSpecBase {
         if (operation == 'runMrtrCleanup') assert jobs().last()[0] == 60
 
         where:
-        operation << ['_cleanupRetiredToolState', '_mrtrEnsureCleanupScheduled', 'runMrtrCleanup']
+        operation                       | arguments
+        '_cleanupRetiredToolState'       | []
+        '_mrtrEnsureCleanupScheduled'    | []
+        'runMrtrCleanup'                 | []
+        '_mrtrCleanupRecord'             | [[checkpoint: [clonerAppId: 'invalid']]]
     }
 
     def 'background persistence failure requeues a bounded retry and later removes expired records'() {
