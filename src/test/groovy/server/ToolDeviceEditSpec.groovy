@@ -30,6 +30,12 @@ import support.ToolSpecBase
  */
 class ToolDeviceEditSpec extends ToolSpecBase {
 
+    def setup() {
+        hubGet.register('/device/drivers') {
+            '{"drivers":[{"id":500,"type":"sys"},{"id":12,"type":"sys"},{"id":999,"type":"sys"}]}'
+        }
+    }
+
     private static String completeDeviceFormJson(String text) {
         def full = new groovy.json.JsonSlurper().parseText(text)
         def defaults = [id: 10, version: 0, controllerType: 'LAN', name: 'Fixture', label: '',
@@ -544,6 +550,90 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         postedBody.body.contains('name=Generic+Switch')
     }
 
+    @spock.lang.Unroll
+    def "tags verification accepts native #nativeTags on the #route path"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = route == 'bypass'
+        if (route != 'bypass') childDevicesList << new TestDevice(id: 10, label: 'Office Lamp')
+        def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":10,"label":"Office Lamp","tags":"original"}}'))
+        hubGet.register('/device/fullJson/10') { groovy.json.JsonOutput.toJson(model) }
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body ->
+            forms << body
+            model.device.tags = nativeTags
+            if (route == 'extended') model.device.notes = 'Changed notes'
+            ''
+        }
+        def patch = [deviceId: '10', tags: wanted]
+        if (route == 'extended') patch.notes = 'Changed notes'
+
+        when:
+        def result = script.toolUpdateDevice(patch)
+
+        then:
+        forms.size() == 1
+        result.success == true
+        result.changes.find { it.property == 'tags' } != null
+        !result.errors
+
+        where:
+        [route, nativeTags, wanted] << ['listed', 'extended', 'bypass'].collectMany { path ->
+            [['kitchen,downstairs', ['kitchen', 'downstairs']],
+             [['kitchen', 'downstairs'], ['kitchen', 'downstairs']],
+             [[' kitchen ', 'downstairs', ''], ['kitchen', 'downstairs']],
+             ['', []], [[], []], [null, []]].collect { row -> [path, row[0], row[1]] }
+        }
+    }
+
+    @spock.lang.Unroll
+    def "a missing tags readback is not a confirmed empty tag set on the #route path"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = route == 'bypass'
+        if (route != 'bypass') childDevicesList << new TestDevice(id: 10, label: 'Office Lamp')
+        def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":10,"tags":"original"}}'))
+        hubGet.register('/device/fullJson/10') { groovy.json.JsonOutput.toJson(model) }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body ->
+            model.device.remove('tags')
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', tags: []])
+
+        then:
+        result.success == false
+        !result.changes.find { it.property == 'tags' }
+        result.errors.find { it.property == 'tags' }
+
+        where:
+        route << ['listed', 'bypass']
+    }
+
+    def "a listed tags form preserves an earlier SDK label update and explicit null icon and notes"() {
+        given:
+        def device = new TestDevice(id: 10, label: 'Office Lamp')
+        childDevicesList << device
+        def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":10,"label":"Office Lamp","tags":"","defaultIcon":null,"icon":"fallback-must-not-be-used","notes":null}}'))
+        device.metaClass.setLabel = { String value -> model.device.label = value }
+        hubGet.register('/device/fullJson/10') { groovy.json.JsonOutput.toJson(model) }
+        def posted
+        script.metaClass.hubInternalPostFormRaw = { String path, String body ->
+            posted = body
+            model.device.tags = 'kitchen'
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', label: 'New label', tags: ['kitchen']])
+
+        then:
+        result.success == true
+        posted.contains('label=New+label')
+        posted.contains('defaultIcon=&')
+        posted.contains('notes=&') || posted.endsWith('notes=')
+        !posted.contains('fallback-must-not-be-used')
+    }
+
     def "toolUpdateDevice tags restores label/name/dni via SDK when the wholesale form blanked them"() {
         given:
         def restored = [:]
@@ -776,10 +866,11 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/device/createVirtual' }
     }
 
-    def "toolCreateDevice retries an exact Driver not found refusal through the current Vue createVirtual path"() {
-        given: 'the compatible-catalog installer refuses a user driver, while the manual add-by-driver endpoint accepts it'
+    def "toolCreateDevice selects the user-driver create route before attempting any creation"() {
+        given:
+        hubGet.register('/device/drivers') { '{"drivers":[{"id":500,"type":"usr"}]}' }
         hubGet.register('/device/sysDriverByIdJson/500') { params ->
-            '{"success":false,"errorMessage":"Driver not found"}'
+            '{"success":false,"errorMessage":"Driver 500 not found."}'
         }
         hubGet.register('/device/createVirtual?deviceTypeId=500') { params ->
             // Current Vue treats a returned deviceId as success; this response has no success flag.
@@ -797,10 +888,55 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.deviceId == '777'
         result.deviceTypeId == '500'
         hubGet.calls*.key == [
-            '/device/sysDriverByIdJson/500',
+            '/device/drivers',
             '/device/createVirtual?deviceTypeId=500',
             '/device/fullJson/777'
         ]
+    }
+
+    @spock.lang.Unroll
+    def "an unusable driver catalog #catalog refuses creation before either mutating endpoint"() {
+        given:
+        hubGet.register('/device/drivers') { catalog }
+        hubGet.register('/device/sysDriverByIdJson/500') { '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/createVirtual?deviceTypeId=500') { '{"deviceId":778}' }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then:
+        result.success == false
+        result.error
+        hubGet.calls*.key == ['/device/drivers']
+
+        where:
+        catalog << ['<html>Login</html>', '{}', '{"drivers":[]}',
+            '{"drivers":[{"id":500}]}', '{"drivers":[{"id":500,"type":"dep"}]}',
+            '{"drivers":[{"id":500,"type":"unknown"}]}',
+            '{"drivers":[{"id":500,"type":"usr"},{"id":500,"type":"sys"}]}']
+    }
+
+    @spock.lang.Unroll
+    def "a #driverType creation with #failure never tries a second create route"() {
+        given:
+        hubGet.register('/device/drivers') { groovy.json.JsonOutput.toJson([drivers: [[id: 500, type: driverType]]]) }
+        def path = driverType == 'usr' ? '/device/createVirtual?deviceTypeId=500' : '/device/sysDriverByIdJson/500'
+        hubGet.register(path) {
+            if (failure == 'transport loss') throw new RuntimeException('connection dropped after request')
+            if (failure == 'non-JSON response') return '<html>Proxy error</html>'
+            if (failure == 'possible created ID') return '{"success":false,"deviceId":777,"errorMessage":"Driver not found"}'
+            return '{"success":false,"errorMessage":"Driver not found"}'
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then:
+        result.success == false
+        hubGet.calls*.key == ['/device/drivers', path]
+
+        where:
+        [driverType, failure] << [['sys', 'usr'], ['transport loss', 'non-JSON response', 'possible created ID', 'explicit refusal']].combinations()
     }
 
     def "toolCreateDevice does not retry after an ambiguous primary create exception"() {
