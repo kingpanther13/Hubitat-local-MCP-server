@@ -41,6 +41,7 @@
 @groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
 // Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
+@groovy.transform.Field static final Map CAPTURE_STORES = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
 // freshly scheduled worker execution can read an atomicState snapshot that predates
@@ -337,7 +338,7 @@ def mainPage() {
             input "debugLogging", "bool", title: "Enable Hubitat Console Logging", defaultValue: false,
                   description: "Logs to Hubitat's built-in log viewer"
             input "maxCapturedStates", "number", title: "Max Captured States",
-                  description: "Maximum number of unique state captures to store (default: 20)",
+                  description: "Maximum temporary legacy-rule captures (default: 20); lost on hub restart or app code reload",
                   defaultValue: 20, range: "1..100", required: false
             input "loopGuardMax", "number", title: "Loop Guard: Max Executions",
                   description: "Auto-disable a rule after this many executions within the time window (default: 30)",
@@ -573,6 +574,7 @@ def installed() {
         WRITE_REQUEST_LEASES.clear()
         _writeStateCacheInvalidate()
     }
+    _resetCaptureStore()
     initialize()
 }
 
@@ -616,21 +618,11 @@ def updated() {
     }
     state.customEngineMigrated = true
 
-    // ===== One-time captured-states state -> atomicState migration =====
-    // Captured device states moved from `state` to `atomicState`. Carry any
-    // pre-existing captures across so a restore_state that worked before the
-    // update still finds them -- otherwise they'd be orphaned in `state` and
-    // silently disappear. One-shot: only copies when atomicState is still empty.
-    if (state.capturedDeviceStates && !atomicState.capturedDeviceStates) {
-        atomicState.capturedDeviceStates = state.capturedDeviceStates
-        def migratedCount = atomicState.capturedDeviceStates.size()
-        state.remove("capturedDeviceStates")
-        mcpLog("info", "capture-migration", "Migrated ${migratedCount} captured state(s) from state to atomicState")
-    }
 }
 
 def uninstalled() {
     log.info "MCP Rule Server uninstalled"
+    _resetCaptureStore()
 
     // Clean up this app's hub-variable in-use registrations so deleting the
     // app doesn't leave Hubitat warning users about vars no rule references
@@ -687,6 +679,8 @@ def initialize() {
     // previously-tracked set so we removeInUseGlobalVar for vars no
     // longer referenced (rule edited away from the var, rule deleted).
     _refreshHubVarInUseRegistrations()
+    // Shed persisted legacy payloads even when no rule accesses captures again.
+    if (state.capturedDeviceStates || atomicState.capturedDeviceStates) countCapturedStates()
 }
 
 
@@ -8744,7 +8738,7 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - set_color: Set color via hue/saturation/level — {deviceId, hue (0-100), saturation (0-100), level (0-100, optional)}
 - set_color_temperature: Set color temperature — {deviceId, temperature (Kelvin)}
 - lock / unlock: Lock or unlock a lock — {deviceId}
-- capture_state: Capture device states for later restore — {deviceIds, stateId? (optional, default "default")}
+- capture_state: Capture device states in memory for later restore (lost on hub restart or app code reload) — {deviceIds, stateId? (optional, default "default")}
 - restore_state: Restore previously captured states — {stateId? (optional, default "default")}
 - send_notification: Send a notification to a device — {deviceId, message}
 - variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}
