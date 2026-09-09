@@ -1,40 +1,5 @@
 # Testing
 
-### Manual CodeQL branch scan
-
-`CodeQL Branch Scan` runs the default security suites for GitHub Actions,
-JavaScript/TypeScript and Python on a selected ref, without a PR or hub access:
-
-```bash
-gh workflow run codeql-manual.yml --ref <branch> --repo kingpanther13/Hubitat-local-MCP-server
-```
-
-The narrow push trigger registers and validates this workflow when its own
-files change, allowing the command above to be exercised before the initial
-merge as well. It uses a pinned official CodeQL CLI bundle, runs no application tests,
-and selects supported source files changed in `main...HEAD`. Copied reference
-material under `resources/hub2-source/` is excluded; languages with no changed
-sources skip analysis. Only selected files are copied, preserving relative paths,
-into temporary scan directories on the GitHub runner; extraction never receives
-the whole checkout. The result gate also restricts findings to those files. The corresponding files
-on `main` are scanned with the same queries to identify existing findings.
-The gate fails on new findings or incomplete analysis. It compares rule, file and CodeQL line
-fingerprint, including duplicate counts, so unrelated line shifts do not reopen
-existing findings. Each language uploads its exact file scope and revision SHAs,
-plus SARIF reports for the sources actually scanned. A newly added file needs
-no synthetic baseline scan. Scope evidence is also retained when a language has
-no changed files. This check covers changed files, including unchanged lines
-inside them; it is not a whole-repository audit or a scan of Groovy. Restricting
-extraction can limit cross-file analysis, so managed CodeQL remains the broader
-security check.
-
-The existing GitHub-managed CodeQL setup continues independently. Default setup
-rejects CodeQL SARIF uploads, so this lane publishes Actions artifacts instead of
-uploading into code scanning. It does not replace the managed PR checks or scan
-Groovy; sandbox lint and the Groovy lanes cover that language.
-
-### Groovy unit tests
-
 Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `./gradlew test` on every PR and push to `main` (`.github/workflows/unit-tests.yml`).
 
 - **Test framework:** Spock 2.3 on Groovy 3.0 (Hubitat's hub runtime is Groovy 2.4, and `eighty20results/hubitat_ci` actively tests its behaviour against that runtime — case-insensitive enum matching, locale-safe `toLowerCase`, etc. — so Groovy 3.0 stays the closest practical match).

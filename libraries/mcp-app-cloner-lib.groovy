@@ -839,11 +839,11 @@ private Map _rmRestoreFromBackup(Map entry) {
     snapshot?.statusJson?.appSettings?.each { s ->
         def n = s?.name?.toString()
         if (n && !savedSchema.containsKey(n)) {
-            savedSchema[n] = [
+            savedSchema.put(n, [
                 name: n,
                 type: s?.type?.toString(),
                 multiple: s?.multiple == true
-            ]
+            ])
         }
     }
     // Two steps that fail differently: a rejected replay leaves the rule as it was (nothing is
@@ -855,7 +855,7 @@ private Map _rmRestoreFromBackup(Map entry) {
     // those through the update endpoint is at best a no-op and at worst a press. The replay of one
     // such snapshot answered 500 on a live 2.5.1.177 hub; the same shapes replay cleanly without
     // the button rows. Replay only value-bearing inputs.
-    def replaySettings = savedSettings.findAll { k, v -> savedSchema[k.toString()]?.type != "button" }
+    def replaySettings = savedSettings.findAll { k, v -> savedSchema.get(k.toString())?.type != "button" }
     def skippedButtons = (savedSettings.keySet() - replaySettings.keySet()).collect { it.toString() }.sort()
     // A device picker is snapshotted as configure/json renders it, an {id: label} map, but the
     // update endpoint takes ids. Left as a map it reaches the body as Groovy's map toString
@@ -867,19 +867,19 @@ private Map _rmRestoreFromBackup(Map entry) {
     def liveDeviceIds = [:]
     snapshot?.statusJson?.appSettings?.each { st ->
         def n = st?.name?.toString()
-        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds[n] = st.deviceIdsForDeviceList
+        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
     }
     def skippedMaps = []
     replaySettings = replaySettings.collectEntries { k, v ->
         String key = k.toString()
-        boolean isPicker = savedSchema[key]?.type?.toString()?.startsWith("capability.") == true
+        boolean isPicker = savedSchema.get(key)?.type?.toString()?.startsWith("capability.") == true
         if (!isPicker) {
             // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
             // its keys; rewriting it silently would be a value change reported as applied.
             if (v instanceof Map) { skippedMaps << key; return [:] }
             return [(key): v]
         }
-        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds[key] : ((v instanceof Map) ? v.keySet().toList() : v)
+        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : ((v instanceof Map) ? v.keySet().toList() : v)
         return [(key): (ids instanceof List ? ids.collect { it?.toString() } : ids)]
     }
     String step = "settings replay"

@@ -10,16 +10,6 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
 
 ## Safety Rules
 
-Sandbox Map regression acceptance is documented in
-[`sandbox-map-probes.md`](fixtures/sandbox-map-probes.md). After explicit approval
-to install a candidate package, use only newly created inert fixture devices and
-apps: compare both device gateway catalogs, field projections, and exact attribute
-values after a scratch-device command. Preserve lowercase `fields` and the valid
-`Fields`/`getClass` controls, plus false/zero/null values. Record firmware and the
-installed SHA; a successful Spock run cannot establish sandbox acceptance. The
-per-row repair ledger separates pending native-form/dashboard/room repairs from
-the five fixes included in the preparation branch.
-
 - **All tests use the `BAT` prefix** for artifacts (rules, devices, rooms, files, variables) for easy identification and cleanup
 - **All rules are marked `testRule: true`** to skip backup on deletion — this applies to `hub_create_custom_rule`-created rules only; native rules created via `hub_set_rule` use the `hub_delete_native_app` teardown path instead (no `testRule` flag)
 - **Tests only create/modify/delete test artifacts** — never touch existing production devices, rules, or hub settings

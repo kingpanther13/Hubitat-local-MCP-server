@@ -501,7 +501,7 @@ private String _contextDeviceLine(device, List attrNames) {
     boolean stateReadFailed = false
     try {
         device.currentStates?.each { st ->
-            if (st?.name != null && st.value != null) states[st.name.toString()] = st
+            if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
         }
     } catch (Exception e) {
         // Serve the line rather than failing the whole snapshot, but a failed read must
@@ -512,7 +512,7 @@ private String _contextDeviceLine(device, List attrNames) {
     }
     def attrParts = []
     attrNames.each { an ->
-        def st = states[an]
+        def st = states.get(an)
         if (st != null) {
             def unit = null
             // Per-attribute micro-read; a failure only drops the unit suffix, so no log.
@@ -643,7 +643,7 @@ def _buildContextJson() {
         try {
             d.currentStates?.each { st ->
                 if (st?.name != null && st.value != null && contextAttrs.contains(st.name.toString())) {
-                    attrs[st.name.toString()] = st.value.toString()
+                    attrs.put(st.name.toString(), st.value.toString())
                 }
             }
         } catch (Exception e) {

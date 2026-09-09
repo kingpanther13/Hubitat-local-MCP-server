@@ -457,9 +457,9 @@ private Map _vrb2NodeFromDialog(Map node, String typeKey) {
         def key = k?.toString()
         if (key == null) return
         if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) return
-        config[key] = v
+        config.put(key, v)
     }
-    def out = [type: node[typeKey], config: config]
+    def out = [type: node.get(typeKey), config: config]
     if (node.id != null && node.id.toString().trim()) out.id = node.id.toString()
     return out
 }

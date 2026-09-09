@@ -706,7 +706,8 @@ class ToolRulesAdminSpec extends ToolSpecBase {
                 // time trigger avoids validateTrigger's device-lookup branch,
                 // but still carries a deviceId field so applyDeviceMapping has
                 // something to remap
-                triggers: [[type: 'time', time: '10:00', deviceId: '100']],
+                triggers: [[type: 'time', time: '10:00', deviceId: '100',
+                            fields: [metaClass: [Fields: [getClass: [false, 0, null]]]]]],
                 conditions: [[type: 'variable', variableName: 'mode', operator: 'equals', value: 'Home', deviceId: '100']],
                 actions: [[type: 'device_command', deviceId: '100', command: 'on']]
             ]
@@ -737,5 +738,6 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         cloned.ruleData.triggers[0].deviceId == '500'
         cloned.ruleData.conditions[0].deviceId == '500'
         cloned.ruleData.actions[0].deviceId == '500'
+        cloned.ruleData.triggers[0].get('fields') == [metaClass: [Fields: [getClass: [false, 0, null]]]]
     }
 }

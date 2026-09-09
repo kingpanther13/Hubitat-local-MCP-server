@@ -79,6 +79,10 @@ MRTR_MIN_LOGICAL_SECONDS = 10.0
 MRTR_RELAY_LEG_CEILING_SECONDS = 9.5
 
 
+def _sandbox_map_key_controls() -> dict:
+    return {"fields": {"Fields": {"getClass": [False, 0, None]}}}
+
+
 def _summarize_mrtr_e2e_proof(
     *,
     continuation_rounds: int,
@@ -784,6 +788,7 @@ class HubitatMcpClient:
             # response. Without this, the exact 504 leg that failed the MRTR proof is
             # discarded and the run reports only the aggregate logical-call duration.
             self._last_continuation_rounds = continuation_rounds
+            self._last_request_state = params.get("requestState")
             self._last_result_type = (
                 result.get("resultType") if isinstance(result, dict) else None
             )
@@ -3943,6 +3948,8 @@ class TestRunner:
         rule_id = self._create_rule_and_verify(f"{PREFIX}Rule_CRUD", {
             "triggers": [{"type": "device_event", "deviceId": dev_id, "attribute": "switch"}],
             "actions": [{"type": "log", "message": "E2E test rule fired"}],
+            "enabled": False,
+            "localVariables": _sandbox_map_key_controls(),
         })
         assert rule_id
 
@@ -3963,6 +3970,10 @@ class TestRunner:
             f"Rule name mismatch: {result.get('name')}"
         assert "triggers" in result or "trigger" in result, "Missing triggers in hub_get_custom_rule"
         assert "actions" in result, "Missing actions in hub_get_custom_rule"
+        # JSON equality distinguishes false from zero and requires explicit nulls.
+        assert json.dumps(result.get("localVariables"), sort_keys=True) == json.dumps(
+            _sandbox_map_key_controls(), sort_keys=True
+        ), f"public rule result lost nested Map keys or value types: {result.get('localVariables')!r}"
 
     @test("rule_crud")
     def test_update_rule(self) -> None:
@@ -6818,14 +6829,20 @@ class TestRunner:
                 {"capability": "log", "message": f"MRTR regular E2E proof {index}"}
                 for index in range(1, 7)
             ]
-            result = self._call_slow_rule({
+            args = {
                 "appId": app_id,
+                # The tool schema permits extension properties. These inert values
+                # bind the continuation without being written to native settings.
+                "Fields": _sandbox_map_key_controls(),
                 "patches": [
                     {"addActions": requested_actions[:3]},
                     *[{"addAction": action} for action in requested_actions[3:]],
                 ],
-            })
+                "confirm": True,
+            }
+            result = self._call_slow_rule(args)
             rounds = self.client._last_continuation_rounds
+            request_state = self.client._last_request_state
             result_type = self.client._last_result_type
             http_legs = self.client._last_http_legs
             leg_evidence = ", ".join(
@@ -6877,6 +6894,38 @@ class TestRunner:
                 f"max_answered_leg={proof['max_answered_leg_elapsed']:.3f}s "
                 f"leg_evidence=[{leg_evidence}]"
             )
+            assert isinstance(request_state, str) and request_state, "MRTR proof returned no continuation state"
+            # A completed request still binds the exact original arguments. Each
+            # type-changing replay must refuse before it can repeat a rule edit.
+            for index, replacement in enumerate((None, False, 0)):
+                altered = json.loads(json.dumps(args))
+                altered["Fields"]["fields"]["Fields"]["getClass"][index] = replacement
+                response = self.client.raw_request({
+                    "jsonrpc": "2.0", "id": 41600 + index, "method": "tools/call",
+                    "params": {
+                        "name": "hub_manage_rule_machine",
+                        "arguments": {"tool": "hub_set_rule", "args": altered},
+                        "requestState": request_state,
+                    },
+                }, headers={
+                    "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                    "Mcp-Method": "tools/call", "Mcp-Name": "hub_manage_rule_machine",
+                })
+                assert response.status_code == 200, f"argument-mismatch replay HTTP status: {response.status_code}"
+                error = response.json().get("error") or {}
+                assert error.get("code") == -32602 and "original arguments" in error.get("message", ""), (
+                    f"continuation accepted a changed nested value at index {index}: {response.text[:500]}"
+                )
+            replay = self.client._send("tools/call", {
+                "name": "hub_manage_rule_machine",
+                "arguments": {"tool": "hub_set_rule", "args": args},
+                "requestState": request_state,
+            })
+            assert replay.get("resultType") == "complete" and not replay.get("isError"), (
+                f"exact-argument continuation replay did not complete: {replay}"
+            )
+            replay_text = next(item["text"] for item in replay.get("content", []) if item.get("type") == "text")
+            assert json.loads(replay_text) == result, "terminal replay changed the public mutation result"
             # Independent persisted-state proof, deliberately after the measured
             # logical call and through the ordinary repository client's read gateway.
             config = self.client.call_tool("hub_read_apps_code", {

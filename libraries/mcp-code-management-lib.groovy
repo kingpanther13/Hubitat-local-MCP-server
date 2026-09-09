@@ -292,7 +292,7 @@ private stripOptionsHtml(options) {
         for (entry in options) {
             if (entry instanceof Map) {
                 def cleaned = [:]
-                entry.each { k, v -> cleaned[k] = (v instanceof String) ? stripAppConfigHtml(v) : v }
+                entry.each { k, v -> cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
                 out << cleaned
             } else {
                 out << entry
@@ -302,7 +302,7 @@ private stripOptionsHtml(options) {
     }
     if (options instanceof Map) {
         def cleaned = [:]
-        options.each { k, v -> cleaned[k] = (v instanceof String) ? stripAppConfigHtml(v) : v }
+        options.each { k, v -> cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
         return cleaned
     }
     return options
@@ -862,8 +862,8 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
         for (i in (s?.input ?: [])) {
             if (i instanceof Map && i.name) {
                 def nm = i.name.toString()
-                if (i.value != null) pageValues[nm] = i.value
-                else if (i.defaultValue != null) pageValues[nm] = i.defaultValue
+                if (i.value != null) pageValues.put(nm, i.value)
+                else if (i.defaultValue != null) pageValues.put(nm, i.defaultValue)
             }
         }
     }
@@ -895,7 +895,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
         // pre-existing behaviour that avoided exactly that. A stored `false` or `0` is a REAL
         // value and must win, which is why the test is emptiness rather than Groovy truthiness.
         def chosen = null
-        for (candidate in [liveSettings[name], cfgSettings[name]]) {
+        for (candidate in [liveSettings.get(name), cfgSettings.get(name)]) {
             if (candidate == null) continue
             if (candidate instanceof CharSequence && candidate.toString().isEmpty()) continue
             if (!_isSimpleSettingValue(candidate)) {
@@ -910,9 +910,9 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
             break
         }
         if (chosen != null) {
-            settingsMap[name] = chosen
+            settingsMap.put(name, chosen)
         } else {
-            settingsMap[name] = pageValues.containsKey(name) ? pageValues[name] : ""
+            settingsMap.put(name, pageValues.containsKey(name) ? pageValues.get(name) : "")
         }
     }
     def body = _rmBuildSettingsBody(instanceId, settingsMap, schema)

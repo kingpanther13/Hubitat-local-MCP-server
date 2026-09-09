@@ -642,7 +642,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
             if (tile == null) {
                 throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: ${tiles.collect { it.id }}.")
             }
-            spec.each { k, v -> if (k?.toString() != "id") tile[k] = v }
+            spec.each { k, v -> if (k?.toString() != "id") tile.put(k, v) }
             _warnUnauthorizedTileDevice(tile, probe, warnings)
         }
     }
@@ -687,7 +687,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
             def key = k?.toString()
             if (key == "tiles") throw new IllegalArgumentException("setOptions cannot replace tiles; use addTiles / updateTiles / removeTileIds (or a wholesale layout).")
             if (key == "name") throw new IllegalArgumentException("The dashboard name is its app label; pass the top-level name arg, not setOptions.name.")
-            layout[key] = v
+            layout.put(key, v)
         }
     }
     layout.tiles = tiles

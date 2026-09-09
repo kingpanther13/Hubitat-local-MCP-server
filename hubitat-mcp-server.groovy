@@ -1936,7 +1936,7 @@ private void _writeStateSetLocked(String stateKey, value) {
 // implied.
 private void _writeStatePutLocked(String stateKey, String entryId, Map rec) {
     Map cached = _writeStateMapLocked(stateKey)
-    cached[entryId] = rec
+    cached.put(entryId, rec)
     if (!WRITE_STATE_DURABLE_MAPS.contains(stateKey)) {
         _writeStateSetLocked(stateKey, cached)
         return
@@ -2353,7 +2353,7 @@ private List _mrtrSweepLocked() {
             _writeExecutionLiveLocked(v.claimId)
         if (v instanceof Map && (executing ||
                 (v.expiresAt != null && (v.expiresAt as Long) > at))) {
-            kept[k] = v
+            kept.put(k, v)
         } else if (v instanceof Map && v.status == "active") {
             cleanup << ([:] + (v as Map))
         }
@@ -2477,7 +2477,7 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
     synchronized (WRITE_RESERVATION_LOCK) {
         cleanup = _mrtrSweepLocked()
         def stored = _writeStateMapLocked("mrtrRequests")
-        def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
+        def rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
         boolean executing = rec != null && _writeExecutionLiveLocked(rec.claimId)
         if (rec == null || (!executing &&
                 (rec.expiresAt == null || (rec.expiresAt as Long) <= now()))) {
@@ -2549,7 +2549,7 @@ private Map _mrtrObserveScheduled(String stateId, Map claim, long requestStarted
     while (true) {
         synchronized (WRITE_RESERVATION_LOCK) {
             def stored = _writeStateMapLocked("mrtrRequests")
-            def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
+            def rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
             def evidence = MRTR_TERMINAL_EVIDENCE[stateId]
             boolean exactTerminal = evidence instanceof Map &&
                 evidence.claimId?.toString() == claimId &&
@@ -2656,7 +2656,7 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
 
 private Map _mrtrOwnedRecordLocked(String stateId, Map claim) {
     def stored = _writeStateMapLocked("mrtrRequests")
-    def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
+    def rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
     if (rec == null || rec.status != "active") return null
     if (rec.claimId?.toString() != claim?.claimId?.toString()) return null
     if (rec.claimedGeneration != claim?.generation) return null
@@ -7083,7 +7083,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
         // raw-settings escape hatch where the schema's declared type is
         // wrong). Clone so we don't mutate the cached schema map.
         schemaForBuild = [:] + schema
-        schemaForBuild[key] = ([:] + schema[key]) << [type: typeHintOverride]
+        schemaForBuild.put(key, ([:] + schema.get(key)) << [type: typeHintOverride])
     }
     def beforeKeys = (schema.keySet() ?: []) as Set
     def beforeValueStr = schema?."${key}"?.value?.toString()
@@ -7825,7 +7825,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             def schema = _rmCollectInputSchema(cfg?.configPage)
             schema.each { name, meta ->
                 if (meta?.multiple == true) {
-                    def rec = settingsByName[name]
+                    def rec = settingsByName.get(name)
                     if (rec != null && rec.multiple != true) {
                         multipleFlagPoison << name.toString()
                     }
@@ -7944,12 +7944,12 @@ private Map _rmCollectInputSchema(Map configPage) {
     for (s in (configPage?.sections ?: [])) {
         for (i in (s?.input ?: [])) {
             if (i instanceof Map && i.name) {
-                schema[i.name.toString()] = [
+                schema.put(i.name.toString(), [
                     name: i.name.toString(),
                     type: i.type?.toString(),
                     multiple: i.multiple == true,
                     required: i.required == true
-                ]
+                ])
             }
         }
     }

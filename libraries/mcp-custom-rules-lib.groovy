@@ -665,19 +665,19 @@ def applyDeviceMapping(data, Map mapping) {
         def result = [:]
         data.each { key, value ->
             if (key == "deviceId" && value != null) {
-                def mappedId = mapping[value.toString()]
-                result[key] = mappedId != null ? mappedId.toString() : value
+                def mappedId = mapping.get(value.toString())
+                result.put(key, mappedId != null ? mappedId.toString() : value)
             } else if (key == "deviceIds" && value instanceof List) {
                 // Map each device ID in multi-device trigger/action arrays
-                result[key] = value.collect { id ->
+                result.put(key, value.collect { id ->
                     if (id != null) {
-                        def mappedId = mapping[id.toString()]
+                        def mappedId = mapping.get(id.toString())
                         return mappedId != null ? mappedId.toString() : id
                     }
                     return id
-                }
+                })
             } else {
-                result[key] = applyDeviceMapping(value, mapping)
+                result.put(key, applyDeviceMapping(value, mapping))
             }
         }
         return result

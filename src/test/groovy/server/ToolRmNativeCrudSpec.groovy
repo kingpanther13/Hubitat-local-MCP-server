@@ -1799,6 +1799,24 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // commit. A regression here breaks user rules without producing any
     // hub-side error, so the unit tests are the gate.
 
+    @spock.lang.Unroll
+    def "native input schema preserves data key #inputName and serializes false zero and null"() {
+        given:
+        def schema = script._rmCollectInputSchema([sections: [[input: [
+            [name: inputName, type: 'bool', multiple: false, required: true]
+        ]]]])
+
+        expect:
+        schema.get(inputName) == [name: inputName, type: 'bool', multiple: false, required: true]
+        script._rmBuildSettingsBody(100, [(inputName): false], schema).get("settings[${inputName}]".toString()) == 'false'
+        script._rmBuildSettingsBody(100, [(inputName): 0], schema).get("settings[${inputName}]".toString()) == '0'
+        script._rmBuildSettingsBody(100, [(inputName): null], schema).get("settings[${inputName}]".toString()) == ''
+        script._rmBuildSettingsBody(100, [(inputName): false], schema).get("${inputName}.multiple".toString()) == 'false'
+
+        where:
+        inputName << ['fields', 'class', 'metaClass', 'Fields', 'getClass']
+    }
+
     def "_rmBuildSettingsBody emits deviceList sidecar on capability writes"() {
         given: "a rule with a capability.switch input"
         enableWrite()

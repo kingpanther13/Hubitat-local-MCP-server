@@ -669,6 +669,7 @@ def test_call_tool_follows_modern_request_state_continuations():
 
     assert result == {"success": True}
     assert client._last_continuation_rounds == 1
+    assert client._last_request_state == "state-123"
     assert client._last_result_type == "complete"
     assert calls[0][1] == {
         "name": "hub_call_rule",

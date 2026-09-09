@@ -14,9 +14,8 @@ device or network effects. Delete owned instances before deleting their code.
 - `sandbox-map-attributes.groovy`: inert attribute source for room and snapshot
   checks. Select only a newly created device using this driver.
 
-Results and reachability limits are recorded in
-`docs/superpowers/plans/2026-09-09-sandbox-map-validation.md` and its adjacent
-evidence JSON. A fragment failure is not proof of a reachable tool failure.
+Keep investigation results and reachability limits in local evidence files.
+A fragment failure is not proof of a reachable tool failure.
 Snapshots and canonicalization were also compared using exact before/after helper
 sources inside an owned app; the fallback snapshot used an adapter forcing an
 empty currentStates collection. Raw hub responses and installed code-ID mappings

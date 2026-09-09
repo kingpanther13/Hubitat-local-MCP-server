@@ -474,16 +474,17 @@ private _applyNetworkConfig(network, List applied) {
 // bad value), so an out-of-range coordinate is rejected before it reaches the hub.
 private _validateCoordinate(String key, Map args, Number lo, Number hi) {
     if (!args.containsKey(key)) return
-    def v = args[key]
+    def v = args.get(key)
     if (v instanceof String) {
         try { v = v.toBigDecimal() } catch (Exception e) {
-            throw new IllegalArgumentException("${key} must be a number, got: ${args[key]}")
+            throw new IllegalArgumentException("${key} must be a number, got: ${args.get(key)}")
         }
     }
     if (!(v instanceof Number) || v < lo || v > hi) {
-        throw new IllegalArgumentException("${key} must be a number between ${lo} and ${hi}, got: ${args[key]}")
+        throw new IllegalArgumentException("${key} must be a number between ${lo} and ${hi}, got: ${args.get(key)}")
     }
-    args[key] = v   // write back the coerced number so the /location/update payload sends a number, not a string
+    args.put(key, v)   // write back the coerced number so the /location/update payload sends a number, not a string
+    return v
 }
 
 def toolGetModes() {

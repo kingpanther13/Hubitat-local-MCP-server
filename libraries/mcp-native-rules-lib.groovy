@@ -372,7 +372,7 @@ private Map _rmCollectFilteredRmRules() {
                 try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
                 catch (Exception ignored) { idInt = null }
                 if (idInt != null && liveApps.containsKey(idInt)) {
-                    filtered[id] = entry
+                    filtered.put(id, entry)
                 } else {
                     if (idInt != null) ghostIds << idInt
                 }
@@ -4938,9 +4938,9 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
     schema.each { name, meta ->
-        def v = liveSettings[name]
+        def v = liveSettings.get(name)
         if (v == null) v = ""
-        settingsMap[name] = v
+        settingsMap.put(name, v)
     }
     def body = _rmBuildSettingsBody(appId, settingsMap, schema)
     body.formAction = "update"
@@ -5057,9 +5057,9 @@ private Map _rmSubmitMainPageDone(Integer appId) {
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
     schema.each { name, meta ->
-        def v = liveSettings[name]
+        def v = liveSettings.get(name)
         if (v == null) v = ""
-        settingsMap[name] = v
+        settingsMap.put(name, v)
     }
     def body = _rmBuildSettingsBody(appId, settingsMap, schema)
     body.formAction = "update"
@@ -5274,13 +5274,13 @@ private String _rmCommaJoinedModeHint(Object rawName, Collection validNames, Str
 private List _rmResolveModeIds(Collection keys) {
     def hubModes = location?.modes ?: []
     def nameToId = [:]
-    hubModes.each { m -> if (m?.name && m?.id != null) nameToId[m.name.toString()] = m.id.toString() }
+    hubModes.each { m -> if (m?.name && m?.id != null) nameToId.put(m.name.toString(), m.id.toString()) }
     def out = []
     keys.each { k ->
         def s = k?.toString()
         if (!s) return
         if (s.isInteger()) { out << s; return }
-        def mapped = nameToId[s]
+        def mapped = nameToId.get(s)
         if (mapped) { out << mapped; return }
         def commaHint = _rmCommaJoinedModeHint(s, nameToId.keySet(), "Mode")
         if (commaHint) throw new IllegalArgumentException(commaHint)
@@ -8611,7 +8611,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
             body.formAction = "update"
             body.currentPage = page
             body.pageBreadcrumbs = '["mainPage"]'
-            hrefContextMarkers.each { k, v -> body[k] = v }
+            hrefContextMarkers.each { k, v -> body.put(k, v) }
             try {
                 def cfg = _rmFetchConfigJson(appId, hrefContext.fromPage?.toString() ?: page)
                 if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
@@ -9070,10 +9070,10 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
     def blankedInputs = []
     schema?.each { name, meta ->
         if (currentSettings?.containsKey(name)) {
-            fullMap[name] = currentSettings[name]
+            fullMap.put(name, currentSettings.get(name))
         } else if (meta?.type == 'button') {
             // Buttons carry no persisted value; the UI serializes them empty.
-            fullMap[name] = ""
+            fullMap.put(name, "")
         } else {
             // Non-button input absent from the page settings map. If it is also
             // not among the inputs being written this submit (extraSettings), it
@@ -9085,10 +9085,10 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
                 blankedInputs << name
                 mcpLog("warn", "rm-native", "_rmSubmitFullPageForm: page input '${name}' (type=${meta?.type}) on ${pageName} for app ${appId} is absent from configPage settings -- submitting empty; if this field needed preserving the full-form submit may blank it")
             }
-            fullMap[name] = ""
+            fullMap.put(name, "")
         }
     }
-    extraSettings?.each { k, v -> fullMap[k] = v }
+    extraSettings?.each { k, v -> fullMap.put(k, v) }
 
     def body = _rmBuildSettingsBody(appId, fullMap, schema)
 
@@ -12742,7 +12742,7 @@ private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
     def baselineMarkerCounts = (baselineHealth?.brokenMarkerCounts instanceof Map) ? (baselineHealth.brokenMarkerCounts as Map) : [:]
     def nowMarkerCounts = (nowHealth?.brokenMarkerCounts instanceof Map) ? (nowHealth.brokenMarkerCounts as Map) : [:]
     nowMarkerCounts.each { marker, cnt ->
-        def baseCnt = (baselineMarkerCounts[marker] ?: 0) as Integer
+        def baseCnt = (baselineMarkerCounts.get(marker) ?: 0) as Integer
         if ((cnt as Integer) > baseCnt) newIssues << "${marker} (${cnt} vs ${baseCnt})".toString()
     }
     return newIssues
@@ -15104,7 +15104,7 @@ def _applyNativeAppEdit(args) {
             def unknownSettings = []
             settingsMap.each { k, v ->
                 if (schema?.containsKey(k.toString())) {
-                    knownSettings[k] = v
+                    knownSettings.put(k, v)
                 } else {
                     unknownSettings << k.toString()
                 }
