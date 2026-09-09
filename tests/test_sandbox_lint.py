@@ -626,6 +626,73 @@ def test_interpolated_bounded_key_is_not_misread_as_its_embedded_identifier():
 }'''
     assert sandbox_map_findings(source) == []
 
+
+@pytest.mark.parametrize("access", ["result[key] = false", "return result[key]"])
+def test_dynamic_map_regressions_are_blocking(access):
+    source = f"def copy(String key) {{\n def result = [:]\n {access}\n}}"
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("helper", ["obtainSchema", "renamedSchema"])
+@pytest.mark.parametrize("body", [
+    "return [:]", "[:]", "def result = [:]\n return result",
+    "def result = [:]\n def renamed = result\n renamed",
+])
+def test_map_return_inference_follows_source_not_helper_name(helper, body):
+    source = f"""def {helper}() {{
+ {body}
+}}
+def consume(String key) {{
+ def result = {helper}()
+ result[key] = false
+ return result[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 2
+    assert all(f["severity"] == "error" for f in findings)
+
+
+def test_map_return_inference_follows_transitive_helpers():
+    source = """def wrapper() { return leaf() }
+def leaf() { return [:] }
+def consume(String key) {
+ def result = wrapper()
+ result[key] = 0
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_dynamic_key_from_settings_is_not_silently_exempt():
+    source = """def copy() {
+ def result = [:]
+ def selected = settings.attribute
+ result[selected] = false
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_list_return_does_not_inherit_same_named_map_return_from_other_file():
+    sources = {
+        "hubitat-mcp-server.groovy": "def values() { return [:] }",
+        "hubitat-mcp-rule.groovy": """def values() { return [] }
+def update(String key) {
+ def result = values()
+ result[key] = 0
+}""",
+    }
+    assert sl.check_sandbox_map_subscripts(sources) == []
+
+
+def test_non_map_typed_local_shadows_map_script_field():
+    source = """@groovy.transform.Field Map CACHE = [:]
+def read(int index) {
+ List CACHE = []
+ return CACHE[index]
+}"""
+    assert sandbox_map_findings(source) == []
+
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------
