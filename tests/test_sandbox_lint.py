@@ -306,6 +306,79 @@ private def copyDeviceCatalog(Map catalog) {
     assert all(f["rule"] == "sandbox-map-key-subscript" for f in findings)
 
 
+@pytest.mark.parametrize("function_name", ["_snapshotDeviceState", "_snapshotBypassDeviceState"])
+@pytest.mark.parametrize("key", ["name", "st.name"])
+def test_sandbox_map_guard_catches_external_snapshot_attribute_assignment(function_name, key):
+    source = f"""
+private Map {function_name}(device, deviceLabel, errOut = null) {{
+    def snapshot = [:]
+    device.currentStates.each {{ st ->
+        def name = st.name
+        snapshot[{key}] = [value: st.value, timestamp: null]
+    }}
+    return snapshot
+}}
+"""
+    findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
+    assert len(findings) == 1
+    assert findings[0]["rule"] == "sandbox-map-key-subscript"
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["source"] == f"snapshot[{key}] = [value: st.value, timestamp: null]"
+
+
+@pytest.mark.parametrize("function_name", ["_deviceConfigurationPublicValue", "transformDriverValue"])
+@pytest.mark.parametrize("declaration", ["def copy = [:]", "def copy = new LinkedHashMap()", "Map copy = [:]"])
+def test_sandbox_map_guard_catches_renamed_map_transform_with_implicit_return_type(function_name, declaration):
+    source = f"""
+private {function_name}(value, key = '') {{
+    if (value instanceof Map) {{
+        {declaration}
+        value.each {{ k, v -> copy[k] = {function_name}(v, k) }}
+        return copy
+    }}
+    return value
+}}
+"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+def test_sandbox_map_guard_catches_map_parameter_without_copy_name():
+    findings = sandbox_map_findings("""
+private def storeDriverValue(Map destination, String key, value) {
+    destination[key] = value
+}
+""")
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("function_name", ["copyRows", "_publicToolResultValue", "transformDriverValue"])
+def test_sandbox_map_guard_allows_list_assignment_even_inside_copy_helpers(function_name):
+    source = f"""
+private def {function_name}(List rows, int index, value) {{
+    def copy = []
+    copy[index] = rows[index]
+    rows[index] = value
+    return copy
+}}
+"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_sandbox_map_guard_keeps_map_evidence_local_to_method():
+    source = """
+private def transformDriverValue(Map rows, String key, value) {
+    rows.put(key, value)
+}
+private def copyRows(List rows, int index, value) {
+    rows[index] = value
+}
+"""
+    assert sandbox_map_findings(source) == []
+
+
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------
