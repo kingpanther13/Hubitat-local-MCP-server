@@ -731,7 +731,7 @@ def toolSetVariable(name, value) {
         logDebug("setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
     if (!state.ruleVariables) state.ruleVariables = [:]
-    state.ruleVariables[name] = value
+    state.ruleVariables.put(name, value)
     return [success: true, name: name, value: value, source: "rule_engine"]
 }
 
@@ -858,7 +858,7 @@ def toolDeleteHubVariable(args) {
     // top-level reassignment pattern: nested-map mutations on state silently
     // fail to persist across hub reboot / app restart unless the top-level
     // key is reassigned. Read-modify-write the whole map.
-    def previousValue = state.ruleVariables[varName]
+    def previousValue = state.ruleVariables.get(varName)
     def updated = state.ruleVariables.findAll { k, v -> k != varName }
     state.ruleVariables = updated
 

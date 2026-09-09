@@ -4268,6 +4268,230 @@ def check_bm25_key_subscripts() -> list[dict]:
         flag(0, "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed.")
     return findings
 
+
+def check_sandbox_map_subscripts(
+    src_override: dict[str, str] | None = None,
+) -> list[dict]:
+    """Scan Map reads/writes using the measured Hubitat access contract.
+
+    Lowercase fields/class/metaClass fail on untyped bracket receivers.
+    Explicit Map receivers accept the measured fields/class operations, but
+    metaClass writes attempt a cast. getClass and Fields are valid data keys.
+    Dynamic-key findings remain source candidates: this scanner does not prove
+    interprocedural reachability or infer an exhaustive platform denylist.
+    They are advisory warnings, not CI enforcement of every dynamic boundary.
+    See tests/fixtures/sandbox-map-probes.md for measurements and inference limits.
+    """
+    if src_override is None:
+        paths = [
+            REPO_ROOT / "hubitat-mcp-server.groovy",
+            REPO_ROOT / "hubitat-mcp-rule.groovy",
+            *sorted((REPO_ROOT / "libraries").glob("*.groovy")),
+        ]
+        sources = {
+            path.relative_to(REPO_ROOT).as_posix(): path.read_text(encoding="utf-8")
+            for path in paths if path.is_file()
+        }
+    else:
+        sources = src_override
+
+    ident = r"[A-Za-z_][A-Za-z0-9_]*"
+    map_type = r"(?:Map|LinkedHashMap|HashMap|TreeMap|ConcurrentHashMap)(?:\s*<[^{};=]+?>)?"
+    method_re = re.compile(
+        rf"^[ \t]*(?:(?:private|protected|public)\s+)?(?:static\s+)?"
+        rf"(?:(?P<type>{ident}(?:<[^{{}}\n]+>)?)\s+)?"
+        rf"(?P<name>(?!(?:if|for|while|switch|catch|synchronized|else)\b){ident})\s*\((?P<params>[^{{}}]*?)\)\s*\{{",
+        re.MULTILINE,
+    )
+    map_decl = re.compile(rf"\b{map_type}\s+({ident})\b")
+    map_init = re.compile(
+        rf"\b({ident}(?:\.{ident})*)\s*=\s*"
+        rf"(?:new\s+{map_type}\s*\(|\[[^\]\n]*:)"
+    )
+    checked_map = re.compile(rf"\b({ident})\s+(?:instanceof|as)\s+Map\b")
+    conditional_map = re.compile(
+        rf"\b({ident})\s*=\s*[^\n;]*\binstanceof\s+Map\b[^\n;]*:\s*\[:\]"
+    )
+    fallback_map = re.compile(rf"\b({ident})\s*=\s*[^\n;]*\?:\s*\[:\]")
+    cast_map = re.compile(rf"\b({ident})\s*=\s*[^\n;]*\bas\s+Map\b")
+    field_map = re.compile(
+        rf"@(?:groovy\.transform\.)?Field\s+(?:(?:static|final|private|protected|public)\s+)*"
+        rf"{map_type}\s+({ident})\b"
+    )
+    alias_re = re.compile(rf"\b({ident})\s*=\s*({ident})\b(\s*\()?")
+    subscript_re = re.compile(
+        rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
+        rf"(?P<key>{ident}(?:\??\.{ident})*(?:\(\))?)\s*\]"
+    )
+    literal_re = re.compile(
+        rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
+        r"(?P<quote>['\"])(?P<key>fields|class|metaClass)(?P=quote)\s*\]"
+    )
+    each_re = re.compile(
+        rf"(?P<receiver>{ident}(?:\.{ident})*)\??\.each\s*\{{\s*"
+        rf"(?P<key>{ident})\s*(?:,\s*{ident}\s*)?->"
+    )
+    # The raw literal is correlated against executable code below; a quoted
+    # example in a comment cannot establish a safe branch.
+    bounded_if_re = re.compile(
+        rf"\bif\s*\(\s*(?P<key>{ident})\s*==\s*"
+        r"""(?P<quote>['"])(?P<literal>[^'"\n]+)(?P=quote)"""
+        r"\s*(?:&&[^{}]*?)?\)\s*\{"
+    )
+    collisions = {"fields", "class", "metaClass"}
+
+    def close_brace(code: str, opening: int) -> int:
+        depth = 1
+        for pos in range(opening + 1, len(code)):
+            depth += (code[pos] == "{") - (code[pos] == "}")
+            if depth == 0:
+                return pos
+        return len(code)
+
+    masked = {
+        path: "\n".join(
+            clean.ljust(len(raw))
+            for raw, clean in zip(source.split("\n"), strip_comments_and_strings(source), strict=True)
+        )
+        for path, source in sources.items()
+    }
+    map_returns = {
+        match.group("name")
+        for code in masked.values() for match in method_re.finditer(code)
+        if re.fullmatch(map_type, match.group("type") or "")
+    }
+    findings = []
+    for path, source in sources.items():
+        code = masked[path]
+        raw_lines = source.split("\n")
+        field_maps = set(field_map.findall(code))
+        for method in method_re.finditer(code):
+            opening = method.end() - 1
+            end = close_brace(code, opening)
+            body = code[opening + 1:end]
+            raw_body = source[opening + 1:end]
+            explicit_maps = set(map_decl.findall(method.group("params")))
+            explicit_maps.update(map_decl.findall(body))
+            # Locals and parameters can shadow a typed script field. The
+            # field's type must not exempt accesses on the shadowing receiver.
+            shadowed = set(re.findall(rf"\bdef\s+({ident})\b", body))
+            shadowed.update(re.findall(
+                rf"\b({ident})\s*(?:=[^,]*)?(?=,|$)", method.group("params")
+            ))
+            explicit_maps.update(field_maps - shadowed)
+            maps = (explicit_maps | set(map_init.findall(body)) |
+                    set(checked_map.findall(body)) | set(conditional_map.findall(body)) |
+                    set(fallback_map.findall(body)) | set(cast_map.findall(body)))
+            aliases = list(alias_re.finditer(body))
+            for _ in range(len(aliases) + 1):
+                before = set(maps)
+                for alias in aliases:
+                    dest, origin, call = alias.groups()
+                    if (call and origin in map_returns) or (not call and origin in maps):
+                        maps.add(dest)
+                if before == maps:
+                    break
+            string_params = set(re.findall(rf"\bString\s+({ident})\b", method.group("params")))
+            untyped_params = {
+                match.group(1)
+                for param in method.group("params").split(",")
+                if (match := re.fullmatch(rf"\s*(?:def\s+)?({ident})\s*(?:=.*)?", param))
+            }
+            attr_names = set(re.findall(
+                rf"\b(?:def|String)\s+({ident})\s*=\s*{ident}\??\.(?:name|key|variableName|id)\b", body
+            ))
+            attr_names.update(re.findall(
+                rf"\b({ident})\s*=\s*{ident}\.keySet\(\)\.iterator\(\)\.next\(\)", body
+            ))
+            iterations = [
+                (m.group("key"), m.end(), close_brace(body, body.index("{", m.start())))
+                for m in each_re.finditer(body)
+            ]
+            # Calls such as (value as Map).each and arbitrary Map-like values
+            # also provide candidate keys; keep their closure scopes local.
+            iterations.extend(
+                (m.group(1), m.end(), close_brace(body, body.index("{", m.start())))
+                for m in re.finditer(rf"(?<!\])\.each\s*\{{\s*({ident})\s*(?:,\s*{ident}\s*)?->", body)
+            )
+            # Preserve the originating closure's bounds when a key is renamed
+            # or converted to a String (for example dashboard setOptions).
+            key_aliases = list(re.finditer(
+                rf"\b(?:def|String)\s+({ident})\s*=\s*({ident})"
+                rf"(?:\??\.toString\(\))?\s*(?=\n|;|$)", body
+            ))
+            for alias in key_aliases:
+                dest, origin = alias.groups()
+                if origin in attr_names:
+                    attr_names.add(dest)
+                inherited = [(dest, alias.end(), stop) for name, start, stop in iterations
+                             if name == origin and start <= alias.start() < stop]
+                iterations.extend(inherited)
+            bounded = []
+            for branch in bounded_if_re.finditer(raw_body):
+                if branch.group("literal") in collisions:
+                    continue
+                if not body[branch.start():].startswith("if"):
+                    continue
+                brace = branch.end() - 1
+                bounded.append((branch.group("key"), brace, close_brace(body, brace)))
+
+            def add(pos: int, message: str, severity: str = "error", *,
+                    code=code, opening=opening, path=path, raw_lines=raw_lines) -> None:
+                line = code.count("\n", 0, opening + 1 + pos)
+                findings.append({
+                    "file": path, "line": line + 1, "severity": severity,
+                    "rule": "sandbox-map-key-subscript", "message": message,
+                    "source": raw_lines[line].strip(),
+                })
+
+            for literal in literal_re.finditer(raw_body):
+                receiver, key = literal.group("receiver", "key")
+                if receiver not in maps:
+                    continue
+                if not body[literal.start():].startswith(receiver):
+                    continue
+                writing = bool(re.match(r"\s*=(?!=|~)", body[literal.end():]))
+                if receiver in explicit_maps and (key != "metaClass" or not writing):
+                    continue
+                add(literal.start(),
+                    f"Measured {'write' if writing else 'read'} collision for '{key}' "
+                    f"on {receiver}; preserve the key with Map.{'put' if writing else 'get'}.")
+
+            for access in subscript_re.finditer(body):
+                receiver, key = access.group("receiver", "key")
+                # Masking a GString retains its interpolation expression. That
+                # must not turn map["prefix${id}"] into an apparent map[id].
+                if not subscript_re.fullmatch(raw_body[access.start():access.end()]):
+                    continue
+                if receiver not in maps:
+                    continue
+                writing = bool(re.match(r"\s*=(?!=|~)", body[access.end():]))
+                if receiver in explicit_maps and not writing:
+                    continue
+                if any(key == name and start < access.start() < stop
+                       for name, start, stop in bounded):
+                    continue
+                iterated = any(key == name and start <= access.start() < stop
+                               for name, start, stop in iterations)
+                attribute = key in attr_names or bool(re.search(
+                    r"\.(?:name|key|variableName|id)(?:\.toString\(\))?$", key
+                ))
+                if not (iterated or attribute or key in string_params or key in untyped_params):
+                    continue
+                # A String parameter alone does not prove its callers admit a
+                # colliding name. Typed writes have a narrower metaClass hazard.
+                # Iteration and String types cannot establish caller bounds.
+                # Keep candidates visible without equating them to literal
+                # collisions; the live-validation ledger supplies reachability.
+                severity = "warning"
+                add(access.start(),
+                    f"Dynamic Map {'write' if writing else 'read'} candidate "
+                    f"{receiver}[{key}] in {method.group('name')}; "
+                    f"use Map.{'put' if writing else 'get'} for unbounded data keys "
+                    "(caller key bounds require separate verification).", severity)
+    return sorted(findings, key=lambda item: (item["file"], item["line"]))
+
+
 def check_logs_json_snapshot_guard() -> list[dict]:
     """Slow-read guard for the hub's /logs/json page. That one document carries every device and
     app stat plus the job tables, so its fetch time grows with hub size and a synchronous read
@@ -4608,6 +4832,10 @@ def main() -> int:
 
     # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
     all_findings.extend(check_bm25_key_subscripts())
+
+    # Device-catalog renderer regression: arbitrary external Map keys and the
+    # verified `fields` collision must use sandbox-safe Map.get/put operations.
+    all_findings.extend(check_sandbox_map_subscripts())
 
 
     # /logs/json grows with hub size: its only fetch is the worker-run one behind the JVM

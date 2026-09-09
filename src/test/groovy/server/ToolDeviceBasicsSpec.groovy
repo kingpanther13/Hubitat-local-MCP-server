@@ -229,7 +229,9 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getCurrentStates() >> [
                 [name: 'switch', value: 'on', date: stateDate],
-                [name: 'level', value: 75, date: null]
+                [name: 'level', value: 75, date: null],
+                [name: 'fields', value: 'driver fields', date: null],
+                [name: 'getClass', value: 42, date: null]
             ]
         }
         childDevicesList << device
@@ -245,6 +247,10 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         and: 'an attribute with no event date carries a null timestamp (never the literal "Never")'
         result.state.level.value == 75
         result.state.level.timestamp == null
+
+        and: 'fields and ordinary driver attribute names retain their values'
+        result.state.get('fields') == [value: 'driver fields', timestamp: null]
+        result.state.get('getClass') == [value: 42, timestamp: null]
     }
 
     @spock.lang.Unroll
@@ -256,8 +262,10 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getCurrentStates() >> emptyStates
-            getSupportedAttributes() >> [[name: 'switch']]
+            getSupportedAttributes() >> [[name: 'switch'], [name: 'fields'], [name: 'getClass']]
             currentValue('switch') >> 'on'
+            currentValue('fields') >> 'driver fields'
+            currentValue('getClass') >> 42
         }
         childDevicesList << device
 
@@ -267,6 +275,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'the fallback path reports the current value with a null timestamp'
         result.state.switch.value == 'on'
         result.state.switch.timestamp == null
+        result.state.get('fields') == [value: 'driver fields', timestamp: null]
+        result.state.get('getClass') == [value: 42, timestamp: null]
 
         where: 'both falsy shapes -- guards a future "if (states != null)" refactor from skipping the empty-list case'
         emptyStates << [null, []]

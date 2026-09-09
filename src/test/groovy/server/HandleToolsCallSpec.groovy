@@ -224,6 +224,39 @@ class HandleToolsCallSpec extends ToolSpecBase {
         canonicalResult.patches[0].backup.is(nestedBackup)
     }
 
+    def "tool result rendering preserves nested fields and arbitrary driver keys without mutating the source"() {
+        given: 'a device-catalog-shaped result containing fields and other driver-controlled keys'
+        def preferenceValues = new LinkedHashMap()
+        preferenceValues.put('fields', [value: 'all'])
+        preferenceValues.put('getClass', [value: 'driver supplied'])
+        preferenceValues.put('custom.preference-name', [value: false])
+        def fields = [
+            preferences: preferenceValues,
+            data: ['fields': 'literal data value', 'custom:data-key': 0]
+        ]
+        def canonicalBackup = [backupKey: 'device_42', brokenBefore: true]
+        def canonicalResult = [success: true, fields: fields, backup: canonicalBackup]
+        script.metaClass.toolGetHubInfo = { a -> canonicalResult }
+
+        when: 'the public renderer copies and serializes the complete tool result'
+        def response = mcpDriver.callTool('hub_get_info', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'every supported public key survives exactly while internal backup metadata is filtered'
+        inner.fields.preferences.keySet() == preferenceValues.keySet()
+        inner.fields.preferences['fields'] == [value: 'all']
+        inner.fields.preferences['getClass'] == [value: 'driver supplied']
+        inner.fields.preferences['custom.preference-name'] == [value: false]
+        inner.fields.data == ['fields': 'literal data value', 'custom:data-key': 0]
+        inner.backup == [backupKey: 'device_42']
+
+        and: 'the structural copy leaves the canonical result and its nested maps untouched'
+        canonicalResult.fields.is(fields)
+        fields.preferences.is(preferenceValues)
+        preferenceValues['getClass'] == [value: 'driver supplied']
+        canonicalBackup.brokenBefore == true
+    }
+
     def "handleToolsCall returns a __preserialized sentinel on the under-cap success path (serialize-once)"() {
         // The sentinel is the mechanism that lets handleMcpRequest render verbatim without a
         // second JsonOutput.toJson. Pinning the sentinel shape here guards the serialize-once

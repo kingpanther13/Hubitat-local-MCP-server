@@ -1368,7 +1368,9 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', updateTiles: [[id: 0, col: 4, colSpan: 2]]])
+        def r = script.toolUpdateDashboard([dashboardId: '700', updateTiles: [[
+            id: 0, col: 4, colSpan: 2, fields: false, metaClass: [Fields: [getClass: [0, null]]]
+        ]]])
 
         then:
         r.success == true
@@ -1377,6 +1379,8 @@ class ToolDashboardSpec extends ToolSpecBase {
         t0.col == 4
         t0.colSpan == 2
         t0.template == 'clock'                      // untouched field preserved
+        t0.get('fields').is(false)
+        t0.get('metaClass') == [Fields: [getClass: [0, null]]]
     }
 
     def "update legacy: updateTiles with an unknown id throws, listing the existing ids"() {
@@ -1444,13 +1448,17 @@ class ToolDashboardSpec extends ToolSpecBase {
         def posts = captureLayoutPosts()
 
         when:
-        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [cols: 10, bgColor: '#123456']])
+        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [
+            cols: 10, bgColor: '#123456', fields: false, metaClass: [Fields: [getClass: [0, null]]]
+        ]])
 
         then:
         r.success == true
         posts[0].body.cols == 10
         posts[0].body.bgColor == '#123456'
         posts[0].body.tiles*.id == [0, 1]
+        posts[0].body.get('fields').is(false)
+        posts[0].body.get('metaClass') == [Fields: [getClass: [0, null]]]
     }
 
     def "update legacy: setOptions rejects the tiles and name keys"() {

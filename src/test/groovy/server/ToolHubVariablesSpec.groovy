@@ -242,6 +242,27 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolSetVariable --------
 
+    def "rule-engine variables preserve data keys and false zero null values on both write paths"() {
+        given:
+        script.metaClass.setGlobalVar = { String name, Object value -> false }
+        script.metaClass.getGlobalVar = { String name -> null }
+        stateMap.ruleVariables = [untouched: 'keep']
+        def values = [fields: false, class: 0, metaClass: null, Fields: [false, 0, null], getClass: 'data']
+
+        expect:
+        values.every { key, value ->
+            def result = script.toolSetVariable(key, value)
+            result.success && result.source == 'rule_engine' &&
+                stateMap.ruleVariables.containsKey(key) && script.getVariableValue(key) == value
+        }
+        values.every { key, value ->
+            script.setRuleVariable(key, 'old') == 'old' &&
+                script.setRuleVariable(key, value) == value &&
+                stateMap.ruleVariables.containsKey(key) && script.getVariableValue(key) == value
+        }
+        stateMap.ruleVariables.untouched == 'keep'
+    }
+
     def "hub_set_variable writes via setGlobalVar and reports source 'hub' on success"() {
         given:
         def captured = [:]

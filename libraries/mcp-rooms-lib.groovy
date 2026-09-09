@@ -57,7 +57,7 @@ def toolGetRoom(String roomIdentifier) {
             def states = [:]
             try {
                 device.currentStates?.each { st ->
-                    states[st.name] = st.value
+                    states.put(st.name, st.value)
                 }
             } catch (Exception e) {
                 mcpLog("debug", "room", "hub_get_room: currentStates read failed for device ${device.id}: ${e.message}")

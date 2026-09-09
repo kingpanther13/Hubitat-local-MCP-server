@@ -21,6 +21,17 @@ import support.ToolSpecBase
  */
 class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
 
+    def "bypass attribute polling reads sandbox-sensitive names and preserves false zero and null"() {
+        given:
+        def states = [fields: [value: false], class: [value: 0], metaClass: [value: null],
+                      Fields: [value: 'upper'], getClass: [value: 'data']]
+        def model = [device: [currentStates: states]]
+
+        expect:
+        states.every { key, state -> script._readBypassAttrValueFrom(model, key) == state.value }
+        script._readBypassAttrValueFrom(model, 'missing') == null
+    }
+
     static final String UNLISTED_ID = '555'
 
     // A fullJson model for an unlisted switch. `switchValue` lets a test drive the reported value.
@@ -352,7 +363,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     def "bypass ON: toolSendCommand fires via /device/runmethod and snapshots from fullJson"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
-        registerFullJson({ 'on' })
+        def model = fullJsonModel('on')
+        model.device.currentStates.put('fields', [value: 'driver fields', date: null])
+        model.device.currentStates.put('getClass', [value: 42, date: null])
+        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params -> JsonOutput.toJson(model) }
         def posted = null
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             posted = [path: path, body: body]; return [success: true, message: null]
@@ -373,6 +387,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.command == 'on'
         result.device == 'Unlisted Switch'
         result.state.switch.value == 'on'
+        result.state.get('fields') == [value: 'driver fields', timestamp: null]
+        result.state.get('getClass') == [value: 42, timestamp: null]
         // TZ-robust: the snapshot reformats the offset-bearing ISO date in the JVM default zone, so
         // compute the expected from the SAME instant+format (a literal MT string false-fails on UTC CI).
         result.state.switch.timestamp == Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", '2026-06-27T10:30:00.000-0600').format('yyyy-MM-dd HH:mm:ss')

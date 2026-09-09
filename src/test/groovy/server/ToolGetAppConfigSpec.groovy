@@ -1178,7 +1178,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch strips HTML from List-shape enum option labels (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch strips HTML from List-shape enum option labels including data keys (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -1199,7 +1199,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
                              description: null, multiple: false, required: false,
                              defaultValue: null, options: [
                                 ['day': '<span style="color:blue">Day</span>'],
-                                ['night': 'Night']
+                                ['night': 'Night'],
+                                ['fields': '<b>Lowercase</b>'],
+                                ['Fields': '<b>Uppercase</b>'],
+                                ['class': '<b>Class data</b>'],
+                                ['metaClass': '<b>Metaclass data</b>'],
+                                ['getClass': '<b>Method name data</b>'],
+                                ['disabled': false, 'count': 0, 'unset': null]
                              ], value: 'day']
                         ],
                         body: []
@@ -1227,6 +1233,16 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         dayEntry['day'] == 'Day'
         !dayEntry['day'].contains('<span')
 
+        and: 'Map keys stay data and non-string option values retain their types'
+        ['fields': 'Lowercase', 'Fields': 'Uppercase', 'class': 'Class data',
+         'metaClass': 'Metaclass data', 'getClass': 'Method name data'].each { key, label ->
+            assert modeInput.options.find { it.containsKey(key) }.get(key) == label
+        }
+        def values = modeInput.options.find { it.containsKey('unset') }
+        values.get('disabled').is(false)
+        values.get('count') == 0
+        values.get('unset') == null
+
         where:
         useGateways << [true, false]
     }
@@ -1253,7 +1269,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
                              defaultValue: null,
                              options: [
                                 on : '<span style="color:green">On</span>',
-                                off: 'Off'
+                                off: 'Off',
+                                fields: '<b>Lowercase</b>',
+                                metaClass: '<b>Metaclass data</b>',
+                                disabled: false, count: 0, unset: null
                              ], value: 'on']
                         ],
                         body: []
@@ -1276,6 +1295,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // HTML stripped from 'On' label
         sceneInput.options['on'] == 'On'
         !sceneInput.options['on'].contains('<span')
+        sceneInput.options.get('fields') == 'Lowercase'
+        sceneInput.options.get('metaClass') == 'Metaclass data'
+        sceneInput.options.get('disabled').is(false)
+        sceneInput.options.get('count') == 0
+        sceneInput.options.containsKey('unset')
+        sceneInput.options.get('unset') == null
     }
 
     @spock.lang.Unroll
