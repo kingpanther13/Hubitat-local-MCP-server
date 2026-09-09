@@ -306,11 +306,10 @@ private def copyDeviceCatalog(Map catalog) {
     assert all(f["rule"] == "sandbox-map-key-subscript" for f in findings)
 
 
-@pytest.mark.parametrize("function_name", ["_snapshotDeviceState", "_snapshotBypassDeviceState"])
 @pytest.mark.parametrize("key", ["name", "st.name"])
-def test_sandbox_map_guard_catches_external_snapshot_attribute_assignment(function_name, key):
+def test_sandbox_map_guard_catches_external_snapshot_attribute_assignment(key):
     source = f"""
-private Map {function_name}(device, deviceLabel, errOut = null) {{
+private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {{
     def snapshot = [:]
     device.currentStates.each {{ st ->
         def name = st.name
@@ -324,6 +323,30 @@ private Map {function_name}(device, deviceLabel, errOut = null) {{
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
     assert findings[0]["severity"] == "error"
     assert findings[0]["source"] == f"snapshot[{key}] = [value: st.value, timestamp: null]"
+
+
+def test_sandbox_map_guard_catches_bypass_snapshot_map_iteration_assignment():
+    source = """
+private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
+    def fj = _fetchDeviceFullJson(deviceId)
+    def cs = fj?.device?.currentStates
+    if (!(cs instanceof Map)) return null
+    def snapshot = [:]
+    cs.each { name, st ->
+        if (name != null) {
+            def val = (st instanceof Map) ? st.value : st
+            def rawDate = (st instanceof Map) ? st.date : null
+            snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]
+        }
+    }
+    return snapshot
+}
+"""
+    findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
+    assert len(findings) == 1
+    assert findings[0]["rule"] == "sandbox-map-key-subscript"
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["source"] == "snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]"
 
 
 @pytest.mark.parametrize("function_name", ["_deviceConfigurationPublicValue", "transformDriverValue"])
@@ -374,6 +397,17 @@ private def transformDriverValue(Map rows, String key, value) {
 }
 private def copyRows(List rows, int index, value) {
     rows[index] = value
+}
+"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_sandbox_map_guard_allows_bounded_keys_and_does_not_treat_comparison_as_write():
+    source = """
+private def copyStatus(Map source, String key) {
+    def output = [:]
+    ['status', 'success'].each { field -> output[field] = source.get(field) }
+    return output[key] == source.get(key)
 }
 """
     assert sandbox_map_findings(source) == []

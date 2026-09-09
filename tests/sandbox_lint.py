@@ -4211,13 +4211,15 @@ def check_sandbox_map_subscripts(
     the reproduced case). Plain Groovy accepts the same source, so this check
     holds two narrow invariants that ordinary Spock cannot prove:
 
-    * structural-copy helpers use ``Map.get/put`` for arbitrary caller or
-      driver-controlled keys rather than ``copy[key]``;
+    * identifiable Maps use ``Map.put`` for keys taken from Map iteration,
+      String parameters, or driver attribute names;
     * the reproduced literal collision keys are not accessed with bracket
       syntax in shipped app/library code.
 
-    This is deliberately a source guard, not a claim that regex can model every
-    Hubitat sandbox key. Live catalog coverage remains the final proof.
+    This is deliberately a source guard: it does not infer return types, follow
+    calls, or prove the safety of every dynamic key. Bounded literal-list keys
+    and numeric indices are not external-key evidence. Live catalog coverage
+    remains the final proof.
     """
     if src_override is None:
         sources: dict[str, str] = {}
@@ -4237,14 +4239,30 @@ def check_sandbox_map_subscripts(
         sources = src_override
 
     findings: list[dict] = []
+    identifier = r"[A-Za-z_][A-Za-z0-9_]*"
+    map_type = r"(?:Map|LinkedHashMap|HashMap|TreeMap|ConcurrentHashMap)(?:\s*<[^{};=]+?>)?"
     declaration = re.compile(
-        r"^\s*(?:private\s+|protected\s+|public\s+)?"
-        r"(?:static\s+)?(?:def|[A-Za-z_][A-Za-z0-9_<>, ?]*)\s+"
-        r"([A-Za-z_][A-Za-z0-9_]*)\s*\("
+        rf"^\s*(?:(?:private|protected|public)\s+(?:static\s+)?"
+        rf"(?:(?:def|{identifier}(?:<[^{{}}]+>)?)\s+)?|"
+        rf"(?:static\s+)?(?:def|{identifier}(?:<[^{{}}]+>)?)\s+)"
+        rf"(?P<name>{identifier})\s*\((?P<params>[^{{}}]*?)\)\s*\{{",
+        re.MULTILINE,
     )
     dynamic_assignment = re.compile(
-        r"\b([A-Za-z_][A-Za-z0-9_.]*)\s*\[\s*"
-        r"([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*="
+        rf"\b({identifier}(?:\.{identifier})*)\s*\[\s*"
+        rf"({identifier}(?:\??\.{identifier})*)\s*\]\s*=(?!=|~)"
+    )
+    typed_map = re.compile(rf"\b{map_type}\s+({identifier})\b")
+    constructed_map = re.compile(
+        rf"\b({identifier}(?:\.{identifier})*)\s*=\s*"
+        rf"(?:new\s+{map_type}\s*\(|\[\s*(?:{identifier}\s*)?:)"
+    )
+    checked_map = re.compile(rf"\b({identifier})\s+(?:instanceof|as)\s+Map\b")
+    entry_iteration = re.compile(
+        rf"\??\.each\s*\{{\s*({identifier})\s*,\s*{identifier}\s*->"
+    )
+    attribute_alias = re.compile(
+        rf"\b(?:def|String)\s+({identifier})\s*=\s*{identifier}\??\.name\b"
     )
     literal_collision = re.compile(
         r"\b[A-Za-z_][A-Za-z0-9_.]*\s*\[\s*"
@@ -4281,39 +4299,50 @@ def check_sandbox_map_subscripts(
                 add(path, index + 1, raw_line,
                     f"Map bracket access with sandbox-colliding literal key '{key}'; use Map.get/put.")
 
-        # Dynamic subscripts are only banned in the structural-copy helpers
-        # that carry arbitrary external keys. A repository-wide ``map[key]``
-        # ban would wrongly flag indexed lists and bounded internal registries.
-        depth = 0
-        in_target = False
-        target_name = None
-        for index, line in enumerate(stripped_lines):
-            if not in_target:
-                match = declaration.match(line)
-                if match:
-                    name = match.group(1)
-                    if ("copy" in name.lower() or
-                            name in {"_mrtrCanonicalArgs", "_publicToolResultValue"}):
-                        in_target = True
-                        target_name = name
-                        depth = line.count("{") - line.count("}")
-                        # A declaration whose brace starts on the next line is
-                        # still active; depth becomes positive when it arrives.
-                    else:
-                        continue
-                else:
-                    continue
-            else:
-                depth += line.count("{") - line.count("}")
+        code = "\n".join(stripped_lines)
 
-            for match in dynamic_assignment.finditer(line):
+        def closing_brace(text: str, opening: int) -> int:
+            depth = 1
+            for offset in range(opening + 1, len(text)):
+                if text[offset] == "{":
+                    depth += 1
+                elif text[offset] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return offset
+            return len(text)
+
+        # Evidence is method-local and independent of the method's name. A
+        # two-argument Map iteration scopes its key to that closure; a later
+        # bounded loop reusing the variable does not inherit that evidence.
+        for method in declaration.finditer(code):
+            opening = method.end() - 1
+            end = closing_brace(code, opening)
+            body = code[opening + 1:end]
+            maps = set(typed_map.findall(method.group("params")))
+            maps.update(typed_map.findall(body))
+            maps.update(constructed_map.findall(body))
+            maps.update(checked_map.findall(body))
+            parameter_keys = set(re.findall(rf"\bString\s+({identifier})\b", method.group("params")))
+            attribute_keys = set(attribute_alias.findall(body))
+            iteration_keys = [
+                (match.group(1), match.end(), closing_brace(body, body.index("{", match.start())))
+                for match in entry_iteration.finditer(body)
+            ]
+            for match in dynamic_assignment.finditer(body):
                 receiver, key = match.groups()
+                if receiver not in maps:
+                    continue
+                external_key = (
+                    key in parameter_keys or key in attribute_keys or key.endswith(".name") or
+                    any(key == name and start <= match.start() < stop
+                        for name, start, stop in iteration_keys)
+                )
+                if not external_key:
+                    continue
+                index = code.count("\n", 0, opening + 1 + match.start())
                 add(path, index + 1, original_lines[index],
-                    f"Arbitrary key '{key}' assigned through {receiver}[{key}] in {target_name}; use Map.put.")
-
-            if in_target and depth == 0 and "}" in line:
-                in_target = False
-                target_name = None
+                    f"External key '{key}' assigned through {receiver}[{key}] in {method.group('name')}; use Map.put.")
 
     return findings
 
