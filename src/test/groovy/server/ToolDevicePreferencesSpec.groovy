@@ -330,6 +330,41 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         ]
     }
 
+    @spock.lang.Unroll
+    def "linked target choices #failureKind remain unavailable with a safe ERROR"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.device.linkedDevice = true
+        registerFixture(DEVICE_ID, full)
+        hubGet.register('/hub2/userDeviceTypes') { '[]' }
+        hubGet.register('/device/accessibleLinkedDevices') {
+            if (failureKind == 'fetch') throw new RuntimeException('fixture-linked-secret')
+            body
+        }
+        settingsMap.mcpLogLevel = 'error'
+        script.log.messages.clear()
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+        def networkId = result.editableFields.find { it.name == 'deviceNetworkId' }
+        def errors = script.log.messages.findAll { it.startsWith('error:[MCP1] ') }
+
+        then:
+        noExceptionThrown()
+        networkId.optionsStatus == 'unavailable'
+        networkId.reason.contains('retry')
+        errors.any { it.contains('/device/accessibleLinkedDevices') && it.contains(DEVICE_ID) }
+        !JsonOutput.toJson(result).contains('fixture-linked-secret')
+        !script.log.messages.join('\n').contains('fixture-linked-secret')
+
+        where:
+        failureKind   | body
+        'fetch'       | null
+        'invalid-json'| '<html>fixture-linked-secret</html>'
+        'wrong-shape' | '{"devices":"fixture-linked-secret"}'
+    }
+
     def "native fetch failure preserves useful identity and explicitly unavailable discovery"() {
         given:
         addListedDevice()
@@ -414,6 +449,58 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.sections.jobs[0].name == 'syntheticRefresh'
         result.references.events.args.deviceId == DEVICE_ID
         !result.toString().contains('synthetic-device-data-secret')
+    }
+
+    @spock.lang.Unroll
+    def "driver catalog #failureKind is unavailable rather than an identity mismatch and logs safely"() {
+        given:
+        addListedDevice()
+        registerFixture()
+        hubGet.register('/hub2/userDeviceTypes') {
+            if (failureKind == 'fetch') throw new RuntimeException('fixture-catalog-secret')
+            body
+        }
+        settingsMap.mcpLogLevel = 'error'
+        script.log.messages.clear()
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+        def errors = script.log.messages.findAll { it.startsWith('error:[MCP1] ') }
+
+        then:
+        noExceptionThrown()
+        result.driverSource.status == 'unavailable'
+        result.driverSource.reason.toLowerCase().contains('catalog')
+        !result.driverSource.reason.contains('No unique')
+        result.driverSource.lookup.tool == 'hub_list_drivers'
+        errors.any { it.contains('/hub2/userDeviceTypes') && it.contains(DEVICE_ID) }
+        !JsonOutput.toJson(result).contains('fixture-catalog-secret')
+        !script.log.messages.join('\n').contains('fixture-catalog-secret')
+
+        where:
+        failureKind    | body
+        'fetch'        | null
+        'invalid-json' | '<html>fixture-catalog-secret</html>'
+        'wrong-shape'  | '{"drivers":"fixture-catalog-secret"}'
+        'empty-body'   | ''
+    }
+
+    def "successfully read empty driver catalog remains unresolved without ERROR"() {
+        given:
+        addListedDevice()
+        registerFixture()
+        hubGet.register('/hub2/userDeviceTypes') { '[]' }
+        settingsMap.mcpLogLevel = 'error'
+        script.log.messages.clear()
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'configuration')
+
+        then:
+        result.driverSource.status == 'unresolved'
+        result.driverSource.reason.contains('No unique')
+        result.driverSource.lookup.tool == 'hub_list_drivers'
+        !script.log.messages.any { it.startsWith('error:[MCP1] ') }
     }
 
     def "duplicate user driver identity resolves through exact usedBy device membership"() {

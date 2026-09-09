@@ -1190,6 +1190,55 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def 'pane #property #responseKind remains a failure with matching readback in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        model.commandRetrySelectionEnabled = false
+        model.device.retryAvailable = true
+        registerFixture(model, bypass)
+        if (!bypass && property == 'showOnHome') {
+            hubGet.register('/device/setShowOnHome?deviceId=10&show=false') { throw new RuntimeException('Not Found (404)') }
+        }
+        if (!bypass && property == 'defaultCurrentState') {
+            hubGet.register('/device/setDefaultCurrentState?id=10&currentState=') { throw new RuntimeException('Not Found (404)') }
+        }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            responseKind == 'rejection' ? [success: false, message: 'fixture-secret-in-response'] :
+                [_unparseable: true, message: 'fixture-secret-in-response']
+        }
+        settingsMap.mcpLogLevel = 'error'
+        script.log.messages.clear()
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10'] + [(property): target])
+        def errors = script.log.messages.findAll { it.startsWith('error:[MCP1] ') }
+
+        then:
+        noExceptionThrown()
+        result.success == false
+        !result.changes.find { it.property == property }
+        result.errors.find { it.property == property }
+        errors.any { it.contains('ID: 10') }
+        !JsonOutput.toJson(result).contains('fixture-secret-in-response')
+        !script.log.messages.join('\n').contains('fixture-secret-in-response')
+
+        where:
+        property              | target | bypass | responseKind
+        'retryEnabled'        | false  | false  | 'rejection'
+        'retryEnabled'        | false  | false  | 'invalid-body'
+        'retryEnabled'        | false  | true   | 'rejection'
+        'retryEnabled'        | false  | true   | 'invalid-body'
+        'showOnHome'          | false  | false  | 'rejection'
+        'showOnHome'          | false  | false  | 'invalid-body'
+        'showOnHome'          | false  | true   | 'rejection'
+        'showOnHome'          | false  | true   | 'invalid-body'
+        'defaultCurrentState' | ''     | false  | 'rejection'
+        'defaultCurrentState' | ''     | false  | 'invalid-body'
+        'defaultCurrentState' | ''     | true   | 'rejection'
+        'defaultCurrentState' | ''     | true   | 'invalid-body'
+    }
+
+    @Unroll
     def 'failed preference update writes a safe native ERROR summary in bypass=#bypass'() {
         given:
         def model = fixture()
