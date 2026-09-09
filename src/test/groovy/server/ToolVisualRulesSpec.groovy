@@ -89,6 +89,23 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
     private static final List GRAPH_IDS = ['n1', 'trigger-merge', 'decision', 'n2']
 
+    def "graph validation preserves arbitrary node ids through classification and edge checks"() {
+        given:
+        def graph = graphDefinition()
+        def names = ['n1': 'fields', 'trigger-merge': 'class', 'decision': 'metaClass', 'n2': 'Fields']
+        graph.nodes.each { it.id = names.get(it.id) }
+        graph.edges.each { it.from = names.get(it.from); it.to = names.get(it.to) }
+
+        expect:
+        script._vrb2Validate(graph) == []
+
+        when: 'the same graph has an invalid outgoing port'
+        graph.edges.last().port = 'next'
+
+        then:
+        script._vrb2Validate(graph).any { it.contains("invalid port 'next'") }
+    }
+
     private void registerAppsList(List children) {
         hubGet.register('/hub2/appsList') { params ->
             json([apps: [

@@ -731,7 +731,7 @@ def toolSetVariable(name, value) {
         logDebug("setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
     if (!state.ruleVariables) state.ruleVariables = [:]
-    state.ruleVariables[name] = value
+    state.ruleVariables.put(name, value)
     return [success: true, name: name, value: value, source: "rule_engine"]
 }
 

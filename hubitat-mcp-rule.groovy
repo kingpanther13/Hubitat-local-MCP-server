@@ -3477,7 +3477,7 @@ def executeAction(action, actionIndex = null, evt = null) {
 
         case "set_local_variable":
             def vars = atomicState.localVariables ?: [:]
-            vars[action.variableName] = substituteVariables(action.value?.toString() ?: "", evt)
+            vars.put(action.variableName, substituteVariables(action.value?.toString() ?: "", evt))
             atomicState.localVariables = vars
             checkLocalVarsSize(vars)
             break
@@ -3732,7 +3732,7 @@ def executeAction(action, actionIndex = null, evt = null) {
 
             if (scope == "local") {
                 locals = atomicState.localVariables ?: [:]
-                currentVal = locals[varName] ?: 0
+                currentVal = locals.get(varName) ?: 0
             } else {
                 // Global hub variable
                 def hubVar = getGlobalVar(varName)
@@ -3755,7 +3755,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             }
 
             if (scope == "local") {
-                locals[varName] = mathResult
+                locals.put(varName, mathResult)
                 atomicState.localVariables = locals
                 checkLocalVarsSize(locals)
             } else {

@@ -384,6 +384,7 @@ class HubitatMcpClient:
         self._transport_retries = 0       # silent read-side transport retries (504/network), verbose-gated
         self._last_op: tuple[str, float, bool] | None = None   # (op_key, seconds, ok) of the most recent call
         self._last_continuation_rounds = 0
+        self._last_request_state: str | None = None
         self._last_result_type: str | None = None
         self._http_leg_timings: list[tuple[str, float, int | None]] = []
         self._decoded_http_leg_indexes: set[int] = set()

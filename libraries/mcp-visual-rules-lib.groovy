@@ -687,7 +687,7 @@ private List _vrb2ValidateChain(Map kinds, Map nextMap, String from, String port
         if (seen.contains(cursor)) { errs << "The rule contains an action cycle."; return errs }
         // A chain may only run through action nodes -- report that before the join check so a
         // branch routed into a structure node names the real mistake.
-        if (kinds[cursor] != "action") { errs << "Expected action node '${cursor}'."; return errs }
+        if (kinds.get(cursor) != "action") { errs << "Expected action node '${cursor}'."; return errs }
         if (visited.contains(cursor)) {
             // Arbitrary joins are rejected by the hub: two branches may only rejoin at the branchMerge.
             errs << "Node '${cursor}' is reached by more than one path; branches may only rejoin at the branchMerge node."
@@ -733,11 +733,11 @@ private List _vrb2Validate(Map graph) {
         if (!(kind in ["trigger", "merge", "decision", "action"])) {
             errors << "Node '${id}' has unsupported kind '${node.kind}'."
         } else {
-            kinds[id] = kind
+            kinds.put(id, kind)
         }
         if (!(node.config instanceof Map)) errors << "Node '${id}' config must be an object."
         def type = node.type?.toString()
-        types[id] = type
+        types.put(id, type)
         // Trigger/action type NAMES are not pre-flighted: firmware extends the catalog, and a
         // rule drawn in the hub UI with a type this build does not know must still round-trip.
         // _vrb2CatalogWarnings reports them; the hub validator is the oracle. The SHAPE is ours
@@ -753,10 +753,10 @@ private List _vrb2Validate(Map graph) {
     }
 
     def idList = ids as List
-    def triggerIds = idList.findAll { kinds[it] == "trigger" }
-    def triggerMergeIds = idList.findAll { kinds[it] == "merge" && types[it] == "triggerMerge" }
-    def branchMergeIds = idList.findAll { kinds[it] == "merge" && types[it] == "branchMerge" }
-    def decisionIds = idList.findAll { kinds[it] == "decision" }
+    def triggerIds = idList.findAll { kinds.get(it) == "trigger" }
+    def triggerMergeIds = idList.findAll { kinds.get(it) == "merge" && types.get(it) == "triggerMerge" }
+    def branchMergeIds = idList.findAll { kinds.get(it) == "merge" && types.get(it) == "branchMerge" }
+    def decisionIds = idList.findAll { kinds.get(it) == "decision" }
     if (triggerIds.isEmpty()) errors << "Rule must contain at least one trigger node."
     if (triggerMergeIds.size() != 1) errors << "Rule must contain exactly one triggerMerge node."
     if (decisionIds.size() != 1) errors << "Rule must contain exactly one decision node."
@@ -770,7 +770,7 @@ private List _vrb2Validate(Map graph) {
             errors << "Node '${decisionId}' config.conditions must be an array."
         } else {
             def conditions = (rawConditions instanceof List) ? rawConditions : []
-            if (types[decisionId] == "any" && conditions.isEmpty()) {
+            if (types.get(decisionId) == "any" && conditions.isEmpty()) {
                 errors << "An 'any' decision must contain at least one condition."
             }
             def conditionIds = [] as Set
@@ -817,8 +817,8 @@ private List _vrb2Validate(Map graph) {
             return
         }
         seenEdges << edgeKey
-        def allowed = (kinds[from] == "decision") ? ["true", "false"] : ["next"]
-        if (kinds[from] != null && !(port in allowed)) {
+        def allowed = (kinds.get(from) == "decision") ? ["true", "false"] : ["next"]
+        if (kinds.get(from) != null && !(port in allowed)) {
             errors << "Edge from '${from}' has invalid port '${port}' (expected ${allowed.join(' or ')})."
             return
         }

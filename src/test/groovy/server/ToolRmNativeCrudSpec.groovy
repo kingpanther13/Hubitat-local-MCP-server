@@ -9654,6 +9654,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.silentRejection == true
     }
 
+    def "walk schema keeps sandbox-sensitive enum option keys and labels"() {
+        given:
+        def options = [fields: 'Fields label', class: 'Class label', metaClass: 'Meta label', Fields: 'Upper label', getClass: 'Data label']
+        def page = [sections: [[input: [[name: 'choice', type: 'enum',
+                                       options: options.collect { key, value -> [(key): value] }]]]]]
+
+        when:
+        def result = script._rmCollectWalkSchema(page, [choice: 'fields'])
+
+        then:
+        result.inputs[0].options == options.collect { key, value -> [value: key, label: value] }
+        result.inputs[0].currentValue == 'fields'
+    }
+
     def "walkStep click fires a /installedapp/btn POST with the requested button name + stateAttribute"() {
         // Direct unit cover for walkStep operation='click' — the dispatcher
         // routes through _rmClickAppButton which POSTs to /installedapp/btn

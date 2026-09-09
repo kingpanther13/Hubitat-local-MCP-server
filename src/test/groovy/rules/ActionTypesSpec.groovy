@@ -352,6 +352,22 @@ class ActionTypesSpec extends RuleHarnessSpec {
 
     // -------- variables --------
 
+    def "local variable actions preserve sandbox-sensitive names through set and math"() {
+        given:
+        atomicStateMap.localVariables = [untouched: false]
+
+        when:
+        ['fields', 'class', 'metaClass', 'Fields', 'getClass'].each { key ->
+            script.executeAction([type: 'set_local_variable', variableName: key, value: '5'])
+            script.executeAction([type: 'variable_math', variableName: key,
+                                  scope: 'local', operation: 'add', operand: 3])
+        }
+
+        then:
+        atomicStateMap.localVariables == [untouched: false, fields: 8, class: 8,
+                                         metaClass: 8, Fields: 8, getClass: 8]
+    }
+
     def "set_local_variable stores the interpolated value in atomicState.localVariables"() {
         given:
         atomicStateMap.localVariables = [target: 'Alice']

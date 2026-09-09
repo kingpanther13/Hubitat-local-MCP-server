@@ -427,7 +427,7 @@ def test_measured_untyped_literal_collisions_block_reads_and_writes(key, access)
 
 
 @pytest.mark.parametrize("key", ["Fields", "getClass"])
-def test_measured_noncolliding_names_are_valid_map_data(key):
+def test_scanner_exempts_measured_noncolliding_literal_names(key):
     source = f"private def probe() {{\n def copy = [:]\n copy['{key}'] = false\n return copy['{key}']\n}}"
     assert sandbox_map_findings(source) == []
 
@@ -531,6 +531,83 @@ def test_map_guard_detects_native_settings_conditional_map_read():
     findings = sandbox_map_findings(source)
     assert len(findings) == 1
     assert "read candidate values[name]" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("access", ["vars[action.variableName] = false", "return vars[action.variableName]"])
+def test_map_guard_tracks_elvis_map_and_action_variable_name(access):
+    source = f"def act(action) {{\n def vars = atomicState.localVariables ?: [:]\n {access}\n}}"
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_map_guard_tracks_untyped_key_parameter_on_state_map():
+    source = """def setValue(name, value) {
+ if (!state.ruleVariables) state.ruleVariables = [:]
+ state.ruleVariables[name] = value
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_map_guard_tracks_single_parameter_iteration_without_assuming_list_receiver_is_map():
+    source = """def copy(List names) {
+ def states = [:]
+ names.each { an -> states[an] = false }
+ names.each { index -> names[index] = false }
+}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "states[an]" in findings[0]["message"]
+
+
+def test_map_guard_tracks_first_map_key_and_cast_initializer():
+    source = """def inspect(spec) {
+ def writeMap = spec.write as Map
+ def key = writeMap.keySet().iterator().next().toString()
+ return writeMap[key]
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_map_guard_tracks_checked_option_map_key():
+    source = """def options(values) {
+ values.each { o ->
+  if (o instanceof Map) {
+   def k = o.keySet().iterator().next()
+   return o[k]
+  }
+ }
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+@pytest.mark.parametrize("key, expected", [("fields", 0), ("metaClass", 1)])
+def test_map_guard_applies_typed_contract_to_script_fields(key, expected):
+    source = f"""@groovy.transform.Field static final Map CACHE = new HashMap()
+def write() {{
+ CACHE['{key}'] = false
+}}
+"""
+    assert len(sandbox_map_findings(source)) == expected
+
+
+def test_untyped_local_shadow_does_not_inherit_script_field_exemption():
+    source = """@groovy.transform.Field static final Map CACHE = new HashMap()
+def write() {
+ def CACHE = [:]
+ CACHE['fields'] = false
+}
+"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_unknown_helper_return_is_not_assumed_to_be_map():
+    source = """def copy(String key) {
+ def result = buildThing()
+ result[key] = false
+}
+"""
+    # buildThing could return a List or a custom getAt/putAt receiver. No type
+    # evidence is available in this source; silence is not a safety verdict.
+    assert sandbox_map_findings(source) == []
 
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation

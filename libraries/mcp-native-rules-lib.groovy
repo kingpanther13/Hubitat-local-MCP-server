@@ -8396,7 +8396,7 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
                 (i.options as List).each { o ->
                     if (o instanceof Map && !o.isEmpty()) {
                         def k = o.keySet().iterator().next()
-                        opts << [value: k.toString(), label: o[k]?.toString()]
+                        opts << [value: k.toString(), label: o.get(k)?.toString()]
                     } else {
                         opts << [value: o?.toString(), label: o?.toString()]
                     }
@@ -8558,7 +8558,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
         def writeMap = spec.write as Map
         if (writeMap.size() != 1) throw new IllegalArgumentException("walkStep.write should contain exactly one key -- call once per field for clean schema-diff signals")
         writtenKey = writeMap.keySet().iterator().next().toString()
-        writtenValue = writeMap[writtenKey]
+        writtenValue = writeMap.get(writtenKey)
         // A doActPage navigation response can expose an indexed field (actType.N,
         // actSubType.N, logmsg.N, etc.) and then advance RM's internal wizard slot
         // before the caller's next request.  Resolve that correctly-derived-but-stale

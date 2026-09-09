@@ -5042,7 +5042,8 @@ def getVariableValue(name) {
 // Helper method for child apps to set rule-scoped variables
 def setRuleVariable(name, value) {
     if (!state.ruleVariables) state.ruleVariables = [:]
-    state.ruleVariables[name] = value
+    state.ruleVariables.put(name, value)
+    return value
 }
 
 

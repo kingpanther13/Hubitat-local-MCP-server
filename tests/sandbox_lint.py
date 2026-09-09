@@ -4211,6 +4211,8 @@ def check_sandbox_map_subscripts(
     metaClass writes attempt a cast. getClass and Fields are valid data keys.
     Dynamic-key findings remain source candidates: this scanner does not prove
     interprocedural reachability or infer an exhaustive platform denylist.
+    They are advisory warnings, not CI enforcement of every dynamic boundary.
+    See tests/fixtures/sandbox-map-probes.md for measurements and inference limits.
     """
     if src_override is None:
         paths = [
@@ -4242,6 +4244,12 @@ def check_sandbox_map_subscripts(
     conditional_map = re.compile(
         rf"\b({ident})\s*=\s*[^\n;]*\binstanceof\s+Map\b[^\n;]*:\s*\[:\]"
     )
+    fallback_map = re.compile(rf"\b({ident})\s*=\s*[^\n;]*\?:\s*\[:\]")
+    cast_map = re.compile(rf"\b({ident})\s*=\s*[^\n;]*\bas\s+Map\b")
+    field_map = re.compile(
+        rf"@(?:groovy\.transform\.)?Field\s+(?:(?:static|final|private|protected|public)\s+)*"
+        rf"{map_type}\s+({ident})\b"
+    )
     alias_re = re.compile(rf"\b({ident})\s*=\s*({ident})\b(\s*\()?")
     subscript_re = re.compile(
         rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
@@ -4253,7 +4261,7 @@ def check_sandbox_map_subscripts(
     )
     each_re = re.compile(
         rf"(?P<receiver>{ident}(?:\.{ident})*)\??\.each\s*\{{\s*"
-        rf"(?P<key>{ident})\s*,\s*{ident}\s*->"
+        rf"(?P<key>{ident})\s*(?:,\s*{ident}\s*)?->"
     )
     # The raw literal is correlated against executable code below; a quoted
     # example in a comment cannot establish a safe branch.
@@ -4288,6 +4296,7 @@ def check_sandbox_map_subscripts(
     for path, source in sources.items():
         code = masked[path]
         raw_lines = source.split("\n")
+        field_maps = set(field_map.findall(code))
         for method in method_re.finditer(code):
             opening = method.end() - 1
             end = close_brace(code, opening)
@@ -4295,8 +4304,12 @@ def check_sandbox_map_subscripts(
             raw_body = source[opening + 1:end]
             explicit_maps = set(map_decl.findall(method.group("params")))
             explicit_maps.update(map_decl.findall(body))
+            # A local untyped declaration can shadow a typed script field.
+            shadowed = set(re.findall(rf"\bdef\s+({ident})\b", body))
+            explicit_maps.update(field_maps - shadowed)
             maps = (explicit_maps | set(map_init.findall(body)) |
-                    set(checked_map.findall(body)) | set(conditional_map.findall(body)))
+                    set(checked_map.findall(body)) | set(conditional_map.findall(body)) |
+                    set(fallback_map.findall(body)) | set(cast_map.findall(body)))
             aliases = list(alias_re.finditer(body))
             for _ in range(len(aliases) + 1):
                 before = set(maps)
@@ -4307,8 +4320,16 @@ def check_sandbox_map_subscripts(
                 if before == maps:
                     break
             string_params = set(re.findall(rf"\bString\s+({ident})\b", method.group("params")))
+            untyped_params = {
+                match.group(1)
+                for param in method.group("params").split(",")
+                if (match := re.fullmatch(rf"\s*(?:def\s+)?({ident})\s*(?:=.*)?", param))
+            }
             attr_names = set(re.findall(
-                rf"\b(?:def|String)\s+({ident})\s*=\s*{ident}\??\.(?:name|key)\b", body
+                rf"\b(?:def|String)\s+({ident})\s*=\s*{ident}\??\.(?:name|key|variableName|id)\b", body
+            ))
+            attr_names.update(re.findall(
+                rf"\b({ident})\s*=\s*{ident}\.keySet\(\)\.iterator\(\)\.next\(\)", body
             ))
             iterations = [
                 (m.group("key"), m.end(), close_brace(body, body.index("{", m.start())))
@@ -4318,7 +4339,7 @@ def check_sandbox_map_subscripts(
             # also provide candidate keys; keep their closure scopes local.
             iterations.extend(
                 (m.group(1), m.end(), close_brace(body, body.index("{", m.start())))
-                for m in re.finditer(rf"\.each\s*\{{\s*({ident})\s*,\s*{ident}\s*->", body)
+                for m in re.finditer(rf"(?<!\])\.each\s*\{{\s*({ident})\s*(?:,\s*{ident}\s*)?->", body)
             )
             # Preserve the originating closure's bounds when a key is renamed
             # or converted to a String (for example dashboard setOptions).
@@ -4328,6 +4349,8 @@ def check_sandbox_map_subscripts(
             ))
             for alias in key_aliases:
                 dest, origin = alias.groups()
+                if origin in attr_names:
+                    attr_names.add(dest)
                 inherited = [(dest, alias.end(), stop) for name, start, stop in iterations
                              if name == origin and start <= alias.start() < stop]
                 iterations.extend(inherited)
@@ -4374,8 +4397,10 @@ def check_sandbox_map_subscripts(
                     continue
                 iterated = any(key == name and start <= access.start() < stop
                                for name, start, stop in iterations)
-                attribute = key in attr_names or bool(re.search(r"\.(?:name|key)(?:\.toString\(\))?$", key))
-                if not (iterated or attribute or key in string_params):
+                attribute = key in attr_names or bool(re.search(
+                    r"\.(?:name|key|variableName|id)(?:\.toString\(\))?$", key
+                ))
+                if not (iterated or attribute or key in string_params or key in untyped_params):
                     continue
                 # A String parameter alone does not prove its callers admit a
                 # colliding name. Typed writes have a narrower metaClass hazard.
