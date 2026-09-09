@@ -92,7 +92,7 @@ def _watchdog_response(logs):
     )
 
 
-@pytest.mark.parametrize("rejection", ["unknown", "unavailable", "accepted"])
+@pytest.mark.parametrize("rejection", ["unknown", "wrong-code", "wrong-name", "unavailable", "accepted"])
 def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_name_rejection(rejection):
     prefix = f"{et.PREFIX}UnknownPreference"
     declared = {"logEnable": True, prefix: False, prefix + "_": True}
@@ -125,14 +125,15 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 patch = arguments["preferences"]
                 preference_attempts.append(patch)
                 assert not set(patch) & set(declared), "Boundary probe attempted an existing preference"
-                if rejection == "unknown":
-                    error = {"code": -32602, "message": (
-                        f"Invalid params: Unknown preference '{next(iter(patch))}'; "
+                if rejection in {"unknown", "wrong-code", "wrong-name"}:
+                    rejected_name = "differentPreference" if rejection == "wrong-name" else next(iter(patch))
+                    error = {"code": -32603 if rejection == "wrong-code" else -32602, "message": (
+                        f"Invalid params: Unknown preference '{rejected_name}'; "
                         "read hub_get_device(mode='configuration') for declared names "
                         'See hub_get_tool_guide(section="update_device") for '
                         "hub_update_device's reference and best practices."
                     )}
-                    raise et.McpError(f"JSON-RPC error: {error}")
+                    raise et.McpError(f"JSON-RPC error: {error}", rpc_error=error)
                 if rejection == "unavailable":
                     raise et.McpError("Unable to read complete preference definitions/storage")
                 return {"success": True}
@@ -580,6 +581,25 @@ def test_send_records_only_the_actual_http_post_duration(monkeypatch, send_clien
     client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
 
     assert client._http_leg_timings == [("tools/call", 8.0, 200)]
+
+
+def test_send_retains_structured_rpc_error_with_mixed_quotes(send_client):
+    error = {"code": -32602, "message": (
+        "Invalid params: Unknown preference 'probe'; "
+        'See hub_get_tool_guide(section="update_device") for hub_update_device\'s reference.'
+    )}
+    client = send_client(lambda *args, **kwargs: SimpleNamespace(
+        status_code=200, reason="OK", raise_for_status=lambda: None,
+        json=lambda: {"jsonrpc": "2.0", "id": 1, "error": error},
+    ))
+    with pytest.raises(et.McpError) as raised:
+        client._send("tools/call", {"name": "hub_update_device", "arguments": {"deviceId": "10"}})
+    assert raised.value.rpc_error == error
+    assert raised.value.rpc_error["message"].startswith("Invalid params: Unknown preference 'probe';")
+    assert client._expected_validation_logs == [
+        "Validation error in hub_update_device: Unknown preference 'probe'; "
+        'See hub_get_tool_guide(section="update_device") for hub_update_device\'s reference.'
+    ]
 
 
 @pytest.mark.parametrize("name,args", [

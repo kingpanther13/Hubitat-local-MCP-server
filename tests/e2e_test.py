@@ -199,6 +199,10 @@ def _summarize_mrtr_e2e_proof(
 class McpError(Exception):
     """JSON-RPC level error from the MCP endpoint."""
 
+    def __init__(self, message: str, *, rpc_error: dict | None = None):
+        self.rpc_error = rpc_error
+        super().__init__(message)
+
 
 class RelayLostResponseError(McpError, requests.HTTPError):
     """A write's response was lost while the hub may have committed it.
@@ -726,7 +730,7 @@ class HubitatMcpClient:
                 if not hasattr(self, "_expected_validation_logs"):
                     self._expected_validation_logs = []
                 self._expected_validation_logs.append(expectation)
-            raise McpError(f"JSON-RPC error: {data['error']}")
+            raise McpError(f"JSON-RPC error: {data['error']}", rpc_error=data["error"])
 
         return data.get("result", {})
 
@@ -1091,7 +1095,7 @@ class LegacyEraClient:
             expectation = _validation_log_expectation(method, params, data["error"])
             if expectation is not None:
                 self._expected_validation_logs.append(expectation)
-            raise McpError(f"JSON-RPC error on legacy {method}: {data['error']}")
+            raise McpError(f"JSON-RPC error on legacy {method}: {data['error']}", rpc_error=data["error"])
         return data.get("result", {})
 
     def initialize(self, requested: str) -> dict:
@@ -12679,7 +12683,10 @@ class TestRunner:
                 })
                 raise AssertionError("Bypass update accepted an undeclared preference")
             except McpError as exc:
-                assert f"Unknown preference '{unknown_name}'" in str(exc), \
+                error = exc.rpc_error or {}
+                assert error.get("code") == -32602 and error.get("message", "").startswith(
+                    f"Invalid params: Unknown preference '{unknown_name}';"
+                ), \
                     f"Undeclared preference must be rejected before native writes: {exc}"
             # NOTE: the `enabled` read-back (_confirmDisabledFlip, the same helper on the bypass and
             # listed write legs) is proven live by the LISTED-device toggle near the top of this test
