@@ -313,15 +313,21 @@ class ToolModeSpec extends ToolSpecBase {
         result.success == true
     }
 
-    def "hub_set_mode_manager rejects an unknown manager"() {
+    @spock.lang.Unroll
+    def "hub_set_mode_manager rejects unknown manager #manager before a hub request"() {
         given:
         enableWrite()
 
         when:
-        script.toolSetModeManager([manager: 'bogus'])
+        script.toolSetModeManager([manager: manager])
 
         then:
-        thrown(IllegalArgumentException)
+        def error = thrown(IllegalArgumentException)
+        error.message == 'manager must be one of builtIn, legacy, app'
+        hubGet.calls.empty
+
+        where:
+        manager << ['bogus', 'fields', 'class', 'properties', 'metaClass']
     }
 
     def "hub_set_mode_manager with neither manager nor conditions throws"() {

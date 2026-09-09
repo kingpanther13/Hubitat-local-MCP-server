@@ -2117,7 +2117,7 @@ def _writeReserveRequest(toolName, String transport) {
             long at = now()
             def rec = [tool: toolName?.toString(), startedAt: at,
                        transport: transport ?: "legacy", expiresAt: at + _writeLeaseMs()]
-            WRITE_REQUEST_LEASES[leaseId] = rec
+            WRITE_REQUEST_LEASES.put(leaseId, rec)
             LIVE_WRITE_EXECUTIONS.add(leaseId)
             outcome = [accepted: true, leaseId: leaseId]
         }
@@ -2344,7 +2344,7 @@ private void _mrtrSweepWorkItemsLocked() {
         // An executing worker owns its item; never reap under it, or the slice loses the
         // arguments it is mid-way through applying.
         if (v.started == true && _writeExecutionLiveLocked(k)) return false
-        def rec = stored[v.stateId?.toString()]
+        def rec = stored.get(v.stateId?.toString())
         if (!(rec instanceof Map) || rec.status != "active") return true
         // Match on claim IDENTITY, not just the record: the item exists to feed ONE claim, so
         // once the record has moved on to a later claim this item is garbage no matter how
@@ -2831,7 +2831,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 ["appId", "page", "operation", "stepsRemaining", "addTriggersRemaining",
                  "addActionsRemaining", "patchesRemaining", "installsRemaining", "updatesRemaining",
                  "backup", "repairHints", "resume"].each { key ->
-                    if (result.containsKey(key)) capped[key] = result[key]
+                    if (result.containsKey(key)) capped.put(key, result.get(key))
                 }
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
@@ -2939,10 +2939,10 @@ private def _mrtrAggregateTerminal(Map rec, result) {
         case "driver_installs":
         case "driver_updates":
             String driverField = aggregate.kind == "driver_installs" ? "installs" : "updates"
-            out[driverField] = ((aggregate[driverField] instanceof List) ? aggregate[driverField] : []) +
-                ((out[driverField] instanceof List) ? out[driverField] : [])
-            int driverCount = out[driverField].size()
-            int driverSucceeded = out[driverField].count { it?.success == true }
+            out.put(driverField, ((aggregate.get(driverField) instanceof List) ? aggregate.get(driverField) : []) +
+                ((out.get(driverField) instanceof List) ? out.get(driverField) : []))
+            int driverCount = out.get(driverField).size()
+            int driverSucceeded = out.get(driverField).count { it?.success == true }
             out.success = out.success == true && driverSucceeded == driverCount
             String driverVerb = driverField == "installs" ? "installed" : "updated"
             out.message = out.success ? "All ${driverCount} driver(s) ${driverVerb} successfully." :
@@ -3010,10 +3010,10 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         if (_mrtrOwnedRecordLocked(stateId, claim) == null) {
             throw new IllegalStateException("requestState ownership was lost before its worker could be scheduled")
         }
-        MRTR_WORK_ITEMS[claimId] = [
+        MRTR_WORK_ITEMS.put(claimId, [
             stateId: stateId, claimId: claimId, generation: generation,
             arguments: _mrtrCopyMap(executionArgs), started: false
-        ]
+        ])
     }
     try {
         runInMillis(200, "runMrtrSlice", [overwrite: false,
@@ -3022,7 +3022,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         // only while the worker is actually executing, so a scheduler/JVM loss can
         // expire safely instead of pinning the global write slot forever.
         synchronized (WRITE_RESERVATION_LOCK) {
-            def queued = MRTR_WORK_ITEMS[claimId]
+            def queued = MRTR_WORK_ITEMS.get(claimId)
             if (queued instanceof Map && queued.started != true) {
                 LIVE_WRITE_EXECUTIONS.remove(claimId)
             }
@@ -3030,7 +3030,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         return [accepted: true]
     } catch (Exception scheduleErr) {
         synchronized (WRITE_RESERVATION_LOCK) {
-            def current = MRTR_WORK_ITEMS[claimId]
+            def current = MRTR_WORK_ITEMS.get(claimId)
             if (current instanceof Map && current.stateId?.toString() == stateId) {
                 MRTR_WORK_ITEMS.remove(claimId)
             }
@@ -3058,7 +3058,7 @@ def runMrtrSlice(Map job = [:]) {
     Map rec = null
     Map claim = [outcome: "claimed", claimId: claimId, generation: generation]
     synchronized (WRITE_RESERVATION_LOCK) {
-        def current = MRTR_WORK_ITEMS[claimId]
+        def current = MRTR_WORK_ITEMS.get(claimId)
         if (current instanceof Map && current.started != true
                 && current.stateId?.toString() == stateId
                 && current.generation == generation) {
@@ -3067,7 +3067,7 @@ def runMrtrSlice(Map job = [:]) {
                 LIVE_WRITE_EXECUTIONS.add(claimId)
                 current = [:] + (current as Map)
                 current.started = true
-                MRTR_WORK_ITEMS[claimId] = current
+                MRTR_WORK_ITEMS.put(claimId, current)
                 work = current
                 claim.record = rec
             } else {
@@ -3106,7 +3106,7 @@ def runMrtrSlice(Map job = [:]) {
     } finally {
         mrtrWorkerSliceStartedAt = previousWorkerStart
         synchronized (WRITE_RESERVATION_LOCK) {
-            def current = MRTR_WORK_ITEMS[claimId]
+            def current = MRTR_WORK_ITEMS.get(claimId)
             if (current instanceof Map && current.stateId?.toString() == stateId
                     && current.generation == generation) {
                 MRTR_WORK_ITEMS.remove(claimId)
@@ -3116,7 +3116,7 @@ def runMrtrSlice(Map job = [:]) {
             // and keeps its requestState record unsweepable until recompile. Only
             // when no successor work item exists; a rescheduled slice manages its
             // own liveness marker.
-            if (MRTR_WORK_ITEMS[claimId] == null) LIVE_WRITE_EXECUTIONS.remove(claimId)
+            if (MRTR_WORK_ITEMS.get(claimId) == null) LIVE_WRITE_EXECUTIONS.remove(claimId)
         }
     }
 }
@@ -3250,8 +3250,8 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
         case "driver_installs":
         case "driver_updates":
             String driverField = kind == "driver_installs" ? "installs" : "updates"
-            aggregate[driverField] = ((aggregate[driverField] instanceof List) ? aggregate[driverField] : []) +
-                ((result[driverField] instanceof List) ? result[driverField] : [])
+            aggregate.put(driverField, ((aggregate.get(driverField) instanceof List) ? aggregate.get(driverField) : []) +
+                ((result.get(driverField) instanceof List) ? result.get(driverField) : []))
             break
     }
     aggregate.anyPartial = aggregate.anyPartial == true || (kind == "patches" ?
@@ -3286,7 +3286,7 @@ private List _mrtrCollapseRuleResults(List entries) {
         if (rid == null) {
             unkeyed << entry
         } else {
-            lastByRule[rid.toString()] = entry
+            lastByRule.put(rid.toString(), entry)
         }
     }
     return lastByRule.values().toList() + unkeyed
@@ -3517,7 +3517,7 @@ def _paginateList(List fullList, cursor, int pageSize, String toolName) {
 // Modeled after ha-mcp PR #637 (category gateway proxy pattern).
 
 private def _toolMetadataGet(String key) {
-    synchronized (TOOL_METADATA_CACHE) { return TOOL_METADATA_CACHE[key] }
+    synchronized (TOOL_METADATA_CACHE) { return TOOL_METADATA_CACHE.get(key) }
 }
 
 private def _immutableToolMetadata(value) {
@@ -3530,8 +3530,8 @@ private def _immutableToolMetadata(value) {
 private def _toolMetadataPut(String key, value) {
     def immutable = _immutableToolMetadata(value)
     synchronized (TOOL_METADATA_CACHE) {
-        if (!TOOL_METADATA_CACHE.containsKey(key)) TOOL_METADATA_CACHE[key] = immutable
-        return TOOL_METADATA_CACHE[key]
+        if (!TOOL_METADATA_CACHE.containsKey(key)) TOOL_METADATA_CACHE.put(key, immutable)
+        return TOOL_METADATA_CACHE.get(key)
     }
 }
 
@@ -4741,7 +4741,7 @@ private Map _toolCatalogIndexes() {
         String name = tool.name as String
         names << name
         def req = tool?.inputSchema?.required
-        if (req instanceof List && !req.isEmpty()) required[name] = req.collect { it as String }
+        if (req instanceof List && !req.isEmpty()) required.put(name, req.collect { it as String })
     }
     return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
 }
@@ -5211,14 +5211,14 @@ def normalizeTrigger(trigger) {
     if (normalized.type in ["sunrise", "sunset"]) {
         def sunType = normalized.type
         normalized.type = "time"
-        normalized[sunType] = true
+        normalized.put(sunType, true)
         return normalized
     }
 
     // Handle {"type": "sun", "event": "sunrise/sunset"}
     if (normalized.type == "sun" && normalized.event in ["sunrise", "sunset"]) {
         normalized.type = "time"
-        normalized[normalized.event] = true
+        normalized.put(normalized.event, true)
         normalized.remove("event")
         return normalized
     }
@@ -5227,13 +5227,13 @@ def normalizeTrigger(trigger) {
     if (normalized.type == "time" && normalized.time in ["sunrise", "sunset"]) {
         def sunType = normalized.time
         normalized.remove("time")
-        normalized[sunType] = true
+        normalized.put(sunType, true)
         return normalized
     }
 
     // Handle {"type": "time", "sunEvent": "sunrise/sunset", "offsetMinutes": N}
     if (normalized.type == "time" && normalized.sunEvent in ["sunrise", "sunset"]) {
-        normalized[normalized.sunEvent] = true
+        normalized.put(normalized.sunEvent, true)
         if (normalized.offsetMinutes != null && normalized.offset == null) {
             normalized.offset = normalized.offsetMinutes
         }
@@ -6315,11 +6315,11 @@ def _latestLocalHubBackupEpoch() {
  */
 def backupItemSource(String type, String id) {
     // atomicState read-modify-write: read the full manifest map, mutate locally,
-    // write back atomically. Direct nested writes to state silently fail on Hubitat.
+    // write back atomically. Nested atomicState changes require whole-map reassignment.
     def manifest = atomicState.itemBackupManifest ?: [:]
 
-    def key = "${type}_${id}"
-    def existing = manifest[key]
+    String key = "${type}_${id}".toString()
+    def existing = manifest.get(key)
 
     // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
     if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
@@ -6356,7 +6356,7 @@ def backupItemSource(String type, String id) {
         timestamp: now(),
         sourceLength: parsed.source.length()
     ]
-    manifest[key] = entry
+    manifest.put(key, entry)
 
     // Prune old backups -- keep at most 20 entries, remove oldest if over limit
     if (manifest.size() > 20) {
@@ -7357,10 +7357,10 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null, Map cache 
     // other caller -> unchanged behaviour). Keyed strictly on (appId, pageName); only a real
     // page is cached -- a root read (pageName == null) carries the volatile app.version token
     // and MUST stay live. A HIT returns exactly what a live fetch would, because every
-    // wizard-page WRITE clears cache[appId] (see _rmCacheInvalidate / _rmCacheStore), so a
+    // wizard-page WRITE clears the app's pages (see _rmCacheInvalidate / _rmCacheStore), so a
     // cached page is provably current.
-    if (cache != null && pageName != null && cache[appId] instanceof Map && cache[appId].containsKey(pageName)) {
-        return cache[appId][pageName]
+    if (cache != null && pageName != null && cache.get(appId) instanceof Map && cache.get(appId).containsKey(pageName)) {
+        return cache.get(appId).get(pageName)
     }
     def path = "/installedapp/configure/json/${appId}"
     if (pageName) path += "/${pageName}"
@@ -7378,8 +7378,8 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null, Map cache 
         throw new IllegalArgumentException("Unexpected response shape from ${path}: missing app object")
     }
     if (cache != null && pageName != null) {
-        if (!(cache[appId] instanceof Map)) cache[appId] = [:]
-        cache[appId][pageName] = parsed
+        if (!(cache.get(appId) instanceof Map)) cache.put(appId, [:])
+        cache.get(appId).put(pageName, parsed)
     }
     return parsed
 }
@@ -7389,7 +7389,7 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null, Map cache 
 // means one page's write can change how sibling pages render, AND the app.version token
 // shifts, so per-page invalidation would be unsafe. No-op when cache is null.
 private void _rmCacheInvalidate(Map cache, Integer appId) {
-    if (cache != null) cache[appId] = [:]
+    if (cache != null) cache.put(appId, [:])
 }
 
 // Invalidate the app, then store a freshly-rendered page model -- used after a write whose
@@ -7399,8 +7399,8 @@ private void _rmCacheInvalidate(Map cache, Integer appId) {
 // app is just invalidated (next read re-fetches live).
 private void _rmCacheStore(Map cache, Integer appId, String pageName, Map pageModel) {
     if (cache == null) return
-    cache[appId] = [:]
-    if (pageName != null && pageModel != null && pageModel.configPage != null) cache[appId][pageName] = pageModel
+    cache.put(appId, [:])
+    if (pageName != null && pageModel != null && pageModel.configPage != null) cache.get(appId).put(pageName, pageModel)
 }
 
 // Parse the page model the hub returns INLINE from an /installedapp/update/json POST. The

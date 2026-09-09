@@ -29243,7 +29243,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
     }
 
-    def "addAction setLocalVariable constant form validates against locals and writes getSetVariable fields"() {
+    @spock.lang.Unroll
+    def "addAction setLocalVariable #localName writes constant #constantValue through getSetVariable"() {
         given:
         enableWrite()
         def fetchSeq = 0
@@ -29256,7 +29257,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // A hub global named "counter" exists too -- proving setLocalVariable does NOT
-        // consult getAllGlobalVars: the local "loopCount" is the only valid target here.
+        // consult getAllGlobalVars: only the local name is a valid target here.
         script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -29266,28 +29267,36 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             modeActsDoActPageJson(100, [
-                [name: "xVarV.1", type: "enum", options: ["loopCount": "loopCount"]],
+                [name: "xVarV.1", type: "enum", options: [(localName): localName]],
                 [name: "numOp.1", type: "enum", options: ["number": "Number"]],
                 [name: "valNumber.1", type: "number"]
             ], { ++fetchSeq })
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [loopCount: [type: "integer", value: 0]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [(localName): [type: "integer", value: 0]]) }
 
         when:
         def result = script.toolSetRule([
             appId: 100,
-            addAction: [capability: "setLocalVariable", variable: "loopCount", value: 42],
+            addAction: [capability: "setLocalVariable", variable: localName, value: constantValue],
             confirm: true
         ])
 
         then: "routes to the same getSetVariable subtype + writes the variable-path fields"
         writtenFields["actType.1"] == "modeActs"
         writtenFields["actSubType.1"] == "getSetVariable"
-        writtenFields["xVarV.1"] == "loopCount"
+        writtenFields["xVarV.1"] == localName
         writtenFields["numOp.1"] == "number"
-        writtenFields["valNumber.1"].toString() == "42"
+        writtenFields["valNumber.1"].toString() == constantValue.toString()
         result.success == true
+
+        where:
+        localName    | constantValue
+        'loopCount'  | 42
+        'fields'     | 0
+        'class'      | 0
+        'metaClass'  | 0
+        'properties' | 0
     }
 
     def "addAction setLocalVariable rejects a target that is not a local variable (and names locals, not globals)"() {

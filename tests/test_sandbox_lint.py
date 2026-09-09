@@ -321,7 +321,7 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {{
     findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
     assert len(findings) == 1
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
     assert findings[0]["source"] == f"snapshot[{key}] = [value: st.value, timestamp: null]"
 
 
@@ -345,7 +345,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
     findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
     assert len(findings) == 1
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
     assert findings[0]["source"] == "snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]"
 
 
@@ -364,7 +364,7 @@ private {function_name}(value, key = '') {{
 """
     findings = sandbox_map_findings(source)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 def test_sandbox_map_guard_catches_map_parameter_without_copy_name():
@@ -374,7 +374,7 @@ private def storeDriverValue(Map destination, String key, value) {
 }
 """)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 @pytest.mark.parametrize("function_name", ["copyRows", "_publicToolResultValue", "transformDriverValue"])
@@ -495,7 +495,7 @@ def test_map_guard_recognizes_native_name_and_entry_key_expressions(key):
     source = f"private def collectNames() {{\n def schema = [:]\n schema[{key}] = false\n}}"
     findings = sandbox_map_findings(source)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 def test_map_guard_does_not_scan_control_blocks_as_duplicate_methods():
@@ -625,6 +625,95 @@ def test_interpolated_bounded_key_is_not_misread_as_its_embedded_identifier():
  ids.each { id -> result["switch${id}.@N"] = false }
 }'''
     assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("access", ["result[key] = false", "return result[key]"])
+def test_dynamic_map_regressions_are_blocking(access):
+    source = f"def copy(String key) {{\n def result = [:]\n {access}\n}}"
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("helper", ["obtainSchema", "renamedSchema"])
+@pytest.mark.parametrize("body", [
+    "return [:]", "[:]", "def result = [:]\n return result",
+    "def result = [:]\n def renamed = result\n renamed",
+])
+def test_map_return_inference_follows_source_not_helper_name(helper, body):
+    source = f"""def {helper}() {{
+ {body}
+}}
+def consume(String key) {{
+ def result = {helper}()
+ result[key] = false
+ return result[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 2
+    assert all(f["severity"] == "error" for f in findings)
+
+
+def test_map_return_inference_follows_transitive_helpers():
+    source = """def wrapper() { return leaf() }
+def leaf() { return [:] }
+def consume(String key) {
+ def result = wrapper()
+ result[key] = 0
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_dynamic_key_from_settings_is_not_silently_exempt():
+    source = """def copy() {
+ def result = [:]
+ def selected = settings.attribute
+ result[selected] = false
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_list_return_does_not_inherit_same_named_map_return_from_other_file():
+    sources = {
+        "hubitat-mcp-server.groovy": "def values() { return [:] }",
+        "hubitat-mcp-rule.groovy": """def values() { return [] }
+def update(String key) {
+ def result = values()
+ result[key] = 0
+}""",
+    }
+    assert sl.check_sandbox_map_subscripts(sources) == []
+
+
+def test_non_map_typed_local_shadows_map_script_field():
+    source = """@groovy.transform.Field Map CACHE = [:]
+def read(int index) {
+ List CACHE = []
+ return CACHE[index]
+}"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_map_property_is_not_an_alias_of_the_containing_map():
+    source = """def update(int index) {
+ def envelope = [ids: [1, 2]]
+ List<Integer> ids = envelope.ids
+ return ids[index]
+}"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_call_before_control_block_does_not_become_a_method():
+    source = """def update(Map input, String key) {
+ requireConfirm(true)
+ if (input) {
+  def result = [:]
+  result[key] = false
+ }
+}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "in update;" in findings[0]["message"]
 
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation

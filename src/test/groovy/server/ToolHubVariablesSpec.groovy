@@ -436,11 +436,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains("'never_set'")
     }
 
-    def "hub_delete_variable reassigns the top-level state.ruleVariables map (Hubitat persistence quirk)"() {
-        // Hubitat's state Map serialization only catches mutations when the top-level
-        // key is reassigned — a bare .remove() on the nested Map silently fails to
-        // persist across hub reboot / app restart. Asserts that toolDeleteHubVariable
-        // emits a NEW Map object on stateMap.ruleVariables (not just mutates in place).
+    def "hub_delete_variable replaces state.ruleVariables with a filtered copy preserving siblings"() {
+        // Pin the filtered-copy implementation; map identity does not establish
+        // whether Hubitat persists state at the end of an execution.
         given:
         enableWrite()
         stateMap.ruleVariables = [target_var: 'will-go', sibling: 'stays']
@@ -452,7 +450,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then: 'sibling is preserved'
         stateMap.ruleVariables == [sibling: 'stays']
 
-        and: 'state.ruleVariables points to a NEW map instance — the read-modify-write pattern Hubitat needs to persist'
+        and: 'state.ruleVariables points to the filtered replacement map'
         !stateMap.ruleVariables.is(originalMapRef)
     }
 
