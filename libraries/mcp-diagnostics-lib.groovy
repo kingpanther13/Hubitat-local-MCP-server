@@ -2234,110 +2234,115 @@ def getMaxCapturedStates() {
     return max < 1 ? 1 : (max > 100 ? 100 : max)
 }
 
-// Helper method for child apps to save captured device states (for capture_state action)
-// Returns info about the save operation including any deleted states
+private Map _captureStore() {
+    String owner = app?.id?.toString()
+    if (!owner) throw new IllegalStateException("Capture storage requires an installed app ID")
+    synchronized (CAPTURE_STORES) {
+        if (!CAPTURE_STORES.containsKey(owner)) {
+            CAPTURE_STORES[owner] = [entries: [:], loaded: false]
+        }
+        return CAPTURE_STORES[owner]
+    }
+}
+
+private void _resetCaptureStore() {
+    if (!app?.id) return
+    synchronized (CAPTURE_STORES) { CAPTURE_STORES.remove(app.id.toString()) }
+}
+
+private Map _captureEntriesLocked(Map store) {
+    if (!store.loaded) {
+        // Import once per class lifetime; stale execution-local state must never
+        // resurrect a snapshot deleted from the shared memory store.
+        Map legacy = [:]
+        if (state.capturedDeviceStates instanceof Map) legacy.putAll(state.capturedDeviceStates)
+        if (atomicState.capturedDeviceStates instanceof Map) legacy.putAll(atomicState.capturedDeviceStates)
+        Map entries = [:]
+        legacy.each { id, raw ->
+            def devices = raw instanceof Map && raw.containsKey("devices") ? raw.devices : raw
+            if (!(devices instanceof Map) && !(devices instanceof List)) {
+                throw new IllegalStateException("Legacy capture has an invalid device payload")
+            }
+            entries[id.toString()] = [text: groovy.json.JsonOutput.toJson(devices),
+                timestamp: raw instanceof Map ? raw.timestamp : null, deviceCount: devices.size()]
+        }
+        store.entries = entries
+        store.loaded = true
+    }
+    // Retry removal after a failed state write without importing stale values again.
+    if (atomicState.containsKey("capturedDeviceStates")) atomicState.remove("capturedDeviceStates")
+    if (state.containsKey("capturedDeviceStates")) state.remove("capturedDeviceStates")
+    return store.entries
+}
+
+def countCapturedStates() {
+    if (!app?.id) return 0
+    Map store = _captureStore()
+    synchronized (store) { return _captureEntriesLocked(store).size() }
+}
+
 def saveCapturedState(stateId, capturedStates) {
-    // atomicState (not state): the prior in-place mutation of `state` did not reliably persist
-    // (`state` only flushes at handler end, and subscribed event handlers run concurrently), so
-    // captures and evictions were lost. Read into a local, mutate, then write the whole map back
-    // in one assignment -- in-place mutation of a nested atomicState map is not reliably persisted
-    // either. This narrows but does not fully close the race: atomicState has no compare-and-swap,
-    // so two truly-concurrent saves can still lose one. Each write is durable, though -- strictly
-    // better than `state`.
-    def stored = atomicState.capturedDeviceStates ?: [:]
+    String id = stateId?.toString()
+    if (id == null || (!(capturedStates instanceof Map) && !(capturedStates instanceof List))) {
+        throw new IllegalArgumentException("A state ID and device map or list are required")
+    }
+    // JSON detaches caller-owned maps; readers receive their own parsed copy too.
+    String text = groovy.json.JsonOutput.toJson(capturedStates)
+    Map store = _captureStore()
+    synchronized (store) {
+        Map entries = _captureEntriesLocked(store)
+        entries[id] = [text: text, timestamp: now(), deviceCount: capturedStates.size()]
+        List deleted = []
+        int max = getMaxCapturedStates()
+        while (entries.size() > max) {
+            def oldest = entries.findAll { key, row -> key != id }.min { it.value.timestamp ?: 0 }
+            deleted << oldest.key
+            entries.remove(oldest.key)
+        }
+        return [stateId: stateId, deviceCount: capturedStates.size(), totalStored: entries.size(),
+                maxLimit: max, deletedStates: deleted, nearLimit: entries.size() >= max - 4]
+    }
+}
 
-    // Add timestamp to the captured state
-    def stateEntry = [
-        devices: capturedStates,
-        timestamp: now(),
-        deviceCount: capturedStates.size()
-    ]
+def getCapturedState(stateId) {
+    Map store = _captureStore()
+    String text
+    synchronized (store) { text = _captureEntriesLocked(store)[stateId?.toString()]?.text }
+    return text == null ? null : new groovy.json.JsonSlurper().parseText(text)
+}
 
-    def deletedStates = []
-
-    // Check if we need to remove old entries (only if this is a new stateId)
-    if (!stored.containsKey(stateId)) {
-        while (stored.size() >= getMaxCapturedStates()) {
-            // Find and remove the oldest entry
-            def oldestId = null
-            def oldestTime = Long.MAX_VALUE
-            stored.each { id, entry ->
-                def entryTime = entry.timestamp ?: 0
-                if (entryTime < oldestTime) {
-                    oldestTime = entryTime
-                    oldestId = id
-                }
-            }
-            if (oldestId) {
-                log.warn "Captured states at limit (${getMaxCapturedStates()}): Removing oldest state '${oldestId}' to make room for '${stateId}'"
-                deletedStates << oldestId
-                stored.remove(oldestId)
-            } else {
-                break // Safety: avoid infinite loop
-            }
+def listCapturedStates() {
+    Map store = _captureStore()
+    synchronized (store) {
+        return _captureEntriesLocked(store).entrySet().toList().sort { a, b ->
+            (b.value.timestamp ?: 0) <=> (a.value.timestamp ?: 0)
+        }.collect { item ->
+            [stateId: item.key, deviceCount: item.value.deviceCount, timestamp: item.value.timestamp,
+             capturedAt: formatTimestamp(item.value.timestamp)]
         }
     }
-
-    stored[stateId] = stateEntry
-    atomicState.capturedDeviceStates = stored
-    def totalStored = stored.size()
-    log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${totalStored}/${getMaxCapturedStates()})"
-
-    return [
-        stateId: stateId,
-        deviceCount: capturedStates.size(),
-        totalStored: totalStored,
-        maxLimit: getMaxCapturedStates(),
-        deletedStates: deletedStates,
-        nearLimit: totalStored >= getMaxCapturedStates() - 4
-    ]
 }
 
-// Helper method for child apps to retrieve captured device states (for restore_state action)
-def getCapturedState(stateId) {
-    def entry = atomicState.capturedDeviceStates?.get(stateId)
-    // Return the devices array for backward compatibility
-    return entry?.devices ?: entry
-}
-
-// Helper method to list all captured states with metadata
-def listCapturedStates() {
-    def stored = atomicState.capturedDeviceStates
-    if (!stored) return []
-
-    return stored.collect { stateId, entry ->
-        [
-            stateId: stateId,
-            deviceCount: entry.deviceCount ?: entry.devices?.size() ?: (entry instanceof List ? entry.size() : 0),
-            timestamp: entry.timestamp ?: null,
-            capturedAt: formatTimestamp(entry.timestamp)
-        ]
-    }.sort { a, b -> (b.timestamp ?: 0) <=> (a.timestamp ?: 0) } // Sort newest first
-}
-
-// Helper method to delete a specific captured state
 def deleteCapturedState(stateId) {
-    def stored = atomicState.capturedDeviceStates
-    if (!stored) {
-        return [success: false, message: "No captured states exist"]
+    Map store = _captureStore()
+    synchronized (store) {
+        Map entries = _captureEntriesLocked(store)
+        String id = stateId?.toString()
+        if (!entries) return [success: false, message: "No captured states exist"]
+        if (!entries.containsKey(id)) return [success: false, message: "Captured state '${stateId}' not found"]
+        entries.remove(id)
+        return [success: true, message: "Captured state '${stateId}' deleted", remaining: entries.size()]
     }
-
-    if (!stored.containsKey(stateId)) {
-        return [success: false, message: "Captured state '${stateId}' not found"]
-    }
-
-    stored.remove(stateId)
-    atomicState.capturedDeviceStates = stored
-    log.debug "Deleted captured state '${stateId}' (remaining: ${stored.size()})"
-    return [success: true, message: "Captured state '${stateId}' deleted", remaining: stored.size()]
 }
 
-// Helper method to clear all captured states
 def clearAllCapturedStates() {
-    def count = atomicState.capturedDeviceStates?.size() ?: 0
-    atomicState.capturedDeviceStates = [:]
-    log.debug "Cleared all ${count} captured states"
-    return [success: true, message: "Cleared ${count} captured state(s)", cleared: count]
+    Map store = _captureStore()
+    synchronized (store) {
+        Map entries = _captureEntriesLocked(store)
+        int count = entries.size()
+        entries.clear()
+        return [success: true, message: "Cleared ${count} captured state(s)", cleared: count]
+    }
 }
 
 def toolListCapturedStates(args = null) {
@@ -2577,7 +2582,7 @@ Requires Write master.""",
         // Captured State Management
         [
             name: "hub_list_captured_states",
-            description: "List saved device-state snapshots: point-in-time device-attribute captures, kept to restore or compare state later.",
+            description: "List temporary device-state snapshots used by the legacy custom rule engine. Captures are held only in memory and are lost on hub restart or app code reload.",
             inputSchema: [
                 type: "object",
                 properties: [

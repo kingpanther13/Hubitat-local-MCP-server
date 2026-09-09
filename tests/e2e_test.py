@@ -2283,6 +2283,49 @@ class TestRunner:
             assert restored, f"CRITICAL: could not restore gateway mode after the flat-mode test: {last}"
 
     @test("infrastructure")
+    def test_metadata_after_mode_switch(self) -> None:
+        # Explicit wire names avoid fetching the oversized flat tools/list catalog.
+        try:
+            self.client.call_tool("hub_update_mcp_settings",
+                {"settings": {"useGateways": False}, "confirm": True}, flat=True)
+            rooms = self.client.call_tool("hub_list_rooms", flat=True)
+            assert isinstance(rooms, dict) and "rooms" in rooms, rooms
+            try:
+                self.client.call_tool("hub_read_rooms", {"tool": "hub_list_rooms", "args": {}}, flat=True)
+                raise AssertionError("gateway call was accepted in flat mode")
+            except McpError as exc:
+                assert "usegateways is off" in str(exc).lower(), str(exc)
+        finally:
+            # Restore even if the first setting change committed but lost its response.
+            restored, last = False, None
+            for _ in range(3):
+                try:
+                    self.client.call_tool("hub_update_mcp_settings",
+                        {"settings": {"useGateways": True}, "confirm": True}, flat=True)
+                    last = self.client.call_tool("hub_read_rooms",
+                        {"tool": "hub_list_rooms", "args": {}}, flat=True)
+                    if isinstance(last, dict) and "rooms" in last:
+                        restored = True
+                        break
+                except (McpError, requests.RequestException) as exc:
+                    last = exc
+                time.sleep(1.0)
+            assert restored, f"CRITICAL: could not restore gateway mode after metadata test: {last}"
+
+        # Required-parameter and search metadata must remain correct after the mode switch.
+        missing = []
+        for _ in range(2):
+            try:
+                self.client.call_tool("hub_read_rooms", {"tool": "hub_get_room", "args": {}}, flat=True)
+                raise AssertionError("gateway accepted a missing required room")
+            except McpError as exc:
+                missing.append(str(exc))
+        assert all("Missing required parameter" in msg and "room" in msg for msg in missing), missing
+        assert all("FLAT_TRIM" not in msg for msg in missing), missing
+        found = self.client.call_tool("hub_search_tools", {"query": "get room", "maxResults": 10}, flat=True)
+        assert any(row.get("tool") == "hub_get_room" for row in found.get("results", [])), found
+
+    @test("infrastructure")
     def test_search_tools_counts_distinct_not_gateway_rows(self) -> None:
         # hub_search_tools builds its BM25 corpus with one row per (gateway, tool)
         # membership, and the read/write split lists every read tool in BOTH a

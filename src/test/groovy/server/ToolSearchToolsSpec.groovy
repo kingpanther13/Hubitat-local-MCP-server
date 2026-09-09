@@ -236,6 +236,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
 
     def "updated() invalidates the in-JVM BM25 index, the legacy atomicState entries, and the gateway requiredParams memo in lockstep"() {
         given: 'populated caches and a no-op initialize so updated() does not hit platform APIs'
+        script.requiredParamsByTool()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).putAll([fingerprint: 'fp-test', corpus: [[name: 'x']], tokens: [['x']]])
         atomicStateMap.toolSearchCorpus = [[name: 'x', description: 'd']]
         atomicStateMap.toolSearchTokens = [['x']]
@@ -249,6 +250,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         script.updated()
 
         then: 'all derived caches are cleared (rebuilt lazily on next use)'
+        (scriptStaticField('TOOL_METADATA_CACHE') as Map).isEmpty()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).isEmpty()
         atomicStateMap.toolSearchCorpus == null
         atomicStateMap.toolSearchTokens == null
