@@ -250,7 +250,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
         failed.error.message.contains('virtual_devices')
         replay.error == failed.error
         attempts == 1
-        script.initDebugLogs().entries.any {
+        script.getDebugLogEntries().any {
             it.level == 'error' && it.details?.tool == 'hub_manage_virtual_device' &&
                 it.details.error == 'No MCP-managed virtual device found'
         }
