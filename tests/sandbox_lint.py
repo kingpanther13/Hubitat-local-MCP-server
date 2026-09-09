@@ -473,13 +473,15 @@ RETIRED_PERSISTED_DERIVED_KEYS = (
     "requiredParamsByToolFingerprint",
 )
 _RETIRED_KEY_PATTERN = "|".join(map(re.escape, RETIRED_PERSISTED_DERIVED_KEYS))
+# Include compound writes while leaving equality and regex comparisons readable.
+_RETIRED_ASSIGNMENT = r"\s*(?:\*\*|>>>|>>|<<|[+\-*/%&|^])?=(?![=~])"
 _RETIRED_DOT_WRITE = re.compile(
     rf"\b(?:atomicState|state)\s*\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
-    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*\s*=(?!=)"
+    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
 _RETIRED_BRACKET_WRITE = re.compile(
     r"\b(?:atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
-    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*\s*=(?!=)"
+    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
 _RETIRED_BRACKET_LITERAL = re.compile(
     rf"\s*(?P<quote>['\"])(?P<key>{_RETIRED_KEY_PATTERN})(?P=quote)\s*"

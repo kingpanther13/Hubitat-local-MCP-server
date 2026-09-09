@@ -1042,6 +1042,27 @@ def test_scan_source_integrates_retired_persisted_key_guard():
     assert "PERSISTED_DERIVED_KEY" in hits("state.toolSearchTokens = tokenize(defs)")
 
 
+@pytest.mark.parametrize("target", (
+    "atomicState.requiredParamsByTool",
+    "state['toolSearchCorpus']",
+    'atomicState["toolSearchTokens"][name]',
+    "state.requiredParamsByTool.room",
+))
+@pytest.mark.parametrize("operator", ("+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", ">>>=", "&=", "|=", "^="))
+def test_retired_persisted_key_guard_flags_compound_writes(target, operator):
+    source = f"{target} {operator} built"
+    findings = sl._scan_retired_persisted_key_writes("<test>", source)
+    assert len(findings) == 1
+    assert findings[0]["rule"] == "PERSISTED_DERIVED_KEY"
+    assert findings[0]["source"] == source
+
+
+@pytest.mark.parametrize("target", ("atomicState.requiredParamsByTool", "state['toolSearchCorpus']"))
+@pytest.mark.parametrize("operator", ("==", "!=", "<=", ">=", "<=>", "=~", "==~"))
+def test_retired_persisted_key_guard_allows_comparisons(target, operator):
+    assert sl._scan_retired_persisted_key_writes("<test>", f"def result = {target} {operator} other") == []
+
+
 @pytest.mark.parametrize("store", ("state", "atomicState"))
 @pytest.mark.parametrize("quote", ("'", '\"'))
 @pytest.mark.parametrize("key", _RETIRED_DERIVED_KEYS)
