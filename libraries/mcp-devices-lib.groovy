@@ -1379,6 +1379,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
                     }
                 }
             } catch (Exception ignored) {
+                mcpLog('error', 'device', "Device ${deviceId}: /device/accessibleLinkedDevices choices could not be read; retry configuration discovery.")
                 field.optionsStatus = 'unavailable'
                 field.reason = 'Native linked-device choices could not be read; retry configuration discovery before retargeting.'
             }
@@ -1400,21 +1401,23 @@ private Map _deviceConfigurationDriverSource(Map d, deviceId) {
     try {
         def text = hubInternalGet('/hub2/userDeviceTypes')
         def catalog = text ? new groovy.json.JsonSlurper().parseText(text) : null
-        if (catalog instanceof List) {
-            def matches = catalog.findAll { row -> row instanceof Map && row.name == d.deviceTypeName && row.namespace == d.deviceTypeNamespace }
-            if (matches.size() > 1) {
-                matches = matches.findAll { row ->
-                    row.usedBy instanceof List && row.usedBy.any { use ->
-                        use instanceof Map && use.id != null && deviceId != null && use.id.toString() == deviceId.toString()
-                    }
+        if (!(catalog instanceof List)) throw new IllegalStateException('Unrecognized user driver catalog')
+        def matches = catalog.findAll { row -> row instanceof Map && row.name == d.deviceTypeName && row.namespace == d.deviceTypeNamespace }
+        if (matches.size() > 1) {
+            matches = matches.findAll { row ->
+                row.usedBy instanceof List && row.usedBy.any { use ->
+                    use instanceof Map && use.id != null && deviceId != null && use.id.toString() == deviceId.toString()
                 }
             }
-            if (matches.size() == 1 && matches[0].id != null) {
-                return [status: 'available', gateway: 'hub_read_apps_code', tool: 'hub_get_source',
-                        args: [type: 'driver', id: matches[0].id.toString()]]
-            }
         }
-    } catch (Exception ignored) { }
+        if (matches.size() == 1 && matches[0].id != null) {
+            return [status: 'available', gateway: 'hub_read_apps_code', tool: 'hub_get_source',
+                    args: [type: 'driver', id: matches[0].id.toString()]]
+        }
+    } catch (Exception ignored) {
+        mcpLog('error', 'device', "Device ${deviceId}: /hub2/userDeviceTypes catalog could not be read; retry driver discovery.")
+        return [status: 'unavailable', reason: 'The user driver catalog could not be read. Retry driver discovery.', lookup: lookup]
+    }
     return [status: 'unresolved', reason: 'No unique user driver-code entry matched the native driver name and namespace.', lookup: lookup]
 }
 
@@ -4020,6 +4023,16 @@ private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List
     }
 }
 
+private void _saveDevicePreferencePaneControls(deviceId, Map overrides) {
+    def payload = _devicePreferencePanePayload(deviceId, overrides)
+    def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
+    if (response instanceof Map && (response.success == false || response._unparseable == true)) {
+        throw new RuntimeException(response._unparseable == true ?
+            'Native preference-pane save returned an unreadable response; inspect configuration before retrying.' :
+            'Native preference-pane save was rejected; inspect configuration before retrying.')
+    }
+}
+
 private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean bypass, List changes, List errors) {
     if (settings.enableWrite == false && (_deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()).any { args.containsKey(it) }) {
         throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
@@ -4027,8 +4040,7 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
     if (args.containsKey("retryEnabled") && !_deviceFlag(full?.commandRetrySelectionEnabled) && _deviceFlag(full?.device?.retryAvailable)) {
         def wanted = args.remove("retryEnabled")
         try {
-            def payload = _devicePreferencePanePayload(deviceId, [commandRetry: wanted])
-            hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
+            _saveDevicePreferencePaneControls(deviceId, [commandRetry: wanted])
             def readback = _fetchDeviceFullJson(deviceId)?.device
             if (readback?.retryEnabled instanceof Boolean && readback.retryEnabled == wanted) changes << [property: "retryEnabled", newValue: wanted]
             else errors << [property: "retryEnabled", error: "POST accepted but could not confirm retryEnabled; native read-back did not match."]
@@ -4092,8 +4104,7 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
             if (args.containsKey(property)) {
                 def wanted = args.remove(property)
                 try {
-                    def payload = _devicePreferencePanePayload(deviceId, [(property): wanted])
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
+                    _saveDevicePreferencePaneControls(deviceId, [(property): wanted])
                     def readback = _fetchDeviceFullJson(deviceId)?.device
                     def equal = readback?.containsKey(property) && (wanted instanceof Boolean ? readback.get(property) instanceof Boolean && readback.get(property) == wanted : (readback.get(property) ?: "").toString() == wanted)
                     if (equal) changes << [property: property, newValue: wanted]
@@ -4449,8 +4460,7 @@ def toolUpdateDevice(args) {
                     throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
                 } catch (Exception primaryErr) {
                     mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
-                    def payload = _devicePreferencePanePayload(deviceId, [showOnHome: args.showOnHome])
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
+                    _saveDevicePreferencePaneControls(deviceId, [showOnHome: args.showOnHome])
                 }
                 // Confirm via a FRESH read-back: a 200 from either endpoint does not prove the flag
                 // flipped, and /device/preference/save returns {success} even on a no-op. fullJson
@@ -4500,8 +4510,7 @@ def toolUpdateDevice(args) {
                 } catch (Exception primaryErr) {
                     // Dedicated endpoint absent on some hubs (404) -- fall back to the Preferences-pane save.
                     mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
-                    def payload = _devicePreferencePanePayload(deviceId, [defaultCurrentState: csVal])
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson(payload))
+                    _saveDevicePreferencePaneControls(deviceId, [defaultCurrentState: csVal])
                     applied = true
                 }
                 if (applied) {

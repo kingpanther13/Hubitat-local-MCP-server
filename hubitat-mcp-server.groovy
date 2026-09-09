@@ -6131,8 +6131,9 @@ def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean
         try {
             return new groovy.json.JsonSlurper().parseText(bodyText)
         } catch (Exception parseErr) {
-            mcpLog("error", "hub-admin", "hubInternalPostJson ${path}: response not JSON: ${bodyText?.take(200)}")
-            return [_unparseable: true, message: "hub returned a non-JSON body from ${path}: ${bodyText?.take(200)}"]
+            def detail = path == '/device/preference/save' ? '[preference response redacted]' : bodyText.take(200)
+            mcpLog("error", "hub-admin", "hubInternalPostJson ${path}: response not JSON: ${detail}")
+            return [_unparseable: true, message: "hub returned a non-JSON body from ${path}: ${detail}"]
         }
     }
     return null
