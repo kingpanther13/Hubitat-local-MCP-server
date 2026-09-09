@@ -70,7 +70,7 @@ even where the implementation also adopted explicit Map operations.
 
 | Row | Original location | Disposition and evidence |
 | --- | --- | --- |
-| 1 | `_writeStatePutLocked` registry write | **Bounded.** The producer creates `mrtr-` UUID IDs and resumed IDs are regex constrained. The typed Map write accepted the measured ordinary/collision controls; production IDs cannot be those names. |
+| 1 | `_writeStatePutLocked` registry write | **Bounded.** The producer creates `mrtr-` UUID IDs and resumed IDs are regex constrained. The typed Map write accepted ordinary, `fields`, and `class` controls; `metaClass` produced a cast failure. Production IDs cannot be those collision names. |
 | 2 | `_mrtrSweepLocked` registry copy | **Bounded.** Keys originate in row 1's registry. An arbitrary-key copy failed in isolation, but no production producer admitting those names was found. Ordinary registry behavior was exercised by live connector writes. |
 | 3 | `_rmWriteSettingOnPage` schema override | **Bounded assignment.** This write runs only with a non-null type override. Those callers use generated/literal `stays-N`, `durChoice.N`, and `useST` names; raw external-setting callers pass null. Scratch Required Expression exercised `useST`. Schema reads and the write now use explicit Map operations where repaired. |
 | 4 | `_rmRestoreFromBackup` device-setting copy | **Reachable, repaired.** An owned app accepted a capability input named `fields` and preserved its selected owned-device list on the native wire. The original copy failed in isolation; schema collection could fail earlier in the complete restore. Preserve device-list shape and mapping fallback. |
@@ -179,8 +179,8 @@ and [sandbox lint](https://github.com/kingpanther13/Hubitat-local-MCP-server/act
 successfully. Those runs validate that revision and its then-current advisory
 scanner, not the new blocking guard.
 
-**Pending final revision evidence:** add the exact final SHA and terminal remote
-scanner/self-test, Python/Ruff, unit-matrix, Groovy-compatibility, and relevant
-E2E results, including fixture restoration and lease release. Final integration
-must bring the merged guard into #411 and verify that neither dynamic-warning
-relaxation nor a normalizer/snapshot regression is reintroduced.
+Exact-head CI results and the merge simulation with #411 are recorded in the
+closing PR's Testing section. Test-hub deployment, fixture restoration, and
+lease release are recorded there with the E2E run; they are distinct from the
+manual source-copy evidence above. The merge order remains this prerequisite
+first, then main into #411 with the blocking guard retained.

@@ -1665,6 +1665,12 @@ def helperMethod() { return "ok" }
 
         then: 'no new backup upload occurred (dedup window held)'
         uploads == []
+        !hubGet.calls.any { it.path == '/library/list/single/data/42' }
+
+        and: 'the original baseline remains addressable by its public String key'
+        atomicStateMap.itemBackupManifest.keySet() == ['library_42'] as Set
+        atomicStateMap.itemBackupManifest.get('library_42').timestamp == 1234567890000L - 60_000L
+        atomicStateMap.itemBackupManifest.get('library_42').version == 1
 
         and: 'response still references the existing backup file'
         result.success == true
@@ -1697,6 +1703,10 @@ def helperMethod() { return "ok" }
 
         then:
         uploads == []
+        !hubGet.calls.any { it.path == '/library/list/single/data/42' }
+        atomicStateMap.itemBackupManifest.keySet() == ['library_42'] as Set
+        atomicStateMap.itemBackupManifest.get('library_42').timestamp == 1234567890000L - 60_000L
+        atomicStateMap.itemBackupManifest.get('library_42').version == 1
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)

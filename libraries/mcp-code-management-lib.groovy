@@ -1973,7 +1973,7 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
 
 private Map backupLibrarySource(String libraryId) {
     def manifest = atomicState.itemBackupManifest ?: [:]
-    def key = "library_${libraryId}"
+    String key = "library_${libraryId}".toString()
     def existing = manifest.get(key)
 
     if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {

@@ -1069,7 +1069,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         hubGet.register('/installedapp/configure/json/200') { params -> ruleConfigJson(200, "to-delete") }
         hubGet.register('/installedapp/statusJson/200') { params -> statusJson(200) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def files = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files.put(fn, b) }
+        script.metaClass.downloadHubFile = { String fn -> files.get(fn) }
 
         def rawCalls = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
@@ -1089,6 +1091,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "the snapshot is registered in the unified item-backup manifest so hub_list_backups picks it up"
         atomicStateMap.itemBackupManifest?.values()?.any { it.type == "rm-rule" && it.ruleId == 200 }
+
+        when: "a client reads the generated handle as a JSON String"
+        def backup = script.toolGetItemBackup([backupKey: result.backup.backupKey.toString()])
+
+        then:
+        backup.error == null
+        backup.type == 'rm-rule'
+        backup.howToRestore.contains('hub_restore_backup')
+        backup.howToRestore.contains(result.backup.backupKey.toString())
+        !backup.howToRestore.contains('Drivers Code')
+        def snapshot = new JsonSlurper().parseText(backup.source)
+        snapshot.appId == 200
+        snapshot.appLabel == 'to-delete'
     }
 
     def "delete_rm_rule soft-delete surfaces hubMessage on refusal"() {

@@ -69,10 +69,10 @@ def proofPage() {
     }
 
     for (key in ["ordinary", "fields", "class", "metaClass", "Fields", "getClass"]) {
-        recordCase(results, "dotRead", key, false) { dotRead(key) }
-        recordCase(results, "dotWrite", key, false) { dotWrite(key) }
-        recordCase(results, "typedDotRead", key, false) { typedDotRead(key) }
-        recordCase(results, "typedDotWrite", key, false) { typedDotWrite(key) }
+        recordCase(results, "dotRead", key, false) { requireFalse(dotRead(key)) }
+        recordCase(results, "dotWrite", key, false) { requireFalse(dotWrite(key)) }
+        recordCase(results, "typedDotRead", key, false) { requireFalse(typedDotRead(key)) }
+        recordCase(results, "typedDotWrite", key, false) { requireFalse(typedDotWrite(key)) }
     }
     dynamicPage(name:"proofPage",title:"Exact helper branch proof",install:true,uninstall:true) {
         section("Results") { paragraph groovy.json.JsonOutput.toJson([count:results.size(), passed:results.count { it.passed }, cases:results]) }
@@ -289,4 +289,9 @@ private def typedDotWrite(key) {
     Map data = [:]
     data."${key}" = false
     return data.get(key)
+}
+
+private Boolean requireFalse(value) {
+    if (value != false) throw new IllegalStateException('Expected the stored false value')
+    return value
 }

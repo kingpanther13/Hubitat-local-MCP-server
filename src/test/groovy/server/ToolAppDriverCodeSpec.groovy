@@ -3525,8 +3525,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ]
 
         and: 'downloadHubFile returns the backup contents'
+        def files = ['mcp-backup-app-99.groovy': 'old source v4'.getBytes('UTF-8')]
         script.metaClass.downloadHubFile = { String fileName ->
-            fileName == 'mcp-backup-app-99.groovy' ? 'old source v4'.getBytes('UTF-8') : null
+            files.get(fileName)
         }
 
         and: 'current on-hub source fetch + version lookup (both hit /app/ajax/code)'
@@ -3538,6 +3539,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content ->
             uploads << name
+            files.put(name, content)
         }
 
         and: 'hubInternalPostJson captures the save call and returns success'
@@ -3572,6 +3574,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         and: 'both the pre-restore entry and the original backup entry are preserved (original kept so the user can restore again if needed)'
         atomicStateMap.itemBackupManifest.containsKey('prerestore_app_99')
         atomicStateMap.itemBackupManifest.containsKey('app_99')
+
+        when: 'a client reads the generated undo handle as a JSON String'
+        def undo = script.toolGetItemBackup([backupKey: result.preRestoreBackup.toString()])
+
+        then:
+        undo.error == null
+        undo.source == 'current source on hub'
+        undo.fileName == 'mcp-prerestore-app-99.groovy'
     }
 
     @spock.lang.Unroll
