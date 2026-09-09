@@ -304,7 +304,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     }
 
     // -----------------------------------------------------------------------
-    // initialize(): unschedule() must precede schedule() so each lifecycle
+    // initialize(): unschedule() must precede rearming so each lifecycle
     // cycle rebuilds the cron set (lifecycle-schedule-symmetry). Direct call;
     // checkForUpdate/_subscribe*/_refresh* are class-1 script methods.
     // -----------------------------------------------------------------------
@@ -322,7 +322,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         when:
         script.initialize()
 
-        then: 'both wire-up calls fired, unschedule strictly before schedule'
+        then: 'MRTR cleanup rearms after unschedule and before the daily job'
         lifecycleCalls.indexOf('unschedule') >= 0
         lifecycleCalls.indexOf('schedule') >= 0
         lifecycleCalls.indexOf('mrtrCleanup:true') > lifecycleCalls.indexOf('unschedule')

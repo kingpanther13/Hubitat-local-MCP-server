@@ -2289,11 +2289,13 @@ private void _mrtrScheduleCleanupLocked(long expiry) {
     long at = now()
     if (((hint.retryAt ?: 0L) as Long) > at) return
     long target = Math.max(at + 1000L, expiry)
-    if (hint.dueAt != null && (hint.dueAt as Long) <= target) return
     int seconds = Math.max(1L, (target - at + 999L).intdiv(1000L)) as Integer
+    long dueAt = at + seconds * 1000L
+    // Compare actual callback deadlines, including the scheduler's whole-second rounding.
+    if (hint.dueAt != null && (hint.dueAt as Long) <= dueAt) return
     try {
         runIn(seconds, "runMrtrCleanup", [overwrite: true])
-        hint.dueAt = at + seconds * 1000L
+        hint.dueAt = dueAt
         hint.remove("retryAt")
     } catch (Exception scheduleErr) {
         hint.retryAt = at + 60000L
@@ -3396,7 +3398,7 @@ private void _mrtrCleanupRecord(Map rec) {
     if (clonerId == null) return
     try { _appClonerCleanup(clonerId as Integer) }
     catch (Exception e) {
-        mcpLog("warn", "mrtr", "Could not clean temporary appCloner ${clonerId}: ${e.message}")
+        _cleanupWarn("mrtr", "Could not clean temporary appCloner ${clonerId}: ${_cleanupFailureDetail(e)}")
     }
 }
 
