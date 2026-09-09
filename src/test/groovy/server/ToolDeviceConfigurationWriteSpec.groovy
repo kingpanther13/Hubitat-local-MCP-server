@@ -235,13 +235,13 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         then:
         result.success == true
         result.changes.find { it.property == 'preference.logEnable' }
-        model.settings.find { it.name == 'logEnable' }.value in [target?.toString(), target == null ? '' : target.toString()]
+        model.settings.find { it.name == 'logEnable' }.value == target.toString()
 
         where:
-        [bypass, target] << [[false, true], [false, true, null]].combinations()
+        [bypass, target] << [[false, true], [false, true]].combinations()
     }
 
-    def 'listed null preference clear uses native partial save after complete validation and verifies a fresh native read'() {
+    def 'listed explicit preference clear uses native partial save after complete validation and verifies a fresh native read'() {
         given:
         def model = fixture()
         model.settings << [name: 'probeText', type: 'text', value: 'original saved text', required: false]
@@ -272,7 +272,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
         when: 'a mixed patch contains an invalid preference'
         script.toolUpdateDevice([deviceId: '10', label: 'Must remain unchanged', preferences: [
-            probeText: [type: 'text', value: null], doesNotExist: [type: 'text', value: 'bad']
+            probeText: [clear: true], doesNotExist: [type: 'text', value: 'bad']
         ]])
 
         then: 'the complete patch is rejected before either write mechanism runs'
@@ -283,7 +283,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
         when: 'the valid clear is issued'
         reads = 0
-        def result = script.toolUpdateDevice([deviceId: '10', preferences: [probeText: [type: 'text', value: null]]])
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [probeText: [clear: true]]])
 
         then: 'the partial native save is used and its exact post-clear native shape is freshly verified'
         sdkUpdates.empty
@@ -293,7 +293,10 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         ]]]
         reads == 3
         result.success == true
-        result.changes.find { it.property == 'preference.probeText' }?.newValue == [type: 'text', value: null]
+        result.changes.find { it.property == 'preference.probeText' }
+        def after = script.toolGetDevice('10', 'configuration').preferences.find { it.name == 'probeText' }
+        after.valuePresent == false
+        after.valueStatus == 'unset'
         !result.errors
     }
 
@@ -308,7 +311,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: [type: 'bool', value: null]]])
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: [clear: true]]])
 
         then:
         result.success == false
@@ -411,7 +414,6 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
         where:
         selection  | wireValue
-        []         | '[]'
         ['a']      | '["a"]'
         ['a', 'b'] | '["a","b"]'
     }
@@ -635,7 +637,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: [type: 'bool', value: null]]])
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: [clear: true]]])
 
         then:
         writes == ['preference']
@@ -801,6 +803,282 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
         where:
         bypass << [false, true]
+    }
+
+    @Unroll
+    def 'boolean declaration #declaredType accepts compatible #suppliedType values in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        model.settings.find { it.name == 'logEnable' }.type = declaredType
+        registerFixture(model, bypass)
+        def writes = []
+        def applyPreference = { String name, setting ->
+            writes << [name: name, value: setting.value]
+            model.settings.find { it.name == name }.value = setting.value.toString()
+        }
+        if (!bypass) childDevicesList[0].metaClass.updateSetting = applyPreference
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            new JsonSlurper().parseText(body).preferences.each { applyPreference(it.name, it) }
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [
+            logEnable: [type: suppliedType, value: false]
+        ]])
+        def read = script.toolGetDevice('10', 'configuration').preferences.find { it.name == 'logEnable' }
+
+        then:
+        result.success == true
+        writes == [[name: 'logEnable', value: false]]
+        read.value == false
+        read.valueStatus == 'stored'
+
+        where:
+        [bypass, aliases] << [[false, true], [['boolean', 'boolean'], ['boolean', 'bool'], ['bool', 'boolean']]].combinations()
+        declaredType = aliases[0]
+        suppliedType = aliases[1]
+    }
+
+    @Unroll
+    def 'orphan stored row does not block an independent declared preference in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        model.inputValues << [name: 'removedDriverPreference', type: 'text', inputValue: 'retain orphan']
+        registerFixture(model, bypass)
+        def writes = []
+        def applyPreference = { String name, setting ->
+            writes << name
+            model.settings.find { it.name == name }.value = setting.value.toString()
+        }
+        if (!bypass) childDevicesList[0].metaClass.updateSetting = applyPreference
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            new JsonSlurper().parseText(body).preferences.each { applyPreference(it.name, it) }
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [logEnable: false]])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == 'preference.logEnable' }
+        writes == ['logEnable']
+        model.inputValues == [[name: 'removedDriverPreference', type: 'text', inputValue: 'retain orphan']]
+        model.settings.find { it.name == 'offset' }.value == '0'
+
+        where:
+        bypass << [false, true]
+    }
+
+    @Unroll
+    def 'valid #name write with out-of-declaration readback reports mismatch in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        registerFixture(model, bypass)
+        def writes = []
+        def applyUnexpectedValue = { String key, setting ->
+            writes << key
+            model.settings.find { it.name == key }.value = savedValue
+        }
+        if (!bypass) childDevicesList[0].metaClass.updateSetting = applyUnexpectedValue
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            new JsonSlurper().parseText(body).preferences.each { applyUnexpectedValue(it.name, it) }
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [(name): wanted]])
+
+        then:
+        noExceptionThrown()
+        writes == [name]
+        result.success == false
+        !result.changes.find { it.property == "preference.${name}" }
+        result.errors.find { it.property == "preference.${name}" }?.status == 'mismatch'
+
+        where:
+        [bypass, values] << [[false, true], [['offset', 1, '11'], ['modes', ['a'], '["retired-option"]']]].combinations()
+        name = values[0]
+        wanted = values[1]
+        savedValue = values[2]
+    }
+
+    @Unroll
+    def 'configuration normalizes whitespace numeric #type storage and defaults without throwing'() {
+        given:
+        def model = fixture()
+        model.settings.find { it.name == 'offset' }.putAll([type: type, value: raw, defaultValue: ' 0 '])
+        registerFixture(model, false)
+
+        when:
+        def result = script.toolGetDevice('10', 'configuration')
+        def preference = result.preferences.find { it.name == 'offset' }
+
+        then:
+        noExceptionThrown()
+        result.preferenceRead.status == 'complete'
+        preference.value == expected
+        preference.defaultValue == 0
+        preference.valueStatus == 'stored'
+
+        where:
+        type      | raw        | expected
+        'number'  | ' 2 '      | 2
+        'decimal' | '\t-1.5 ' | -1.5
+    }
+
+    @Unroll
+    def 'native wildcard range accepts #value while preserving its finite lower bound'() {
+        given:
+        def model = fixture()
+        model.settings.find { it.name == 'offset' }.putAll([range: '1..*', value: '1'])
+        registerFixture(model, false)
+
+        when:
+        def prepared = script._prepareDeviceUpdatePatch([deviceId: '10', preferences: [offset: value]], '10', model)
+
+        then:
+        noExceptionThrown()
+        prepared.args.preferences.offset.value == value
+
+        when:
+        script._prepareDeviceUpdatePatch([deviceId: '10', preferences: [offset: 0]], '10', model)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('below')
+
+        where:
+        value << [1, 1000000]
+    }
+
+    @Unroll
+    def 'explicit #name clear is accepted for optional inputs and refused for required inputs before mutation'() {
+        given:
+        def model = fixture()
+        def declaration = model.settings.find { it.name == name }
+        declaration.required = false
+        registerFixture(model, false)
+
+        when:
+        def prepared = script._prepareDeviceUpdatePatch([deviceId: '10', preferences: [(name): [clear: true]]], '10', model)
+
+        then:
+        noExceptionThrown()
+        prepared.args.preferences.get(name).clear == true
+
+        when:
+        declaration.required = true
+        script._prepareDeviceUpdatePatch([deviceId: '10', preferences: [(name): [clear: true]]], '10', model)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('required')
+
+        where:
+        name << ['logEnable', 'offset', 'modes']
+    }
+
+    @Unroll
+    def 'ambiguous #caseName preference patch is rejected before any mixed write in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        model.settings << [name: 'optionalText', type: 'text', value: 'must remain', required: false]
+        registerFixture(model, bypass)
+        def writes = []
+        if (!bypass) {
+            childDevicesList[0].metaClass.setLabel = { String label -> writes << 'label' }
+            childDevicesList[0].metaClass.updateSetting = { String name, setting -> writes << name }
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false -> writes << path; '' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> writes << path; [success: true] }
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', label: 'Must not apply', preferences: [logEnable: false] + preferencePatch])
+
+        then:
+        thrown(IllegalArgumentException)
+        writes.empty
+        model.settings.find { it.name == 'optionalText' }.value == 'must remain'
+        model.settings.find { it.name == 'logEnable' }.value == 'true'
+
+        where:
+        [bypass, values] << [[false, true], [
+            ['bare-null', [optionalText: null]],
+            ['bare-empty-text', [optionalText: '']],
+            ['bare-whitespace-text', [optionalText: ' \t ']],
+            ['bare-empty-array', [modes: []]],
+            ['typed-null', [optionalText: [type: 'text', value: null]]],
+            ['typed-empty-text', [optionalText: [type: 'text', value: '']]],
+            ['typed-whitespace-text', [optionalText: [type: 'text', value: ' \t ']]],
+            ['typed-empty-array', [modes: [type: 'enum', value: []]]],
+            ['clear-and-value', [optionalText: [clear: true, value: 'replacement']]],
+            ['clear-and-null', [optionalText: [clear: true, value: null]]],
+            ['clear-and-empty-array', [modes: [clear: true, value: []]]],
+            ['false-clear-and-value', [optionalText: [clear: false, value: 'replacement']]]
+        ]].combinations()
+        caseName = values[0]
+        preferencePatch = values[1]
+    }
+
+    @Unroll
+    def 'explicit optional #type clear is confirmed only when saved storage is unset'() {
+        given:
+        def model = fixture()
+        def row = [name: 'clearTarget', type: type, multiple: multiple, required: false] + storage
+        model.settings << row
+        registerFixture(model, false)
+        def changes = []
+        def errors = []
+
+        when:
+        script._verifyDevicePreferenceWrite('10', 'clearTarget', [type: type, clear: true, value: null], changes, errors)
+
+        then:
+        noExceptionThrown()
+        if (unset) {
+            assert changes*.property == ['preference.clearTarget']
+            assert errors.empty
+        } else {
+            assert changes.empty
+            assert errors.find { it.property == 'preference.clearTarget' }?.status == 'mismatch'
+        }
+
+        where:
+        type   | multiple | storage                                 | unset
+        'text' | false    | [value: null]                           | false
+        'text' | false    | [value: '']                             | false
+        'text' | false    | [:]                                     | true
+        'text' | false    | [value: null, id: null, deviceId: null]   | true
+        'enum' | true     | [value: null]                           | false
+        'enum' | true     | [value: '[]']                           | false
+        'enum' | true     | [value: []]                             | false
+        'enum' | true     | [value: '']                             | false
+        'enum' | true     | [:]                                     | true
+        'enum' | true     | [value: null, id: null, deviceId: null]   | true
+    }
+
+    @Unroll
+    def 'saved empty multiselect verification does not equate #storage with an empty list'() {
+        given:
+        def model = fixture()
+        def row = model.settings.find { it.name == 'modes' }
+        row.remove('value')
+        row.putAll(storage)
+        registerFixture(model, false)
+        def changes = []
+        def errors = []
+
+        when: 'verifying a saved value independently of caller-input validation'
+        script._verifyDevicePreferenceWrite('10', 'modes', [type: 'enum', value: []], changes, errors)
+
+        then:
+        changes.empty
+        errors.find { it.property == 'preference.modes' }?.status == 'mismatch'
+
+        where:
+        storage << [[value: null], [:], [value: null, id: null, deviceId: null]]
     }
 
     def 'secret preference saved value is never echoed in the changes response'() {
