@@ -3,6 +3,7 @@ package server
 import spock.lang.Shared
 import spock.lang.Unroll
 import support.TestChildApp
+import support.PermissiveLog
 import support.ToolSpecBase
 
 class MrtrCleanupSpec extends ToolSpecBase {
@@ -280,6 +281,27 @@ class MrtrCleanupSpec extends ToolSpecBase {
 
         where:
         legacy << [false, true]
+    }
+
+    @Unroll
+    def '#operation survives unavailable storage even when MCP logging is cold'() {
+        given:
+        def nativeLog = new PermissiveLog()
+        def peer = newCompiledScriptInstance(app: cleanupApp, state: stateMap, log: nativeLog,
+            atomicState: { throw new IllegalStateException('storage unavailable') })
+        (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
+        peer._writeStateCacheInvalidate()
+
+        when:
+        peer."$operation"()
+
+        then:
+        noExceptionThrown()
+        nativeLog.messages.any { it.startsWith('warn:') && it.contains('storage unavailable') }
+        if (operation == 'runMrtrCleanup') assert jobs().last()[0] == 60
+
+        where:
+        operation << ['_cleanupRetiredToolState', '_mrtrEnsureCleanupScheduled', 'runMrtrCleanup']
     }
 
     def 'background persistence failure requeues a bounded retry and later removes expired records'() {
