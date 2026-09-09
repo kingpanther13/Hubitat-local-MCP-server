@@ -321,7 +321,7 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {{
     findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
     assert len(findings) == 1
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
     assert findings[0]["source"] == f"snapshot[{key}] = [value: st.value, timestamp: null]"
 
 
@@ -345,7 +345,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
     findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
     assert len(findings) == 1
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
     assert findings[0]["source"] == "snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]"
 
 
@@ -364,7 +364,7 @@ private {function_name}(value, key = '') {{
 """
     findings = sandbox_map_findings(source)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 def test_sandbox_map_guard_catches_map_parameter_without_copy_name():
@@ -374,7 +374,7 @@ private def storeDriverValue(Map destination, String key, value) {
 }
 """)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 @pytest.mark.parametrize("function_name", ["copyRows", "_publicToolResultValue", "transformDriverValue"])
@@ -495,7 +495,7 @@ def test_map_guard_recognizes_native_name_and_entry_key_expressions(key):
     source = f"private def collectNames() {{\n def schema = [:]\n schema[{key}] = false\n}}"
     findings = sandbox_map_findings(source)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 def test_map_guard_does_not_scan_control_blocks_as_duplicate_methods():
