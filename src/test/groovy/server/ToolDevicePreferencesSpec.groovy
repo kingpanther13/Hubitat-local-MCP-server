@@ -623,7 +623,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         assembled.sections.state.large == full.deviceState.large
     }
 
-    def "fragment cursor refuses changed native content instead of joining different snapshots"() {
+    def "fragment cursor completes its original snapshot while native state changes"() {
         given:
         addListedDevice()
         def full = fixture()
@@ -634,10 +634,119 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         full.deviceState.large = 'y' * 180000
 
         when:
+        def chunks = [first.content]
+        def cursor = first.nextCursor
+        while (cursor) {
+            def page = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], cursor)
+            chunks << page.content
+            cursor = page.nextCursor
+        }
+        def assembled = new JsonSlurper().parseText(chunks.join(''))
+
+        then:
+        assembled.sections.state.large == 'x' * 180000
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
+    }
+
+    def "an empty cursor preserves the normal small configuration shape"() {
+        given:
+        addListedDevice()
+        registerFixture()
+
+        expect:
+        script.toolGetDevice(DEVICE_ID, 'configuration', null, null, '') ==
+            script.toolGetDevice(DEVICE_ID, 'configuration')
+    }
+
+    def "configuration and details redact the native psw convention without hiding ordinary values"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.settings << [name: 'psw', type: 'text', value: 'sensitive-stored', defaultValue: 'sensitive-default']
+        full.deviceState = [psw: 'sensitive-state', harmless: 'public']
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def configuration = script.toolGetDevice(DEVICE_ID, 'configuration')
+        def details = script.toolGetDevice(DEVICE_ID, 'details', ['state'])
+
+        then:
+        def preference = configuration.preferences.find { it.name == 'psw' }
+        preference.value == '[REDACTED]'
+        preference.defaultValue == '[REDACTED]'
+        details.sections.state.psw == '[REDACTED]'
+        details.sections.state.harmless == 'public'
+    }
+
+    def "string false flags preserve standalone identity applicability"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.device.linkedDevice = 'false'
+        full.device.isComponent = 'false'
+        full.device.linkedAndDisabled = 'false'
+        full.device.zigbeeId = '0200000000411001'
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def fields = script.toolGetDevice(DEVICE_ID, 'configuration').editableFields
+
+        then:
+        ['name', 'label', 'deviceTypeId', 'deviceNetworkId', 'zigbeeId', 'preferences'].every { name ->
+            fields.find { it.name == name }.applicable
+        }
+    }
+
+    def "fragment snapshots expire with restart guidance without refetching unrelated native data"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 180000]
+        registerFixture(DEVICE_ID, full)
+        long clock = 1000000L
+        script.metaClass.now = { -> clock }
+        def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+        clock += 301000L
+
+        when:
         script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], first.nextCursor)
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('changed')
+        ex.message.toLowerCase().contains('restart')
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
+    }
+
+    def "fragment snapshot cannot bypass a revoked device authorization"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 180000]
+        registerFixture(DEVICE_ID, full)
+        def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+        childDevicesList.clear()
+        settingsMap.bypassDeviceAllowlist = false
+
+        when:
+        script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], first.nextCursor)
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "fragment continuation is bound to the original field selection"() {
+        given:
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 180000, other: 'y' * 180000]
+        registerFixture(DEVICE_ID, full)
+        def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+
+        when:
+        script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['other'], first.nextCursor)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('selection')
     }
 }
