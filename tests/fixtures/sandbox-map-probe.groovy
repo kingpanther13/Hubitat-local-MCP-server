@@ -33,4 +33,3 @@ def mainPage() {
         section("Results") { paragraph groovy.json.JsonOutput.toJson(results) }
     }
 }
-

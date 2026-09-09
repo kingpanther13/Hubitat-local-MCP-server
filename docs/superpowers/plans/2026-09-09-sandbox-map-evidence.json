@@ -636,6 +636,273 @@
     },
     {
       "id": "1",
+      "key": "Fields",
+      "result": {
+        "Fields": {
+          "value": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "2",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "3",
+      "key": "Fields",
+      "result": {
+        "Fields": {
+          "type": "bool"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "4",
+      "key": "Fields",
+      "result": {
+        "Fields": [
+          "owned"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "5",
+      "key": "Fields",
+      "result": [
+        {
+          "Fields": "label"
+        }
+      ],
+      "success": true
+    },
+    {
+      "id": "6",
+      "key": "Fields",
+      "result": {
+        "Fields": "label"
+      },
+      "success": true
+    },
+    {
+      "id": "7",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "8",
+      "key": "Fields",
+      "result": {
+        "Fields": 0
+      },
+      "success": true
+    },
+    {
+      "id": "9",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "10",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "11",
+      "key": "Fields",
+      "result": {
+        "deviceId": "mapped"
+      },
+      "success": true
+    },
+    {
+      "id": "12",
+      "key": "Fields",
+      "result": {
+        "deviceIds": [
+          "mapped",
+          null,
+          "missing"
+        ]
+      },
+      "success": true
+    },
+    {
+      "id": "13",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "14",
+      "key": "Fields",
+      "result": {
+        "id": 0,
+        "Fields": 0
+      },
+      "success": true
+    },
+    {
+      "id": "15",
+      "key": "Fields",
+      "result": {
+        "2311": {
+          "label": "owned"
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "16",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "17",
+      "key": "Fields",
+      "result": {
+        "Fields": 0
+      },
+      "success": true
+    },
+    {
+      "id": "18",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "19",
+      "key": "Fields",
+      "result": {
+        "Fields": ""
+      },
+      "success": true
+    },
+    {
+      "id": "20",
+      "key": "Fields",
+      "result": {
+        "Fields": ""
+      },
+      "success": true
+    },
+    {
+      "id": "21",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "22",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "23",
+      "key": "Fields",
+      "result": {
+        "Fields": 0
+      },
+      "success": true
+    },
+    {
+      "id": "24",
+      "key": "Fields",
+      "result": {
+        "latitude": 0
+      },
+      "success": true
+    },
+    {
+      "id": "gap_savedSchema",
+      "key": "Fields",
+      "result": {
+        "Fields": {
+          "name": "Fields",
+          "type": "text",
+          "multiple": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "gap_layout",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "untyped_read",
+      "key": "Fields",
+      "result": false,
+      "success": true
+    },
+    {
+      "id": "typed_each_read",
+      "key": "Fields",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "untyped_each_read",
+      "key": "Fields",
+      "result": [
+        false
+      ],
+      "success": true
+    },
+    {
+      "id": "typed_each_write",
+      "key": "Fields",
+      "result": {
+        "Fields": false
+      },
+      "success": true
+    },
+    {
+      "id": "null_safe_put",
+      "key": "Fields",
+      "result": {
+        "Fields": {
+          "nested": false
+        }
+      },
+      "success": true
+    },
+    {
+      "id": "1",
       "key": "getClass",
       "result": {
         "getClass": {
@@ -1524,6 +1791,92 @@
         "errors": []
       },
       "success": true
+    }
+  ],
+  "provenance": [
+    {
+      "file": "hubitat-mcp-server.groovy",
+      "matchesInstalled": true,
+      "localSha256": "8a63df1099171ca321b6b81166191b2d28c6f1a6a92c862040ab55be6883b589",
+      "hubSha256": "8a63df1099171ca321b6b81166191b2d28c6f1a6a92c862040ab55be6883b589"
+    },
+    {
+      "file": "hubitat-mcp-rule.groovy",
+      "matchesInstalled": true,
+      "localSha256": "248ad59e5df95bee030ca73530ef03a333ebf680e0f89525157d3e1c6d2e4a83",
+      "hubSha256": "248ad59e5df95bee030ca73530ef03a333ebf680e0f89525157d3e1c6d2e4a83"
+    },
+    {
+      "file": "libraries/mcp-rooms-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "f08c909d0d5e463473d79b9fdf0754082b056dbed060936a97d17bc9c0e21330",
+      "hubSha256": "f08c909d0d5e463473d79b9fdf0754082b056dbed060936a97d17bc9c0e21330"
+    },
+    {
+      "file": "libraries/mcp-devices-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "19bf469786728501bdbca273976b85cfa70571dd10fc4247cacce9cf703c6b32",
+      "hubSha256": "19bf469786728501bdbca273976b85cfa70571dd10fc4247cacce9cf703c6b32"
+    },
+    {
+      "file": "libraries/mcp-custom-rules-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "d0ec452cd45bfaaaa3c0dc5ac64b47c1733c975c44b34f407580268bbeebfce5",
+      "hubSha256": "d0ec452cd45bfaaaa3c0dc5ac64b47c1733c975c44b34f407580268bbeebfce5"
+    },
+    {
+      "file": "libraries/mcp-code-management-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "b0e03d24a00998f2fdc5bbb1e76c9739f3392c588383b545aeb58cfbfb9e6e23",
+      "hubSha256": "b0e03d24a00998f2fdc5bbb1e76c9739f3392c588383b545aeb58cfbfb9e6e23"
+    },
+    {
+      "file": "libraries/mcp-app-cloner-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "66714ebdf3d77306a39b2e61b4b48736c14a082e6929c33d14425589bbbd9417",
+      "hubSha256": "66714ebdf3d77306a39b2e61b4b48736c14a082e6929c33d14425589bbbd9417"
+    },
+    {
+      "file": "libraries/mcp-native-rules-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "964c99407cb32580408200328efc9092a3ee684939f0dd22e8908ea59104251c",
+      "hubSha256": "964c99407cb32580408200328efc9092a3ee684939f0dd22e8908ea59104251c"
+    },
+    {
+      "file": "libraries/mcp-virtual-devices-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "0be6f09c50cc9e0839ce4e073cebdb1848330a1b02837b94f215acd7a4b129f4",
+      "hubSha256": "0be6f09c50cc9e0839ce4e073cebdb1848330a1b02837b94f215acd7a4b129f4"
+    },
+    {
+      "file": "libraries/mcp-dashboards-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "b6d624e18a0d7fbffb115ff52f38b683a059c4fe3048e85e18f66e84f3f19bfa",
+      "hubSha256": "b6d624e18a0d7fbffb115ff52f38b683a059c4fe3048e85e18f66e84f3f19bfa"
+    },
+    {
+      "file": "libraries/mcp-system-lib.groovy",
+      "matchesInstalled": true,
+      "localSha256": "1bf2f679d4517502118247ccd943555637a5a3ac2927a11a9f0eccdb4585ed43",
+      "hubSha256": "1bf2f679d4517502118247ccd943555637a5a3ac2927a11a9f0eccdb4585ed43"
+    },
+    {
+      "file": "resources/hub2-source/appUI.js",
+      "matchesInstalled": false,
+      "localSha256": "7066fc76e6c9a89606c0b4c97374decc44d21b92702d27a91c26ea5508695a37",
+      "hubSha256": "0bff4adbc2adced713540d5b0d36fe6074cd64571939f9c23d4ccbad13466b43"
+    },
+    {
+      "file": "resources/hub2-source/main.js",
+      "matchesInstalled": true,
+      "localSha256": "20cc18949a97e0312e891cf4accf5920472693a778a94e65f443486e7ed76aae",
+      "hubSha256": "20cc18949a97e0312e891cf4accf5920472693a778a94e65f443486e7ed76aae"
+    },
+    {
+      "file": "resources/hub2-source/vue-hub2-shell-2.5.1.min.js",
+      "matchesInstalled": true,
+      "localSha256": "9a388a1938dbb1ad7eaf20037ea9f283b78577d169d174967d3db87bd2f0d05e",
+      "hubSha256": "9a388a1938dbb1ad7eaf20037ea9f283b78577d169d174967d3db87bd2f0d05e"
     }
   ]
 }
