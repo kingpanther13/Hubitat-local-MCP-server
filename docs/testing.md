@@ -1,5 +1,28 @@
 # Testing
 
+### Manual CodeQL branch scan
+
+`CodeQL Branch Scan` runs the default security suites for GitHub Actions,
+JavaScript/TypeScript and Python on a selected ref, without a PR or hub access:
+
+```bash
+gh workflow run codeql-manual.yml --ref <branch> --repo kingpanther13/Hubitat-local-MCP-server
+```
+
+GitHub enables manual dispatch once this workflow exists on `main`. A narrow
+push trigger also validates edits to the workflow, its gate and gate tests before
+merge. It uses a pinned official CodeQL CLI bundle, runs no application tests,
+and fails on any finding or incomplete analysis. Each language uploads a SARIF
+artifact named with the analyzed commit SHA. This is a full-source scan, so it
+also reports pre-existing findings; it does not apply GitHub alert dismissals.
+
+The existing GitHub-managed CodeQL setup continues independently. Default setup
+rejects CodeQL SARIF uploads, so this lane publishes Actions artifacts instead of
+uploading into code scanning. It does not replace the managed PR checks or scan
+Groovy; sandbox lint and the Groovy lanes cover that language.
+
+### Groovy unit tests
+
 Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `./gradlew test` on every PR and push to `main` (`.github/workflows/unit-tests.yml`).
 
 - **Test framework:** Spock 2.3 on Groovy 3.0 (Hubitat's hub runtime is Groovy 2.4, and `eighty20results/hubitat_ci` actively tests its behaviour against that runtime — case-insensitive enum matching, locale-safe `toLowerCase`, etc. — so Groovy 3.0 stays the closest practical match).

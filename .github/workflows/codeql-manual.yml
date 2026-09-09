@@ -1,0 +1,67 @@
+name: CodeQL Branch Scan
+on:
+  workflow_dispatch:
+  # Exercise changes to this lane before it is available on the default branch.
+  push:
+    paths:
+      - '.github/workflows/codeql-manual.yml'
+      - '.github/scripts/codeql_gate.py'
+      - 'tests/test_codeql_gate.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-branch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL branch (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript, python]
+    env:
+      CODEQL_VERSION: '2.27.0'
+      LANGUAGE: ${{ matrix.language }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - name: Install the pinned official CodeQL bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "codeql-bundle-v${CODEQL_VERSION}" \
+            --repo github/codeql-action \
+            --pattern 'codeql-bundle-linux64.tar.zst*' --dir "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"
+          sha256sum --check codeql-bundle-linux64.tar.zst.checksum.txt
+          tar --zstd -xf codeql-bundle-linux64.tar.zst
+          echo "$RUNNER_TEMP/codeql" >> "$GITHUB_PATH"
+      - name: Extract source without running application tests
+        run: |
+          codeql version
+          codeql database create "$RUNNER_TEMP/codeql-db" \
+            --language="$LANGUAGE" --build-mode=none --source-root . --threads=2
+      - name: Run the default security suite
+        run: |
+          codeql database analyze "$RUNNER_TEMP/codeql-db" \
+            "codeql/${LANGUAGE}-queries:codeql-suites/${LANGUAGE}-code-scanning.qls" \
+            --format=sarif-latest --output "$RUNNER_TEMP/codeql.sarif" --threads=2
+      # Managed default setup rejects CodeQL SARIF uploads. Keep an independent
+      # Actions gate and artifact instead of changing the repository's setup.
+      - name: Require a successful scan with zero findings
+        run: python .github/scripts/codeql_gate.py "$RUNNER_TEMP/codeql.sarif"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: codeql-${{ matrix.language }}-${{ github.sha }}
+          path: ${{ runner.temp }}/codeql.sarif
+          if-no-files-found: error
