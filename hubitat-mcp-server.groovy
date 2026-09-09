@@ -8825,6 +8825,8 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 ### hub_restore_backup
 
 - `scope=source` (default) -- restore an app/driver/rule by `backupKey` (for deleted code use hub_create_*; deleted rules DO recreate).
+- App/driver source restores report `undoAvailable=true` only after verifying the pre-restore file. Use the returned `preRestoreBackup` handle to undo. If capture or retry verification fails, restoration can still succeed with `undoAvailable=false` and a warning; an older undo record is not a verified undo for that restore.
+- Native rule restore requires confirmed absence from the app inventory before recreating an unreadable rule. If the config read fails and absence cannot be confirmed, inspect the rule/inventory and retry when readable.
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub.
 - `scope=hub_uploaded` -- upload an external `.lzf` fetched from `backupUrl`, then restore (open-world).''',
 

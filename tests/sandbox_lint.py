@@ -4487,12 +4487,14 @@ def check_sandbox_map_subscripts(
     def return_scope(path: str) -> str:
         return "parent" if path == "hubitat-mcp-server.groovy" else scope(path)
 
-    methods = [
-        (path, match, params, opening, code[opening + 1:end])
-        for path, code in masked.items() for match, params, opening, end in method_records(code)
-    ]
+    methods_by_path = {
+        path: [(match, params, opening, end, code[opening + 1:end])
+               for match, params, opening, end in method_records(code)]
+        for path, code in masked.items()
+    }
+    methods = [(path, *record) for path, records in methods_by_path.items() for record in records]
     map_returns: dict[str, set[str]] = {}
-    for path, match, _, _, _ in methods:
+    for path, match, _, _, _, _ in methods:
         known = map_returns.setdefault(return_scope(path), set())
         if re.fullmatch(map_type, match.group("type") or ""):
             known.add(match.group("name"))
@@ -4516,7 +4518,7 @@ def check_sandbox_map_subscripts(
     # aliases and transitive calls; unknown external helpers stay unknown.
     for _ in range(len(methods) + 1):
         changed = False
-        for path, method, params, _, body in methods:
+        for path, method, params, _, _, body in methods:
             known = map_returns[return_scope(path)]
             if method.group("name") in known or method.group("type") not in (None, "def"):
                 continue
@@ -4533,8 +4535,7 @@ def check_sandbox_map_subscripts(
         code = masked[path]
         raw_lines = source.split("\n")
         field_maps = set(field_map.findall(code))
-        for method, params, opening, end in method_records(code):
-            body = code[opening + 1:end]
+        for method, params, opening, end, body in methods_by_path[path]:
             raw_body = source[opening + 1:end]
             explicit_maps = set(map_decl.findall(params))
             explicit_maps.update(map_decl.findall(body))
