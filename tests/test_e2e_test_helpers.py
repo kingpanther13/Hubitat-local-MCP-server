@@ -126,7 +126,13 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 preference_attempts.append(patch)
                 assert not set(patch) & set(declared), "Boundary probe attempted an existing preference"
                 if rejection == "unknown":
-                    raise et.McpError(f"Invalid params: Unknown preference '{next(iter(patch))}'")
+                    error = {"code": -32602, "message": (
+                        f"Invalid params: Unknown preference '{next(iter(patch))}'; "
+                        "read hub_get_device(mode='configuration') for declared names "
+                        'See hub_get_tool_guide(section="update_device") for '
+                        "hub_update_device's reference and best practices."
+                    )}
+                    raise et.McpError(f"JSON-RPC error: {error}")
                 if rejection == "unavailable":
                     raise et.McpError("Unable to read complete preference definitions/storage")
                 return {"success": True}
