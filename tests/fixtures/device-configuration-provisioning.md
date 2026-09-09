@@ -5,10 +5,9 @@ exercise existing fixtures. They never install a driver, create a device, modify
 the MCP allowlist, or delete infrastructure. Missing, duplicate, wrongly selected,
 stale, or unrestored fixtures fail with provisioning guidance.
 
-Provision once through the direct test-hub admin endpoints after confirming no
-E2E run is active. Direct endpoints have not yet been supplied or inspected for
-this revision. Do not use a personal hub or the E2E watchdog to provision these
-devices. Further integration or radio setup requires the user's scope decision.
+Provision once through a direct connection to the test hub after confirming no
+E2E run is active. Routine E2E does not provision or remove these resources.
+Review the native prerequisites before adding integration or radio infrastructure.
 
 ## Standing core profiles
 

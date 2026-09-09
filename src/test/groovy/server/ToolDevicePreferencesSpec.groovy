@@ -697,6 +697,49 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         }
     }
 
+    @spock.lang.Unroll
+    def "Zigbee ID #shape read applicability agrees with write prevalidation"() {
+        given:
+        addListedDevice()
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = System.currentTimeMillis()
+        def full = fixture()
+        full.device.isComponent = false
+        full.device.linkedDevice = false
+        if (present) full.device.put('zigbeeId', nativeId)
+        else full.device.remove('zigbeeId')
+        registerFixture(DEVICE_ID, full)
+
+        when:
+        def field = script.toolGetDevice(DEVICE_ID, 'configuration').editableFields.find { it.name == 'zigbeeId' }
+        def prepared = null
+        def refusal = null
+        try {
+            prepared = script._prepareDeviceUpdatePatch(
+                [deviceId: DEVICE_ID, zigbeeId: '0200000000411002', confirm: true], DEVICE_ID, full)
+        } catch (IllegalArgumentException ex) {
+            refusal = ex.message
+        }
+
+        then:
+        field.applicable == editable
+        field.writable == editable
+        if (editable) {
+            assert refusal == null
+            assert prepared.args.zigbeeId == '0200000000411002'
+        } else {
+            assert prepared == null
+            assert refusal?.contains('zigbeeId')
+        }
+
+        where:
+        shape    | present | nativeId           | editable
+        'absent' | false   | null               | false
+        'null'   | true    | null               | false
+        'empty'  | true    | ''                 | false
+        'hex'    | true    | '0200000000411001' | true
+    }
+
     def "fragment snapshots expire with restart guidance without refetching unrelated native data"() {
         given:
         addListedDevice()
@@ -734,11 +777,12 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    def "snapshot eviction bounds retained content and preserves the newest readable snapshot"() {
+    @spock.lang.Unroll
+    def "snapshot eviction bounds #payloadLength character pages and preserves the newest readable snapshot"() {
         given:
         addListedDevice()
         def full = fixture()
-        full.deviceState = [large: 'x' * 400000]
+        full.deviceState = [large: 'x' * payloadLength]
         registerFixture(DEVICE_ID, full)
         def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
         def newest
@@ -759,6 +803,9 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('restart')
+
+        where:
+        payloadLength << [100000, 400000]
     }
 
     def "snapshot budget includes retained caller selection metadata"() {

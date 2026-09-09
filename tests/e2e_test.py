@@ -3020,6 +3020,20 @@ class TestRunner:
             assert observer_id != device_id, "Disabling a fixture requires an independent standing observer"
             self._device_configuration_profile(profile, device_id, observer_id, manifest, driver_types, expected, room_name)
 
+    def _assert_configuration_fixture_parent(self, profile, native):
+        assert "parentAppId" in native, (
+            f"Native parent identity is unavailable for {profile['path']}; an omitted field cannot prove standalone ownership"
+        )
+        parent_id = native["parentAppId"]
+        if profile["path"] == "child-sdk":
+            assert parent_id is not None and str(parent_id) == str(self.client.app_id), (
+                f"Configuration child belongs to app {parent_id}, not the tested MCP app {self.client.app_id}"
+            )
+        else:
+            assert parent_id is None, (
+                f"Configuration {profile['path']} must be standalone; native parent app is {parent_id}"
+            )
+
     def _device_configuration_profile(self, profile, device_id, observer_id, manifest, driver_types, expected, room_name):
         def configuration(**selection):
             return self.client.call_tool("hub_read_devices", {
@@ -3090,10 +3104,7 @@ class TestRunner:
         cfg = configuration()
         assert_native_preferences(native, cfg, expected)
         assert cfg.get("preferenceRead", {}).get("status") == "complete", f"Preference discovery incomplete: {cfg}"
-        is_child = baseline.get("parentAppId") is not None
-        assert is_child is (profile["path"] == "child-sdk"), (
-            f"Native parent identity does not match the provisioned path: {baseline}"
-        )
+        self._assert_configuration_fixture_parent(profile, baseline)
         assert int(baseline["deviceTypeId"]) == driver_types[manifest["driver"]], (
             f"Persistent fixture was left on the replacement driver: {baseline}"
         )
@@ -3381,9 +3392,7 @@ class TestRunner:
                 f"Wrong/stale LAN fixture observer: {native}"
             )
             assert native.get("fixtureVersion") == manifest["version"] == 2, "Provision the current LAN fixture driver"
-            assert (native.get("parentAppId") is not None) is (profile["path"] == "child-sdk"), (
-                f"LAN fixture native ownership differs from its declared dispatch path: {native}"
-            )
+            self._assert_configuration_fixture_parent(profile, native)
             try:
                 result = self._write_once(None, "hub_call_device_command", {
                     "deviceId": device_id, "command": "sendLanProbe", "parameters": [nonce], "includeState": False,
