@@ -4305,10 +4305,7 @@ def check_sandbox_map_subscripts(
         re.MULTILINE,
     )
     map_decl = re.compile(rf"\b{map_type}\s+({ident})\b")
-    map_init = re.compile(
-        rf"\b({ident}(?:\.{ident})*)\s*=\s*"
-        rf"(?:new\s+{map_type}\s*\(|\[[^\]\n]*:)"
-    )
+    assignment_re = re.compile(rf"\b({ident}(?:\.{ident})*)\s*=(?!=)\s*")
     checked_map = re.compile(rf"\b({ident})\s+(?:instanceof|as)\s+Map\b")
     conditional_map = re.compile(
         rf"\b({ident})\s*=\s*[^\n;]*\binstanceof\s+Map\b[^\n;]*:\s*\[:\]"
@@ -4319,7 +4316,6 @@ def check_sandbox_map_subscripts(
         rf"@(?:groovy\.transform\.)?Field\s+(?:(?:static|final|private|protected|public)\s+)*"
         rf"{map_type}\s+({ident})\b"
     )
-    alias_re = re.compile(rf"\b({ident})\s*=(?!=)\s*([^\n;{{}}]+)")
     subscript_re = re.compile(
         rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
         rf"(?P<key>{ident}(?:\??\.{ident})*(?:\(\))?)\s*\]"
@@ -4332,7 +4328,7 @@ def check_sandbox_map_subscripts(
     # example in a comment cannot establish a safe branch.
     bounded_if_re = re.compile(
         rf"\bif\s*\(\s*(?P<key>{ident})\s*==\s*"
-        r"""(?P<quote>['"])(?P<literal>[^'"\n]+)(?P=quote)"""
+        r"""(?P<quote>['"])(?P<literal>[^'"\n$\\]+)(?P=quote)"""
         r"\s*(?:&&[^{}]*?)?\)\s*\{"
     )
     collisions = {"fields", "class", "metaClass"}
@@ -4357,24 +4353,58 @@ def check_sandbox_map_subscripts(
             if opening < len(code) and code[opening] == "{":
                 yield match, code[match.end():params_end], opening, close_brace(code, opening)
 
+    def is_map_literal(expression: str) -> bool:
+        if not expression.startswith("[") or close_delimiter(expression, 0, "[", "]") != len(expression) - 1:
+            return False
+        # Only an outer entry separator establishes a Map. Nested Maps and
+        # ternary/Elvis expressions are also legal elements of a List.
+        depth = 0
+        ternaries = 0
+        for pos, token in enumerate(expression[1:-1], start=1):
+            depth += (token in "([{") - (token in ")]}")
+            if depth != 0:
+                continue
+            if token == "?" and expression[pos + 1:pos + 2] not in (".", "["):
+                ternaries += 1
+            elif token == ":":
+                if ternaries:
+                    ternaries -= 1
+                else:
+                    return True
+        return False
+
+    def outer_expression_tokens(expression: str):
+        depth = 0
+        for pos, token in enumerate(expression):
+            if depth == 0:
+                yield pos, token
+            depth += (token in "([{") - (token in ")]}")
+
+    def assignment_expressions(body: str):
+        # Keep multiline literals together and include their property/index/
+        # method suffixes: the initializer result may differ from its prefix.
+        for assignment in assignment_re.finditer(body):
+            tail = body[assignment.end():]
+            end = next((pos for pos, token in outer_expression_tokens(tail)
+                        if token in "\n;,)]}"), len(tail))
+            yield assignment[1], tail[:end].strip()
+
     def is_map_expression(expression: str, maps: set[str], returns: set[str]) -> bool:
         expression = expression.strip()
         while expression.startswith("(") and close_delimiter(expression, 0, "(", ")") == len(expression) - 1:
             expression = expression[1:-1].strip()
-        if re.fullmatch(ident, expression):
+        if re.fullmatch(rf"{ident}(?:\.{ident})*", expression):
             return expression in maps
+        for pos, token in outer_expression_tokens(expression):
+            if token == "+":
+                return (is_map_expression(expression[:pos], maps, returns)
+                        and is_map_expression(expression[pos + 1:], maps, returns))
         constructor = re.match(rf"new\s+{map_type}\s*\(", expression)
         call = re.match(rf"({ident})\s*\(", expression)
         if constructor or (call and call[1] in returns):
             opening = (constructor or call).end() - 1
             return close_delimiter(expression, opening, "(", ")") == len(expression) - 1
-        if expression.startswith("[") and close_delimiter(expression, 0, "[", "]") == len(expression) - 1:
-            depth = 0
-            for token in expression[1:-1]:
-                depth += (token in "([{") - (token in ")]}")
-                if token == ":" and depth == 0:
-                    return True
-        return False
+        return is_map_literal(expression)
 
     def method_return_expressions(body: str) -> list[str]:
         # A return inside a closure returns from that closure, not its method.
@@ -4423,6 +4453,19 @@ def check_sandbox_map_subscripts(
             return False
         return not re.search(rf"\bfor\s*\([^)]*\b{key}\b", code)
 
+    def condition_requires_key_comparison(condition: str) -> bool:
+        opening = condition.index("(")
+        closing = close_delimiter(condition, opening, "(", ")")
+        expression = condition[opening + 1:closing]
+        # The matcher anchors the first term to the key equality. An outer OR
+        # or conditional can admit keys that fail it; an AND's nested OR cannot.
+        for pos, token in outer_expression_tokens(expression):
+            if expression[pos:pos + 2] == "||":
+                return False
+            if token == "?" and expression[pos + 1:pos + 2] not in (".", "["):
+                return False
+        return True
+
     def writes_subscript(code: str, start: int, end: int) -> bool:
         return bool(
             re.match(rf"\s*{mutation_operator}", code[end:])
@@ -4444,26 +4487,27 @@ def check_sandbox_map_subscripts(
     def return_scope(path: str) -> str:
         return "parent" if path == "hubitat-mcp-server.groovy" else scope(path)
 
-    methods = [
-        (path, match, params, opening, code[opening + 1:end])
-        for path, code in masked.items() for match, params, opening, end in method_records(code)
-    ]
+    methods_by_path = {
+        path: [(match, params, opening, end, code[opening + 1:end])
+               for match, params, opening, end in method_records(code)]
+        for path, code in masked.items()
+    }
+    methods = [(path, *record) for path, records in methods_by_path.items() for record in records]
     map_returns: dict[str, set[str]] = {}
-    for path, match, _, _, _ in methods:
+    for path, match, _, _, _, _ in methods:
         known = map_returns.setdefault(return_scope(path), set())
         if re.fullmatch(map_type, match.group("type") or ""):
             known.add(match.group("name"))
 
     def inferred_maps(params: str, body: str, returns: set[str]) -> set[str]:
         maps = (set(map_decl.findall(params)) | set(map_decl.findall(body)) |
-                set(map_init.findall(body)) | set(checked_map.findall(body)) |
+                set(checked_map.findall(body)) |
                 set(conditional_map.findall(body)) | set(fallback_map.findall(body)) |
                 set(cast_map.findall(body)))
-        aliases = list(alias_re.finditer(body))
+        aliases = list(assignment_expressions(body))
         for _ in range(len(aliases) + 1):
             before = set(maps)
-            for alias in aliases:
-                dest, expression = alias.groups()
+            for dest, expression in aliases:
                 if is_map_expression(expression, maps, returns):
                     maps.add(dest)
             if before == maps:
@@ -4474,7 +4518,7 @@ def check_sandbox_map_subscripts(
     # aliases and transitive calls; unknown external helpers stay unknown.
     for _ in range(len(methods) + 1):
         changed = False
-        for path, method, params, _, body in methods:
+        for path, method, params, _, _, body in methods:
             known = map_returns[return_scope(path)]
             if method.group("name") in known or method.group("type") not in (None, "def"):
                 continue
@@ -4491,8 +4535,7 @@ def check_sandbox_map_subscripts(
         code = masked[path]
         raw_lines = source.split("\n")
         field_maps = set(field_map.findall(code))
-        for method, params, opening, end in method_records(code):
-            body = code[opening + 1:end]
+        for method, params, opening, end, body in methods_by_path[path]:
             raw_body = source[opening + 1:end]
             explicit_maps = set(map_decl.findall(params))
             explicit_maps.update(map_decl.findall(body))
@@ -4531,6 +4574,8 @@ def check_sandbox_map_subscripts(
                 if not body[branch.start():].startswith("if"):
                     continue
                 brace = branch.end() - 1
+                if not condition_requires_key_comparison(body[branch.start():brace]):
+                    continue
                 stop = close_brace(body, brace)
                 if key_binding_unchanged(branch.group("key"), body[branch.start():stop]):
                     bounded.append((branch.group("key"), brace, stop))

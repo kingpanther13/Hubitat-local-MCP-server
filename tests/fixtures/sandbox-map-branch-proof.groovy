@@ -237,7 +237,7 @@ private Map _rmSubmitFullPageFormAfter(Integer appId, String pageName, Map cfg, 
         // submit (stale version token, auth, malformed envelope, etc.) instead
         // of just a bare status code.
         def bodyPreview = resp?.data?.toString()?.take(200)
-        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The submit was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via hub_get_app_config(appId=${appId}) and retry). The page may be left in trash-confirmation mode; on this hard-fail path the tool backs it out automatically via cancelTrash. Do NOT treat this as a partial delete.")
+        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The outcome has not been verified. Recovery is best-effort; inspect the rule with hub_get_app_config(appId=${appId}) before retrying.")
     }
     // Surface any non-button inputs the wholesale-replace blanked (absent from
     // currentSettings AND not in extraSettings) so a caller can refuse a

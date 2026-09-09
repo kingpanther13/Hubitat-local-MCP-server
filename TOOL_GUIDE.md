@@ -488,6 +488,7 @@ A bundle is a `.zip` that Hubitat Package Manager (HPM) fetches and unpacks into
 - Persist even if MCP uninstalled
 - Max 20 kept, oldest pruned
 - Rapid edits preserve original (1-hour protection)
+- App/driver restores return `undoAvailable=true` and a `preRestoreBackup` handle only when the undo file is verified. A failed capture or unverifiable retry may still restore successfully, with `undoAvailable=false` and a warning; do not rely on an older undo record for that restore.
 
 ### Custom-engine Rule Backups (Automatic)
 - `hub_delete_custom_rule` auto-backs up to File Manager as `mcp_rule_backup_<name>_<timestamp>.json`
@@ -497,6 +498,7 @@ A bundle is a `.zip` that Hubitat Package Manager (HPM) fetches and unpacks into
 ### Native RM Rule Backups (Automatic)
 - Existing-rule edits ensure a File Manager baseline exists as `mcp-rm-backup-<ruleId>-<timestamp>.json`; by default the newest same-rule baseline is reused for one hour. Restoring it returns the rule to the start of that edit chain and undoes every later edit. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and destructive Required Expression replacement always snapshot immediately before the operation.
 - Snapshots register in the unified `atomicState.itemBackupManifest` with type=`rm-rule`
+- A failed configuration read permits recreation only when the app inventory confirms the original rule is absent. Otherwise restore stops before creating a replacement or changing settings.
 - Use `hub_list_backups` (in `hub_read_apps_code` / `hub_manage_backup`) to enumerate, `hub_restore_backup` (in `hub_manage_backup`) with the backupKey to roll back
 - If the rule still exists, settings are replayed in place; if deleted, a fresh empty rule is recreated and the saved settings replayed onto it
 

@@ -1229,5 +1229,127 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.success == true
         uploads.isEmpty()
         (atomicStateMap.itemBackupManifest ?: [:]).prerestore_app_228 == null
+        result.undoAvailable == false
+        result.warning
+        !result.containsKey('preRestoreBackup')
+        !result.containsKey('preRestoreFile')
+        !result.containsKey('undoHint')
+    }
+
+    @spock.lang.Unroll
+    def "restore reports missing undo after pre-restore capture fails at #failure"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [
+            app_228: [type: 'app', id: '228', fileName: 'backup.groovy', version: 5, timestamp: 1L],
+            prerestore_app_228: [type: 'app', id: '228', fileName: 'mcp-prerestore-app-228.groovy', version: 2, timestamp: 1L]
+        ]
+        def files = ['backup.groovy': 'BACKUPSRC'.getBytes('UTF-8'),
+                     'mcp-prerestore-app-228.groovy': 'UNRELATED OLD UNDO'.getBytes('UTF-8')]
+        script.metaClass.downloadHubFile = { String name -> files.get(name) }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes ->
+            if (failure == 'upload') throw new IOException('File Manager unavailable')
+            if (failure != 'readback') files.put(name, bytes)
+        }
+        def reads = 0
+        script.metaClass.hubInternalGet = { String path, Map params = null ->
+            reads++
+            if (reads == 1) {
+                if (failure == 'fetch') throw new IOException('temporary fetch failure')
+                if (failure == 'empty') return ''
+                if (failure == 'parse') return 'not JSON'
+                if (failure == 'missing source') return '{"version":7}'
+            }
+            return '{"source":"CURRENT SOURCE","version":7}'
+        }
+        def saved = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420, boolean isRetry = false ->
+            saved << new groovy.json.JsonSlurper().parseText(body).source
+            [success: true, id: 228]
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_228', confirm: true])
+
+        then:
+        result.success == true
+        saved == ['BACKUPSRC']
+        result.undoAvailable == false
+        result.warning
+        !result.containsKey('preRestoreBackup')
+        !result.containsKey('preRestoreFile')
+        !result.containsKey('undoHint')
+
+        where:
+        failure << ['fetch', 'empty', 'parse', 'missing source', 'upload', 'readback']
+    }
+
+    @spock.lang.Unroll
+    def "restore retry advertises only its verified undo when #undoState"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [
+            app_228: [type: 'app', id: '228', fileName: 'backup.groovy', version: 5, timestamp: 1L]
+        ]
+        def files = ['backup.groovy': 'BACKUPSRC'.getBytes('UTF-8')]
+        def liveSource = 'CURRENT SOURCE'
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name -> files.get(name) }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads << name; files.put(name, bytes) }
+        script.metaClass.hubInternalGet = { String path, Map params = null ->
+            groovy.json.JsonOutput.toJson([source: liveSource, version: 7])
+        }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420, boolean isRetry = false ->
+            liveSource = new groovy.json.JsonSlurper().parseText(body).source
+            [success: true, id: 228]
+        }
+
+        when:
+        def first = script.toolRestoreItemBackup([backupKey: 'app_228', confirm: true])
+
+        then:
+        first.success == true
+        first.undoAvailable == true
+        new String(files.get(first.preRestoreFile.toString()), 'UTF-8') == 'CURRENT SOURCE'
+
+        when:
+        def undoFile = first.preRestoreFile.toString()
+        if (undoState == 'file missing') files.remove(undoFile)
+        if (undoState == 'file changed') files.put(undoFile, 'OTHER UNDO'.getBytes('UTF-8'))
+        if (undoState == 'different backup key') {
+            atomicStateMap.itemBackupManifest.put('app_alias', atomicStateMap.itemBackupManifest.app_228)
+        }
+        if (undoState == 'different backup contents') {
+            files.put('backup.groovy', 'DIFFERENT SNAPSHOT'.getBytes('UTF-8'))
+            liveSource = 'DIFFERENT SNAPSHOT'
+        }
+        def result = script.toolRestoreItemBackup([
+            backupKey: undoState == 'different backup key' ? 'app_alias' : 'app_228', confirm: true])
+
+        then:
+        result.success == true
+        uploads == ['mcp-prerestore-app-228.groovy']
+        result.undoAvailable == expectedUndo
+        if (expectedUndo) {
+            assert result.preRestoreBackup == first.preRestoreBackup
+            assert result.preRestoreFile == first.preRestoreFile
+            assert result.undoHint
+            assert !result.warning
+        } else {
+            assert result.warning
+            assert !result.containsKey('preRestoreBackup')
+            assert !result.containsKey('preRestoreFile')
+            assert !result.containsKey('undoHint')
+        }
+
+        where:
+        undoState                    | expectedUndo
+        'unchanged'                  | true
+        'file missing'               | false
+        'file changed'               | false
+        'different backup key'       | false
+        'different backup contents'  | false
     }
 }

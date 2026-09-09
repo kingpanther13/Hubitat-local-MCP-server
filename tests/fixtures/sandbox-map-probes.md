@@ -72,7 +72,7 @@ even where the implementation also adopted explicit Map operations.
 | --- | --- | --- |
 | 1 | `_writeStatePutLocked` registry write | **Bounded.** The producer creates `mrtr-` UUID IDs and resumed IDs are regex constrained. The typed Map write accepted ordinary, `fields`, and `class` controls; `metaClass` produced a cast failure. Production IDs cannot be those collision names. |
 | 2 | `_mrtrSweepLocked` registry copy | **Bounded.** Keys originate in row 1's registry. An arbitrary-key copy failed in isolation, but no production producer admitting those names was found. Ordinary registry behavior was exercised by live connector writes. |
-| 3 | `_rmWriteSettingOnPage` schema override | **Bounded assignment.** This write runs only with a non-null type override. Those callers use generated/literal `stays-N`, `durChoice.N`, and `useST` names; raw external-setting callers pass null. Scratch Required Expression exercised `useST`. Schema reads and the write now use explicit Map operations where repaired. |
+| 3 | `_rmWriteSettingOnPage` schema override | **Bounded assignment.** This write runs only with a non-null type override. Those callers use fixed UI field names or wizard-indexed names: `stays-N`, `durChoice.N`, `useST`, generated `uVar<P>.<N>`, and Hub Variables fields `hbVar`, `varType`, `varDate`, `varTime`, and `varValue`. Raw external-setting callers pass null. Scratch Required Expression exercised `useST`. Schema reads and the write now use explicit Map operations where repaired. |
 | 4 | `_rmRestoreFromBackup` device-setting copy | **Reachable, repaired.** An owned app accepted a capability input named `fields` and preserved its selected owned-device list on the native wire. The original copy failed in isolation; schema collection could fail earlier in the complete restore. Preserve device-list shape and mapping fallback. |
 | 5 | `stripOptionsHtml` List branch | **Reproduced connector failure, repaired.** Reading the owned List-options page failed on `fields`; the native List retained that name and its HTML label. Cleaning preserves keys and non-string values. |
 | 6 | `stripOptionsHtml` Map branch | **Defensive repair; production collision not demonstrated.** The original direct-Map fragment failed. Both tested native List and Map enum definitions normalized to List-of-Maps, reaching row 5. That observation does not prove all direct-Map responses impossible. Exact repaired-branch operation proof passed below. |
@@ -108,7 +108,7 @@ label cleaning, false/zero/null/List values, empty buttons, missing-value
 `blankedInputs`, and extra-settings overrides. Form construction and HTTP
 submission were inert capture adapters; no real form was posted. The repaired
 method sources came from `e07eb1f2a5b588afecbfd53f91b01f99d784ddee` and are unchanged
-from merged `a4b968f5`; original methods came from the immutable inventory baseline.
+from merged `a4b968f5` at capture; original methods came from the immutable inventory baseline. The committed After fixture now has corrected failure/recovery wording; the measured Map operations are unchanged.
 This closes the operation-proof gap without claiming unobserved native reachability.
 ## Original controls and adjacent paths
 
