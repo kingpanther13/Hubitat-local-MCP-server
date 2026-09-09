@@ -4426,7 +4426,7 @@ def check_sandbox_map_subscripts(
     def writes_subscript(code: str, start: int, end: int) -> bool:
         return bool(
             re.match(rf"\s*{mutation_operator}", code[end:])
-            or re.search(r"(?:^|[\n=;{}(,:]|\breturn)\s*(?:\+\+|--)\s*$", code[:start])
+            or re.search(r"(?:^|[\n=;{}(,:?+*/%&|^!<>~\-]|\breturn)\s*(?:\+\+|--)\s*$", code[:start])
         )
 
     masked = {

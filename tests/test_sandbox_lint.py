@@ -871,6 +871,14 @@ def test_preceding_statement_increment_does_not_turn_typed_map_read_into_write()
 }"""
     assert sandbox_map_findings(source) == []
 
+
+@pytest.mark.parametrize("expression", ["flag ? ++data[key] : 0", "1 + ++data[key]"])
+def test_prefix_map_write_inside_an_expression_remains_blocking(expression):
+    source = f"def update(Map data, String key, boolean flag) {{\n return {expression}\n}}"
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "write" in findings[0]["message"]
+
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------
