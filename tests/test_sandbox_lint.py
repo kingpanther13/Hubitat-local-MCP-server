@@ -693,6 +693,28 @@ def read(int index) {
 }"""
     assert sandbox_map_findings(source) == []
 
+
+def test_map_property_is_not_an_alias_of_the_containing_map():
+    source = """def update(int index) {
+ def envelope = [ids: [1, 2]]
+ List<Integer> ids = envelope.ids
+ return ids[index]
+}"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_call_before_control_block_does_not_become_a_method():
+    source = """def update(Map input, String key) {
+ requireConfirm(true)
+ if (input) {
+  def result = [:]
+  result[key] = false
+ }
+}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "in update;" in findings[0]["message"]
+
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------

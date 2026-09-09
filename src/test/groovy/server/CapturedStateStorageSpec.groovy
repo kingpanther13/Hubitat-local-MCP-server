@@ -18,6 +18,30 @@ class CapturedStateStorageSpec extends ToolSpecBase {
         peer.metaClass.deleteHubFile = { String name -> throw new IllegalStateException('capture delete') }
     }
 
+    @Unroll
+    def "capture name #captureId preserves migrated and replacement data"() {
+        given:
+        Map original = ['7': [level: 0, enabled: false, absent: null]]
+        Map replacement = ['8': [tags: [], enabled: false, level: 0]]
+        atomicStateMap.capturedDeviceStates = [(captureId): [devices: original, timestamp: 1L]]
+        forbidFiles(script)
+
+        expect:
+        script.getCapturedState(captureId) == original
+
+        when:
+        def saved = script.saveCapturedState(captureId, replacement)
+
+        then:
+        saved.totalStored == 1
+        script.getCapturedState(captureId) == replacement
+        script.listCapturedStates()*.stateId == [captureId]
+        !atomicStateMap.containsKey('capturedDeviceStates')
+
+        where:
+        captureId << ['fields', 'class', 'metaClass', 'properties']
+    }
+
     def "separate requests share detached captures without durable writes or file IO"() {
         given:
         def peer = newCompiledScriptInstance(app: captureApp, state: stateMap, atomicState: atomicStateMap)

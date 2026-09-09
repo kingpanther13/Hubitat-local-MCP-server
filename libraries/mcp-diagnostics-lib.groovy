@@ -2201,8 +2201,8 @@ private Map _captureEntriesLocked(Map store) {
             if (!(devices instanceof Map) && !(devices instanceof List)) {
                 throw new IllegalStateException("Legacy capture has an invalid device payload")
             }
-            entries[id.toString()] = [text: groovy.json.JsonOutput.toJson(devices),
-                timestamp: raw instanceof Map ? raw.timestamp : null, deviceCount: devices.size()]
+            entries.put(id.toString(), [text: groovy.json.JsonOutput.toJson(devices),
+                timestamp: raw instanceof Map ? raw.timestamp : null, deviceCount: devices.size()])
         }
         store.entries = entries
         store.loaded = true
@@ -2229,7 +2229,7 @@ def saveCapturedState(stateId, capturedStates) {
     Map store = _captureStore()
     synchronized (store) {
         Map entries = _captureEntriesLocked(store)
-        entries[id] = [text: text, timestamp: now(), deviceCount: capturedStates.size()]
+        entries.put(id, [text: text, timestamp: now(), deviceCount: capturedStates.size()])
         List deleted = []
         int max = getMaxCapturedStates()
         while (entries.size() > max) {

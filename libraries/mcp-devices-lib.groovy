@@ -613,8 +613,8 @@ def _buildContextJson() {
     def roomIndex = [:]
     allDevices.each { d ->
         def r = d.roomName?.toString() ?: "No room"
-        if (!roomIndex.containsKey(r)) roomIndex[r] = []
-        roomIndex[r] << d.id.toString()
+        if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
+        roomIndex.get(r) << d.id.toString()
     }
     // The rooms index scales with the inventory too, so it gets its own cap (half the
     // budget) -- on an extreme fleet it could exceed the whole budget by itself, and no

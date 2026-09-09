@@ -83,7 +83,7 @@ def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
 
     def manifest = atomicState.itemBackupManifest ?: [:]
-    def entry = manifest[args.backupKey]
+    def entry = manifest.get(args.backupKey)
 
     if (!entry) {
         mcpLog("debug", "hub-admin", "Backup key '${args.backupKey}' not found in manifest")
@@ -166,7 +166,7 @@ def toolRestoreItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
 
     def manifest = atomicState.itemBackupManifest ?: [:]
-    def entry = manifest[args.backupKey]
+    def entry = manifest.get(args.backupKey)
 
     if (!entry) {
         mcpLog("debug", "hub-admin", "Restore: backup key '${args.backupKey}' not found in manifest")
@@ -253,10 +253,10 @@ def toolRestoreItemBackup(args) {
                 uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
                 // atomicState read-modify-write: read full map, mutate locally, write back.
                 def mfst = atomicState.itemBackupManifest ?: [:]
-                mfst[preRestoreBackupKey] = [
+                mfst.put(preRestoreBackupKey, [
                     type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
                     version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
-                ]
+                ])
                 atomicState.itemBackupManifest = mfst
                 mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
             }

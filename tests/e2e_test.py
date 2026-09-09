@@ -6605,8 +6605,8 @@ class TestRunner:
         app_id = self._create_native_rule("ReqExpr")
         try:
             built = self._patch_rule(app_id, [
-                {"addLocalVariable": {"name": "batCounter", "type": "Number", "value": 0}},
-                {"addAction": {"capability": "setLocalVariable", "variable": "batCounter", "value": 5}},
+                {"addLocalVariable": {"name": "fields", "type": "Number", "value": 0}},
+                {"addAction": {"capability": "setLocalVariable", "variable": "fields", "value": 0}},
                 {"addRequiredExpression": {"conditions": [
                     {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
             ])
@@ -6617,8 +6617,8 @@ class TestRunner:
                 f"patch addAction setLocalVariable did not return an actionIndex: {built[1]}"
 
             persisted = self._get_persisted_rule_config(app_id).get("settings") or {}
-            assert persisted.get(f"xVarV.{set_local_idx}") == "batCounter" \
-                and str(persisted.get(f"valNumber.{set_local_idx}")) == "5", \
+            assert persisted.get(f"xVarV.{set_local_idx}") == "fields" \
+                and str(persisted.get(f"valNumber.{set_local_idx}")) == "0", \
                 f"setLocalVariable target/value did not persist: {persisted}"
             re_slots = [str(key).split("_", 1)[1] for key, value in persisted.items()
                         if str(key).startswith("rCapab_")
@@ -6633,7 +6633,7 @@ class TestRunner:
             listed = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
             names = [lv.get("name") for lv in (listed.get("localVariables") or [])]
-            assert "batCounter" in names, f"hub_list_rule_local_variables missing batCounter: {listed}"
+            assert "fields" in names, f"hub_list_rule_local_variables missing fields: {listed}"
 
             self._assert_rule_healthy(app_id)
 
@@ -6645,17 +6645,17 @@ class TestRunner:
             # broken-after-delete behaviour is covered by its own scenario).
             removed = self._patch_rule(app_id, [
                 {"removeAction": {"index": set_local_idx}},
-                {"removeLocalVariable": {"name": "batCounter"}},
+                {"removeLocalVariable": {"name": "fields"}},
             ])
             assert len(removed) == 2 and all(entry.get("success") is not False for entry in removed), \
                 f"ordered reference/local removal patches did not both commit: {removed}"
             assert removed[1].get("deleted") is True \
-                and removed[1].get("name") == "batCounter", \
+                and removed[1].get("name") == "fields", \
                 f"removeLocalVariable did not confirm deletion: {removed[1]}"
             relisted = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
-            assert "batCounter" not in [lv.get("name") for lv in (relisted.get("localVariables") or [])], \
-                f"batCounter still present after removeLocalVariable: {relisted}"
+            assert "fields" not in [lv.get("name") for lv in (relisted.get("localVariables") or [])], \
+                f"fields still present after removeLocalVariable: {relisted}"
         finally:
             self._delete_native(app_id)
 

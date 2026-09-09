@@ -4300,7 +4300,7 @@ def check_sandbox_map_subscripts(
     method_re = re.compile(
         rf"^[ \t]*(?:(?:private|protected|public)\s+)?(?:static\s+)?"
         rf"(?:(?P<type>{ident}(?:<[^{{}}\n]+>)?)\s+)?"
-        rf"(?P<name>(?!(?:if|for|while|switch|catch|synchronized|else)\b){ident})\s*\((?P<params>[^{{}}]*?)\)\s*\{{",
+        rf"(?P<name>(?!(?:if|for|while|switch|catch|synchronized|else)\b){ident})\s*\((?P<params>[^{{}}()]*?)\)\s*\{{",
         re.MULTILINE,
     )
     map_decl = re.compile(rf"\b{map_type}\s+({ident})\b")
@@ -4318,7 +4318,7 @@ def check_sandbox_map_subscripts(
         rf"@(?:groovy\.transform\.)?Field\s+(?:(?:static|final|private|protected|public)\s+)*"
         rf"{map_type}\s+({ident})\b"
     )
-    alias_re = re.compile(rf"\b({ident})\s*=\s*({ident})\b(\s*\()?")
+    alias_re = re.compile(rf"\b({ident})\s*=\s*({ident})\b(?!\s*\??\.)(\s*\()?")
     subscript_re = re.compile(
         rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
         rf"(?P<key>{ident}(?:\??\.{ident})*(?:\(\))?)\s*\]"
@@ -4398,7 +4398,7 @@ def check_sandbox_map_subscripts(
             expressions.extend(body.rstrip().splitlines()[-1:])
             for expression in expressions:
                 expression = re.sub(r"^\s*return\s+", "", expression).strip()
-                head = re.match(rf"({ident})\s*(\()?", expression)
+                head = re.match(rf"({ident})\b(?!\s*\??\.)\s*(\()?", expression)
                 if (re.match(rf"(?:new\s+{map_type}\s*\(|\[[^\]\n]*:)", expression)
                         or (head and ((head[2] and head[1] in known)
                                      or (not head[2] and head[1] in maps)))):

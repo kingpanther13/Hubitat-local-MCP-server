@@ -388,7 +388,7 @@ private _validateNetworkArgs(network) {
             throw new IllegalArgumentException("network.ipMode must be 'dhcp' or 'static', got: ${network.ipMode}")
         }
         if (mode == "static") {
-            def missing = ["address", "netmask", "gateway"].findAll { !network[it] }
+            def missing = ["address", "netmask", "gateway"].findAll { !network.get(it) }
             if (missing) throw new IllegalArgumentException("network.ipMode='static' requires ${missing.join(', ')} (address, netmask, gateway are all required for a static IP).")
         }
     }
@@ -618,7 +618,7 @@ def toolSetModeManager(args) {
     def result = [success: true]
     if (manager) {
         def wireByKey = [builtin: "builtIn", legacy: "legacy", app: "app"]
-        def wire = wireByKey[manager]
+        def wire = wireByKey.get(manager)
         if (!wire) throw new IllegalArgumentException("manager must be one of builtIn, legacy, app")
         try {
             def raw = hubInternalGet("/modes/setModeManager/${wire}")

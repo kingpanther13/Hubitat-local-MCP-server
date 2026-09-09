@@ -554,13 +554,13 @@ private void registerRmRule(Map combined, def r, String version) {
     if (id == null) return
     def key = id.toString()
     if (!combined.containsKey(key)) {
-        combined[key] = [
+        combined.put(key, [
             id: id,
             label: label,
             name: name,
             type: type,
             rmVersion: version
-        ]
+        ])
     }
 }
 
@@ -3920,7 +3920,7 @@ private List _rmLiveActionIndicesFromSettings(Map status) {
         def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
         if (!m.matches()) return
         def idx = (m[0][1] as Integer)
-        if (s?.value?.toString()?.trim()) live[idx] = true
+        if (s?.value?.toString()?.trim()) live.put(idx, true)
     }
     return live.keySet().sort()
 }
@@ -4271,7 +4271,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     // apply the shared guard predicate and fail SAFE (do not reject) when the capability is
     // unresolved (null) -- a missed guard beats falsely rejecting a legitimate edit.
     if (_rmLooksLikeStateChangeToken(mods.state)) {
-        def committedCap = triggerCaps[triggerIdx]
+        def committedCap = triggerCaps.get(triggerIdx)
         // committedCap != null distinguishes "capability read successfully but unlisted" (a
         // non-null string the deny-list guards) from "capability could not be read" (statusJson
         // carried no tCapab value -> null -> SKIP the guard, fail safe). The deny-list returns TRUE
@@ -6230,7 +6230,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 // statusJson answered (an empty map means the rule simply has no locals).
                 allVars = [:]
                 localsRead.vars.each { lvName, lvMeta ->
-                    allVars[lvName?.toString()] = [type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null)]
+                    allVars.put(lvName?.toString(), [type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null)])
                 }
             } else {
                 mcpLog("warn", "rm-native", "setLocalVariable: local-variable read (statusJson appState.allLocalVars) unavailable for app ${appId} (${localsRead.error}) -- variable-name validation skipped; write will proceed unvalidated")
@@ -6270,7 +6270,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             // exist, so a null or non-numeric token means we cannot prove it is numeric -- reject
             // rather than silently allowing an un-typeable target through to a doomed reveal walk.
             if (actionSpec.value != null || actionSpec.fromDevice != null || actionSpec.math != null) {
-                def targetMeta = allVars[targetVar]
+                def targetMeta = allVars.get(targetVar)
                 def targetType = (targetMeta instanceof Map) ? targetMeta?.type?.toString() : null
                 if (!_rmIsNumericVarType(targetType)) {
                     def modeName = actionSpec.value != null ? "numeric-constant (value)"
@@ -9399,7 +9399,7 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         timestamp: snapshot.timestamp,
         sourceLength: jsonBytes.length  // reusing the existing field name for byte size
     ]
-    mfst[backupKey] = entry
+    mfst.put(backupKey, entry)
 
     // Reuse backupItemSource's prune budget (20 entries total across all
     // backup types). Oldest pruned first -- same policy as app/driver.
@@ -9616,7 +9616,7 @@ Map _setRuleFromEnvelope(Map env) {
         // EXCEPT 'settings', whose payload is a raw {inputName: value} map that may legitimately
         // contain a single input literally named 'settings'; unwrapping there would misread it.
         def val = payload
-        if (op != 'settings' && val instanceof Map && val.size() == 1 && val.containsKey(op)) val = val[op]
+        if (op != 'settings' && val instanceof Map && val.size() == 1 && val.containsKey(op)) val = val.get(op)
         // List-shaped ops take a BARE array. For the spec-list ops a caller who wrapped it under
         // any single key (e.g. {actions:[...]}) is unwrapped here. NOT for patches: its items are
         // {op: spec} maps, so a single-key map like {addActions:[...]} is a malformed payload, not
@@ -9630,7 +9630,7 @@ Map _setRuleFromEnvelope(Map env) {
                 throw new IllegalArgumentException("hub_set_rule operation='${op}': args must be a bare array, e.g. args:[{...},...] (got ${got}). Call without confirm to see the schema.")
             }
         }
-        legacy[op] = val
+        legacy.put(op, val)
     }
     return [args: legacy]
 }
@@ -10782,7 +10782,7 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 // the pre-deferral worst case (a possible IF(Broken Condition) wrap, surfaced as a warn).
 private void _rmRunPendingPredCapabsClear(Integer appId) {
     def pending = atomicState.predClearPending ?: [:]
-    if (!pending[appId.toString()]) return
+    if (!pending.get(appId.toString())) return
     try {
         _rmClearPredCapabsViaGhostIfThen(appId, "addAction (deferred from addRequiredExpression)")
     } catch (Exception e) {
@@ -11251,8 +11251,8 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
         // Map caller-facing type names to firmware enum values.
         def typeToWire = [clock: "A specific time", sunrise: "Sunrise", sunset: "Sunset"]
-        def startTypeWire = typeToWire[startType]
-        def endTypeWire   = typeToWire[endType]
+        def startTypeWire = typeToWire.get(startType)
+        def endTypeWire   = typeToWire.get(endType)
 
         // Validate that the required time/offset values are present before any hub writes.
         // Validating here (not after reveals) avoids hub round-trips on a caller error.
@@ -12576,7 +12576,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     //   NOT a routing/editAct check -- so STPage opens cleanly without the ghost ifThen. (The helper's
     //   old "routing reset" comment only undid the ghost ifThen's OWN nav to doActPage.)
     def _predPending = atomicState.predClearPending ?: [:]
-    _predPending[appId.toString()] = true
+    _predPending.put(appId.toString(), true)
     atomicState.predClearPending = _predPending
 
     // Step 5. Post-commit validation. RM 5.1's STPage silently accepts

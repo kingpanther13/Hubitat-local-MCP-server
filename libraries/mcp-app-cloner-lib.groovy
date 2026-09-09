@@ -546,7 +546,7 @@ def toolImportNativeApp(args) {
     } catch (Exception e) {
         throw new IllegalArgumentException("Could not extract original source id from appReplacements: ${e.message}")
     }
-    def originalLabel = appReplacements[originalSourceId.toString()]?.appLabel?.toString()
+    def originalLabel = appReplacements.get(originalSourceId.toString())?.appLabel?.toString()
 
     // Snapshot pre-import children of the target parent.
     def parentHintCfg
@@ -1117,7 +1117,7 @@ private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
         Integer originalSourceId
         try { originalSourceId = ((replacements.keySet() as List)[0]).toString() as Integer }
         catch (Exception e) { throw new IllegalArgumentException("Could not extract original source id from appReplacements: ${e.message}") }
-        String originalLabel = replacements[originalSourceId.toString()]?.appLabel?.toString()
+        String originalLabel = replacements.get(originalSourceId.toString())?.appLabel?.toString()
         def hintCfg
         try { hintCfg = _rmFetchConfigJson(parentHintAppId) }
         catch (Exception hintErr) {
