@@ -3548,7 +3548,7 @@ def executeAction(action, actionIndex = null, evt = null) {
                         devState.saturation = dev.currentValue("saturation")
                     }
                     if (dev.hasCapability("ColorTemperature")) devState.colorTemperature = dev.currentValue("colorTemperature")
-                    capturedStates[dev.id.toString()] = devState
+                    capturedStates.put(dev.id.toString(), devState)
                 }
                 def stateKey = action.stateId ?: "default"
                 // Store in parent app so other rules can access it

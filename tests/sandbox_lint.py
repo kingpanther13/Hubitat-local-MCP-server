@@ -4387,6 +4387,10 @@ def check_sandbox_map_subscripts(
 
             for access in subscript_re.finditer(body):
                 receiver, key = access.group("receiver", "key")
+                # Masking a GString retains its interpolation expression. That
+                # must not turn map["prefix${id}"] into an apparent map[id].
+                if not subscript_re.fullmatch(raw_body[access.start():access.end()]):
+                    continue
                 if receiver not in maps:
                     continue
                 writing = bool(re.match(r"\s*=(?!=|~)", body[access.end():]))

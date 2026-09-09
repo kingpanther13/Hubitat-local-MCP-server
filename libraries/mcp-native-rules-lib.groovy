@@ -5322,7 +5322,7 @@ private List _rmResolveModeNames(Collection keys) {
     def nameSet = [] as Set
     hubModes.each { m ->
         if (m?.id != null && m?.name) {
-            idToName[m.id.toString()] = m.name.toString()
+            idToName.put(m.id.toString(), m.name.toString())
             nameSet << m.name.toString()
         }
     }
@@ -5330,7 +5330,7 @@ private List _rmResolveModeNames(Collection keys) {
     keys.each { k ->
         def s = k?.toString()
         if (!s) return
-        if (s.isInteger() && idToName[s]) { out << idToName[s]; return }
+        if (s.isInteger() && idToName.get(s)) { out << idToName.get(s); return }
         if (nameSet.contains(s)) { out << s; return }
         def commaHint = _rmCommaJoinedModeHint(s, nameSet, "Mode")
         if (commaHint) throw new IllegalArgumentException(commaHint)
@@ -9601,7 +9601,7 @@ Map _setRuleFromEnvelope(Map env) {
             throw new IllegalArgumentException("hub_set_rule operation='create' accepts only ${allowed.join(', ')} in args; ${extraneous.sort().join(', ')} require an existing rule -- create first, then call that operation with the returned appId.")
         }
         def legacyCreate = [confirm: true]
-        allowed.each { k -> if ((payload as Map).containsKey(k)) legacyCreate[k] = payload[k] }
+        allowed.each { k -> if ((payload as Map).containsKey(k)) legacyCreate.put(k, payload.get(k)) }
         return [args: legacyCreate]
     }
     def legacy = [:]
@@ -9645,9 +9645,9 @@ Map _setRuleOperationSchema(String op) {
     def argsSchema
     if (op == 'create') {
         argsSchema = [:]
-        (['name'] + _setRuleCreateHonored()).each { k -> if (props[k] != null) argsSchema[k] = props[k] }
+        (['name'] + _setRuleCreateHonored()).each { k -> if (props.get(k) != null) argsSchema.put(k, props.get(k)) }
     } else {
-        argsSchema = props[op]   // the bare value/shape args must match
+        argsSchema = props.get(op)   // the bare value/shape args must match
     }
     def clean = new groovy.json.JsonSlurper().parseText(stripFlatTrim(groovy.json.JsonOutput.toJson(argsSchema ?: [:]), false))
     def usage

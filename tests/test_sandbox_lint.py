@@ -609,6 +609,14 @@ def test_unknown_helper_return_is_not_assumed_to_be_map():
     # evidence is available in this source; silence is not a safety verdict.
     assert sandbox_map_findings(source) == []
 
+
+def test_interpolated_bounded_key_is_not_misread_as_its_embedded_identifier():
+    source = '''def fields(List ids) {
+ def result = [:]
+ ids.each { id -> result["switch${id}.@N"] = false }
+}'''
+    assert sandbox_map_findings(source) == []
+
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------

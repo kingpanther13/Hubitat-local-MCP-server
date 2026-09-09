@@ -2021,7 +2021,7 @@ private Map backupLibrarySource(String libraryId) {
         def sortedKeys = manifest.entrySet().sort { a, b -> a.value.timestamp <=> b.value.timestamp }*.key
         def toRemove = sortedKeys.take(manifest.size() - 20)
         toRemove.each { k ->
-            def e2 = manifest[k]
+            def e2 = manifest.get(k)
             if (e2?.fileName) {
                 try { deleteHubFile(e2.fileName) } catch (Exception ex) { mcpLog("warn", "hub-admin", "Could not delete pruned library backup file '${e2.fileName}': ${ex.message}") }
             }

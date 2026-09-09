@@ -640,7 +640,7 @@ private Map _vrb2Decompose(Map graph) {
         throw new IllegalArgumentException("The rule is not a Visual Rule Builder 2.0 schema version 1 document.")
     }
     def byId = [:]
-    graph.nodes.each { if (it instanceof Map && it.id != null) byId[it.id.toString()] = it }
+    graph.nodes.each { if (it instanceof Map && it.id != null) byId.put(it.id.toString(), it) }
     def triggerMerge = graph.nodes.find { it instanceof Map && it.kind == "merge" && it.type == "triggerMerge" }
     def decision = graph.nodes.find { it instanceof Map && it.kind == "decision" && (it.type == null || it.type in ["all", "any"]) }
     def branchMerge = graph.nodes.find { it instanceof Map && it.kind == "merge" && it.type == "branchMerge" }

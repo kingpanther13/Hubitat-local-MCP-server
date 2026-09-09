@@ -98,6 +98,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
         expect:
         script._vrb2Validate(graph) == []
+        script._vrb2Decompose(graph).thenActions*.id == ['Fields']
 
         when: 'the same graph has an invalid outgoing port'
         graph.edges.last().port = 'next'

@@ -614,9 +614,9 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
     if (component.deviceId) {
         def id = component.deviceId.toString()
         if (!deviceUsage.containsKey(id)) {
-            deviceUsage[id] = new LinkedHashSet()
+            deviceUsage.put(id, new LinkedHashSet())
         }
-        deviceUsage[id] << section
+        deviceUsage.get(id) << section
     }
 
     // Check for deviceIds field (plural — multi-device triggers, capture_state, etc.)
@@ -624,9 +624,9 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
         component.deviceIds.each { did ->
             def id = did.toString()
             if (!deviceUsage.containsKey(id)) {
-                deviceUsage[id] = new LinkedHashSet()
+                deviceUsage.put(id, new LinkedHashSet())
             }
-            deviceUsage[id] << section
+            deviceUsage.get(id) << section
         }
     }
 

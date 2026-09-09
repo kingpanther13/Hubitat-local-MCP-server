@@ -21,6 +21,17 @@ import support.ToolSpecBase
  */
 class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
 
+    def "bypass attribute polling reads sandbox-sensitive names and preserves false zero and null"() {
+        given:
+        def states = [fields: [value: false], class: [value: 0], metaClass: [value: null],
+                      Fields: [value: 'upper'], getClass: [value: 'data']]
+        def model = [device: [currentStates: states]]
+
+        expect:
+        states.every { key, state -> script._readBypassAttrValueFrom(model, key) == state.value }
+        script._readBypassAttrValueFrom(model, 'missing') == null
+    }
+
     static final String UNLISTED_ID = '555'
 
     // A fullJson model for an unlisted switch. `switchValue` lets a test drive the reported value.

@@ -1905,7 +1905,7 @@ private Map _writeStateMapLocked(String stateKey) {
         loaded = _mrtrCopyMap(stored as Map)
         WRITE_STATE_DURABLE_MAPS.add(stateKey)
     }
-    WRITE_STATE_CACHE[stateKey] = loaded
+    WRITE_STATE_CACHE.put(stateKey, loaded)
     return loaded
 }
 
@@ -1915,12 +1915,12 @@ private def _writeStateValueLocked(String stateKey) {
     if (WRITE_STATE_CACHE.containsKey(stateKey)) return WRITE_STATE_CACHE[stateKey]
     def stored = _writeStateDurableRead(stateKey)
     def snapshot = (stored instanceof Map) ? _mrtrCopyMap(stored as Map) : stored
-    WRITE_STATE_CACHE[stateKey] = snapshot
+    WRITE_STATE_CACHE.put(stateKey, snapshot)
     return snapshot
 }
 
 private void _writeStateSetLocked(String stateKey, value) {
-    WRITE_STATE_CACHE[stateKey] = value
+    WRITE_STATE_CACHE.put(stateKey, value)
     if (value instanceof Map) WRITE_STATE_DURABLE_MAPS.add(stateKey)
     _writeStateDurableWrite(stateKey, value)
 }
@@ -2944,10 +2944,10 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             // Publish exact claim/generation proof after storing the terminal.
             // The scheduling observer uses it immediately; defensive cache-reload
             // repair can also use it while this compiled class remains loaded.
-            MRTR_TERMINAL_EVIDENCE[stateId] = [
+            MRTR_TERMINAL_EVIDENCE.put(stateId, [
                 claimId: claim?.claimId?.toString(), generation: claim?.generation,
                 expiresAt: rec.expiresAt, record: [:] + rec
-            ]
+            ])
             _mrtrSweepTerminalEvidenceLocked()
             return true
         } finally {
@@ -6345,7 +6345,7 @@ def initDebugLogs() {
                       entries: [], hydrated: fresh]
         // The old state-backed history is discarded once; subsequent reloads use native logs.
         state.debugLogs = [config: config]
-        DEBUG_LOG_BUFFERS[appId] = buffer
+        DEBUG_LOG_BUFFERS.put(appId, buffer)
         return buffer
     }
 }
@@ -6483,14 +6483,14 @@ private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId
             }
             if (envelope instanceof Map && envelope.appId == buffer.appId &&
                 envelope.generation == generation && envelope.id && envelope.entry instanceof Map) {
-                recovered[envelope.id] = _debugLogRecord(envelope.entry, envelope.id.toString())
+                recovered.put(envelope.id, _debugLogRecord(envelope.entry, envelope.id.toString()))
             }
         }
     }
     synchronized (buffer) {
         // A clear during the HTTP read establishes a new generation; old rows stay excluded.
         if (buffer.generation == generation && (fetchId == null || buffer.fetchId == fetchId)) {
-            buffer.entries.each { recovered[it.id] = it }
+            buffer.entries.each { recovered.put(it.id, it) }
             buffer.entries = []
             recovered.values().each { _appendDebugLogRecord(buffer, it) }
             buffer.hydrated = true
@@ -6751,7 +6751,7 @@ private Integer _discoverParentAppId(String appType) {
         ids.remove("rm")
         atomicState.parentAppIds = ids
     }
-    def cached = ids[appType]
+    def cached = ids.get(appType)
     if (cached != null) {
         try { return cached.toString().toInteger() } catch (NumberFormatException e) {
             mcpLog("warn", "rm-native", "Invalid cached parentAppId for '${appType}' ('${cached}') -- rediscovering")
@@ -6897,7 +6897,7 @@ private Integer _discoverParentAppId(String appType) {
         // unconfirmed -- the next call re-discovers (cheap) and re-verifies.
         mcpLog("warn", "rm-native", "Parent ${parentTypeName} id ${id}: install commit unverified (commit call threw) -- id NOT cached; the next create re-discovers")
     } else {
-        ids[appType] = id
+        ids.put(appType, id)
         atomicState.parentAppIds = ids
     }
     mcpLog("info", "rm-native", "Discovered ${parentTypeName} parent app id: ${id} (appType=${appType})")
@@ -7889,7 +7889,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // instance would slip through a string-set delta. Callers comparing two health verdicts
     // (the replace restore gate) use this count map to detect a NEW broken instance.
     def brokenMarkerCounts = [:]
-    brokenMarkers.each { m -> brokenMarkerCounts[m] = (brokenMarkerCounts[m] ?: 0) + 1 }
+    brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
 
     // Stable report shape (backward-compatible with the pre-#254 contract): the RM detection
     // arrays are always present so existing consumers can read them unconditionally. The new
