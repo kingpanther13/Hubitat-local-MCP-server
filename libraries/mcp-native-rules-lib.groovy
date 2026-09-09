@@ -2561,7 +2561,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             "Yearly":  [weekOfMonth: "weeklyYC${pn}", dayOfWeek: "dailyYC${pn}", monthEnum: "yearlyMonthCX${pn}", time: "startingYC${pn}"],
             "Cron String": [cron: "cronStr${pn}"]
         ]
-        def fields = freqFieldMap[freq] ?: [:]
+        def fields = freqFieldMap.get(freq) ?: [:]
         // (Periodic arg validation -- Seconds/Minutes restricted-enum count and
         // the Monthly dayOfMonth/weekOfMonth mutual-exclusivity -- already ran
         // up front, before the trigger editor opened.)
@@ -4387,7 +4387,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         def indices = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
         throw new IllegalArgumentException("modifyAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${indices.sort().join(', ')}. RM is not touched.")
     }
-    def entry = reverse[actSubType]
+    def entry = reverse.get(actSubType)
     def actType = committedSettings["actType.${actionIdx}".toString()]?.toString()
     if (actType != "rulesActs" || entry == null) {
         throw new IllegalArgumentException("modifyAction currently supports only rule-targeting actions (runRule, cancelTimers, pauseRule, privateBoolean). Action ${actionIdx} is actType='${actType}' actSubType='${actSubType}'. Rebuild other action shapes with removeAction + addAction (one patches call keeps it atomic). RM is not touched.")
@@ -4832,7 +4832,7 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     ]
     if (hrefParams != null && !hrefParams.isEmpty()) {
         def paramsMarker = "params_for_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
-        body[paramsMarker] = groovy.json.JsonOutput.toJson(hrefParams)
+        body.put(paramsMarker, groovy.json.JsonOutput.toJson(hrefParams))
     }
     try {
         def cfg = _rmFetchConfigJson(appId, fromPage, cache)
@@ -6401,7 +6401,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             "speech": "SpeechSynthesis", "SpeechSynthesis": "SpeechSynthesis"
         ]
         def capFilterRaw = actionSpec.capabilityFilter ?: "Switch"
-        def capFilter = friendlyToKey[capFilterRaw.toString()] ?: capFilterRaw.toString()
+        def capFilter = friendlyToKey.get(capFilterRaw.toString()) ?: capFilterRaw.toString()
         fields = [
             "useLastDev.@N": (actionSpec.useLastEventDevice == true),
             "myCapab.@N": capFilter,
@@ -11096,7 +11096,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // below so a change token on a discrete cap gets the same "author it as a trigger row" steer
     // as every other condition surface; the discrete-event guard owns only the numeric-shape comparator (>, =, <, ...)
     // with no value, whose recovery is a state value.
-    def discreteValid = DISCRETE_EVENT_CAPS[capCanonical]
+    def discreteValid = DISCRETE_EVENT_CAPS.get(capCanonical)
     if (discreteValid != null && cond.comparator != null && !_rmComparatorIsRhsOptional(cond.comparator)
             && cond.state == null && cond.value == null) {
         cancelInFlightCond()

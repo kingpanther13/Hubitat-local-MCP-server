@@ -139,6 +139,15 @@ code were deleted, and all six owned source/backup files were removed. Readback
 confirmed the original 113 app IDs remained unchanged, with no added or missing
 apps and no investigation files left. No household device or rule was modified.
 
+The final multiline-Map inference pass additionally identified five lookup reads
+(periodic frequency fields, rule-action subtype, friendly capability names,
+discrete-event capabilities, and the self-admin setting allowlist) plus the
+native navigation parameter-marker write. All now use explicit `get`/`put`
+without changing fallback or validation behavior. The navigation marker has a
+fixed prefix and the self-admin update key passes an allowlist; those are bounded
+callers, not demonstrated collision bugs. The other table lookups are repaired
+without claiming new personal-hub collision reproductions.
+
 ## Enforced scanner policy and validation
 
 `check_sandbox_map_subscripts` enforces a source invariant: detected dynamic Map
