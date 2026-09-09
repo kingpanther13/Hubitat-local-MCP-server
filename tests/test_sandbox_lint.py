@@ -229,6 +229,265 @@ def test_clean_source_no_findings():
 
 
 # ---------------------------------------------------------------------------
+# SandboxSubscriptGuard -- arbitrary Map-key copy and colliding literal keys
+# ---------------------------------------------------------------------------
+
+def sandbox_map_findings(source: str, path: str = "hubitat-mcp-server.groovy") -> list[dict]:
+    """Run the focused source guard against an inline production-shaped fixture."""
+    return sl.check_sandbox_map_subscripts({path: source})
+
+
+@pytest.mark.parametrize("function_name", ["_publicToolResultValue", "_mrtrCanonicalArgs"])
+def test_sandbox_map_guard_catches_arbitrary_key_assignment_in_implicated_copy_functions(function_name):
+    source = f"""
+private def {function_name}(value) {{
+    def copy = new LinkedHashMap()
+    (value as Map).each {{ key, child ->
+        copy[key] = child
+    }}
+    return copy
+}}
+"""
+    findings = sandbox_map_findings(source)
+    assert {f["rule"] for f in findings} == {"sandbox-map-key-subscript"}
+
+
+def test_sandbox_map_guard_catches_known_colliding_literal_key():
+    source = """
+private def renderCatalog(Map response) {
+    def nested = response['fields']
+    nested['getClass'] = response['getClass']
+    return nested
+}
+"""
+    findings = sandbox_map_findings(source)
+    assert {f["rule"] for f in findings} == {"sandbox-map-key-subscript"}
+
+
+def test_sandbox_map_guard_accepts_get_put_for_arbitrary_and_colliding_keys():
+    source = """
+private def safeCopy(Map value) {
+    def copy = new LinkedHashMap()
+    value.each { key, child -> copy.put(key, child) }
+    def fields = copy.get('fields')
+    copy.put('getClass', fields)
+    return copy
+}
+"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_sandbox_map_guard_ignores_list_indexing_and_comment_string_false_positives():
+    source = r'''
+private def ordinaryLists(List rows, int index) {
+    def selected = rows[index]
+    // copy[key] = child is documentation, not executable code
+    def example = "nested['fields'] = value"
+    return selected
+}
+'''
+    assert sandbox_map_findings(source) == []
+
+
+def test_sandbox_map_guard_catches_nested_device_catalog_copy():
+    source = """
+private def copyDeviceCatalog(Map catalog) {
+    def out = new LinkedHashMap()
+    catalog.get('fields').each { fieldName, definition ->
+        def nested = new LinkedHashMap()
+        definition.each { driverKey, value -> nested[driverKey] = value }
+        out[fieldName] = nested
+    }
+    return out
+}
+"""
+    findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
+    assert findings
+    assert all(f["rule"] == "sandbox-map-key-subscript" for f in findings)
+
+
+@pytest.mark.parametrize("key", ["name", "st.name"])
+def test_sandbox_map_guard_catches_external_snapshot_attribute_assignment(key):
+    source = f"""
+private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {{
+    def snapshot = [:]
+    device.currentStates.each {{ st ->
+        def name = st.name
+        snapshot[{key}] = [value: st.value, timestamp: null]
+    }}
+    return snapshot
+}}
+"""
+    findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
+    assert len(findings) == 1
+    assert findings[0]["rule"] == "sandbox-map-key-subscript"
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["source"] == f"snapshot[{key}] = [value: st.value, timestamp: null]"
+
+
+def test_sandbox_map_guard_catches_bypass_snapshot_map_iteration_assignment():
+    source = """
+private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
+    def fj = _fetchDeviceFullJson(deviceId)
+    def cs = fj?.device?.currentStates
+    if (!(cs instanceof Map)) return null
+    def snapshot = [:]
+    cs.each { name, st ->
+        if (name != null) {
+            def val = (st instanceof Map) ? st.value : st
+            def rawDate = (st instanceof Map) ? st.date : null
+            snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]
+        }
+    }
+    return snapshot
+}
+"""
+    findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
+    assert len(findings) == 1
+    assert findings[0]["rule"] == "sandbox-map-key-subscript"
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["source"] == "snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]"
+
+
+@pytest.mark.parametrize("function_name", ["_deviceConfigurationPublicValue", "transformDriverValue"])
+@pytest.mark.parametrize("declaration", ["def copy = [:]", "def copy = new LinkedHashMap()", "Map copy = [:]"])
+def test_sandbox_map_guard_catches_renamed_map_transform_with_implicit_return_type(function_name, declaration):
+    source = f"""
+private {function_name}(value, key = '') {{
+    if (value instanceof Map) {{
+        {declaration}
+        value.each {{ k, v -> copy[k] = {function_name}(v, k) }}
+        return copy
+    }}
+    return value
+}}
+"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+def test_sandbox_map_guard_catches_map_parameter_without_copy_name():
+    findings = sandbox_map_findings("""
+private def storeDriverValue(Map destination, String key, value) {
+    destination[key] = value
+}
+""")
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("function_name", ["copyRows", "_publicToolResultValue", "transformDriverValue"])
+def test_sandbox_map_guard_allows_list_assignment_even_inside_copy_helpers(function_name):
+    source = f"""
+private def {function_name}(List rows, int index, value) {{
+    def copy = []
+    copy[index] = rows[index]
+    rows[index] = value
+    return copy
+}}
+"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_sandbox_map_guard_keeps_map_evidence_local_to_method():
+    source = """
+private def transformDriverValue(Map rows, String key, value) {
+    rows.put(key, value)
+}
+private def copyRows(List rows, int index, value) {
+    rows[index] = value
+}
+"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_sandbox_map_guard_allows_bounded_keys_and_does_not_treat_comparison_as_write():
+    source = """
+private def copyStatus(Map source, String key) {
+    def output = [:]
+    ['status', 'success'].each { field -> output[field] = source.get(field) }
+    return output[key] == source.get(key)
+}
+"""
+    assert sandbox_map_findings(source) == []
+
+
+
+
+@pytest.mark.parametrize("key", ["fields", "class", "metaClass"])
+@pytest.mark.parametrize("access", ["return copy['KEY']", "copy['KEY'] = false"])
+def test_measured_untyped_literal_collisions_block_reads_and_writes(key, access):
+    source = "private def probe() {\n def copy = [:]\n " + access.replace("KEY", key) + "\n}"
+    findings = sandbox_map_findings(source)
+    assert findings
+    assert all(f["severity"] == "error" for f in findings)
+
+
+@pytest.mark.parametrize("key", ["Fields", "getClass"])
+def test_measured_noncolliding_names_are_valid_map_data(key):
+    source = f"private def probe() {{\n def copy = [:]\n copy['{key}'] = false\n return copy['{key}']\n}}"
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("key", ["fields", "class"])
+def test_explicit_map_type_accepts_measured_literal_access(key):
+    source = f"private def probe(Map copy) {{\n copy['{key}'] = false\n return copy['{key}']\n}}"
+    assert sandbox_map_findings(source) == []
+
+
+def test_typed_metaclass_assignment_is_still_a_collision():
+    source = "private def probe(Map copy) {\n copy['metaClass'] = false\n}"
+    assert any(f["severity"] == "error" for f in sandbox_map_findings(source))
+
+
+def test_external_untyped_map_reads_are_detected():
+    source = """private def readValues(Map values) {
+ def copy = [:] + values
+ values.each { key, value ->
+  def seen = copy[key]
+ }
+}"""
+    assert sandbox_map_findings(source)
+
+
+def test_bounded_device_mapping_branch_is_not_external_key_evidence():
+    source = """private def mapDevice(Map values) {
+ def result = [:]
+ values.each { key, value ->
+  if (key == "deviceId" && value != null) {
+   result[key] = value
+  } else {
+   result[key] = value
+  }
+ }
+ return result
+}"""
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [7]
+
+
+def test_alias_of_map_return_is_scanned_without_a_method_name_exemption():
+    source = """private Map obtainSchema() {
+ return [:]
+}
+private def copySchema(Map external) {
+ def schema = obtainSchema()
+ def alias = schema
+ external.each { key, value -> alias[key] = value }
+ return alias
+}"""
+    assert sandbox_map_findings(source)
+
+
+def test_map_guard_does_not_treat_numeric_list_access_as_map_access():
+    source = """private def copyRows(List rows) {
+ rows.eachWithIndex { row, index -> rows[index] = row }
+ return rows[0]
+}"""
+    assert sandbox_map_findings(source) == []
+
+# ---------------------------------------------------------------------------
 # format_finding / format_annotation
 # ---------------------------------------------------------------------------
 
