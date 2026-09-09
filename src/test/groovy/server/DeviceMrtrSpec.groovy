@@ -123,7 +123,9 @@ class DeviceMrtrSpec extends ToolSpecBase {
         complete.result.resultType == 'complete'
         def result = mcpDriver.parseInner(complete)
         (leaf == 'hub_get_device' ? result.label : result.devices[0].label) == 'Before'
-        mcpDriver.parseInner(replay) == result
+        def replayed = mcpDriver.parseInner(replay)
+        (leaf == 'hub_get_device' ? replayed.label : replayed.devices[0].label) == 'Before'
+        leaf != 'hub_get_device' || replayed.nextCursor == result.nextCursor
         reads == 1
         !groovy.json.JsonOutput.toJson(atomicStateMap).contains('private-pref')
         !groovy.json.JsonOutput.toJson(runInMillisCalls).contains('private-pref')
@@ -164,5 +166,89 @@ class DeviceMrtrSpec extends ToolSpecBase {
         then:
         denied.error != null || denied.result.isError == true
         !groovy.json.JsonOutput.toJson(denied).contains('private-device-profile')
+    }
+
+    def "a quickly completed device read needs one HTTP call but the next call is fresh"() {
+        given:
+        int reads = 0
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+            [id: '88', label: "Read ${++reads}".toString()]
+        }
+        RUN_IN_MILLIS_OVERRIDE.set({ List scheduled ->
+            runInMillisCalls << scheduled
+            finish(scheduled)
+        })
+
+        when:
+        def first = call('hub_get_device', [deviceId: '88'])
+        def second = call('hub_get_device', [deviceId: '88'])
+
+        then:
+        first.result.resultType == 'complete'
+        second.result.resultType == 'complete'
+        mcpDriver.parseInner(first).label == 'Read 1'
+        mcpDriver.parseInner(second).label == 'Read 2'
+        reads == 2
+        runInMillisCalls.size() == 2
+    }
+
+    def "device read scheduler failure is an error with no inline fallback"() {
+        given:
+        int reads = 0
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor ->
+            reads++; [id: '88']
+        }
+        RUN_IN_MILLIS_OVERRIDE.set({ List scheduled -> throw new IllegalStateException('scheduler unavailable') })
+
+        when:
+        def failed = call('hub_get_device', [deviceId: '88'])
+
+        then:
+        failed.error != null || failed.result.isError == true
+        reads == 0
+        script._activeWrites().isEmpty()
+    }
+
+    def "a lost device snapshot fails its continuation without starting another fetch"() {
+        given:
+        int reads = 0
+        script.metaClass.toolGetDevice = { id, mode, sections, fields, cursor -> reads++; [id: '88'] }
+        String token = call('hub_get_device', [deviceId: '88']).result.requestState
+        assert token != null
+        (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()
+
+        when:
+        def failed = call('hub_get_device', [deviceId: '88'], token)
+        finish(runInMillisCalls[0])
+
+        then:
+        failed.error.code == -32602
+        reads == 0
+        runInMillisCalls.size() == 1
+    }
+
+    def "device worker validation retains the JSON RPC error and guide hint on replay"() {
+        given:
+        settingsMap.enableMandatoryBPS = false
+        Map args = [action: 'delete', deviceNetworkId: 'unknown', confirm: true]
+        int attempts = 0
+        script.metaClass.toolManageVirtualDevice = { actual ->
+            attempts++
+            throw new IllegalArgumentException('No MCP-managed virtual device found')
+        }
+        String token = call('hub_manage_virtual_device', args).result.requestState
+        call('hub_manage_virtual_device', args, token)
+        finish(runInMillisCalls[0])
+
+        when:
+        def failed = call('hub_manage_virtual_device', args, token)
+        def replay = call('hub_manage_virtual_device', args, token)
+
+        then:
+        failed.error.code == -32602
+        failed.error.message.contains('No MCP-managed virtual device found')
+        failed.error.message.contains('virtual_devices')
+        replay.error == failed.error
+        attempts == 1
     }
 }

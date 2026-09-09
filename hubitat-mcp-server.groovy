@@ -33,6 +33,7 @@
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
 // Per execution: never pass this clock into a destructive inner wizard operation.
 @groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
+@groovy.transform.Field Map deviceReadContext = null
 // JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
 // _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot (the trimmed page + at), fetchId
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
@@ -1538,6 +1539,7 @@ def handleToolsCall(msg) {
 
     Map rec = null
     Map claim = null
+    String readSnapshotId = null
     String stateId = requestState?.toString()
     long reqT0 = now()
     try {
@@ -1551,7 +1553,8 @@ def handleToolsCall(msg) {
                         && _mrtrReadTools().contains(rec.leafTool?.toString())) {
                     Map replayArgs = _mrtrCopyMap(args as Map)
                     replayArgs.__reqT0 = reqT0
-                    def replayed = executeTool(toolName, replayArgs)
+                    def replayed = _executeWithDeviceReadContext(toolName, replayArgs,
+                        rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null)
                     if (replayed instanceof Map && replayed.status == "in_progress") {
                         // The snapshot is gone and a fresh fetch did not land in time; a
                         // terminal record cannot continue, so the client starts a fresh call.
@@ -1594,12 +1597,15 @@ def handleToolsCall(msg) {
                 // still pending reserves a requestState for the client to continue.
                 Map readArgs = _mrtrCopyMap(args as Map)
                 readArgs.__reqT0 = reqT0
-                def readResult = executeTool(toolName, readArgs)
+                if (_mrtrDeviceReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
+                def readResult = _executeWithDeviceReadContext(toolName, readArgs,
+                    readSnapshotId ? [id: readSnapshotId, fresh: true] : null)
                 if (!(readResult instanceof Map && readResult.status == "in_progress")) {
                     return _renderToolResult(msg.id, toolName, reactiveToolName, args, readResult, false)
                 }
             }
-            def reservation = _mrtrReserve(toolName, reactiveToolName, binding)
+            def reservation = readSnapshotId ? _mrtrReserve(toolName, reactiveToolName, binding, readSnapshotId) :
+                _mrtrReserve(toolName, reactiveToolName, binding)
             if (reservation.accepted != true) {
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                     reservation.refusal, true)
@@ -1800,7 +1806,8 @@ def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs"] as Set
+            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
+            "hub_get_device", "hub_list_devices"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -1809,7 +1816,7 @@ def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_delete_debug_logs"] as Set
+            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device"] as Set
 }
 
 // Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
@@ -1819,7 +1826,16 @@ def _mrtrWriteTools() {
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule"] as Set
+            "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices"] as Set
+}
+
+private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices"] as Set }
+
+private def _executeWithDeviceReadContext(tool, Map args, Map context) {
+    Map previous = deviceReadContext
+    deviceReadContext = context
+    try { return executeTool(tool, args) }
+    finally { deviceReadContext = previous }
 }
 
 // A read only continues when the request's transport carries a time budget; without one the
@@ -1830,7 +1846,8 @@ def _mrtrReadContinuationActive() {
 
 private Set _mrtrDetachedWorkerTools() {
     return ["hub_set_rule", "hub_set_native_app",
-            "hub_create_driver", "hub_update_driver", "hub_delete_item"] as Set
+            "hub_create_driver", "hub_update_driver", "hub_delete_item",
+            "hub_manage_virtual_device", "hub_update_device"] as Set
 }
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
@@ -2422,13 +2439,14 @@ private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
 
 // Duplicate detection, global write capacity, storage capacity, and record
 // creation are one transaction under the static app-wide mutex.
-def _mrtrReserve(outerTool, leafTool, Map binding) {
+def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null) {
     List cleanup = []
     Map outcome
     synchronized (WRITE_RESERVATION_LOCK) {
         cleanup = _mrtrSweepLocked()
         _writeSweepRequestsLocked()
-        def duplicate = _mrtrFindActiveLocked(leafTool, binding)
+        // Device state can change outside MCP; independent reads must never join an older snapshot.
+        def duplicate = readSnapshotId ? null : _mrtrFindActiveLocked(leafTool, binding)
         if (duplicate != null) {
             // A relay can drop the mutation-free preflight after this state was
             // reserved but before the client learned requestState. Coalesce an exact
@@ -2457,6 +2475,7 @@ def _mrtrReserve(outerTool, leafTool, Map binding) {
                     startedAt: at, updatedAt: at, expiresAt: at + _mrtrActiveTtlMs(),
                     rounds: 0, generation: 0
                 ]
+                if (readSnapshotId) rec.readSnapshotId = readSnapshotId
                 _mrtrPutLocked(stateId, rec)
                 outcome = [accepted: true, stateId: stateId]
             }
@@ -3044,6 +3063,13 @@ def runMrtrSlice(Map job = [:]) {
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
         _mrtrCommitSlice(stateId, rec, claim, executionArgs, result)
     } catch (Exception workerErr) {
+        if (workerErr instanceof IllegalArgumentException &&
+                rec.leafTool in ["hub_manage_virtual_device", "hub_update_device"]) {
+            // Preserve the device tools' validation contract on every replay, including
+            // reactive guide hints and the exact error the diagnostics consumer records.
+            _mrtrStoreTerminal(stateId, rec, claim, [__deviceValidation: workerErr.message], true)
+            return
+        }
         mcpLog("error", "mrtr", "Detached write worker failed for ${rec.leafTool}: ${workerErr.message}")
         def failure = [success: false, isError: true, tool: rec.leafTool,
                        error: "Tool error: ${workerErr.message}"]
@@ -3106,7 +3132,8 @@ private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     String leaf = rec.leafTool?.toString()
     if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
     if (leaf == "hub_import_native_app") return _mrtrImportNativeAppSlice(rec, executionArgs)
-    return executeTool(rec.outerTool, executionArgs)
+    return _executeWithDeviceReadContext(rec.outerTool, executionArgs,
+        rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null)
 }
 
 private Map _mrtrControl(String kind, Map checkpoint) {
@@ -3275,6 +3302,12 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
 }
 
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
+    if (result instanceof Map && result.__deviceValidation != null) {
+        String detail = result.__deviceValidation.toString()
+        mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${detail}")
+        def hint = _reactiveBpsWarning(reactiveToolName, args, detail)
+        return jsonRpcError(id, -32602, "Invalid params: ${detail}${hint ? ' ' + hint : ''}")
+    }
     // Reactive hints mutate their result map. Terminal MRTR responses are retained
     // for replay, so render from a non-mutating structural copy and keep the cached canonical
     // result immutable across clients and retries. Do not use _mrtrCopyMap here:
@@ -4760,6 +4793,9 @@ def executeTool(toolName, args) {
         if (customEngineMode == "readonly" && !customReadonlyTools.contains(toolName)) {
             throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules_and_apps.")
         }
+    }
+    if (deviceReadContext != null && _mrtrDeviceReadTools().contains(toolName?.toString())) {
+        return _deviceReadSnapshot(toolName.toString(), args as Map, deviceReadContext)
     }
     switch (toolName) {
         // Device Tools
@@ -9659,7 +9695,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`. When the transport carries a time budget, log and diagnostic reads also continue as described below.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, and `hub_update_device`. When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
 
 The first write request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
@@ -9690,6 +9726,8 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
+
+`hub_get_device` (every mode) and `hub_list_devices` (including virtual devices) use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot require a fresh call. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous.
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 

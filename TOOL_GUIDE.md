@@ -1404,7 +1404,7 @@ Surfaced via `hub_get_tool_guide(section='slow_ops')`. Hubitat's cloud relay can
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, and `hub_update_device`.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
@@ -1415,6 +1415,8 @@ Why `input_required`/`requestState` rather than the spec's Tasks primitive: each
 ### Slow log and diagnostic reads
 
 When the transport has a time budget, `hub_get_jobs`, `hub_get_performance_stats`, and native log reads through `hub_get_logs` use background fetches and the same `requestState` continuation. Cold MCP history recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. A warm read can finish on its first call. Reads hold no write lease, and their log payloads stay outside persisted continuation records.
+
+`hub_get_device` (every mode) and `hub_list_devices` (including virtual devices) also use background reads on budgeted modern requests. Fast reads finish in one response; slower reads continue with the same arguments and `requestState`. Each independent device read fetches fresh data. Only continuation and replay share its snapshot, preserving any device-details pagination cursor. Changes to device access or loss of the snapshot require a fresh read. Device payloads remain in bounded memory rather than persisted continuation records. Legacy device calls retain their synchronous behavior.
 
 `hub_delete_debug_logs` waits for recovery before clearing, then retains its small terminal result so replay cannot clear again. Reload recovery reads existing native history; old state-backed entries are discarded once when updating to native storage. Legacy clients that receive `status: "in_progress"` repeat the same read or clear call.
 

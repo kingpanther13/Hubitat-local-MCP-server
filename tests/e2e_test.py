@@ -594,6 +594,7 @@ class HubitatMcpClient:
             round_zero_mrtr = leaf in {
                 "hub_set_rule", "hub_set_native_app", "hub_clone_native_app",
                 "hub_import_native_app", "hub_create_driver", "hub_update_driver",
+                "hub_manage_virtual_device", "hub_update_device",
             }
             if leaf == "hub_delete_item" and isinstance(leaf_args, dict):
                 round_zero_mrtr = leaf_args.get("type") == "driver"
@@ -3071,25 +3072,15 @@ class TestRunner:
             return snapshots
 
         def update(patch):
-            groups = [patch]
-            if profile["path"] == "standalone-bypass":
-                # Native bypass uses several distinct endpoints. Keep each grouped request
-                # below the cloud relay budget instead of retrying a lost write response.
-                pane_keys = {"preferences", "showOnHome", "defaultCurrentState", "room"}
-                pane = {key: value for key, value in patch.items() if key in pane_keys}
-                other = {key: value for key, value in patch.items() if key not in pane_keys and key != "confirm"}
-                if pane and other:
-                    confirmation = {"confirm": patch["confirm"]} if "confirm" in patch else {}
-                    groups = [{**other, **confirmation}, {**pane, **confirmation}]
-            for group in groups:
-                result = self._write_once("hub_manage_devices", "hub_update_device", {
-                    "deviceId": device_id, **group,
-                }, f"{profile['path']} configuration edit")
-                assert result.get("success") is True, f"Configuration edit failed: {result}"
-                assert not result.get("errors"), f"Configuration edit reported success with rejected fields: {result}"
-                changed = {row.get("property") for row in result.get("changes", [])}
-                pane_fields = {"retryEnabled", "showOnHome", "defaultCurrentState"} & group.keys()
-                assert pane_fields <= changed, f"Configuration pane write was not confirmed: {result}"
+            result = self._write_once("hub_manage_devices", "hub_update_device", {
+                "deviceId": device_id, **patch,
+            }, f"{profile['path']} configuration edit")
+            assert result.get("success") is True, f"Configuration edit failed: {result}"
+            assert not result.get("errors"), f"Configuration edit reported success with rejected fields: {result}"
+            assert result.get("mrtr", {}).get("continued") is True, f"Device update bypassed MRTR: {result}"
+            changed = {row.get("property") for row in result.get("changes", [])}
+            pane_fields = {"retryEnabled", "showOnHome", "defaultCurrentState"} & patch.keys()
+            assert pane_fields <= changed, f"Configuration pane write was not confirmed: {result}"
             return result
 
         def normalized(key, value):
@@ -3745,6 +3736,7 @@ class TestRunner:
                 self.created_device_dnis.append(found_dni)
         assert result.get("success") or result.get("id") or result.get("deviceId") or dni, \
             f"create virtual device failed: {result}"
+        assert result.get("mrtr", {}).get("continued") is True, f"Virtual-device creation bypassed MRTR: {result}"
 
     @test("virtual_device_lifecycle")
     def test_command_virtual_switch(self) -> None:

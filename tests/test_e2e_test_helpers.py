@@ -525,7 +525,16 @@ def test_send_records_only_the_actual_http_post_duration(monkeypatch, send_clien
     assert client._http_leg_timings == [("tools/call", 8.0, 200)]
 
 
-def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client):
+@pytest.mark.parametrize("name,args", [
+    ("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": {
+        "appType": "basic_rule", "name": "BAT", "confirm": True,
+    }}),
+    ("hub_manage_virtual_device", {"action": "create", "deviceType": "Virtual Switch", "confirm": True}),
+    ("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": "test-dni", "confirm": True}),
+    ("hub_update_device", {"deviceId": "88", "label": "Changed"}),
+    ("hub_manage_devices", {"tool": "hub_update_device", "args": {"deviceId": "88", "label": "Changed"}}),
+])
+def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client, name, args):
     responses = iter([
         SimpleNamespace(status_code=504, reason="Gateway Timeout"),
         SimpleNamespace(
@@ -546,11 +555,8 @@ def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client):
     client = send_client(post)
 
     result = client._send("tools/call", {
-        "name": "hub_manage_native_rules_and_apps",
-        "arguments": {
-            "tool": "hub_set_native_app",
-            "args": {"appType": "basic_rule", "name": "BAT", "confirm": True},
-        },
+        "name": name,
+        "arguments": args,
     })
 
     assert result == {"resultType": "input_required", "requestState": "state-live"}
