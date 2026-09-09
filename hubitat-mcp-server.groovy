@@ -4473,6 +4473,23 @@ private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     }
 }
 
+private String _visibleGatewayIntro(String gatewayName, Map gatewayConfig, Set hidden, Map displayMeta) {
+    def config = gatewayConfig.get(gatewayName)
+    String description = config.description?.toString() ?: ''
+    boolean narrowed = config.tools.any { hidden.contains(it) }
+    if (!narrowed) {
+        // An unchanged read gateway can still promise writes through another gateway.
+        narrowed = description.findAll(/hub_[a-z0-9_]+/).any { reference ->
+            def referencedGateway = gatewayConfig.get(reference)
+            referencedGateway ? referencedGateway.tools.any { hidden.contains(it) } : hidden.contains(reference)
+        }
+    }
+    if (narrowed) {
+        return "${displayMeta.get(gatewayName)?.title ?: gatewayName} gateway. Its currently available operations are listed below.".toString()
+    }
+    return description
+}
+
 // When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
 // at call time. The hide rules live in the biTools / customEngineMode blocks below;
 // useGateways=false additionally flattens the catalog (every tool individually) and
@@ -4530,9 +4547,6 @@ def getToolDefinitions() {
 
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
-    boolean gatewayVisibilityNarrowed = settings.enableRead == false || settings.enableWrite == false ||
-        (settings.disabled_tools instanceof Collection && !settings.disabled_tools.isEmpty()) ||
-        (settings.disabled_gateways instanceof Collection && !settings.disabled_gateways.isEmpty())
 
     // Base tools: all tools NOT behind a gateway, minus any hidden by toggles.
     def baseTools = getAllToolDefinitions().findAll {
@@ -4550,9 +4564,7 @@ def getToolDefinitions() {
         def catalog = visibleSubTools.collect { toolName ->
             "- ${toolName}: ${config.summaries[toolName]}"
         }.join("\n")
-        def intro = gatewayVisibilityNarrowed
-            ? "${displayMeta[gwName]?.title ?: gwName} gateway. Its currently available operations are listed below."
-            : config.description
+        def intro = _visibleGatewayIntro(gwName, gatewayConfig, hideByName, displayMeta)
         [[
             name: gwName,
             description: "${intro}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
