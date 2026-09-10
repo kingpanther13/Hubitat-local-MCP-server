@@ -254,6 +254,26 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     // -- that no-ops initialize, irrelevant here; we drive uninstalled() direct.
     // -----------------------------------------------------------------------
 
+    def "uninstalled() removes only this app's cleanup and migration hints"() {
+        given:
+        def schedules = scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map
+        def cleaned = scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set
+        def retries = scriptStaticField('RETIRED_TOOL_STATE_RETRY_AT') as Map
+        script._mrtrEnsureCleanupScheduled()
+        schedules.putAll(['1': [checked: true], 'other': [checked: true]])
+        cleaned.addAll(['1', 'other'])
+        retries.putAll(['1': 123L, 'other': 456L])
+
+        when:
+        script.uninstalled()
+
+        then:
+        schedules.keySet() == ['other'] as Set
+        !(scriptStaticField('MRTR_CLEANUP_CHECK_AT') as Map).containsKey('1')
+        cleaned == ['other'] as Set
+        retries == [other: 456L]
+    }
+
     def "uninstalled() removes each tracked in-use var, clears the set, and unsubscribes"() {
         given: 'two tracked in-use registrations and a clean unsubscribe counter'
         UNSUBSCRIBE_CALL_COUNT.set(0)
@@ -304,12 +324,12 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     }
 
     // -----------------------------------------------------------------------
-    // initialize(): unschedule() must precede schedule() so each lifecycle
+    // initialize(): unschedule() must precede rearming so each lifecycle
     // cycle rebuilds the cron set (lifecycle-schedule-symmetry). Direct call;
     // checkForUpdate/_subscribe*/_refresh* are class-1 script methods.
     // -----------------------------------------------------------------------
 
-    def "initialize() unschedules BEFORE scheduling the daily checkForUpdate"() {
+    def "initialize() unschedules BEFORE rearming MRTR cleanup and the daily update check"() {
         given:
         lifecycleCalls.clear()
         stateMap.accessToken = 'tok'                  // skip createAccessToken
@@ -317,14 +337,16 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         script.metaClass.checkForUpdate = { -> }
         script.metaClass._subscribeToAllHubVariables = { -> }
         script.metaClass._refreshHubVarInUseRegistrations = { -> }
+        script.metaClass._mrtrEnsureCleanupScheduled = { boolean reset -> lifecycleCalls << "mrtrCleanup:${reset}".toString() }
 
         when:
         script.initialize()
 
-        then: 'both wire-up calls fired, unschedule strictly before schedule'
+        then: 'MRTR cleanup rearms after unschedule and before the daily job'
         lifecycleCalls.indexOf('unschedule') >= 0
         lifecycleCalls.indexOf('schedule') >= 0
-        lifecycleCalls.indexOf('unschedule') < lifecycleCalls.indexOf('schedule')
+        lifecycleCalls.indexOf('mrtrCleanup:true') > lifecycleCalls.indexOf('unschedule')
+        lifecycleCalls.indexOf('mrtrCleanup:true') < lifecycleCalls.indexOf('schedule')
     }
 
     // -----------------------------------------------------------------------

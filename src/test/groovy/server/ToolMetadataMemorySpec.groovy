@@ -1,6 +1,7 @@
 package server
 
 import spock.lang.Unroll
+import support.PermissiveLog
 import support.TestChildApp
 import support.ToolSpecBase
 
@@ -132,22 +133,45 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
 
     def "cleanup retries a failed removal and warm calls stop accessing state"() {
         given:
+        long clock = 1000L
         def persisted = new FailingLegacyState()
+        def legacy = new CountingLegacyState()
         persisted.toolSearchCorpus = ['old']
-        def peer = newCompiledScriptInstance(app: new TestChildApp(id: 402L), state: [:], atomicState: persisted)
+        def nativeLog = new PermissiveLog()
+        def peer = newCompiledScriptInstance(app: new TestChildApp(id: 402L), state: legacy,
+            atomicState: persisted, log: nativeLog)
+        NOW_OVERRIDE.set({ clock })
+        def buffer = peer.initDebugLogs()
+        def errors = buffer.entries
 
         when:
         peer._cleanupRetiredToolState()
 
         then:
         persisted.toolSearchCorpus == ['old']
+        errors.size() == 1
+        peer.getConfiguredLogLevel() == 'error'
+        errors[0].entry.level == 'error'
+        nativeLog.messages.count { it.startsWith('error:') && it.contains('temporary storage failure') } == 1
 
-        when:
-        peer._cleanupRetiredToolState()
-        int removed = persisted.@removals
-        peer._cleanupRetiredToolState()
+        when: 'requests during backoff neither retry nor repeat the error'
+        10.times { peer._cleanupRetiredToolState() }
 
         then:
+        persisted.@removals == 1
+        errors.size() == 1
+
+        when: 'the next request after backoff retries only remaining keys'
+        clock += 60000L
+        peer._cleanupRetiredToolState()
+        int removed = persisted.@removals
+        int atomicChecks = persisted.@checks
+        int stateChecks = legacy.@checks
+        10.times { peer._cleanupRetiredToolState() }
+
+        then:
+        persisted.@checks == atomicChecks
+        legacy.@checks == stateChecks
         !persisted.containsKey('toolSearchCorpus')
         persisted.@removals == removed
 
@@ -159,8 +183,65 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         !other.containsKey('toolSearchCorpus')
     }
 
+    def "empty stores incur no removal calls and null-valued retired keys are removed"() {
+        given:
+        def legacy = new CountingLegacyState()
+        def atomic = new CountingLegacyState()
+        def peer = newCompiledScriptInstance(app: new TestChildApp(id: 402L), state: legacy, atomicState: atomic)
+
+        when:
+        peer._cleanupRetiredToolState()
+
+        then:
+        legacy.@removals == 0
+        atomic.@removals == 0
+
+        when: 'another installation contains only retired null markers'
+        legacy.put('requiredParamsByTool', null)
+        atomic.put('toolSearchCorpusVersion', null)
+        atomic.put('unrelated', false)
+        newCompiledScriptInstance(app: new TestChildApp(id: 403L), state: legacy, atomicState: atomic)._cleanupRetiredToolState()
+
+        then:
+        legacy.isEmpty()
+        atomic == [unrelated: false]
+        legacy.@removals == 1
+        atomic.@removals == 1
+    }
+
+    def "direct search shares retired-key cleanup including required metadata"() {
+        given:
+        atomicStateMap.requiredParamsByTool = [obsolete: ['value']]
+        stateMap.toolSearchCorpusVersion = 'old'
+
+        when:
+        script.toolSearchTools([query: 'room'])
+
+        then:
+        !atomicStateMap.containsKey('requiredParamsByTool')
+        !stateMap.containsKey('toolSearchCorpusVersion')
+    }
+
+    private static class CountingLegacyState extends LinkedHashMap {
+        int removals = 0
+        int checks = 0
+        boolean containsKey(Object key) {
+            checks++
+            return super.containsKey(key)
+        }
+        Object remove(Object key) {
+            removals++
+            return super.remove(key)
+        }
+    }
+
     private static class FailingLegacyState extends LinkedHashMap {
         int removals = 0
+        int checks = 0
+        boolean containsKey(Object key) {
+            checks++
+            return super.containsKey(key)
+        }
         Object remove(Object key) {
             removals++
             if (removals == 1) throw new IllegalStateException('temporary storage failure')

@@ -275,7 +275,7 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         legacyBytes - compactBytes == redundantPropertyBytes
     }
 
-    def "a failed legacy compaction never blocks replay and is retried on the next request"() {
+    def "a failed legacy compaction never blocks replay and retries after backoff"() {
         given:
         long at = script.now() as Long
         String stateId = 'mrtr-legacy-retry-0000001'
@@ -284,7 +284,7 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         Map legacy = [
             schemaVersion: 1, status: 'terminal', outerTool: 'hub_call_rule', leafTool: 'hub_call_rule',
             argDigest: script._mrtrBinding('hub_call_rule', 'hub_call_rule', args).argDigest,
-            startedAt: at, updatedAt: at, finishedAt: at, expiresAt: at + 60000L,
+            startedAt: at, updatedAt: at, finishedAt: at, expiresAt: at + 120000L,
             rounds: 1, generation: 1, aggregate: [kind: 'call_rule', results: result.results],
             terminalResult: result, terminalIsError: false
         ]
@@ -312,9 +312,19 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         when: 'the same terminal state is replayed again'
         Map second = replay(2) as Map
 
-        then: 'compaction retries and publishes the smaller durable record'
+        then: 'replay remains available without retrying persistence immediately'
         second.result.resultType == 'complete'
         mcpDriver.parseInner(second) == result
+        backing['mrtrRequests'][stateId].containsKey('aggregate')
+        backing.@mrtrWrites == 1
+
+        when: 'the retry backoff passes while the terminal is still valid'
+        NOW_OVERRIDE.set({ at + 60000L })
+        Map third = replay(3) as Map
+
+        then:
+        third.result.resultType == 'complete'
+        mcpDriver.parseInner(third) == result
         !backing['mrtrRequests'][stateId].containsKey('aggregate')
         backing.@mrtrWrites == 2
     }

@@ -331,9 +331,12 @@ abstract class HarnessSpec extends Specification {
         // Queued slice payloads are class-static too; a leftover item would let a later
         // feature's sweep or cleanup observe work it never scheduled.
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
+        (scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map).clear()
+        (scriptStaticField('MRTR_CLEANUP_CHECK_AT') as Map).clear()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         (scriptStaticField('TOOL_METADATA_CACHE') as Map).clear()
         (scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set).clear()
+        (scriptStaticField('RETIRED_TOOL_STATE_RETRY_AT') as Map).clear()
         (scriptStaticField('CAPTURE_STORES') as Map).clear()
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
         (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()
@@ -455,6 +458,7 @@ abstract class HarnessSpec extends Specification {
             _ * getAtomicState() >> { context.atomicState instanceof Closure ? context.atomicState.call() : context.atomicState }
             _ * getSettings() >> { inheritedApi.getSettings() }
             _ * now() >> { inheritedApi.now() }
+            _ * runIn(*_) >> { args -> inheritedApi.runIn(*args) }
             _ * getLog() >> { context.containsKey('log') ? context.log : inheritedApi.getLog() }
         }
         // These accessors are delegated concrete methods; EMC overrides are unreliable.

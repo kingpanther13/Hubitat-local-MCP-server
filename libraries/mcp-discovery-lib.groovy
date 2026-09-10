@@ -3,6 +3,7 @@ library(name: "McpDiscoveryLib", namespace: "mcp", author: "kingpanther13", desc
 def toolSearchTools(args) {
     def query = args.query
     if (!query?.trim()) return [error: "query is required"]
+    _cleanupRetiredToolState()
     def maxResults = args.maxResults != null ? Math.max(0, args.maxResults as Integer) : 5
 
     // The index (full corpus + per-doc tokens, index-aligned) is a pure function of the static
@@ -36,17 +37,6 @@ def toolSearchTools(args) {
             def tokens = built.collect { bm25Tokenize(_bm25DocText(it)) }
             TOOL_SEARCH_INDEX.clear()
             TOOL_SEARCH_INDEX.putAll([fingerprint: corpusFp, corpus: built, tokens: tokens])
-            // An upgraded hub still carries the persisted copy an older build wrote, and updated()
-            // only runs on a settings save: shed it here, once, so the dead state does not ride
-            // every execution until someone happens to save settings.
-            try {
-                if (atomicState.toolSearchCorpus != null || atomicState.toolSearchTokens != null || atomicState.toolSearchCorpusFingerprint != null) {
-                    atomicState.remove("toolSearchCorpus")
-                    atomicState.remove("toolSearchTokens")
-                    atomicState.remove("toolSearchCorpusVersion")
-                    atomicState.remove("toolSearchCorpusFingerprint")
-                }
-            } catch (Exception ignore) { }
         }
         corpus = TOOL_SEARCH_INDEX.corpus
         docTokensAll = TOOL_SEARCH_INDEX.tokens
@@ -174,7 +164,8 @@ def toolSearchCorpusFingerprint(List defs = null) {
         }
     }
     // Include representative field-template and tokenizer output in the cold-build fingerprint.
-    // A bare tokenizer input would omit the template's choice of searchable fields.
+    // Token-list length checks cannot detect changed token content. Probe both the tokenizer
+    // and searchable-field template, whose changes need not alter corpus text or list length.
     h = _fpField(h, bm25Tokenize(_bm25DocText(
         [name: 'hub_x-1', title: 'A_b', description: 'cd', params: 'ef', hints: 'gh',
          gateway: 'ij'])).join(','))
@@ -188,7 +179,8 @@ private String _bm25DocText(entry) {
     return "${entry.name} ${entry.title ?: ''} ${entry.description} ${entry.params ?: ''} ${entry.hints ?: ''}"
 }
 
-// Cold builds fold fields without allocating a concatenated catalog. Include each field's
+// Cold builds fold fields without allocating a concatenated catalog (~98 KB in the original
+// audit); warm searches reuse the memoized fingerprint. Include each field's
 // length so delimiter text such as "source|sourceFile|importUrl" cannot erase field boundaries.
 private long _fpField(long h, value) {
     String s = (value == null) ? "" : value.toString()
