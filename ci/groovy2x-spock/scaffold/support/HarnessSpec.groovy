@@ -152,10 +152,10 @@ abstract class HarnessSpec extends Specification {
         }
         // Lifecycle stubs must be permanent on the shared mock; each feature supplies its handler.
         mock.addChildDevice(_, _, _, _, _) >> { args ->
-            CURRENT_FEATURE.get()?.mockChildDeviceLifecycle?.call(*args)
+            CURRENT_FEATURE?.mockChildDeviceLifecycle?.call(*args)
         }
         mock.deleteChildDevice(_) >> { args ->
-            CURRENT_FEATURE.get()?.mockChildDeviceLifecycle?.call('delete', null, args[0])
+            CURRENT_FEATURE?.mockChildDeviceLifecycle?.call('delete', null, args[0])
             null
         }
         mock.render(_) >> { args -> SHARED_MCP_DRIVER.captureRender(args[0] as Map) }
