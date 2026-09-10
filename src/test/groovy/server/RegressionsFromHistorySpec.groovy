@@ -136,7 +136,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         given: 'a selected device whose lastActivity is 2.7h before the harness now()'
         def twoPointSevenHoursAgo = new Date(1234567890000L - (long)(2.7 * 3_600_000L))
         def device = new TestDevice(id: 1, name: 'sensor', label: 'Sensor')
-        device.metaClass.getLastActivity = { -> twoPointSevenHoursAgo }
+        hubGet.register('/device/fullJson/1') { params ->
+            JsonOutput.toJson([device: [id: 1, name: 'sensor', label: 'Sensor',
+                lastActivityTime: twoPointSevenHoursAgo.time, currentStates: [:]], commands: []])
+        }
         childDevicesList << device
         settingsMap.selectedDevices = [device]
 
@@ -158,7 +161,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         def twoPointSevenHoursAgo = new Date(1234567890000L - (long)(2.7 * 3_600_000L))
         def device = new TestDevice(id: 1, name: 'sensor', label: 'Sensor')
-        device.metaClass.getLastActivity = { -> twoPointSevenHoursAgo }
+        hubGet.register('/device/fullJson/1') { params ->
+            JsonOutput.toJson([device: [id: 1, name: 'sensor', label: 'Sensor',
+                lastActivityTime: twoPointSevenHoursAgo.time, currentStates: [:]], commands: []])
+        }
         childDevicesList << device
         settingsMap.selectedDevices = [device]
 

@@ -282,7 +282,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         def result = script.toolDeviceHealthCheck([tracerouteHost: "8.8.8.8", speedtest: true])
 
         then:
-        result.message == "No devices selected for MCP access"
+        result.message == "No devices selected for MCP access and no MCP-managed virtual devices"
         result.traceroute.output == "route ok"
         result.speedtest.output == "1.5 MB/s"
     }
@@ -294,6 +294,10 @@ class Issue257FoldsSpec extends ToolSpecBase {
         // bottom-of-function attach. The device has no lastActivity -> 'unknown',
         // which is fine: we only need the populated-result path exercised.
         settingsMap.selectedDevices = [new TestDevice(id: 1, name: "d1", label: "Living Room Light")]
+        hubGet.register('/device/fullJson/1') { params ->
+            JsonOutput.toJson([device: [id: 1, name: "d1", label: "Living Room Light",
+                lastActivityTime: null, currentStates: [:]], commands: []])
+        }
         hubGet.register('/hub/networkTest/traceroute/8.8.8.8') { params -> "1  router  0.5 ms\n2  8.8.8.8  12 ms" }
         hubGet.register('/hub/networkTest/speedtest') { params -> "(2.7 MB/s) saved [10485760/10485760]" }
 
