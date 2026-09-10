@@ -333,7 +333,7 @@ private Map _parseHubLogLine(String line) {
 }
 
 // Scoped snapshots live only long enough for a continuation or terminal replay. Bound
-// simultaneous snapshots, never their content; retain each slot until its replay window expires.
+// simultaneous snapshots, never their content; retain continuation snapshots until replay expires.
 def _nativeLogSnapshot(Map query, Map args) {
     if (!_mrtrReadContinuationActive()) {
         return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
@@ -380,10 +380,12 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
                 throw new IllegalArgumentException("Device read snapshot expired or was lost; start a fresh call.")
             }
         }
-        // Completed snapshots still belong to continuations and terminal replays.
-        // Only the TTL sweep may reclaim them; reject new work without scheduling it.
+        // Returning a continuation reserves its snapshot through terminal replay.
+        // Completed one-round reads can be evicted; their callers have no replay token.
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
-            throw new IllegalStateException("Background read capacity is full; retry after existing snapshots expire.")
+            def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v -> v.pending != true && v.replayProtected != true }
+            if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
+            else throw new IllegalStateException("Background read capacity is full; retry after existing snapshots expire.")
         }
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
             String fetchId = java.util.UUID.randomUUID().toString()
@@ -409,6 +411,7 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
     long deadline = t0 + _logsJsonObserveWaitMs()
     long remainingBudget = Math.max(0L, deadline - now())
     while (true) {
+        long remaining
         synchronized (NATIVE_LOG_SNAPSHOTS) {
             def snapshot = NATIVE_LOG_SNAPSHOTS[key]
             if (snapshot instanceof Map && snapshot.pending != true) {
@@ -419,9 +422,12 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
                 }
                 return [state: "ready", text: snapshot.text, fetchedAt: snapshot.at]
             }
+            remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+            if (remaining <= 0L) {
+                if (snapshot instanceof Map) snapshot.replayProtected = true
+                return [state: "pending"]
+            }
         }
-        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
-        if (remaining <= 0L) return [state: "pending"]
         long waitMs = Math.min(250L, remaining)
         pauseExecution(waitMs)
         remainingBudget -= waitMs
@@ -460,7 +466,8 @@ def runNativeLogFetch(Map job = [:]) {
     }
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         if (NATIVE_LOG_SNAPSHOTS[job.key]?.fetchId == job.fetchId) {
-            NATIVE_LOG_SNAPSHOTS[job.key] = result + [at: now(), fetchId: job.fetchId, pending: false]
+            NATIVE_LOG_SNAPSHOTS[job.key] = result + [at: now(), fetchId: job.fetchId, pending: false,
+                replayProtected: NATIVE_LOG_SNAPSHOTS[job.key].replayProtected == true]
         }
     }
 }

@@ -109,7 +109,7 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         hubGet.calls.size() == 2
     }
 
-    def "native log reads preserve completed snapshots until expiry without disturbing pending workers"() {
+    def "native log reads evict completed one-round snapshots without disturbing pending workers"() {
         given:
         Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
         long timestamp = script.now()
@@ -121,21 +121,7 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         hubGet.register('/logs/past/json') { params -> '[]' }
 
         when:
-        script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp - 10000L])
-
-        then:
-        def failure = thrown(IllegalStateException)
-        failure.message.contains('Background read capacity is full')
-        runInMillisCalls.empty
-        snapshots.containsKey('old-ready')
-        snapshots.containsKey('new-ready')
-        (0..<6).every { index -> snapshots.get("pending-${index}".toString()).pending == true }
-        snapshots.size() == 8
-        hubGet.calls.empty
-
-        when:
-        NOW_OVERRIDE.set({ -> timestamp + 20000L })
-        def first = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
+        def first = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp - 10000L])
 
         then:
         first.state == 'pending'
@@ -144,6 +130,7 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         snapshots.containsKey('new-ready')
         (0..<6).every { index -> snapshots.get("pending-${index}".toString()).pending == true }
         snapshots.size() == 8
+        hubGet.calls.empty
 
         when:
         script.runNativeLogFetch(runInMillisCalls[0][2].data as Map)
