@@ -3459,6 +3459,25 @@ class TestRunner:
         print(f"    DEVICE_CONFIGURATION {profile['path']}: grouped edits and independent restoration verified; "
               "unavailable prerequisite rows are negative coverage only.")
 
+    def _wait_configuration_fixture_identity(self, device_id: str, nonce: str) -> dict:
+        # SDK command acceptance can precede the driver's observer event.
+        deadline = time.monotonic() + 10.0
+        native = {}
+        while True:
+            observed = self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": device_id, "attribute": "nativeDeviceInfo",
+            })
+            if observed.get("value") is not None:
+                native = json.loads(observed["value"])
+                if native.get("nonce") == nonce and str(native.get("deviceId")) == device_id:
+                    return native
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                identity = {key: native.get(key) for key in ("nonce", "deviceId", "fixtureVersion", "enabled")}
+                raise AssertionError(
+                    f"LAN fixture observer did not complete for device {device_id}, nonce {nonce}: {identity}")
+            time.sleep(min(0.25, remaining))
+
     @test("devices")
     def test_configuration_fixture_lan_dispatch(self) -> None:
         """Prove explicit asynchronous HubAction callbacks separately for each provisioned dispatch path."""
@@ -3478,11 +3497,7 @@ class TestRunner:
                 "deviceId": device_id, "command": "captureConfiguration", "parameters": [nonce], "includeState": False,
             }, "independent LAN fixture ownership observation")
             assert captured.get("success") is True, f"LAN fixture identity observer failed: {captured}"
-            summary = self.client.call_tool("hub_get_device", {"deviceId": device_id})
-            native = json.loads(next(row["value"] for row in summary["attributes"] if row["name"] == "nativeDeviceInfo"))
-            assert native.get("nonce") == nonce and str(native.get("deviceId")) == device_id, (
-                f"Wrong/stale LAN fixture observer: {native}"
-            )
+            native = self._wait_configuration_fixture_identity(device_id, nonce)
             assert native.get("fixtureVersion") == manifest["version"] == 2, "Provision the current LAN fixture driver"
             self._assert_configuration_fixture_parent(profile, native)
             try:
@@ -13197,83 +13212,37 @@ class TestRunner:
     @test("poll_until_attribute")
     def test_poll_immediate_match(self) -> None:
         """Happy path: device already in expected state -> polledCount=1, success=true."""
-        # Use the shared virtual switch; get_or_create ensures it exists in 'off' state.
         dev_id = self.get_test_switch_id()
-        # Baseline the limiter log BEFORE any dispatch: this is the SHARED switch, so a prior test
-        # may have left an 'off' limiter line in the window. The soft-pass below must only accept a
-        # FRESH line from this dispatch, never a stale one (else a real poll regression hides here).
-        limiter_base = self._limiter_lines(dev_id, method="off")
-
-        def _drive_off_and_poll() -> Any:
-            # Drive it to 'off' first so we know its state.
-            self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
-            time.sleep(0.3)
-            return self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dev_id,
-                "attribute": "switch",
-                "expectedValue": "off",
-                "timeoutMs": 5000,
-            })
-
-        result = _drive_off_and_poll()
-        # An 'off' that produces NO state change while the poll keeps reading the old
-        # value is the load-limiter block signature (the command false-succeeds and
-        # the device never dispatches). Bounce the app via the watchdog and retry once.
-        if result.get("success") is not True and self._clear_load_throttle(
-                f"'off' on device {dev_id} never landed: {result}"):
-            result = _drive_off_and_poll()
-        # If it STILL fails and the hub log proves the 'off' dispatch reached the device but the
-        # platform load limiter aborted event delivery, soft-pass: the limiter warning IS proof the
-        # tool worked, so this is a platform capacity signal at the tail of the full run, not a
-        # product failure. (Bounce + retry above already tried to recover; this is the last resort.)
-        if result.get("success") is not True and self._limiter_logged(dev_id, method="off", baseline=limiter_base):
-            self._soft_passes.append(
-                "poll_until_attribute/test_poll_immediate_match: limiter-proven "
-                "('off' dispatched; platform throttled event delivery so the poll could not converge)")
-            return
+        # Poll the observed state; command delivery is a separate contract and can be throttled.
+        current = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch",
+        }).get("value")
+        assert current in ("on", "off"), f"Switch baseline is unavailable: {current!r}"
+        result = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch", "expectedValue": current, "timeoutMs": 5000,
+        })
         assert result.get("success") is True, f"Expected success=true, got: {result}"
         assert result.get("timedOut") is False, f"Expected timedOut=false, got: {result}"
-        assert result.get("polledCount", 0) >= 1, f"Expected polledCount>=1, got: {result}"
+        assert result.get("polledCount") == 1, f"Expected an immediate match on the first poll, got: {result}"
+        assert result.get("finalValue") == current, f"Poll returned a different value from the baseline: {result}"
 
     @test("poll_until_attribute")
     def test_poll_timeout(self) -> None:
         """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
         dev_id = self.get_test_switch_id()
-        import time as _time
-        # Baseline BEFORE dispatch (shared switch): the success=True soft-pass below is the strictest
-        # of the four (success=True is THIS test's failure shape), so it must accept only a FRESH
-        # limiter line from this dispatch -- never a stale 'off' line a prior test left on this device.
-        limiter_base = self._limiter_lines(dev_id, method="off")
-
-        def _drive_off_and_poll_for_on() -> tuple[Any, float]:
-            # Ensure switch is 'off' so 'on' won't match.
-            self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
-            time.sleep(0.3)
-            t0 = _time.monotonic()
-            res = self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dev_id,
-                "attribute": "switch",
-                "expectedValue": "on",
-                "timeoutMs": 2000,
-            })
-            return res, (_time.monotonic() - t0) * 1000
-
-        result, elapsed_wall = _drive_off_and_poll_for_on()
-        # success=true here means the switch read 'on' AFTER an 'off' was sent -- the
-        # 'off' never dispatched (load-limiter block leaves it stuck in the old state).
-        if result.get("success") is True and self._clear_load_throttle(
-                f"'off' on device {dev_id} never landed (poll matched 'on'): {result}"):
-            result, elapsed_wall = _drive_off_and_poll_for_on()
-        # If it STILL false-matches and the hub log proves the 'off' dispatch reached the device but
-        # the platform limiter aborted delivery (switch stuck 'on'), soft-pass -- the tool worked;
-        # this is a tail-of-run capacity signal, not a product failure.
-        if result.get("success") is True and self._limiter_logged(dev_id, method="off", baseline=limiter_base):
-            self._soft_passes.append(
-                "poll_until_attribute/test_poll_timeout: limiter-proven "
-                "('off' dispatched but throttled, leaving the switch stuck 'on' so the timeout poll matched early)")
-            return
+        current = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch",
+        }).get("value")
+        assert current in ("on", "off"), f"Switch baseline is unavailable: {current!r}"
+        expected = "off" if current == "on" else "on"
+        t0 = time.monotonic()
+        result = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch", "expectedValue": expected, "timeoutMs": 2000,
+        })
+        elapsed_wall = (time.monotonic() - t0) * 1000
         assert result.get("success") is False, f"Expected success=false, got: {result}"
         assert result.get("timedOut") is True, f"Expected timedOut=true, got: {result}"
+        assert result.get("finalValue") == current, f"Switch changed during the timeout probe: {result}"
         # Wall clock should reflect roughly the timeout (within 1 second of variance)
         assert elapsed_wall >= 1800, f"Wall clock too short ({elapsed_wall:.0f}ms); poll may not have blocked"
 
