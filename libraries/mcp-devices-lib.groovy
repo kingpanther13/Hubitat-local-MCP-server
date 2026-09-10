@@ -2214,9 +2214,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     ]
 
     if (pollArgs != null) {
-        // Block-poll until the attribute converges (or times out), then snapshot, so the
-        // state reflects the RESULTING (converged) value -- the immediate snapshot alone
-        // is pre-effect because the hub commits the change after this request returns.
+        // Poll before taking the post-dispatch snapshot; immediate native reads may
+        // show either the prior or resulting value. Record convergence separately
+        // because polling can time out or fail.
         def waitForBlock = [
             attribute: pollArgs.attribute,
             expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
@@ -2267,9 +2267,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // against the same relay budget the batch is trying to stay inside.
     if (!includeState) return result
 
-    // Snapshot AFTER any waitFor poll. Without waitFor this is the immediate (pre-effect)
-    // read; with waitFor it reflects the converged state. A null return is the read-back
-    // FAILURE sentinel (distinct from a legitimately empty [:]); surface why so the agent
+    // Snapshot after dispatch and any waitFor poll. The native read may show the
+    // prior or resulting value; waitFor.converged reports whether polling confirmed it.
+    // Null is the read-back FAILURE sentinel (distinct from empty [:]); surface why so the agent
     // can tell a failed confirmation read apart from a device with no readable attributes.
     def stateErr = []
     // def snap = bypass ? _snapshotBypassDeviceState(deviceId, deviceLabel, stateErr)
@@ -6222,7 +6222,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         ]
                     ],
                     parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel[[FLAT_TRIM]] or [\"#FF0000\"] for setColor[[/FLAT_TRIM]].", items: [type: "string"]],
-                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state.[[FLAT_TRIM]] (The `state` snapshot then reflects the converged value.) Omit for a fire-and-forget command with only the immediate pre-effect snapshot.[[/FLAT_TRIM]]", properties: [
+                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll an attribute for an expected value; check waitFor.converged to confirm the resulting state.[[FLAT_TRIM]] The native `state` snapshot is read after dispatch and any poll. Without waitFor it is an immediate read that may show the prior or resulting value.[[/FLAT_TRIM]]", properties: [
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". Must be a supported attribute of the device."],
                         expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
                         expectedValues: [type: "array", items: [type: "string"], description: "Awaited set: eq/ne value list (OR), or between's two bounds [low, high]."],
