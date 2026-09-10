@@ -87,6 +87,23 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         operation << ['summary', 'attribute', 'events', 'history']
     }
 
+    @Unroll
+    def 'enabled readback cannot confirm an unavailable disabled flag #disabled'() {
+        given:
+        fixture('selected')
+        nativeModel.device.disabled = disabled
+
+        when:
+        def result = script._confirmDisabledFlip('10', false)
+
+        then:
+        result.ok == false
+        result.fetchFailed == true
+
+        where:
+        disabled << [null, '', 'unknown', 0, [:], []]
+    }
+
     def 'native poll read failure is a read error rather than a never reported attribute'() {
         given:
         fixture('selected')
