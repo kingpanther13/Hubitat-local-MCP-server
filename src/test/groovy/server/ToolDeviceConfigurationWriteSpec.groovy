@@ -726,6 +726,40 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
             [[id: 0, selected: true]], [[id: -1, selected: true]], [[id: 1.5, selected: true]]]
     }
 
+    @Unroll
+    def 'notes edit preserves groupId=#groupId and controllerType=#controllerType in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        model.device.groupId = groupId
+        model.device.controllerType = controllerType
+        registerFixture(model, bypass)
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 30, boolean retry = false ->
+            def form = decodeForm(body)
+            forms << form
+            // The native form coerces a submitted blank group to zero; omission keeps it null.
+            model.device.groupId = form.containsKey('groupId') ? (form.groupId ? form.groupId.toInteger() : 0) : null
+            if (form.containsKey('controllerType')) model.device.controllerType = form.controllerType
+            model.device.notes = form.notes
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', notes: 'Updated note'])
+
+        then:
+        result.success == true
+        forms.size() == 1
+        model.device.notes == 'Updated note'
+        model.device.groupId == groupId
+        model.device.controllerType == controllerType
+        groupId == null ? !forms[0].containsKey('groupId') : forms[0].groupId == groupId.toString()
+        controllerType == null ? !forms[0].containsKey('controllerType') : forms[0].controllerType == controllerType
+
+        where:
+        [bypass, groupId, controllerType] << [[false, true], [null, 0, 37], [null, 'LAN']].combinations()
+    }
+
     def 'explicit nullable fields false and version zero survive a complete form save'() {
         given:
         def model = fixture()
