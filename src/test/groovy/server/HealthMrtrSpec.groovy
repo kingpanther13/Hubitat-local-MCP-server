@@ -75,6 +75,7 @@ class HealthMrtrSpec extends ToolSpecBase {
         payload.traceroute.output == 'original route'
         payload.identifyHubTriggered == true
         payload.summary.totalDevices == 1
+        payload.remove('mrtr')
         mcpDriver.parseInner(replay) == payload
         hubGet.calls*.path == ['/hub/networkTest/traceroute/8.8.8.8',
             '/hub/advanced/blinkLED', '/hub2/devicesList']
@@ -245,4 +246,3 @@ class HealthMrtrSpec extends ToolSpecBase {
         hubGet.calls.empty
     }
 }
-

@@ -1835,7 +1835,7 @@ def _budgetAwareTools() {
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
-            "hub_get_device", "hub_list_devices"] as Set
+            "hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -1854,13 +1854,15 @@ def _mrtrWriteTools() {
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices"] as Set
+            "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
+            "hub_get_device_health"] as Set
 }
 
-private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices"] as Set }
+private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set }
 
 private def _executeWithDeviceReadContext(tool, Map args, Map context) {
     Map previous = deviceReadContext
+    if (context != null) context.outerTool = tool?.toString()
     deviceReadContext = context
     try { return executeTool(tool, args) }
     finally { deviceReadContext = previous }
@@ -2930,12 +2932,14 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         // This cap cannot guarantee completion within a client's retry limit.
         if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
             if (continuation.kind?.toString() == "slow_read") {
-                // Nothing was committed: the read only ever observed its background fetch,
-                // which keeps running and publishes to the cache when it lands.
+                // The observer cannot cancel its background work, including an optional
+                // health-check LED blink. A terminal timeout must not encourage duplicate probes.
                 def readCapped = [
                     success: false, isError: true, status: "slow_read_timeout", tool: leaf,
                     error: "The ${leaf} read did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
-                    note: _mrtrDeviceReadTools().contains(leaf) ?
+                    note: leaf == "hub_get_device_health" ?
+                        "The health check may still be running, including any requested identify LED blink. Do not automatically retry: that starts another health check. This requestState only replays this timeout. Wait for the hub's probes to settle before deciding whether to run fewer probes." :
+                        _mrtrDeviceReadTools().contains(leaf) ?
                         "No hub state was changed. The background device read may still be running. Start a fresh call with a smaller selection; if this repeats, inspect the device page and hub performance." :
                         "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
@@ -3165,8 +3169,10 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.expiresAt = rec.finishedAt + (readLeaf ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
             // The replay re-reads the cached snapshot, so the record must not outlive it:
             // clock the read TTL from when that snapshot was fetched, not from finishedAt.
-            def fetchedAt = (readLeaf && result instanceof Map && result.snapshot instanceof Map)
-                ? result.snapshot.fetchedAt : null
+            def fetchedAt = readLeaf ? originalRec.readSnapshotFetchedAt : null
+            if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map && result.snapshot instanceof Map) {
+                fetchedAt = result.snapshot.fetchedAt
+            }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
             }
@@ -3337,8 +3343,12 @@ private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     String leaf = rec.leafTool?.toString()
     if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
     if (leaf == "hub_import_native_app") return _mrtrImportNativeAppSlice(rec, executionArgs)
-    return _executeWithDeviceReadContext(rec.outerTool, executionArgs,
-        rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null)
+    Map context = rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null
+    def result = _executeWithDeviceReadContext(rec.outerTool, executionArgs, context)
+    // Execution-local provenance bounds terminal retention without adding response fields
+    // or copying the snapshot payload into persisted continuation records.
+    if (context?.fetchedAt instanceof Number) rec.readSnapshotFetchedAt = context.fetchedAt
+    return result
 }
 
 private Map _mrtrControl(String kind, Map checkpoint) {
@@ -9257,6 +9267,7 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
 - tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
 - speedtest: fixed 10 MB Hubitat S3 blob, no caller input; a few seconds on a fast link, up to ~90s on slow ones.
+- Budgeted modern calls run the complete health check in a background read; continuations and terminal replay reuse its result without repeating probes or the LED blink. Traceroute keeps its 30s timeout and speedtest its 90s timeout. Long probes or combinations may exceed the eight-slice continuation window or the client's retry limit; `slow_read_timeout` is an explicit failure and does not cancel the worker. Do not automatically start another health check after a timeout.
 - **Cursor pagination (staleDevices):** page size 100. Omit the cursor to get all stale devices in one response (subject to the response-size guard). unknownDevices and healthyDevices are always returned in full alongside the page.
 
 ### hub_get_metrics (hub metrics + the hub's own health alerts)
@@ -10059,7 +10070,7 @@ Clients negotiated below MCP 2026-07-28 do not understand requestState. They ret
 
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
 
-`hub_get_device` (every mode) and `hub_list_devices` (including virtual devices) use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot require a fresh call. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous.
+`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous. Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 

@@ -351,12 +351,14 @@ private String _deviceReadAccessScope() {
 
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
     Map work = [id: context.id, fresh: context.fresh, tool: tool,
+                outerTool: context.outerTool ?: tool,
                 args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
     Map snapshot = _hubReadSnapshot(null, args, work)
     if (work.scope != _deviceReadAccessScope()) {
         throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
     }
     if (snapshot.state == "pending") return [status: "in_progress", tool: tool]
+    context.fetchedAt = snapshot.fetchedAt
     return new groovy.json.JsonSlurper().parseText(snapshot.text)
 }
 
@@ -368,7 +370,10 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         NATIVE_LOG_SNAPSHOTS.entrySet().findAll { entry ->
             Map value = entry.value as Map
-            long ttl = value.pending == true ? 90000L : 30000L
+            // Health permits serial 30s traceroute + 90s speedtest + inventory/ping work.
+            // Retention outlasts those HTTP deadlines; it is not a worker cancellation timer.
+            long pendingTtl = value.work?.tool == "hub_get_device_health" ? 240000L : 90000L
+            long ttl = value.pending == true ? pendingTtl : 30000L
             now() - (value.at as Long) >= ttl
         }.collect { it.key }.each { NATIVE_LOG_SNAPSHOTS.remove(it) }
         if (deviceRead != null) {
@@ -445,7 +450,11 @@ def runNativeLogFetch(Map job = [:]) {
             if (work.scope != _deviceReadAccessScope()) {
                 throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
             }
-            def payload = _executeWithDeviceReadContext(work.tool, work.args as Map, null)
+            // Re-enter the original route so a gateway disabled while this job was queued
+            // is checked alongside the live read master and leaf permissions.
+            String outer = work.outerTool?.toString() ?: work.tool.toString()
+            Map outerArgs = outer == work.tool ? work.args as Map : [tool: work.tool, args: work.args]
+            def payload = _executeWithDeviceReadContext(outer, outerArgs, null)
             String text = groovy.json.JsonOutput.toJson(payload)
             int bytes = text.getBytes("UTF-8").length
             if (bytes > 120000) text = groovy.json.JsonOutput.toJson(
