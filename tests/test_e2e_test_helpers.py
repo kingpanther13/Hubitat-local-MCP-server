@@ -2238,10 +2238,12 @@ def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observ
         if name == "hub_get_logs":
             assert arguments == {"deviceId": "10", "level": "error", "limit": 10}
             log_reads.append(arguments.copy())
+            runner.client._last_op = ("hub_get_logs", 0.2, not logs_fail)
             if logs_fail:
                 raise et.McpToolError("hub_get_logs", "diagnostic unavailable")
             return {"logs": [{"message": "fixture command rejected"}]}
         assert name == "hub_get_device_attribute", "identity wait must not repeat the observer command"
+        runner.client._last_op = ("hub_get_device_attribute", 0.1, True)
         assert arguments == {"deviceId": "10", "attribute": "nativeDeviceInfo"}
         reads.append(arguments.copy())
         native = {"nonce": "old", "deviceId": "other-fixture", "fixtureVersion": 2}
@@ -2252,8 +2254,9 @@ def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observ
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(call_tool=call_tool)
     if stays_stale:
-        with pytest.raises(AssertionError, match="observer did not complete for device 10, nonce 123"):
+        with pytest.raises(AssertionError, match="observer did not complete for device 10, nonce 123") as failure:
             runner._wait_configuration_fixture_identity("10", "123")
+        assert failure.value._mcp_failed_op == ("hub_get_device_attribute", 0.1, True)
         assert clock[0] == 10.0
         assert len(log_reads) == 1
         output = capsys.readouterr().out

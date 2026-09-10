@@ -3478,6 +3478,9 @@ class TestRunner:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 identity = {key: native.get(key) for key in ("nonce", "deviceId", "fixtureVersion", "enabled")}
+                failure = AssertionError(
+                    f"LAN fixture observer did not complete for device {device_id}, nonce {nonce}: {identity}")
+                failure._mcp_failed_op = getattr(self.client, "_last_op", None)
                 try:
                     logs = self.client.call_tool("hub_get_logs", {
                         "deviceId": device_id, "level": "error", "limit": 10,
@@ -3485,8 +3488,7 @@ class TestRunner:
                     print(f"    CONFIGURATION_OBSERVER_LOGS device {device_id}: {json.dumps(logs)[:12000]}")
                 except Exception as log_error:
                     print(f"    CONFIGURATION_OBSERVER_LOGS device {device_id}: unavailable: {log_error}")
-                raise AssertionError(
-                    f"LAN fixture observer did not complete for device {device_id}, nonce {nonce}: {identity}")
+                raise failure
             time.sleep(min(0.25, remaining))
 
     @test("devices")
