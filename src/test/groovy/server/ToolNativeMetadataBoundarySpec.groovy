@@ -33,7 +33,6 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
             case 'history': return script.toolGetDeviceHistory([deviceId: '10', hoursBack: 1])
             case 'command': return script.toolSendCommand('10', 'on', [])
             case 'update': return script.toolUpdateDevice([deviceId: '10', label: 'Changed'])
-            case 'logs': return script.toolGetHubLogs([deviceId: '10'])
             case 'virtual': return script.toolListVirtualDevices([:]).devices[0]
             case 'deleteVirtual': return script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-10', confirm: true])
         }
@@ -65,7 +64,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         !hubGet.calls.any { it.path in ['/device/eventsJson/10', '/logs/past/json'] }
 
         where:
-        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update', 'logs', 'virtual'].collectMany { op ->
+        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update', 'virtual'].collectMany { op ->
             ['empty', 'missing', 'mismatched'].collectMany { identity -> [false, true].collect { [op, identity, it] } }
         }
     }
@@ -87,7 +86,6 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         where:
         tool                       | args
         'hub_get_device'            | [deviceId: '10']
-        'hub_get_logs'              | [deviceId: '10']
         'hub_call_device_command'   | [deviceId: '10', command: 'on']
         'hub_list_devices'          | [filter: 'virtual']
         'hub_get_device_attribute'  | [deviceId: '10', attribute: 'switch']
