@@ -197,7 +197,7 @@ class MrtrCleanupSpec extends ToolSpecBase {
         given:
         long at = script.now()
         atomicStateMap.mrtrRequests = [active: [status: 'active', leafTool: 'hub_set_rule',
-            outerTool: 'hub_set_rule', expiresAt: at + 1000L, claimId: 'worker', generation: 1,
+            outerTool: 'hub_set_rule', expiresAt: at + 1000L, claimId: 'worker', generation: 1, claimedGeneration: 1,
             checkpoint: [clonerAppId: 77]]]
         script._writeStateCacheInvalidate()
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).put('worker',
