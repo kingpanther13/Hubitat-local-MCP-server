@@ -266,8 +266,8 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         then:
         result.total == 2
         result.unfilteredTotal == 3
-        result.success == false
-        result.isError == true
+        result.success == true
+        result.isError != true
         result.partialSuccess == true
         result.unreadableDeviceIds == ['79']
         result.devices*.id == [expectedId]
@@ -289,6 +289,8 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
 
         then:
         result.success == false
+        result.isError == true
+        result.partialSuccess != true
         result.count == 1
         result.total == 1
         result.devices[0].id == '77'
@@ -371,21 +373,99 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         writes.empty
     }
 
-    def 'virtual delete stops before lifecycle mutation when native identity is unavailable'() {
+    @Unroll
+    def 'virtual delete uses owned identity when native metadata is #failure with bypass #bypass'() {
         given:
         owned('77')
-        readable = false
+        settingsMap.bypassDeviceAllowlist = bypass
+        childDevicesList[0].metaClass.getLabel = { throw new AssertionError('SDK label read') }
+        childDevicesList[0].metaClass.getName = { throw new AssertionError('SDK name read') }
+        hubGet.register('/device/fullJson/77') {
+            if (failure == 'transport failure') throw new IOException('offline')
+            if (failure == 'wrong identity') return '{"device":{"id":78,"label":"Wrong device"}}'
+            null
+        }
 
         when:
-        def result = script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-77', confirm: true])
+        def response = mcpDriver.callTool('hub_manage_virtual_device',
+            [action: 'delete', deviceNetworkId: 'mcp-77', confirm: true])
 
         then:
-        deletions.empty
-        result.success == false
+        response.error == null
+        response.result.isError != true
+        def result = mcpDriver.parseInner(response)
+        deletions == ['mcp-77']
+        result.success == true
         result.deviceId == '77'
-        result.error.contains('fullJson')
-        result.note
-        childDevicesList.size() == 1
+        result.deviceLabel == 'MCP-managed virtual device'
+        childDevicesList.empty
+
+        where:
+        [failure, bypass] << ['unavailable', 'transport failure', 'wrong identity'].collectMany { failure ->
+            [false, true].collect { [failure, it] }
+        }
+    }
+
+    @Unroll
+    def 'duplicate DNI preserves validation error when native label read fails through #surface'() {
+        given:
+        owned('77')
+        childDevicesList[0].metaClass.getLabel = { throw new AssertionError('SDK label read') }
+        childDevicesList[0].metaClass.getName = { throw new AssertionError('SDK name read') }
+        hubGet.register('/device/fullJson/77') { throw new IOException('offline') }
+        def args = [action: 'create', deviceType: 'Virtual Switch', deviceLabel: 'Duplicate',
+            deviceNetworkId: 'mcp-77', confirm: true]
+
+        when:
+        String message
+        if (surface == 'direct') {
+            try {
+                script.toolManageVirtualDevice(args)
+                assert false: 'Duplicate DNI must fail validation'
+            } catch (IllegalArgumentException expected) {
+                message = expected.message
+            }
+        } else {
+            def response = mcpDriver.callTool('hub_manage_virtual_device', args)
+            assert response.error.code == -32602
+            message = response.error.message
+        }
+
+        then:
+        message.contains("network ID 'mcp-77' already exists")
+        message.contains('MCP-managed virtual device')
+        message.contains('ID: 77')
+        writes.empty
+        deletions.empty
+        creations == 0
+
+        where:
+        surface << ['direct', 'dispatch']
+    }
+
+    @Unroll
+    def 'virtual inventory partial failures preserve usable results through dispatch with readable #usable'() {
+        given:
+        owned('77')
+        owned('78')
+        if (!usable) hubGet.register('/device/fullJson/77') { null }
+        hubGet.register('/device/fullJson/78') { null }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
+
+        then:
+        response.error == null
+        (response.result.isError == true) == !usable
+        def result = mcpDriver.parseInner(response)
+        result.success == usable
+        (result.partialSuccess == true) == usable
+        result.devices*.id == ['77', '78']
+        result.devices[1].success == false
+        result.count == 2
+
+        where:
+        usable << [false, true]
     }
 
     @Unroll

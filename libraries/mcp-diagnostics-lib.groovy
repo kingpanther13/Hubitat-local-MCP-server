@@ -452,6 +452,7 @@ def runNativeLogFetch(Map job = [:]) {
                 _responseTooLargeEnvelope(work.tool.toString(), bytes, 120000))
             result = [text: text, scope: work.scope]
         } else {
+            if (job.query?.type == "dev") _requireDeviceToolAccess(job.query.id)
             result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
         }
     } catch (Exception fetchError) {
@@ -1519,6 +1520,32 @@ def toolForceGarbageCollection(args) {
     return result
 }
 
+private Map _deviceHealthInventory() {
+    boolean bypass = _bypassEnabled()
+    def allowedIds = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id.toString() } as Set
+    if (!bypass && !allowedIds) {
+        return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices"]
+    }
+    // The Devices page carries activity for the whole tree in one read, including children.
+    def text = hubInternalGet("/hub2/devicesList")
+    def parsed = new groovy.json.JsonSlurper().parseText(text ?: "{}")
+    def records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
+    if (!(records instanceof List)) throw new IllegalStateException("Native device tree is unavailable or malformed")
+    def byId = [:]
+    records.each { record ->
+        String id = record.id.toString()
+        if (bypass || allowedIds.contains(id)) {
+            byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
+                metadataUnavailable: !record.containsKey('lastActivity')])
+        }
+    }
+    // A missing selected/owned device is an unknown result, not proof that it is healthy or absent.
+    allowedIds.each { id ->
+        if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
+    }
+    return [devices: byId.values() as List]
+}
+
 def toolDeviceHealthCheck(args) {
     def staleHours = args.staleHours ?: 24
     def includeHealthy = args.includeHealthy ?: false
@@ -1593,8 +1620,10 @@ def toolDeviceHealthCheck(args) {
 
     def inventory
     try {
-        inventory = toolListDevices(false, 0, 0, null, null, null, "summary", ["id", "label", "lastActivity"])
+        inventory = _deviceHealthInventory()
     } catch (Exception e) {
+        // Native response text may contain settings; retain operation and failure class only.
+        mcpLog("error", "monitoring", "hub_get_device_health native inventory failed (${e.class.simpleName})")
         inventory = [success: false, error: "Native device inventory could not be read (${e.class.simpleName})."]
     }
     if (inventory?.success == false || !(inventory?.devices instanceof List)) {
@@ -1635,6 +1664,13 @@ def toolDeviceHealthCheck(args) {
                 id: device.id.toString(),
                 name: deviceLabel
             ]
+            if (device.metadataUnavailable == true) {
+                entry.lastActivity = "unavailable"
+                entry.hoursAgo = null
+                entry.metadataUnavailable = true
+                unknown << entry
+                return
+            }
 
             // SDK activity read retained for rollback:
             // def lastActivity = null
@@ -1645,6 +1681,14 @@ def toolDeviceHealthCheck(args) {
             //     mcpLog("debug", "monitoring", "hub_get_device_health could not read lastActivity for device ${device.id}: ${e.class.simpleName}: ${e.message}")
             // }
             def lastActivity = device.lastActivity != null ? _parseSinceArg(device.lastActivity) : null
+            if (device.lastActivity != null && lastActivity == null) {
+                mcpLog("error", "monitoring", "hub_get_device_health could not parse native lastActivity for device ${device.id}")
+                entry.lastActivity = "unavailable"
+                entry.hoursAgo = null
+                entry.metadataUnavailable = true
+                unknown << entry
+                return
+            }
 
             if (lastActivity) {
                 try {
@@ -1861,6 +1905,12 @@ def toolSetZigbee(args) {
         def pd = args.ping_device
         if (!(pd instanceof Map) || pd.device_id == null || pd.enabled == null) {
             throw new IllegalArgumentException("ping_device requires {device_id, enabled} -- toggle keep-alive pinging for one Zigbee device.")
+        }
+        _requireDeviceToolAccess(pd.device_id)
+        if (!(_fetchDeviceFullJson(pd.device_id)?.device instanceof Map)) {
+            return [success: false, isError: true,
+                error: "Native device identity is unavailable for ${pd.device_id}; keep-alive ping was not changed.",
+                note: "Use the numeric Hubitat device ID and verify the device exists before retrying."]
         }
         try {
             boolean on = (pd.enabled == true)
@@ -2470,7 +2520,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_device_health",
-            description: "Hub network diagnostics + device-staleness checks. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours.",
+            description: "Hub network diagnostics + device-staleness checks. Checks selected devices and MCP-managed children, or all hub devices when allowlist bypass is enabled, for no activity in staleHours.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2534,7 +2584,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     power_level: [description: "Zigbee transmit power level (hub-dependent dBm scale). Set together with channel."],
                     rebuild_on_reboot: [type: "boolean", description: "Radio setting: rebuild the Zigbee network on each hub reboot."],
                     ping_inactive: [type: "boolean", description: "Radio setting: keep-alive ping inactive Zigbee devices."],
-                    ping_device: [type: "object", description: "Toggle keep-alive ping for ONE device: {device_id, enabled}."],
+                    ping_device: [type: "object", description: "Toggle keep-alive ping for one authorized device: {device_id: numeric Hubitat device ID, enabled}. Allowlist bypass permits unselected devices."],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]
                 ]
             ]

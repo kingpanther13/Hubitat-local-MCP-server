@@ -7,6 +7,37 @@ import support.ToolSpecBase
 
 class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
     @Unroll
+    def 'global logs remain hub wide without device selection and bypass #bypass'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = bypass
+        hubGet.register('/logs/past/json') { params ->
+            assert !params
+            JsonOutput.toJson(['2026-09-10 10:00:00.000\tERROR\tdev|42|Unselected fixture|global diagnostic'])
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_logs', [:])
+
+        then:
+        response.error == null
+        response.result.isError != true
+        mcpDriver.parseInner(response).logs[0].message == 'global diagnostic'
+        !hubGet.calls.any { it.path.startsWith('/device/') }
+
+        where:
+        bypass << [false, true]
+    }
+
+    def 'scoped device logs reject unselected identity before HTTP through dispatch'() {
+        when:
+        def response = mcpDriver.callTool('hub_get_logs', [deviceId: '42'])
+
+        then:
+        response.error.code == -32602
+        hubGet.calls.empty
+    }
+
+    @Unroll
     def 'native device logs respect #ownership ownership with bypass #bypass'() {
         given:
         def device = new TestDevice(id: 42, name: 'Log fixture')

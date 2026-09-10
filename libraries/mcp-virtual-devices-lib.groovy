@@ -339,16 +339,23 @@ def toolListVirtualDevices(args) {
         if (capabilityFilter) result.capabilityFilter = capabilityFilter
     }
     if (readFailures) {
-        result.success = false
-        result.isError = true
-        result.error = 'Native information could not be read for one or more MCP-managed virtual devices.'
+        boolean hasReadableDevices = (filtering ? matching : page).any { it.success != false }
+        result.success = hasReadableDevices
+        if (hasReadableDevices) {
+            result.partialSuccess = true
+            result.warnings = ['Native information could not be read for one or more MCP-managed virtual devices.']
+        } else {
+            result.isError = true
+            result.error = 'Native information could not be read for any requested MCP-managed virtual devices.'
+        }
         result.note = 'Device IDs and counts include unreadable devices. Inspect the failed entries and retry the read.'
         if (filtering) {
             result.unreadableDeviceIds = readFailures.collect { it.id }
             result.message = "Found ${total - readFailures.size()} matching MCP-managed virtual devices and ${readFailures.size()} unreadable owned devices whose filter match could not be determined."
         }
     }
-    if (page.any { it.warnings } || (readFailures && (filtering ? matching : page).any { it.success != false })) {
+    if (page.any { it.warnings }) {
+        result.success = true
         result.partialSuccess = true
     }
     if (limit > 0) {
@@ -438,13 +445,9 @@ def toolDeleteVirtualDevice(args) {
     }
 
     def deviceId = childDevice.id.toString()
+    // The registry proves ownership; native identity only supplies the display label.
     def fullJson = _fetchDeviceFullJson(deviceId)
-    if (!(fullJson?.device instanceof Map) || !fullJson.device) {
-        return [success: false, isError: true, deviceId: deviceId, deviceNetworkId: dni,
-            error: "Native device identity unavailable from /device/fullJson/${deviceId}.",
-            note: "No deletion was attempted. Inspect this device in the Hubitat UI and retry once native information is available."]
-    }
-    def deviceLabel = fullJson.device.label ?: fullJson.device.name ?: "Unknown"
+    def deviceLabel = fullJson?.device?.label ?: fullJson?.device?.name ?: "MCP-managed virtual device"
     // Retained SDK identity read for deliberate rollback.
     // def deviceLabel = childDevice.label ?: childDevice.name ?: "Unknown"
 
