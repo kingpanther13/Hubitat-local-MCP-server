@@ -2761,11 +2761,8 @@ class TestRunner:
 
     @test("diagnostics")
     def test_device_health_traceroute(self) -> None:
-        # FOLD 2 (#257): traceroute folds the hub's route trace into hub_get_device_health
-        # (GET /hub/networkTest/traceroute/<ipv4>). Use a stable public IPv4 (8.8.8.8). The fold path
-        # must produce a result.traceroute object carrying the target host; on a hub with WAN it returns
-        # output (the plain-text route table), otherwise a structured error -- tolerate either so the
-        # test is resilient, but assert the fold fired (traceroute present with host + output|error).
+        # A route can legitimately be unavailable; require its explicit probe error
+        # or output, with the requested host, instead of accepting transport loss.
         result = self._call_health_probe({"tracerouteHost": "8.8.8.8"})
         self._assert_health_probe_transport()
         assert isinstance(result, dict), "hub_get_device_health did not return an object"

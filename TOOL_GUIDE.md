@@ -101,6 +101,8 @@ Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hu
 
 **Uncertain command outcome:** `outcomeUnknown: true` means the native command request failed without proving whether the device acted. Read the device state or event history before deciding whether to retry; blindly repeating a non-idempotent command can apply it twice.
 
+**Health probes over the cloud relay:** `hub_get_device_health` uses the existing read-snapshot continuation path for modern MCP clients with a transport budget. Traceroute, speedtest and the associated health inventory run once; continuations and terminal replay read that snapshot. The native probe timeouts remain unchanged. A probe that exceeds the bounded continuation window returns `slow_read_timeout`; it may still be running, so do not automatically launch another probe. Long speedtests or combined probes can exceed this window.
+
 **Partial virtual results:** `success: true, partialSuccess: true` means a created device or some inventory entries are usable, but native metadata or namespace verification is incomplete. Inspect the warnings and unreadable device IDs. A created ID/DNI already exists: repair or re-read it rather than creating another device. An entirely unreadable inventory returns `success: false, isError: true`; a partial inventory must not be treated as complete.
 
 **Tool failure rule:**

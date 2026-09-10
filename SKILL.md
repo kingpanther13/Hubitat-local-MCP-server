@@ -607,6 +607,8 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 
 **Uncertain command outcome:** `outcomeUnknown: true` means the native command request failed without proving whether the device acted. Read the device state or event history before deciding whether to retry; blindly repeating a non-idempotent command can apply it twice.
 
+**Health probe continuation:** Modern, transport-budgeted `hub_get_device_health` calls execute through the existing read-snapshot worker. Traceroute, speedtest, health inventory and an optional identify blink run once per logical call; replay reads the same snapshot. Native endpoint timeouts are unchanged. The existing bounded continuation window can expire first on long speedtests or combined probes, returning `slow_read_timeout` while the worker may still be running; callers must not automatically launch another probe.
+
 **Partial virtual results:** `success: true, partialSuccess: true` means a created device or some inventory entries are usable, but native metadata or namespace verification is incomplete. Inspect the warnings and unreadable device IDs. A created ID/DNI already exists: repair or re-read it rather than creating another device. An entirely unreadable inventory returns `success: false, isError: true`; a partial inventory must not be treated as complete.
 
 ### MCP Protocol Implementation
