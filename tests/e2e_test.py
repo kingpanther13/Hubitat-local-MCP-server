@@ -2734,6 +2734,20 @@ class TestRunner:
             assert "matter" in str(result.get("note", "")).lower(), \
                 f"sdk_only fallback missing an actionable Matter note: {result}"
 
+    def _call_health_probe(self, args: dict) -> dict:
+        try:
+            return self.client.call_tool("hub_get_device_health", args)
+        except (McpError, McpToolError, requests.HTTPError):
+            # Capture endpoint timings near the failure before later suite logs displace them.
+            try:
+                logs = self.client.call_tool("hub_get_logs", {
+                    "mode": "hub", "pattern": "/hub/networkTest/", "limit": 10,
+                })
+                print(f"    health native network diagnostics: {json.dumps(logs)}")
+            except Exception as diagnostic_error:
+                print(f"    health failure diagnostics unavailable: {diagnostic_error}")
+            raise
+
     def _assert_health_probe_transport(self) -> None:
         legs = self.client._last_http_legs
         rounds = self.client._last_continuation_rounds
@@ -2752,7 +2766,7 @@ class TestRunner:
         # must produce a result.traceroute object carrying the target host; on a hub with WAN it returns
         # output (the plain-text route table), otherwise a structured error -- tolerate either so the
         # test is resilient, but assert the fold fired (traceroute present with host + output|error).
-        result = self.client.call_tool("hub_get_device_health", {"tracerouteHost": "8.8.8.8"})
+        result = self._call_health_probe({"tracerouteHost": "8.8.8.8"})
         self._assert_health_probe_transport()
         assert isinstance(result, dict), "hub_get_device_health did not return an object"
         tr = result.get("traceroute")
@@ -2765,7 +2779,7 @@ class TestRunner:
     def test_device_health_speedtest(self) -> None:
         # Native WAN download time varies; the snapshot worker must keep each relay
         # leg bounded while returning either the probe output or its explicit error.
-        result = self.client.call_tool("hub_get_device_health", {"speedtest": True})
+        result = self._call_health_probe({"speedtest": True})
         self._assert_health_probe_transport()
         assert isinstance(result, dict), "hub_get_device_health did not return an object"
         st = result.get("speedtest")

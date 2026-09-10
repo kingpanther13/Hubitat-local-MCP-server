@@ -34,6 +34,9 @@ def _raw_tool_body(body, *, is_error=False):
 @pytest.mark.parametrize("failure", [None, "relay", "slow_leg"])
 def test_health_probes_require_completed_bounded_transport(method, failure):
     def call_tool(tool, args):
+        if tool == "hub_get_logs":
+            assert failure == "relay"
+            return {"logs": [{"message": "native network timeout"}]}
         assert tool == "hub_get_device_health"
         if failure == "relay":
             raise et.McpError("504 Gateway Timeout")
@@ -43,7 +46,7 @@ def test_health_probes_require_completed_bounded_transport(method, failure):
     runner = et.TestRunner.__new__(et.TestRunner)
     runner.client = SimpleNamespace(
         call_tool=call_tool, _last_continuation_rounds=3, _last_logical_elapsed=12.0,
-        _last_http_legs=[(10.1 if failure == "slow_leg" else 4.0, 200, True)],
+        _last_http_legs=[(10.1 if failure == "slow_leg" else 4.0, 200, True)] * 3,
     )
     invoke = getattr(runner, method)
     if failure == "relay":
