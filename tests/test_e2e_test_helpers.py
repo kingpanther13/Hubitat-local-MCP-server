@@ -8,6 +8,8 @@ actually runs there.
 import json
 import os
 import sys
+import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 # tests/ is already on sys.path conceptually, but be explicit for safety.
@@ -1729,6 +1731,21 @@ def test_export_bundle_uses_logical_writes_filtered_verification_and_exact_backu
         ("hub_manage_files", "hub_delete_file", file_name),
         ("hub_manage_files", "hub_delete_file", backup_name),
     ]
+
+
+def test_bundle_fixture_contains_only_unused_app_code():
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    source_name = "mcptest.E2eThrowawayApp.groovy"
+    with zipfile.ZipFile(fixtures / "mcp-e2e-throwaway-bundle.zip") as bundle:
+        assert set(bundle.namelist()) == {source_name, "install.txt", "update.txt"}
+        for manifest_name in ("install.txt", "update.txt"):
+            assert bundle.read(manifest_name).decode("utf-8").splitlines() == [
+                "mcptest", "mcptest_e2e_throwaway", f"app {source_name}",
+            ]
+        source = bundle.read(source_name).decode("utf-8")
+        assert source == (fixtures / "e2e-throwaway-app.groovy").read_text(encoding="utf-8")
+        assert 'name: "Deadman Test Target Bundle"' in source
+        assert 'namespace: "mcptest"' in source
 
 
 def test_delete_bundle_uses_logical_write_helper(monkeypatch):

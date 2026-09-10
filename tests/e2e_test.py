@@ -9142,65 +9142,6 @@ class TestRunner:
     # -----------------------------------------------------------------------
 
     @test("app_code_update")
-    def test_update_library_preserves_backup_and_uses_current_version(self) -> None:
-        name = f"{PREFIX}LibraryUpdate_{_run_artifact_suffix()}"
-        original = (f'library(name: "{name}", namespace: "mcptest", author: "MCP E2E", '
-                    'description: "Disposable library update regression")\n'
-                    'def e2eLibraryRevision() { return 1 }\n')
-        library_id = None
-        try:
-            created = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_library", "args": {"source": original, "confirm": True},
-            })
-            library_id = created.get("libraryId")
-            assert created.get("success") is True and library_id, f"library creation failed: {created}"
-            current = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_source", "args": {"type": "library", "id": library_id, "noSave": True},
-            })
-            assert current.get("source") == original, f"initial library source differs: {current}"
-            for revision in (2, 3):
-                source = original.replace("return 1", f"return {revision}")
-                updated = self.client.call_tool("hub_manage_code", {
-                    "tool": "hub_update_library",
-                    "args": {"libraryId": library_id, "source": source, "confirm": True},
-                })
-                assert updated.get("success") is True, f"library update {revision} failed: {updated}"
-                assert updated.get("previousVersion") == current.get("version"), \
-                    f"library update used a stale version: before={current}, update={updated}"
-                after = self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_source", "args": {"type": "library", "id": library_id, "noSave": True},
-                })
-                assert after.get("source") == source, f"library update {revision} did not persist: {after}"
-                assert int(after["version"]) > int(current["version"]), f"library version did not advance: {after}"
-                current = after
-            backup = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_backup", "args": {"backupKey": f"library_{library_id}"},
-            })
-            assert backup.get("source") == original, f"rapid library updates replaced the baseline: {backup}"
-        except Exception as exc:
-            # A later cleanup failure must not erase the original failing operation.
-            print(f"    LIBRARY_UPDATE before cleanup [{self._last_op_str(exc)}]: {exc}")
-            raise
-        finally:
-            if library_id:
-                try:
-                    deleted = self._write_once("hub_manage_code", "hub_delete_item", {
-                        "type": "library", "item_id": library_id, "confirm": True,
-                    }, "library update fixture cleanup")
-                    assert deleted.get("success") is True, f"library cleanup failed: {deleted}"
-                finally:
-                    backup_name = f"mcp-backup-library-{library_id}.groovy"
-                    backup = self.client.call_tool("hub_read_apps_code", {
-                        "tool": "hub_get_backup", "args": {"backupKey": f"library_{library_id}"},
-                    })
-                    if backup.get("fileName") == backup_name:
-                        removed = self._write_once("hub_manage_files", "hub_delete_file", {
-                            "fileName": backup_name, "confirm": True,
-                        }, "library source backup cleanup")
-                        assert removed.get("success") is True, f"library backup cleanup failed: {removed}"
-                        assert not removed.get("backupFile"), f"backup deletion created another backup: {removed}"
-
-    @test("app_code_update")
     def test_update_app_code_lifecycle(self) -> None:
         # Throwaway Apps Code class (code only, never installed as an instance). The name
         # deliberately starts with "Deadman Test Target" (namespace mcptest) so the cleanup
@@ -10580,9 +10521,21 @@ class TestRunner:
         # just that the app compiled).
         lib_names = [lib.get("name") for lib in libs]
         # McpRoomsLib is the first REAL extracted module (hub_*_room impls) -- permanent.
-        assert any(
-            lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp" for lib in libs
-        ), f"McpRoomsLib not found in hub libraries (got {lib_names})"
+        rooms_lib = next((lib for lib in libs
+                          if lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp"), None)
+        assert rooms_lib, f"McpRoomsLib not found in hub libraries (got {lib_names})"
+        expected = (Path(__file__).resolve().parent.parent / "libraries" / "mcp-rooms-lib.groovy").read_text(
+            encoding="utf-8")
+        # Stay below the source reader's automatic File Manager save threshold.
+        assert len(expected) <= 64000, "Choose a smaller installed library for the read-only source check"
+        readback = self.client.call_tool("hub_get_source", {
+            "type": "library", "id": str(rooms_lib["id"]), "length": len(expected),
+        })
+        assert readback.get("success") is True, f"installed library source read failed: {readback}"
+        assert readback.get("source", "").replace("\r\n", "\n") == expected, \
+            "installed McpRoomsLib source does not match the deployed branch"
+        assert readback.get("version") is not None and readback.get("version") == rooms_lib.get("version"), \
+            f"library source/list versions differ: source={readback.get('version')}, list={rooms_lib.get('version')}"
 
     def _get_hub_info_optin(self) -> dict:
         """hub_get_info with BOTH additive opt-in blocks in ONE call, shared by the two opt-in tests
@@ -11284,9 +11237,11 @@ class TestRunner:
 
     @test("system_tools")
     def test_delete_bundle(self) -> None:
-        """hub_delete_bundle removes a bundle, verified by re-list. Uses a self-contained throwaway
-        bundle (mcptest namespace, fetched from the PR head) so it NEVER touches the live mcp
-        libraries bundle. Skipped on local runs where the PR raw URL env isn't set."""
+        """Delete a bundle containing unused app code, verified by re-list.
+
+        The fixture creates no running app instance or library. Skipped on local runs
+        where the PR raw URL env isn't set.
+        """
         raw_base = os.environ.get("PR_RAW_BASE")
         sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
         if not (raw_base and sha):
@@ -11335,12 +11290,8 @@ class TestRunner:
                         "throwaway bundle cleanup")
                 except Exception as exc:
                     print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
-            # Deleting the bundle removes only the container, not the library it delivered
-            # (mcptest.E2eThrowawayLib) -- but the run-end cleanup's Layer 7b mcptest-namespace
-            # sweep reaps it with the ONE hub_list_libraries scan it already pays for the whole
-            # run. The per-test scan that used to live here cost 14-40s per attempt: the hub's
-            # /hub2/userLibraries endpoint returns EVERY library WITH full source (~2MB), so it
-            # was the single most expensive read in the suite -- and doubled on a 504 retry.
+            # Bundle deletion leaves its unused app code behind. The run-end Layer 5
+            # sweep removes its mcptest/Deadman Test Target code alongside the other app fixtures.
 
     def _set_write_cap(self, limit: int) -> None:
         """Set maxConcurrentWrites. Never call this while a write holds a slot: the settings
@@ -13418,24 +13369,6 @@ class TestRunner:
                         print(f"  [WARN] throwaway bundle sweep delete failed for '{b.get('name')}': {exc}")
         except Exception as exc:
             print(f"  [WARN] throwaway bundle sweep failed: {exc}")
-
-        # Layer 7b: throwaway libraries in mcptest from the bundle and library-update tests.
-        # Bundle delete does not cascade its library, and a crashed update test can strand its
-        # fixture. The disarm no-stale gate only sweeps 'mcp', so reclaim mcptest libraries here.
-        try:
-            lres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
-            for lib in (lres.get("libraries", []) if isinstance(lres, dict) else []):
-                if lib.get("namespace") == "mcptest" and lib.get("id"):
-                    try:
-                        print(f"  Sweep: deleting throwaway library '{lib.get('name')}' (id={lib.get('id')})")
-                        self.client.call_tool("hub_manage_code", {
-                            "tool": "hub_delete_item",
-                            "args": {"type": "library", "item_id": str(lib.get("id")), "confirm": True},
-                        })
-                    except Exception as exc:
-                        print(f"  [WARN] throwaway library sweep delete failed for '{lib.get('name')}': {exc}")
-        except Exception as exc:
-            print(f"  [WARN] throwaway library sweep failed: {exc}")
 
         # Layer 8: Easy Dashboards with the BAT_E2E_ prefix (issue #259; dashboards impls in McpDashboardsLib).
         # The create/clone/delete test deletes the original inline; this reclaims the clone
