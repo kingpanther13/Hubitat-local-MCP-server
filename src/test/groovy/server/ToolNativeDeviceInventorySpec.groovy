@@ -335,6 +335,50 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         messages.count { it.contains('lastActivityTime') && it.contains('1') } == 1
     }
 
+    @Unroll
+    def 'context preserves late room failures when resource budget is #byteBudget'() {
+        given:
+        settingsMap.selectedDevices = (1..10).collect { sdkIdentity(it) }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..10).collect { id ->
+                def data = [id: id, name: "Device ${id}"]
+                if (id != 10) data.roomName = id == 9 ? null : (id == 8 ? 'Room unavailable' : 'Den')
+                [data: data]
+            }])
+        }
+        (1..10).each { id ->
+            hubGet.register("/device/fullJson/${id}") {
+                if (id == 10) throw new IOException('native metadata unavailable')
+                JsonOutput.toJson([device: [id: id, label: 'L' * 1000,
+                    roomName: id == 9 ? null : (id == 8 ? 'Room unavailable' : 'Den'),
+                    capabilities: ['Switch'], currentStates: [switch: [value: 'on']]], commands: []])
+            }
+        }
+        script.metaClass._contextResourceByteBudget = { -> byteBudget }
+
+        when:
+        def result = script._buildContextJson()
+
+        then:
+        result.truncated == true
+        !result.devices.any { it.id == '10' }
+        result.partial == true
+        result.roomUnavailableCount == 1
+        !result.rooms.any { it.name == 'No room' && it.deviceIds.contains('10') }
+        !result.containsKey('roomUnavailableDeviceIds')
+        if (byteBudget == 5000) {
+            assert result.rooms.find { it.roomUnavailable == true }.deviceIds == ['10']
+            assert result.rooms.find { it.name == 'No room' }.deviceIds == ['9']
+            assert result.rooms.find { it.name == 'Room unavailable' && it.roomUnavailable != true }.deviceIds == ['8']
+        } else {
+            assert result.roomsTruncated == true
+            assert result.rooms.empty
+        }
+
+        where:
+        byteBudget << [5000, 120]
+    }
+
     def 'context stops native state reads at its budget while keeping the full native room index'() {
         given:
         settingsMap.selectedDevices = (1..10).collect { sdkIdentity(it) }

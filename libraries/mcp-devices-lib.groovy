@@ -752,12 +752,17 @@ def _buildContextJson() {
     }
     allDevices.each { d ->
         if (roomsById.containsKey(d.id)) d.roomName = roomsById.get(d.id)
-        else _hydrateNativeInventory([d], [], true)
+        else {
+            _hydrateNativeInventory([d], [], true)
+            if (d._nativeReadError) d._nativeRoomUnavailable = true
+        }
     }
     def contextAttrs = _contextAttributeNames() as Set
+    int roomUnavailableCount = allDevices.count { it._nativeRoomUnavailable == true }
     def roomIndex = [:]
     allDevices.each { d ->
-        def r = d.roomName?.toString() ?: "No room"
+        // A null key keeps unknown membership distinct even from a room named "Room unavailable".
+        def r = d._nativeRoomUnavailable ? null : (d.roomName?.toString() ?: "No room")
         if (!roomIndex.containsKey(r)) roomIndex[r] = []
         roomIndex[r] << d.id.toString()
     }
@@ -768,7 +773,9 @@ def _buildContextJson() {
     int roomsUsed = 0
     boolean roomsTruncated = false
     def rooms = []
-    for (entry in roomIndex.collect { name, ids -> [name: name, deviceIds: ids] }) {
+    for (entry in roomIndex.collect { name, ids ->
+        name == null ? [name: "Room unavailable", roomUnavailable: true, deviceIds: ids] : [name: name, deviceIds: ids]
+    }) {
         roomsUsed += _escapedLen(groovy.json.JsonOutput.toJson(entry))
         if (roomsUsed > roomsCap) {
             roomsTruncated = true
@@ -803,6 +810,7 @@ def _buildContextJson() {
         if (stateReadFailed) rec.stateUnavailable = true
         if (d._nativeUnavailableCollections?.contains('capabilities')) rec.capabilitiesUnavailable = true
         if (d._nativeReadError) rec.metadataUnavailable = true
+        if (d._nativeRoomUnavailable) rec.roomUnavailable = true
         used += _escapedLen(groovy.json.JsonOutput.toJson(rec))
         if (used > budget) {
             truncated = true
@@ -818,7 +826,8 @@ def _buildContextJson() {
         rooms: rooms,
         devices: devices
     ]
-    if (devices.any { it.stateUnavailable || it.capabilitiesUnavailable || it.metadataUnavailable }) result.partial = true
+    if (roomUnavailableCount) result.roomUnavailableCount = roomUnavailableCount
+    if (roomUnavailableCount || devices.any { it.stateUnavailable || it.capabilitiesUnavailable || it.metadataUnavailable }) result.partial = true
     if (truncated) {
         result.truncated = true
         result.note = "Device records truncated at ${devices.size()} of ${allDevices.size()} (hub response-size cap). Use the hub_list_devices tool (format='context', cursor pagination) for the full inventory.".toString()
