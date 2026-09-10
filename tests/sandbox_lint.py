@@ -517,6 +517,59 @@ def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[d
     return findings
 
 
+# New durable structures require an explicit storage-contract review, even when
+# their name differs from a retired cache. Keep this list with the state audit.
+PERSISTED_STATE_INVENTORY = {
+    "state": {
+        "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
+        "headersReadable", "originLocalIpReadable", "updateCheck",
+        "lastBackupTimestamp", "debugLogs",
+    },
+    "atomicState": {
+        "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy",
+        "hubSecurityCookie", "hubSecurityCookieExpiry", "itemBackupManifest",
+        "debugLogGeneration", "parentAppIds", "inUseHubVars", "variableHistory",
+        "hubVarsAppId", "predClearPending",
+    },
+}
+_INVENTORY_DOT_WRITE = re.compile(
+    r"\b(?P<store>atomicState|state)\s*\.\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
+)
+_INVENTORY_BRACKET_WRITE = re.compile(
+    r"\b(?P<store>atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
+    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
+)
+
+
+def _scan_persisted_state_inventory(display_path: str, source: str) -> list[dict]:
+    """Review new literal state assignments in the server and included libraries."""
+    path = display_path.replace("\\", "/")
+    if path != "hubitat-mcp-server.groovy" and not path.startswith("libraries/"):
+        return []
+    findings = []
+    for line_num, (line, original) in enumerate(
+        zip(strip_comments_and_strings(source), source.split("\n"), strict=True), start=1
+    ):
+        writes = [(m.group("store"), m.group("key")) for m in _INVENTORY_DOT_WRITE.finditer(line)]
+        for match in _INVENTORY_BRACKET_WRITE.finditer(line):
+            start, end = match.span("literal")
+            literal = re.fullmatch(r"\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1\s*", original[start:end])
+            if literal:
+                writes.append((match.group("store"), literal.group(2)))
+        for store, key in writes:
+            if key in PERSISTED_STATE_INVENTORY[store] or key in RETIRED_PERSISTED_DERIVED_KEYS:
+                continue
+            findings.append({
+                "file": display_path, "line": line_num, "rule": "PERSISTED_STATE_INVENTORY",
+                "message": f"Review new durable `{store}.{key}`: document growth, write frequency and "
+                           "durability in docs/state-storage-audit.md before adding it to the lint inventory. "
+                           "Keep bulk per-call caches in class memory.",
+                "severity": "error", "source": original.strip(),
+            })
+    return findings
+
+
 def _strip_line_comment(line: str) -> str:
     """Drop a trailing `//` line comment, leaving `://` (a URL) alone.
 
@@ -590,6 +643,7 @@ def scan_source(source: str, display_path: str) -> list[dict]:
                 )
 
     findings.extend(_scan_retired_persisted_key_writes(display_path, source))
+    findings.extend(_scan_persisted_state_inventory(display_path, source))
     return findings
 
 

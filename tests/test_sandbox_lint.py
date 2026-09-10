@@ -1423,6 +1423,32 @@ _RETIRED_DERIVED_KEYS = (
 )
 
 
+@pytest.mark.parametrize("path", ("hubitat-mcp-server.groovy", "libraries/mcp-new-lib.groovy"))
+@pytest.mark.parametrize("target", ("state.newCache", "atomicState['newCache']", 'state["newCache"].items'))
+@pytest.mark.parametrize("operator", ("=", "+=", "<<="))
+def test_new_persisted_structure_requires_inventory_review(path, target, operator):
+    findings = sl.scan_source(f"{target} {operator} collectEverything()", path)
+    assert "PERSISTED_STATE_INVENTORY" in {f["rule"] for f in findings}
+
+
+@pytest.mark.parametrize("source", (
+    "def old = atomicState.newCache",
+    "atomicState.remove('newCache')",
+    "if (state.newCache == other) inspect()",
+    "// state.newCache = huge",
+    "def description = 'state.newCache = huge'",
+    "atomicState.variableHistory = history.takeRight(200)",
+    "state.debugLogs.logLevel = level",
+))
+def test_inventory_guard_preserves_reads_migration_and_existing_contracts(source):
+    assert sl._scan_persisted_state_inventory("hubitat-mcp-server.groovy", source) == []
+
+
+def test_inventory_guard_does_not_expand_into_legacy_child_or_test_fixtures():
+    for path in ("hubitat-mcp-rule.groovy", "src/test/groovy/server/Fixture.groovy"):
+        assert sl._scan_persisted_state_inventory(path, "state.newCache = value") == []
+
+
 @pytest.mark.parametrize("store", ("state", "atomicState"))
 @pytest.mark.parametrize("key", _RETIRED_DERIVED_KEYS)
 def test_retired_persisted_key_guard_flags_dot_writes(store, key):
