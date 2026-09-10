@@ -88,6 +88,23 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def 'native access rejects nonnumeric device path #deviceId before HTTP'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+
+        when:
+        script.toolGetAttribute(deviceId, 'switch')
+
+        then:
+        thrown(IllegalArgumentException)
+        hubGet.calls.empty
+
+        where:
+        deviceId << ['../sysDriverByIdJson/430', '10/../../device/delete/10', '10?other=1',
+                     '10#fragment', '%2e%2e%2f', 'abc', '-1', '1.5']
+    }
+
+    @Unroll
     def 'enabled readback cannot confirm an unavailable disabled flag #disabled'() {
         given:
         fixture('selected')
