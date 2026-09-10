@@ -3646,13 +3646,31 @@ class TestRunner:
                     break
         except Exception:
             pass
+
+        def preserved_form_fields():
+            result = self.client.call_tool("hub_get_device", {
+                "deviceId": dev_id, "mode": "details", "sections": ["identity", "metadata"],
+                "fields": ["label", "deviceNetworkId", "roomId", "groupId", "controllerType",
+                           "zigbeeId", "notes", "defaultIcon"],
+            })
+            for section in ("identity", "metadata"):
+                assert result.get("sectionRead", {}).get(section, {}).get("status") == "complete", (
+                    f"Native full-form preservation fields are unreadable: {result}"
+                )
+            assert {"label", "deviceNetworkId"} <= result.get("sections", {}).get("identity", {}).keys(), (
+                f"Native identity fields are missing from the preservation snapshot: {result}"
+            )
+            return result["sections"]
+
         try:
+            form_before = preserved_form_fields()
             result = self.client.call_tool("hub_update_device", {
                 "deviceId": dev_id, "tags": ["kitchen", "downstairs"],
             })
             assert result.get("success") is True, f"tag edit failed: {result}"
             assert any(c.get("property") == "tags" for c in (result.get("changes") or [])), \
                 f"tags change not recorded: {result}"
+            assert preserved_form_fields() == form_before, "Tags edit changed an unrequested native form field"
             # The wholesale form must not have blanked the label.
             dev = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
             assert f"{PREFIX}Tags_Edit" in (dev.get("label") or dev.get("name") or ""), \
@@ -12602,13 +12620,22 @@ class TestRunner:
         """Boundary + bypass-reach assertions for test_bypass_device_allowlist_reaches_unlisted_device.
 
         Split out only so the caller can guarantee the ON-baseline restore in a finally."""
+        def assert_device_logs_available():
+            for _ in range(3):
+                logs = self.client.call_tool("hub_get_logs", {"deviceId": unauth, "limit": 5})
+                if logs.get("status") != "in_progress":
+                    break
+                time.sleep(1)
+            assert logs.get("success") is not False and isinstance(logs.get("logs"), list), (
+                f"Device-filtered logs must remain readable regardless of device access: {logs}"
+            )
+
         denied_calls = [
             ("hub_get_device", {"deviceId": unauth}),
             ("hub_get_device_attribute", {"deviceId": unauth, "attribute": "switch"}),
             ("hub_list_device_events", {"deviceId": unauth}),
             ("hub_update_device", {"deviceId": unauth, "label": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}),
             ("hub_call_device_command", {"deviceId": unauth, "command": "captureConfiguration", "parameters": ["0"]}),
-            ("hub_get_logs", {"deviceId": unauth, "limit": 5}),
             ("hub_list_device_dependents", {"deviceId": unauth}),
         ]
         for tool, args in denied_calls:
@@ -12623,6 +12650,7 @@ class TestRunner:
             assert unauth in error and any(word in error.lower() for word in ("not found", "allowlist", "access")), (
                 f"{tool} failed for a reason other than the device-access boundary: {error}"
             )
+        assert_device_logs_available()
 
         flipped = False
         try:
@@ -12644,12 +12672,7 @@ class TestRunner:
             assert isinstance(evs, dict) and "events" in evs and "count" in evs, \
                 f"bypass events did not return the expected shape: {evs}"
             assert isinstance(evs.get("events"), list), f"events should be a list: {evs}"
-            for _ in range(3):
-                logs = self.client.call_tool("hub_get_logs", {"deviceId": unauth, "limit": 5})
-                if logs.get("status") != "in_progress":
-                    break
-                time.sleep(1)
-            assert isinstance(logs.get("logs"), list), f"Bypass device logs unavailable: {logs}"
+            assert_device_logs_available()
             dependents = self.client.call_tool("hub_list_device_dependents", {"deviceId": unauth})
             assert str(dependents.get("deviceId")) == unauth and isinstance(dependents.get("appsUsing"), list), (
                 f"Bypass device dependents unavailable: {dependents}"

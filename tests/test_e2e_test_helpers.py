@@ -130,11 +130,16 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     current_label = "Native original"
     native_observations = []
     denied_tools = []
+    log_bypasses = []
 
     class FakeClient:
         def call_tool(self, name, arguments=None):
             nonlocal current_label
             arguments = arguments or {}
+            if name == "hub_get_logs":
+                assert arguments == {"deviceId": "10", "limit": 5}
+                log_bypasses.append(bypass)
+                return {"logs": [{"deviceId": "10", "message": "Unselected device log"}]}
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -154,8 +159,6 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                         "commands": [{"name": "captureConfiguration"}]}
             if name == "hub_list_device_events":
                 return {"events": [], "count": 0}
-            if name == "hub_get_logs":
-                return {"logs": []}
             if name == "hub_list_device_dependents":
                 return {"deviceId": "10", "appsUsing": []}
             if name == "hub_call_device_command":
@@ -206,8 +209,9 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert label_attempts == ["Native original _BWTEST", "Native original"]
     assert current_label == "Native original"
     assert len(native_observations) == 1
+    assert log_bypasses == [False, True]
     assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
-                            "hub_update_device", "hub_call_device_command", "hub_get_logs",
+                            "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"] + (["hub_get_device"] if rejection == "unknown" else [])
     assert bypass_changes == [True, False]
 
@@ -220,11 +224,16 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
     bypass_changes = []
     bypass = False
     denied_tools = []
+    log_bypasses = []
 
     class FakeClient:
         def call_tool(self, name, arguments=None):
             nonlocal current_label
             arguments = arguments or {}
+            if name == "hub_get_logs":
+                assert arguments == {"deviceId": "10", "limit": 5}
+                log_bypasses.append(bypass)
+                return {"logs": [{"deviceId": "10", "message": "Unselected device log"}]}
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -238,8 +247,6 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
                 return {"id": "10", "name": "Fallback name", "label": "Summary fallback", "commands": []}
             if name == "hub_list_device_events":
                 return {"events": [], "count": 0}
-            if name == "hub_get_logs":
-                return {"logs": []}
             if name == "hub_list_device_dependents":
                 return {"deviceId": "10", "appsUsing": []}
             if name == "hub_update_device" and "label" in arguments:
@@ -266,8 +273,9 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
 
     assert label_attempts == [f"{native_label} _BWTEST", native_label]
     assert current_label == native_label
+    assert log_bypasses == [False, True]
     assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
-                            "hub_update_device", "hub_call_device_command", "hub_get_logs",
+                            "hub_update_device", "hub_call_device_command",
                             "hub_list_device_dependents"]
     assert bypass_changes == [True, False]
 
