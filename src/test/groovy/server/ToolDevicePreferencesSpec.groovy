@@ -445,6 +445,8 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.sections.identity.lastActivityTime == '2026-09-08T09:00:00.000-0400'
         result.sections.attributes.currentStates.temperature.unit == 'C'
         result.sections.attributes.declaredAttributes[0].name == 'temperature'
+        result.sections.attributes.attributeCoverage.source == 'device.currentStates'
+        result.sections.attributes.attributeCoverage.declarationsComplete == false
         result.sections.relationships.parentApp.id == 301
         result.sections.relationships.appsUsing[0].id == 501
         result.sections.state.health == 'online'

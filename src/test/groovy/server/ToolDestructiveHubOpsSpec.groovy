@@ -652,7 +652,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         given:
         enableWrite()
 
-        and: 'lookup returns the device on the first call, null on verify (device is gone)'
+        and: 'lookup returns the device first, then an explicit empty native device model'
         def lookupCalls = 0
         hubGet.register('/device/fullJson/42') { params ->
             lookupCalls++
@@ -660,7 +660,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
             // skipping the Z-Wave/Zigbee endpoint probes entirely.
             lookupCalls == 1
                 ? '{"device":{"id":42,"label":"Old Switch","name":"Generic Switch","deviceTypeName":"Virtual Switch","deviceTypeNamespace":"hubitat","deviceNetworkId":"mcp-virtual-123"},"commands":[]}'
-                : null
+                : '{"device":null}'
         }
         hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
 
@@ -691,7 +691,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
             lookupCalls++
             lookupCalls == 1
                 ? '{"device":{"id":42,"label":"Old Switch","name":"Generic Switch","deviceTypeName":"Virtual Switch","deviceTypeNamespace":"hubitat","deviceNetworkId":"mcp-virtual-123"},"commands":[]}'
-                : null
+                : '{"device":null}'
         }
         hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
 
@@ -786,7 +786,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
             lookupCalls == 1 ? groovy.json.JsonOutput.toJson([
                 device: [id: 42, name: 'Native Name', label: null, deviceNetworkId: dni,
                          deviceTypeName: 'Native Driver', deviceTypeNamespace: 'hubitat', zigbeeId: zigbeeId,
-                         lastActivityTime: '2009-02-13T22:31:30+0000'], commands: []]) : null
+                         lastActivityTime: '2009-02-13T22:31:30+0000'], commands: []]) : '{"device":null}'
         }
         hubGet.register('/device/eventsJson/42') { params ->
             '[{"name":"switch","value":"on","date":"2009-02-13T22:31:30+0000","descriptionText":"Native Name is on","isStateChange":true}]'
@@ -813,6 +813,54 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         bypass | radio    | dni            | zigbeeId
         false  | 'Z-WAVE' | '2A'           | null
         true   | 'ZIGBEE' | 'zigbee-node'  | '00124B0001234567'
+    }
+
+    private static class DeleteHttpException extends RuntimeException {
+        final Map response
+        DeleteHttpException(int status) {
+            super("HTTP ${status}")
+            response = [status: status]
+        }
+    }
+
+    @spock.lang.Unroll
+    def "hub_delete_device verification only accepts explicit absence: #scenario"() {
+        given:
+        enableWrite()
+        def lookups = 0
+        hubGet.register('/device/fullJson/42') { params ->
+            if (++lookups == 1) {
+                return '{"device":{"id":42,"name":"Audit Device","deviceTypeName":"Virtual Switch","deviceNetworkId":"scratch-42"}}'
+            }
+            if (failure != null) throw failure
+            return body
+        }
+        hubGet.register('/device/eventsJson/42') { params -> '[]' }
+        hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
+
+        when:
+        def result = script.toolDeleteDevice([deviceId: '42', confirm: true])
+
+        then:
+        result.success == verified
+        result.deviceId == '42'
+        result.deviceName == 'Audit Device'
+        result.message.contains('permanently deleted') == verified
+        verified || result.warnings.any { it.contains('UNVERIFIED') }
+        hubGet.calls.count { it.path == '/device/forceDelete/42/yes' } == 1
+
+        where:
+        scenario          | body                      | failure                                       | verified
+        'timeout'         | null                      | new RuntimeException('Read timed out')         | false
+        'HTTP 500'        | null                      | new DeleteHttpException(500)                   | false
+        'malformed JSON'  | '<html>Unavailable</html>' | null                                          | false
+        'blank response'  | ''                        | null                                          | false
+        'wrong root'      | '[]'                      | null                                          | false
+        'missing device'  | '{}'                      | null                                          | false
+        'invalid device'  | '{"device":[]}'           | null                                          | false
+        'explicit null'   | '{"device":null}'         | null                                          | true
+        'empty device'    | '{"device":{}}'           | null                                          | true
+        'HTTP 404'        | null                      | new DeleteHttpException(404)                   | true
     }
 
     @spock.lang.Unroll

@@ -1,6 +1,7 @@
 package server
 
 import spock.lang.Shared
+import support.NativeInventoryFixture
 import support.TestDevice
 import support.TestHub
 import support.TestLocation
@@ -35,6 +36,11 @@ class McpResourcesSpec extends ToolSpecBase {
     }
 
     private Map dispatch(Map body, Map headers = null) {
+        if (body.method == 'resources/read' && body.params?.uri?.startsWith('hubitat://context')) {
+            ((settingsMap.selectedDevices ?: []) + childDevicesList).each { device ->
+                NativeInventoryFixture.register(hubGet, device.id.toString()) { device }
+            }
+        }
         if (headers != null) mcpDriver.pushHeaders(headers)
         mcpDriver.pushBody(body)
         script.handleMcpRequest()

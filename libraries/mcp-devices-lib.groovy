@@ -56,11 +56,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         return _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor)
     }
-    // Combine selected devices and MCP-managed child devices (virtual devices); childDevs
-    // is kept separately for the mcpManaged flag below and passed through so the helper
-    // does not re-read the child list from the hub.
+    // Child identities supply ownership only; the native inventory supplies device content.
+    // Keep this membership snapshot for mcpManaged and selection deduplication.
     def childDevs = getChildDevices() ?: []
-    def allDevices = _mcpVisibleDevices(childDevs)
 
     // Remaining validation for the classic args, BEFORE the empty-inventory early return
     // so a bad argument is a -32602 even on a hub with no authorized devices. Groovy
@@ -87,6 +85,13 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // Re-parse changedSince to the Date the filter needs (validity was proven above).
     def changedSinceDate = changedSince != null ? _parseSinceArg(changedSince) : null
 
+    def allDevices
+    try {
+        allDevices = _mcpVisibleDevices(childDevs)
+    } catch (IllegalStateException e) {
+        return [success: false, error: e.message, note: "Retry the native device inventory read."]
+    }
+
     if (!allDevices) {
         def emptyMsg = "No devices selected for MCP access and no MCP-managed virtual devices"
         // format='context' keeps its shape contract even on an empty install: a caller
@@ -112,7 +117,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 
     // Parse and apply server-side filter BEFORE pagination so limit/offset respect the filtered set.
     // Supported filters: null/"all" (default), "enabled", "disabled", "stale:<hours>" (e.g. "stale:24").
-    // Filtering happens in-memory against device properties already loaded, no extra hub API calls.
+    // Native records are loaded once before filters that need their metadata or state.
     def filterType = null
     def staleMs = 0L
     if (filter && filter != "all") {
@@ -133,6 +138,16 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             staleMs = (long)(hours * 3600000L)
         } else {
             throw new IllegalArgumentException("Invalid filter '${filter}'. Must be one of: all, enabled, disabled, stale:<hours>")
+        }
+    }
+
+    // Filters inspect native metadata/state before pagination; unfiltered projections
+    // hydrate only their page below, avoiding a fullJson request for every hub device.
+    if (filterType || labelFilter || capabilityFilter || roomFilter || onlyOn == true || changedSinceDate != null) {
+        try {
+            _hydrateNativeInventory(allDevices)
+        } catch (IllegalStateException e) {
+            return [success: false, error: e.message, note: "Retry the native device inventory read."]
         }
     }
 
@@ -176,7 +191,8 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // onlyOn keeps devices whose switch attribute currently reads "on" -- "what's on right
     // now" in one call. onlyOn=false is a no-op (not "only off"): absence of the filter.
     if (onlyOn == true) {
-        allDevices = allDevices.findAll { d -> d.currentValue("switch")?.toString() == "on" }
+        // allDevices = allDevices.findAll { d -> d.currentValue("switch")?.toString() == "on" }
+        allDevices = allDevices.findAll { d -> d.currentStates?.find { it.name == "switch" }?.value?.toString() == "on" }
     }
 
     // changedSince keeps devices ACTIVE since the timestamp -- the inverse of filter=stale:N.
@@ -280,6 +296,11 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // like format='ids'.
     if (resolvedFormat == "context") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
+        try {
+            _hydrateNativeInventory(pagedDevices)
+        } catch (IllegalStateException e) {
+            return [success: false, error: e.message, note: "Retry the native context read."]
+        }
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -338,12 +359,18 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def useDetailed = (resolvedFormat == "detailed") || detailed ||
         (fieldSet != null && fieldSet.any { detailFields.contains(it) })
 
+    if (fieldSet == null || fieldSet.any { !(it in ["id", "mcpManaged"]) }) {
+        try {
+            _hydrateNativeInventory(pagedDevices)
+        } catch (IllegalStateException e) {
+            return [success: false, error: e.message, note: "Retry the native device inventory read."]
+        }
+    }
+
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
 
-        // Per-field gating avoids calling expensive hub APIs (currentValue, supportedAttributes,
-        // supportedCommands) for omitted fields. id is always emitted -- without it callers
-        // get a list of objects with no correlation key; use format='ids' for id-only results.
+        // Metadata hydration is page-scoped; id is always emitted as the correlation key.
         def info = [:]
 
         info.id = deviceIdStr
@@ -364,19 +391,22 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 info.capabilities = device.capabilities?.collect { it.name }
             }
             if (fieldSet == null || fieldSet.contains("attributes")) {
-                info.attributes = device.supportedAttributes?.collect { attr ->
-                    [name: attr.name, value: device.currentValue(attr.name)]
-                }
+                // info.attributes = device.supportedAttributes?.collect { attr ->
+                //     [name: attr.name, value: device.currentValue(attr.name)]
+                // }
+                info.attributes = device.currentStates.collect { st -> [name: st.name, value: st.value] }
             }
             if (fieldSet == null || fieldSet.contains("commands")) {
-                info.commands = device.supportedCommands?.collect { it.name }
+                // info.commands = device.supportedCommands?.collect { it.name }
+                info.commands = device.commands.collect { it.name }
             }
         } else {
             // Summary mode: populate currentStates only when requested (or when no projection active)
             if (fieldSet == null || fieldSet.contains("currentStates")) {
                 info.currentStates = [:]
                 ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
-                    def val = device.currentValue(attr)
+                    // def val = device.currentValue(attr)
+                    def val = device.currentStates?.find { it.name == attr }?.value
                     if (val != null) info.currentStates[attr] = val
                 }
             }
@@ -406,16 +436,19 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 }
 
 private Boolean isDeviceDisabled(device) {
-    try {
-        if (device.hasProperty("disabled") && device.disabled != null) return device.disabled == true
-    } catch (Exception ignore) {}
-    try {
-        return device.isDisabled() == true
-    } catch (Exception ignore) {}
-    try {
-        if (device.hasProperty("status") && device.status?.toString()?.toLowerCase() == "disabled") return true
-    } catch (Exception ignore) {}
-    return false
+    // Retained SDK disabled detection for deliberate rollback.
+    // try {
+    // if (device.hasProperty("disabled") && device.disabled != null) return device.disabled == true
+    // } catch (Exception ignore) {}
+    // try {
+    // return device.isDisabled() == true
+    // } catch (Exception ignore) {}
+    // try {
+    // if (device.hasProperty("status") && device.status?.toString()?.toLowerCase() == "disabled") return true
+    // } catch (Exception ignore) {}
+    // return false
+    return device.disabled == true || device.disabled?.toString()?.toLowerCase() == "true" ||
+        device.status?.toString()?.toLowerCase() == "disabled"
 }
 
 private String safeDni(device) {
@@ -436,7 +469,8 @@ private String safeParentDeviceId(device) {
 
 private Date safeLastActivity(device) {
     try {
-        return device.getLastActivity()
+        // return device.getLastActivity()
+        return device.lastActivityTime == null ? null : _parseSinceArg(device.lastActivityTime)
     } catch (Exception ignore) {
         return null
     }
@@ -492,9 +526,7 @@ private List _contextHeaderLines() {
 }
 
 // One context-summary line: "- Label (id, room) - Cap1, Cap2; attr=value<unit>, ...".
-// Reads the device's currentStates ONCE (the same per-device hub read summary mode pays;
-// the saving vs per-attribute currentValue() calls is ~21 reads -> 1), then projects the
-// requested attribute names in caller order. Values carry the reported unit directly
+// Projects the already-loaded native currentStates in caller order. Values carry the reported unit directly
 // appended (temperature=72.5°F) -- compact and unambiguous for a model reader.
 private String _contextDeviceLine(device, List attrNames) {
     def states = [:]
@@ -538,17 +570,58 @@ private String _safeHsmStatus() {
     }
 }
 
-// The MCP-visible device population: authorized devices plus this app's own child
-// (virtual) devices, deduplicated by id. Shared by toolListDevices and the context
+// The MCP-visible population: selected/owned identities, or all native identities with bypass. Shared by toolListDevices and the context
 // resource builders so the populations cannot drift. Callers that already hold the
 // child-device list pass it in to avoid a second getChildDevices() hub read.
 private List _mcpVisibleDevices(List childDevs = null) {
-    def all = (selectedDevices ?: []).toList()
-    def ids = all.collect { it.id.toString() } as Set
-    ((childDevs != null ? childDevs : getChildDevices()) ?: []).each { cd ->
-        if (!ids.contains(cd.id.toString())) all.add(cd)
+    // Retained SDK population for deliberate rollback; active records carry identities only.
+    // def all = (selectedDevices ?: []).toList()
+    // def ids = all.collect { it.id.toString() } as Set
+    // ((childDevs != null ? childDevs : getChildDevices()) ?: []).each { cd ->
+    // if (!ids.contains(cd.id.toString())) all.add(cd)
+    // }
+    // return all
+    if (_bypassEnabled()) {
+        def inventory = _fetchAllHubDeviceRecords("device", "native device inventory")
+        if (inventory?.failure || !(inventory?.records instanceof List) || inventory.idsComplete == false) {
+            throw new IllegalStateException("Native device inventory is unavailable or incomplete; retry before using the device list.")
+        }
+        if (inventory.records.any { !(it instanceof Map) || it.id == null }) {
+            throw new IllegalStateException("Native device inventory contained an invalid device record; retry after checking hub firmware.")
+        }
+        def byId = [:]
+        inventory.records.each { d -> byId.put(d.id.toString(), [id: d.id.toString()]) }
+        return byId.values() as List
     }
-    return all
+    def byId = [:]
+    ((selectedDevices ?: []) + ((childDevs != null ? childDevs : getChildDevices()) ?: [])).each { d ->
+        if (d?.id != null) byId.put(d.id.toString(), [id: d.id.toString()])
+    }
+    return byId.values() as List
+}
+
+private void _hydrateNativeInventory(List records) {
+    records.each { record ->
+        if (record._nativeLoaded == true) return
+        def fj = _fetchDeviceFullJson(record.id)
+        if (!(fj?.device instanceof Map) || fj.device.id?.toString() != record.id.toString()) {
+            throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
+        }
+        def d = fj.device
+        if (d.currentStates != null && !(d.currentStates instanceof Map)) {
+            throw new IllegalStateException("Native device state has an unexpected shape for device ${record.id}.")
+        }
+        def states = []
+        (d.currentStates ?: [:]).each { name, st ->
+            states << [name: name.toString(), value: _nativeDeviceStateValue(st),
+                       unit: st instanceof Map ? st.unit : null]
+        }
+        record.putAll([name: d.name, label: d.label, roomName: d.roomName,
+            disabled: d.disabled, status: d.status, deviceNetworkId: d.deviceNetworkId,
+            parentDeviceId: d.parentDeviceId, lastActivityTime: d.lastActivityTime,
+            capabilities: _capabilityNames(d.capabilities).collect { [name: it] },
+            currentStates: states, commands: fj.commands instanceof List ? fj.commands : [], _nativeLoaded: true])
+    }
 }
 
 // Budget for the unpaginated context RESOURCES (resources/read takes only a uri, so an
@@ -574,6 +647,7 @@ private int _escapedLen(String s) { s == null ? 0 : groovy.json.JsonOutput.toJso
 def _buildContextSummaryText() {
     int maxUseful = (int) (_contextResourceByteBudget() / 25)
     def res = toolListDevices(false, 0, maxUseful, null, null, null, "context", null, null, null, null, null, null, null)
+    if (res.success == false) throw new IllegalStateException(res.error.toString())
     def total = (res.total ?: 0) as Integer
     return _truncateContextText(res.summary ?: res.message, total)
 }
@@ -609,6 +683,7 @@ private String _truncateContextText(String text, int totalDevices) {
 // and points at the paginated tool form / hub_list_rooms.
 def _buildContextJson() {
     def allDevices = _mcpVisibleDevices()
+    _hydrateNativeInventory(allDevices)
     def contextAttrs = _contextAttributeNames() as Set
     def roomIndex = [:]
     allDevices.each { d ->
@@ -728,8 +803,8 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
 // {id, label, capabilities} for every device -- supplies capabilities. Spine devices come first in
 // tree order; a device only the feed lists is appended after them. Neither source's omission ever
 // costs a device: a spine device the feed omits (or whose entry has no capabilities list) is
-// present without a `capabilities` key (the caller fills authorized devices in from the Groovy
-// model), a feed device the tree omits is present from the feed, and either omission flags the
+// present without a `capabilities` key (the caller fills authorized devices in from native
+// fullJson), a feed device the tree omits is present from the feed, and either omission flags the
 // result partial with a counted note.
 // `source` is the endpoint the records were built from: the tree, unless the feed supplied
 // capabilities for them (the union), or the feed alone when the tree could not be used.
@@ -885,7 +960,7 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
 // The capabilitiesNote for a partial scope='all' inventory: the counted note the inventory read
 // produced, else the no-capability-source wording (both response shapes carry the same text).
 private String _allHubCapabilitiesNote(Map inventory) {
-    return inventory.partialNote ?: "No capability-bearing source was usable on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and /hub2/vrb/devices either did not answer or carried no capabilities lists -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+    return inventory.partialNote ?: "No capability-bearing source was usable on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and /hub2/vrb/devices either did not answer or carried no capabilities lists -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities cannot be read under the current device-access policy. capabilityFilter therefore matches authorized devices only."
 }
 
 // scope='all' implementation: every hub device + an mcpAuthorized flag. The Groovy device model is
@@ -893,10 +968,10 @@ private String _allHubCapabilitiesNote(Map inventory) {
 // /device/listWithCapabilities/json (id/label/capabilities) where it still exists; on 2.5.1.173+
 // where it is gone, the /hub2/devicesList tree (every id, no capabilities) unioned with the
 // /hub2/vrb/devices picker feed (capabilities) -- see _fetchAllHubDeviceRecords. `source` names
-// which answered for capabilities; a device without a capabilities record is filled in from the
-// Groovy model when authorized, and the result says capabilitiesPartial + capabilitiesNote when
+// which answered for capabilities; a device without a capabilities record is filled in from
+// native fullJson when authorized, and the result says capabilitiesPartial + capabilitiesNote when
 // any device lacks one or the tree could not be read. Lightweight uniform records (no
-// attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
+// attributes/commands/currentStates -- those use the ordinary detailed inventory route).
 private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor) {
     if (labelFilter != null && !(labelFilter instanceof String)) {
         throw new IllegalArgumentException("labelFilter must be a string")
@@ -908,9 +983,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     if (format && !["summary", "ids"].contains(resolvedFormat)) {
         throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only (detailed/currentStates require MCP-authorized devices; got '${format}')")
     }
-    // The last-resort source exposes no capabilities, so those are filled in from the Groovy model
-    // where the app has access and left empty where it does not (an unauthorized device's
-    // capabilities are simply not knowable from inside the sandbox).
+    // Read missing capabilities natively only when the current device-access policy allows it.
     def inventory = _fetchAllHubDeviceRecords("device", "hub_list_devices scope='all'")
     if (inventory.failure == "fetch") {
         return [success: false, error: "Failed to fetch the all-hub device list (${inventory.source}): ${inventory.fetchError}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
@@ -919,26 +992,43 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         return [success: false, error: "Unexpected ${inventory.source} response (expected {devices:[...]}).", note: "Hub firmware may have changed the endpoint contract."]
     }
     def raw = inventory.records
+    if (!(raw instanceof List) || raw.any { !(it instanceof Map) || it.id == null }) {
+        return [success: false, error: "Native device inventory contained an invalid record.",
+                note: "Retry after checking hub firmware; an incomplete device list was not returned."]
+    }
     def sourceEndpoint = inventory.source
     def capabilitiesComplete = inventory.capabilities
     def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
     (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
-    // Capability lookup for the capability-less source, built once from the authorization-scoped model.
+    // // Capability lookup for the capability-less source, built once from the authorization-scoped model.
+    // def capsById = [:]
+    // if (!capabilitiesComplete) {
+    // // Both sources that feed authorizedIds above, so every device tagged mcpAuthorized
+    // // can also report its capabilities -- otherwise an MCP-managed child device would be
+    // // authorized yet unmatchable by capabilityFilter.
+    // (((selectedDevices ?: []) as List) + ((getChildDevices() ?: []) as List)).each { dev ->
+    // def did = dev?.id?.toString()
+    // if (did != null) capsById.put(did, _capabilityNames(dev.capabilities))
+    // }
+    // }
+    if (_bypassEnabled()) raw.each { d -> if (d instanceof Map && d.id != null) authorizedIds.add(d.id.toString()) }
     def capsById = [:]
     if (!capabilitiesComplete) {
-        // Both sources that feed authorizedIds above, so every device tagged mcpAuthorized
-        // can also report its capabilities -- otherwise an MCP-managed child device would be
-        // authorized yet unmatchable by capabilityFilter.
-        (((selectedDevices ?: []) as List) + ((getChildDevices() ?: []) as List)).each { dev ->
-            def did = dev?.id?.toString()
-            if (did != null) capsById.put(did, _capabilityNames(dev.capabilities))
+        for (d in raw) {
+            def did = d instanceof Map ? d.id?.toString() : null
+            if (did != null && authorizedIds.contains(did) && !(d.capabilities instanceof List)) {
+                def fj = _fetchDeviceFullJson(did)
+                if (!(fj?.device instanceof Map) || fj.device.id?.toString() != did || !(fj.device.capabilities instanceof List)) {
+                    return [success: false, error: "Native capabilities are unavailable for device ${did}.",
+                            note: "Retry the native inventory read; no SDK fallback was used."]
+                }
+                capsById.put(did, _capabilityNames(fj.device.capabilities))
+            }
         }
     }
 
-    // Only process actual Map elements; a null/non-object element from a firmware contract drift
-    // would otherwise NPE/ClassCast past the structured-error envelope. id is emitted as a String
-    // to match the scope='authorized' path.
-    def devices = raw.findAll { it instanceof Map }.collect { d ->
+    // Invalid records were rejected above so the reported inventory cannot silently shrink.
+    def devices = raw.collect { d ->
         def idStr = d.id?.toString()
         def caps = (d.capabilities instanceof List) ? _capabilityNames(d.capabilities)
                                                    : (idStr != null ? (capsById.get(idStr) ?: []) : [])
@@ -988,7 +1078,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         unfilteredTotal: unfilteredTotal,
         mcpAuthorizedCount: authorizedCount,
         unauthorizedCount: totalCount - authorizedCount,
-        note: "scope='all' lists EVERY hub device with mcpAuthorized true/false. mcpAuthorized=false means the device is NOT in this MCP app's device list, so it cannot be read or controlled until added in the hub UI (MCP Rule Server app > device selection). Records are lightweight (id/label/capabilities/mcpAuthorized); use scope='authorized' (default) for full detail/currentStates. mcpAuthorizedCount/unauthorizedCount are over the full filtered set (they sum to total), not the returned page."
+        note: "scope='all' lists EVERY hub device with mcpAuthorized true/false. mcpAuthorized reflects current device access: selected devices and MCP-owned children are authorized, and enabling device-allowlist bypass authorizes every existing hub device. With bypass off, add an unauthorized device in the hub UI (MCP Rule Server app > device selection) before reading or controlling it. Records are lightweight (id/label/capabilities/mcpAuthorized); use scope='authorized' (default) for full detail/currentStates. mcpAuthorizedCount/unauthorizedCount are over the full filtered set (they sum to total), not the returned page."
     ]
     result.source = sourceEndpoint
     if (!capabilitiesComplete) {
@@ -1014,7 +1104,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
 // "Device not found" for a device outside settings.selectedDevices fall back to the hub's
 // id-keyed admin endpoints, reaching ANY device on the hub. The toggle is independent of
 // Developer Mode -- once on it works in normal operation. LISTED / MCP-managed devices ALWAYS
-// keep the rich Groovy-device path; only the unlisted fallback is new.
+// use native endpoints too; the toggle changes authorization only.
 
 // True when the operator enabled the device-allowlist bypass. Default OFF (null/unset == off).
 private boolean _bypassEnabled() {
@@ -1025,7 +1115,7 @@ private boolean _bypassEnabled() {
 private boolean _requireDeviceToolAccess(deviceId) {
     boolean listed = findDevice(deviceId) != null
     if (!listed && !_bypassEnabled()) {
-        throw new IllegalArgumentException("Device not found: ${deviceId}. Select it in MCP settings or enable device-allowlist bypass.")
+        throw new IllegalArgumentException("Device not found: ${deviceId}")
     }
     return listed
 }
@@ -1493,16 +1583,12 @@ private _readBypassAttrValueFrom(Map fullJson, attribute) {
     return _nativeDeviceStateValue(entry)
 }
 
-// Re-fetch fullJson and read one attribute's value. The bypass poll value-reader: re-fetching
-// fullJson each interval is the unlisted-device analogue of the listed device's live
-// currentStates list (both re-read fresh from the hub each poll).
+// Re-fetch fullJson so each poll observes fresh native state.
 private _readBypassAttrValue(deviceId, attribute) {
     return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
 }
 
-// Build the toolGetDevice summary shape from a fullJson device model (allowlist-bypass path).
-// Mirrors the Groovy-device path: id/name/label/room/capabilities + attributes (from
-// currentStates) + commands (from the top-level commands array).
+// Preserve the summary shape using reported native states and native command definitions.
 private Map _getDeviceFromFullJson(deviceId, Map fj) {
     def d = fj.device
     def attributes = []
@@ -1683,6 +1769,9 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed
                 break
             case 'attributes':
                 value = _deviceConfigurationProjection(d, ['capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState'])
+                // Keep the historical key while identifying its native, reported-state coverage.
+                value.attributeCoverage = [source: 'device.currentStates', declarationsComplete: false,
+                    note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
                 if (identity.attributes instanceof List) value.declaredAttributes = identity.attributes.collect { row ->
                     def attribute = _deviceConfigurationPublicValue(row)
                     if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
@@ -4271,7 +4360,11 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
                     (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == wanted :
                     (actual == null ? "" : actual.toString()) == wanted)
                 if (equal) changes << [property: property, newValue: wanted]
-                else errors << [property: property, error: "POST accepted but could not confirm ${property}; native read-back did not match."]
+                else if (!(readback instanceof Map) || !readback.containsKey(property)) {
+                    errors << [property: property, error: "POST accepted but could not confirm the change; native read-back is unavailable for ${property}."]
+                } else {
+                    errors << [property: property, error: "POST accepted but ${property} read back as '${actual}' (expected '${wanted}')."]
+                }
             } catch (Exception e) { errors << [property: property, error: e.message ?: e.toString()] }
         }
     }
@@ -4828,7 +4921,10 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
                     changes << [property: "label", oldValue: d.label, newValue: wanted]
                     deviceLabel = wanted ?: readback.name ?: "Device ${deviceId}"
                 } else {
-                    errors << [property: "label", error: "Update accepted but could not confirm label; native read-back did not match or was unavailable."]
+                    def reason = readback instanceof Map && readback.containsKey("label")
+                        ? "label read back as '${readback.label}' (expected '${wanted}')."
+                        : "could not confirm label; native read-back was unavailable."
+                    errors << [property: "label", error: "Update accepted but ${reason}"]
                 }
             }
         } catch (Exception e) {
@@ -5310,41 +5406,63 @@ def toolDeleteDevice(args) {
     try {
         def responseText = hubInternalGet("/device/fullJson/${deviceId}")
         if (responseText) {
-            deviceInfo = new groovy.json.JsonSlurper().parseText(responseText)
+            def fullJson = new groovy.json.JsonSlurper().parseText(responseText)
+            if (fullJson instanceof Map && fullJson.device instanceof Map &&
+                fullJson.device.id?.toString() == deviceId) {
+                deviceInfo = fullJson.device
+            }
         }
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "Could not fetch device info for ${deviceId}: ${e.message}")
     }
 
     if (!deviceInfo) {
-        throw new IllegalArgumentException("Device ${deviceId} not found on hub. Verify the device ID is correct.")
+        throw new IllegalArgumentException("Device ${deviceId} not found on hub or its native identity could not be verified. Verify the device ID and retry; nothing was deleted.")
     }
 
     def deviceName = deviceInfo.label ?: deviceInfo.name ?: "Unknown"
     def deviceDNI = deviceInfo.deviceNetworkId ?: "unknown"
-    def deviceType = deviceInfo.typeName ?: deviceInfo.type ?: "unknown"
+    def deviceType = deviceInfo.deviceTypeName ?: deviceInfo.typeName ?: deviceInfo.type ?: "unknown"
     def warnings = []
 
     // Step 2: Check for recent activity (active device warning)
     try {
-        def selectedDevice = findDevice(deviceId)
-        if (selectedDevice) {
-            def lastActivity = selectedDevice.lastActivity
-            if (lastActivity) {
-                def hoursAgo = (Math.round((now() - lastActivity.time) / 3600000.0 * 10) / 10.0) as double
-                if (hoursAgo < 24) {
-                    warnings << "ACTIVE DEVICE: Last activity was ${hoursAgo} hours ago at ${lastActivity.format("yyyy-MM-dd'T'HH:mm:ss")}. This device may still be functional."
-                }
-            }
-            def recentEvents = selectedDevice.events(max: 3)
-            if (recentEvents && recentEvents.size() > 0) {
-                def lastEvent = recentEvents[0]
-                warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${lastEvent.value} at ${lastEvent.date?.format("yyyy-MM-dd'T'HH:mm:ss")}"
+        def lastActivity = deviceInfo.lastActivityTime != null ? _parseSinceArg(deviceInfo.lastActivityTime) : null
+        if (lastActivity) {
+            def hoursAgo = (Math.round((now() - lastActivity.time) / 3600000.0 * 10) / 10.0) as double
+            if (hoursAgo < 24) {
+                warnings << "ACTIVE DEVICE: Last activity was ${hoursAgo} hours ago at ${lastActivity.format("yyyy-MM-dd'T'HH:mm:ss")}. This device may still be functional."
             }
         }
     } catch (Exception e) {
-        // Device not in selected list or events unavailable — skip
+        // Activity warnings are best-effort; event history is checked independently.
     }
+    def recentEvents = _fetchBypassDeviceEvents(deviceId)
+    if (recentEvents) {
+        def lastEvent = recentEvents[0]
+        warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${lastEvent.value} at ${lastEvent.date}"
+    }
+
+    // SDK rollback reference; audit reads now use fresh native data for every device.
+    // try {
+    //     def selectedDevice = findDevice(deviceId)
+    //     if (selectedDevice) {
+    //         def lastActivity = selectedDevice.lastActivity
+    //         if (lastActivity) {
+    //             def hoursAgo = (Math.round((now() - lastActivity.time) / 3600000.0 * 10) / 10.0) as double
+    //             if (hoursAgo < 24) {
+    //                 warnings << "ACTIVE DEVICE: Last activity was ${hoursAgo} hours ago at ${lastActivity.format("yyyy-MM-dd'T'HH:mm:ss")}. This device may still be functional."
+    //             }
+    //         }
+    //         def recentEvents = selectedDevice.events(max: 3)
+    //         if (recentEvents && recentEvents.size() > 0) {
+    //             def lastEvent = recentEvents[0]
+    //             warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${lastEvent.value} at ${lastEvent.date?.format("yyyy-MM-dd'T'HH:mm:ss")}"
+    //         }
+    //     }
+    // } catch (Exception e) {
+    //     // Device not in selected list or events unavailable — skip
+    // }
 
     // Step 3: Check Z-Wave/Zigbee radio membership
     def isRadioDevice = false
@@ -5463,19 +5581,16 @@ def toolDeleteDevice(args) {
     try {
         def checkResponse = hubInternalGet("/device/fullJson/${deviceId}")
         if (checkResponse) {
-            try {
-                def checkParsed = new groovy.json.JsonSlurper().parseText(checkResponse)
-                verified = !checkParsed?.id
-            } catch (Exception parseErr) {
-                // Non-JSON response or error page = likely deleted
-                verified = true
-            }
-        } else {
-            verified = true
+            def checkParsed = new groovy.json.JsonSlurper().parseText(checkResponse)
+            verified = checkParsed instanceof Map && checkParsed.containsKey('device') &&
+                (checkParsed.device == null || (checkParsed.device instanceof Map && checkParsed.device.isEmpty()))
         }
     } catch (Exception e) {
-        // 404 or error = device is gone = success
-        verified = true
+        // A timeout or error page cannot prove the device was removed.
+        verified = _httpStatusOf(e) == 404
+    }
+    if (!verified) {
+        warnings << "DELETE UNVERIFIED: The native device lookup did not confirm absence. Check the device in Hubitat before retrying deletion."
     }
 
     mcpLog(verified ? "info" : "warn", "hub-admin", "Device delete ${verified ? 'VERIFIED' : 'UNVERIFIED'}: '${deviceName}' (ID: ${deviceId})")
@@ -5791,7 +5906,7 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance_devices')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
-                    scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = only devices granted to this MCP app (full detail/currentStates). 'all' = EVERY device on the hub, each tagged mcpAuthorized true/false."]
+                    scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled (full detail/currentStates). 'all' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]
                 ]
             ]
         ],

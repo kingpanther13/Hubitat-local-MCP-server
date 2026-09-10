@@ -20,7 +20,7 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         models = (1..3).collectEntries { id ->
             [(id.toString()): [device: [id: id, name: "Native ${id}", label: "Native ${id}",
                 roomName: 'Den', capabilities: ['Switch'], disabled: false,
-                lastActivity: '2026-09-10T10:00:00Z',
+                lastActivityTime: '2026-09-10T10:00:00Z',
                 currentStates: [switch: [value: id == 2 ? 'off' : 'on']]],
                 commands: [[name: 'on', arguments: []]]]]
         }
@@ -139,4 +139,63 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         result.devices.every { it.mcpAuthorized && it.capabilities == ['Switch'] }
         result.capabilitiesPartial == true
     }
+    def 'unfiltered summary hydrates only the requested page and preserves numeric states'() {
+        given:
+        nativeFixture()
+        models['2'].device.currentStates.temperature = [value: '72.5', dataType: 'NUMBER', numberValue: 72.5]
+
+        when:
+        def result = script.toolListDevices(false, 1, 1)
+
+        then:
+        result.devices*.id == ['2']
+        result.devices[0].currentStates.temperature == 72.5
+        hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path == ['/device/fullJson/2']
+    }
+
+    def 'scope all tags every native device accessible when bypass is enabled'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, null, null, 'summary', null, null, 'all')
+
+        then:
+        result.total == 3
+        result.mcpAuthorizedCount == 3
+        result.unauthorizedCount == 0
+        result.devices.every { it.mcpAuthorized }
+    }
+
+    def 'a bypass inventory with an unconfirmed id set cannot look complete'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/listWithCapabilities/json') { throw new IOException('removed') }
+        hubGet.register('/hub2/devicesList') { throw new IOException('offline') }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson([[id: 3, label: 'Native 3', capabilities: ['Switch']]]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, null, null, 'ids')
+
+        then:
+        result.success == false
+        result.error.toString().toLowerCase().contains('inventory')
+        !result.containsKey('deviceIds')
+    }
+
+    def 'scope all rejects malformed inventory records rather than omitting them'() {
+        given:
+        nativeFixture()
+        hubGet.register('/device/listWithCapabilities/json') { JsonOutput.toJson([[id: 1, label: 'Native 1'], null]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, null, null, 'summary', null, null, 'all')
+
+        then:
+        result.success == false
+        !result.containsKey('devices')
+    }
+
 }

@@ -1,6 +1,7 @@
 package server
 
 import spock.lang.Shared
+import support.NativeInventoryFixture
 import support.TestDevice
 import support.TestLocation
 import support.ToolSpecBase
@@ -26,12 +27,17 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
     def setup() {
         sharedLocation.hsmStatus = null
+        [5, 900].each { id ->
+            NativeInventoryFixture.register(hubGet, id.toString()) {
+                ((settingsMap.selectedDevices ?: []) + childDevicesList).find { it.id == id }
+            }
+        }
     }
 
     // ---- helpers --------------------------------------------------------
 
     private TestDevice makeDevice(Map props) {
-        new TestDevice(
+        def device = new TestDevice(
             id: props.id ?: 1,
             name: props.name ?: 'TestDriver',
             label: props.label ?: props.name ?: 'Test Device',
@@ -42,6 +48,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
             attributeValues: props.attrValues ?: [:],
             lastActivity: props.lastActivity ?: null
         )
+        NativeInventoryFixture.register(hubGet, device.id.toString()) { device }
+        return device
     }
 
     // ---- labelFilter tests ----------------------------------------------
@@ -1406,7 +1414,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "fields projection: currentValue IS called when fields includes currentStates"() {
+    def "fields projection: native state is read when fields includes currentStates"() {
         given:
         def calls = []
         def d1 = makeDevice(id: 1, label: 'My Light', name: 'TestDriver')
@@ -1422,12 +1430,13 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
         then:
         result.devices.size() == 1
-        result.devices[0].containsKey('currentStates')
-        !calls.isEmpty()
+        result.devices[0].currentStates.switch == 'on'
+        calls.isEmpty()
+        hubGet.calls.any { it.path == '/device/fullJson/1' }
     }
 
     @spock.lang.Unroll
-    def "via dispatch: fields projection currentValue IS called when fields includes currentStates (useGateways=#useGateways)"() {
+    def "via dispatch: fields projection native state is read when fields includes currentStates (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def calls = []
@@ -1447,8 +1456,9 @@ class ToolListDevicesSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.devices.size() == 1
-        inner.devices[0].containsKey('currentStates')
-        !calls.isEmpty()
+        inner.devices[0].currentStates.switch == 'on'
+        calls.isEmpty()
+        hubGet.calls.any { it.path == '/device/fullJson/1' }
 
         where:
         useGateways << [true, false]
@@ -2026,7 +2036,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         List getCurrentStates() { throw new RuntimeException('driver exploded') }
     }
 
-    def "a device whose currentStates read throws still gets a line, without attributes"() {
+    def "a native state transport failure returns an explicit context error"() {
         given:
         def broken = new ThrowingStatesDevice(id: 5, label: 'Broken Driver', roomName: 'Den',
             capabilities: [[name: 'Switch']])
@@ -2035,12 +2045,10 @@ class ToolListDevicesSpec extends ToolSpecBase {
         when:
         def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
 
-        then: 'the snapshot survives; the failed read is marked IN the payload, not just logged'
-        result.count == 2
-        result.summary.readLines().contains('- Broken Driver (5, Den) - Switch (state unavailable)')
-
-        and: 'the healthy capability-less device renders the exact no-caps shape'
-        result.summary.readLines().contains('- Fine (6, No room); switch=on')
+        then:
+        result.success == false
+        result.error.toString().contains('5')
+        !result.containsKey('summary')
     }
 
     @spock.lang.Unroll
