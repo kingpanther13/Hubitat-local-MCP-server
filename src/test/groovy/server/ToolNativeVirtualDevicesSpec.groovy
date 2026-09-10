@@ -144,6 +144,131 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         mcpDriver.parseInner(response).devices[0].driverNamespace == 'native-ns'
     }
 
+    @Unroll
+    def 'virtual native filters intersect before pagination through #surface with bypass #bypass'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = bypass
+        ['77', '78', '79', '80', '81'].each { owned(it) }
+        models['77'].device.label = 'Unrelated first'
+        models['78'].device.label = 'BAT Native First'
+        models['79'].device.label = 'BAT Native Wrong Capability'
+        models['79'].device.capabilities = ['TemperatureMeasurement']
+        models['80'].device.label = null
+        models['80'].device.name = 'BAT Native Fallback'
+        models['81'].device.label = 'BAT Native Last'
+        settingsMap.selectedDevices = [new TestDevice(id: 99, name: 'BAT Native not owned')]
+        childDevicesList.each { sdk ->
+            sdk.metaClass.getLabel = { throw new AssertionError('SDK label read') }
+            sdk.metaClass.getName = { throw new AssertionError('SDK name read') }
+        }
+        def args = [filter: 'virtual', labelFilter: 'bat NATIVE', capabilityFilter: 'sWITCH', cursor: '1', limit: 1]
+
+        when:
+        def result = surface == 'direct' ? script.toolListVirtualDevices(args) :
+            mcpDriver.parseInner(mcpDriver.callTool('hub_list_devices', args))
+
+        then:
+        result.devices*.id == ['80']
+        result.devices[0].label == 'BAT Native Fallback'
+        result.total == 3
+        result.unfilteredTotal == 5
+        result.count == 1
+        result.offset == 1
+        result.hasMore == true
+        result.nextCursor == '2'
+        !hubGet.calls.any { it.path == '/device/fullJson/99' }
+        writes.empty
+
+        where:
+        [surface, bypass] << ['direct', 'dispatch'].collectMany { surface -> [false, true].collect { [surface, it] } }
+    }
+
+    def 'virtual filter no matches is an empty filtered population'() {
+        given:
+        owned('77')
+
+        when:
+        def result = script.toolListVirtualDevices([labelFilter: 'Absent', cursor: '', limit: 1])
+
+        then:
+        result.devices == []
+        result.total == 0
+        result.count == 0
+        result.unfilteredTotal == 1
+        result.hasMore == false
+        !result.containsKey('nextCursor')
+        result.message.toLowerCase().contains('match')
+        !result.message.contains('create one')
+    }
+
+    def 'virtual cursor bounds use filtered total'() {
+        given:
+        ['77', '78', '79'].each { owned(it) }
+        models['77'].device.label = 'Only match'
+
+        when:
+        script.toolListVirtualDevices([labelFilter: 'Only', cursor: '2', limit: 1])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('out of range')
+    }
+
+    @Unroll
+    def 'virtual #field filter rejects non-string #value even with no children'() {
+        when:
+        script.toolListVirtualDevices([(field): value])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains(field)
+        hubGet.calls.empty
+
+        where:
+        [field, value] << ['labelFilter', 'capabilityFilter'].collectMany { field -> [7, false, [], [:]].collect { [field, it] } }
+    }
+
+    def 'empty virtual filters preserve page-only native hydration'() {
+        given:
+        owned('77')
+        owned('78')
+
+        when:
+        def result = script.toolListVirtualDevices([labelFilter: '', capabilityFilter: '', limit: 1])
+
+        then:
+        result.devices*.id == ['77']
+        result.total == 2
+        !hubGet.calls.any { it.path == '/device/fullJson/78' }
+    }
+
+    @Unroll
+    def 'virtual filters retain unreadable owned identities and mark partial results at cursor #cursor'() {
+        given:
+        ['77', '78', '79'].each { owned(it) }
+        models['77'].device.label = 'Unrelated'
+        models['78'].device.label = 'Match'
+        hubGet.register('/device/fullJson/79') { null }
+
+        when:
+        def result = script.toolListVirtualDevices([labelFilter: 'Match', cursor: cursor, limit: 1])
+
+        then:
+        result.total == 2
+        result.unfilteredTotal == 3
+        result.success == false
+        result.isError == true
+        result.partialSuccess == true
+        result.unreadableDeviceIds == ['79']
+        result.devices*.id == [expectedId]
+        if (expectedId == '79') assert result.devices[0].success == false
+
+        where:
+        cursor | expectedId
+        ''     | '78'
+        '1'    | '79'
+    }
+
     def 'virtual inventory preserves failed device id and counts instead of claiming empty native metadata'() {
         given:
         owned('77')
