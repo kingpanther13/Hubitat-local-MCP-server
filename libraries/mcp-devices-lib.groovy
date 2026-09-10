@@ -5198,8 +5198,9 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
     ]
     if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
     if (fieldOverrides) model.putAll(fieldOverrides)
-    // Submitting blanks changes a null groupId to zero and a null controllerType to an empty string.
-    ["groupId", "controllerType"].each { key ->
+    // Native blanks coerce null groupId/roomId to zero and controllerType to an empty string.
+    // Overrides were applied above, so an explicit room clear still sends roomId=0.
+    ["groupId", "controllerType", "roomId"].each { key ->
         if (model.get(key) == null) model.remove(key)
     }
     def enc = { v ->
