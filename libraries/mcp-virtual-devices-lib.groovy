@@ -238,6 +238,15 @@ def toolCreateVirtualDevice(args) {
 }
 
 def toolListVirtualDevices(args) {
+    def labelFilter = args?.labelFilter
+    def capabilityFilter = args?.capabilityFilter
+    if (labelFilter != null && !(labelFilter instanceof String)) {
+        throw new IllegalArgumentException("labelFilter must be a string")
+    }
+    if (capabilityFilter != null && !(capabilityFilter instanceof String)) {
+        throw new IllegalArgumentException("capabilityFilter must be a string")
+    }
+    boolean filtering = labelFilter || capabilityFilter
     def childDevs = getChildDevices() ?: []
     def cursor = args?.cursor
     int offset = args?.offset != null ? (args.offset as Integer) : 0
@@ -246,12 +255,13 @@ def toolListVirtualDevices(args) {
         if (offset > 0) {
             throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
         }
-        offset = _parseListCursor(cursor, childDevs.size(), "hub_list_devices(filter='virtual')")
+        offset = _parseListCursor(cursor, Integer.MAX_VALUE, "hub_list_devices(filter='virtual')")
         if (limit <= 0) limit = 50
     }
     if (offset < 0) offset = 0
 
     if (!childDevs) {
+        if (cursor != null) _parseListCursor(cursor, 0, "hub_list_devices(filter='virtual')")
         def empty = [
             devices: [],
             count: 0,
@@ -266,11 +276,7 @@ def toolListVirtualDevices(args) {
         return empty
     }
 
-    int startIndex = Math.min(offset, childDevs.size())
-    int endIndex = limit > 0
-        ? (int) Math.min(((long) startIndex) + limit, childDevs.size())
-        : childDevs.size()
-    def page = childDevs.subList(startIndex, endIndex).collect { device ->
+    def readNativeDevice = { device ->
         def deviceId = device.id.toString()
         try {
             def fullJson = _fetchDeviceFullJson(deviceId)
@@ -302,26 +308,54 @@ def toolListVirtualDevices(args) {
                 note: "The device remains MCP-owned. Inspect this device in the Hubitat UI and retry the read."]
         }
     }
+    // Filtering needs native content across the owned population; unfiltered pages stay lazy.
+    def matching = childDevs
+    if (filtering) {
+        def needle = labelFilter?.toLowerCase()
+        matching = childDevs.collect(readNativeDevice).findAll { info ->
+            // An unreadable child cannot be proved not to match. Keep its identity and error.
+            if (info.success == false) return true
+            boolean labelMatches = !labelFilter || (info.label ?: info.name ?: '').toString().toLowerCase().contains(needle)
+            boolean capabilityMatches = !capabilityFilter || info.capabilities.any { it?.toString()?.equalsIgnoreCase(capabilityFilter) }
+            return labelMatches && capabilityMatches
+        }
+    }
+    int total = matching.size()
+    if (cursor != null) offset = _parseListCursor(cursor, total, "hub_list_devices(filter='virtual')")
+    int startIndex = Math.min(offset, total)
+    int endIndex = limit > 0 ? (int) Math.min(((long) startIndex) + limit, total) : total
+    def selectedPage = matching.subList(startIndex, endIndex)
+    def page = filtering ? selectedPage : selectedPage.collect(readNativeDevice)
+    def readFailures = (filtering ? matching : page).findAll { it.success == false }
     def result = [
         devices: page,
         count: page.size(),
-        total: childDevs.size(),
-        message: "Found ${childDevs.size()} MCP-managed virtual ${childDevs.size() == 1 ? 'device' : 'devices'}. These are automatically accessible to all MCP device tools."
+        total: total,
+        message: "Found ${total} MCP-managed virtual ${total == 1 ? 'device' : 'devices'}${filtering ? ' matching the requested filters' : ''}. These are automatically accessible to all MCP device tools."
     ]
-    if (page.any { it.success == false }) {
+    if (filtering) {
+        result.unfilteredTotal = childDevs.size()
+        if (labelFilter) result.labelFilter = labelFilter
+        if (capabilityFilter) result.capabilityFilter = capabilityFilter
+    }
+    if (readFailures) {
         result.success = false
         result.isError = true
         result.error = 'Native information could not be read for one or more MCP-managed virtual devices.'
         result.note = 'Device IDs and counts include unreadable devices. Inspect the failed entries and retry the read.'
+        if (filtering) {
+            result.unreadableDeviceIds = readFailures.collect { it.id }
+            result.message = "Found ${total - readFailures.size()} matching MCP-managed virtual devices and ${readFailures.size()} unreadable owned devices whose filter match could not be determined."
+        }
     }
-    if (page.any { it.warnings } || (page.any { it.success == false } && page.any { it.success != false })) {
+    if (page.any { it.warnings } || (readFailures && (filtering ? matching : page).any { it.success != false })) {
         result.partialSuccess = true
     }
     if (limit > 0) {
         result.offset = startIndex
         result.limit = limit
-        result.hasMore = endIndex < childDevs.size()
-        if (endIndex < childDevs.size()) {
+        result.hasMore = endIndex < total
+        if (endIndex < total) {
             result.nextOffset = endIndex
             if (cursor != null) result.nextCursor = endIndex.toString()
         }

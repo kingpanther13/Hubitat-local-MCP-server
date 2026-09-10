@@ -214,6 +214,16 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         error.message.contains('out of range')
     }
 
+    def 'virtual empty inventory still rejects an out of range cursor'() {
+        when:
+        script.toolListVirtualDevices([labelFilter: 'Absent', cursor: '1'])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('out of range')
+        hubGet.calls.empty
+    }
+
     @Unroll
     def 'virtual #field filter rejects non-string #value even with no children'() {
         when:
