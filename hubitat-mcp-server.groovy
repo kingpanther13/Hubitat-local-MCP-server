@@ -3713,7 +3713,7 @@ private def _immutableToolMetadata(value) {
 private def _toolMetadataPut(String key, value) {
     def immutable = _immutableToolMetadata(value)
     synchronized (TOOL_METADATA_CACHE) {
-        if (!TOOL_METADATA_CACHE.containsKey(key)) TOOL_METADATA_CACHE[key] = immutable
+        if (!TOOL_METADATA_CACHE.containsKey(key)) TOOL_METADATA_CACHE.put(key, immutable)
         return TOOL_METADATA_CACHE[key]
     }
 }
@@ -4945,7 +4945,7 @@ private Map _toolCatalogIndexes() {
         String name = tool.name as String
         names << name
         def req = tool?.inputSchema?.required
-        if (req instanceof List && !req.isEmpty()) required[name] = req.collect { it as String }
+        if (req instanceof List && !req.isEmpty()) required.put(name, req.collect { it as String })
     }
     return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
 }
@@ -8868,7 +8868,7 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
-`bypassDeviceAllowlist` (bool, default OFF) removes a security boundary: when ON, the per-device tools (hub_get_device, hub_get_device_attribute incl. poll mode, hub_call_device_command incl. waitFor, hub_update_device config writes, hub_list_device_events, hub_list_device_events history) IGNORE the device allowlist (selectedDevices) and reach ANY device on the hub by id, via the hub's id-keyed admin endpoints, at full read+write parity. Other device tools (hub_list_devices, device swap/replace/delete, device-health) are NOT bypassed. Its effect is independent of Developer Mode -- once ON it works in normal operation. Leave OFF unless you intentionally want the MCP server to control every hub device (e.g. automated whole-hub testing).
+`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, device-filtered logs, dependent lookups and swaps use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution.
 
 **selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
 

@@ -28,7 +28,7 @@ def toolUpdateMcpSettings(args) {
     // normal operation). WARNING: when ON it makes the per-device tools (hub_get_device,
     // hub_get_device_attribute, hub_call_device_command, hub_update_device, hub_list_device_events)
     // ignore the device allowlist (settings.selectedDevices) and reach ANY device on the hub by id;
-    // default OFF. (hub_list_devices, swap/replace/delete, and device-health are NOT bypassed.)
+    // default OFF. Native inventory, health, logs, dependents and swap use the same access policy.
     // selectedDevices is ALSO allowed but is NOT in this scalar map: it is the MCP device-access
     // scope (a capability.* multi-select), so it routes to _validateMcpDeviceScope (atomic id
     // validation + lockout guard + the capability.* List write) rather than the scalar coerce path.
