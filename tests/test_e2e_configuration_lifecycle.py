@@ -12,7 +12,8 @@ import pytest
     (False, "", "body"), (True, None, "body"), (False, "switch", "body"),
     (True, "switch", "body"), (False, "", "setup-error"), (False, "", "setup-noop"),
 ])
-def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, status, failure):
+@pytest.mark.parametrize("path,authorized", [("standalone-sdk", True), ("standalone-bypass", False)])
+def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, status, failure, path, authorized):
     expected = {
         "probeBool": ("bool", False), "probeNumber": ("number", 3),
         "probeText": ("text", "original saved text"), "probeEnum": ("enum", "eco"),
@@ -24,7 +25,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         "largeReadProbePresent": False, "roomName": None, "dataValues": {"configurationProbe": "original"},
         "maxEvents": 40, "maxStates": 30, "spammyThreshold": 300, "notes": "", "tags": [],
         "defaultIcon": "", "name": "Fixture", "label": "Fixture", "deviceNetworkId": "fixture-10",
-        "retryEnabled": False, "controllerType": "",
+        "retryEnabled": False, "controllerType": "", "groupId": None,
     }
     original = deepcopy(info)
     writes, body_starts = [], []
@@ -48,6 +49,13 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         assert name == "hub_get_device", name
         if args.get("mode") == "configuration":
             return configuration()
+        if args.get("mode") == "details":
+            assert args["sections"] == ["identity"]
+            assert args["fields"] == ["groupId", "controllerType"]
+            return {
+                "sectionRead": {"identity": {"status": "complete"}},
+                "sections": {"identity": {key: info[key] for key in args["fields"]}},
+            }
         return {"id": "10", "name": "Fixture", "label": "Fixture", "room": None,
                 "capabilities": [], "commands": [], "attributes": [
                     {"name": key, "value": json.dumps(value)} for key, value in snapshot.items()]}
@@ -77,7 +85,9 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
             raise RuntimeError("injected setup failure after mutation")
         if body:
             raise RuntimeError("injected matrix failure after mutation")
-        return {"success": True, "mrtr": {"continued": True}, "changes": [{"property": k} for k in patch]}
+        changes = [{"property": k} for k in patch if k != "dataValues"]
+        changes.extend({"property": f"dataValue.{key}"} for key in patch.get("dataValues", {}))
+        return {"success": True, "mrtr": {"continued": True}, "changes": changes}
 
     runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))
     runner._write_once = write_once
@@ -85,13 +95,16 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
                "setup-noop": "Native showOnHome"}[failure]
     with pytest.raises((RuntimeError, AssertionError), match=message):
         runner._device_configuration_profile(
-            {"path": "standalone-sdk", "label": "Fixture", "authorized": True}, "10", "11",
+            {"path": path, "label": "Fixture", "authorized": authorized}, "10", "11",
             {"version": 2, "driver": "Primary", "replacementDriver": "Alternate", "nativeFields": {}},
             {"Primary": 100, "Alternate": 101}, expected, "Fixture room",
         )
     assert not runner._fixture_reset_failures
     assert body_starts == ([(True, "switch")] if failure == "body" else [])
     assert len(writes) == (2 if (show, status) == (True, "switch") else 3 if failure == "body" else 2)
+    if failure == "body":
+        assert writes[-2]["dataValues"] == {"configurationProbe": "changed"}
+    assert writes[-1]["dataValues"] == {"configurationProbe": "original"}
     # Hubitat represents the None selection as either null or empty text.
     for key in ("defaultCurrentState", "roomName"):
         original[key] = original[key] or ""
