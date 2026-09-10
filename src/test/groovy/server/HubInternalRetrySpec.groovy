@@ -449,6 +449,33 @@ class HubInternalRetrySpec extends ToolSpecBase {
         errorLogs.any { it.contains('/app/saveOrUpdateJson') && it.contains('not JSON') }
     }
 
+    def "malformed preference save response retains failure context without leaking its body"() {
+        given:
+        enableHubSecurity()
+        seedCachedCookie('JSESSIONID=cached')
+        settingsMap.mcpLogLevel = 'error'
+        script.log.messages.clear()
+        httpPostHandler = { Map params, Closure cb ->
+            cb.call([status: 200, data: '<html>password=fixture-preference-response-secret</html>'])
+        }
+
+        when:
+        def result = script.hubInternalPostJson('/device/preference/save',
+            '{"deviceId":10,"preferences":[{"name":"apiToken","type":"password","value":"fixture-request-secret"}]}')
+        def errorLogs = script.log.messages.findAll { it.startsWith('error:[MCP1] ') }
+
+        then:
+        result instanceof Map
+        result._unparseable == true
+        result.message.contains('/device/preference/save')
+        !result.toString().contains('fixture-preference-response-secret')
+        !result.toString().contains('<html>')
+        errorLogs.any { it.contains('/device/preference/save') }
+        !script.log.messages.join('\n').contains('fixture-preference-response-secret')
+        !script.log.messages.join('\n').contains('fixture-request-secret')
+        !script.log.messages.join('\n').contains('<html>')
+    }
+
     // ---------- querystring-in-path guard ----------
 
     @spock.lang.Unroll

@@ -10,11 +10,31 @@ with the hub's HTTP surface. Every file is downloaded verbatim from a hub at
 | File(s) | What it is |
 |---|---|
 | `vue-hub2.min.js` (~3.3 MB, platform 2.5.0.143) | The modern **Vue 3 SPA** as one MONOLITH — every component body inline, so this is the file whose string literals carry the **whole endpoint corpus** (`/hub2/appsList`, `/device/runmethod`, `/app/saveOrUpdateJson`, …). Kept deliberately: the 2.5.1 build is code-split and its shell no longer contains those literals |
-| `vue-hub2-shell-2.5.1.min.js` (~573 KB, platform 2.5.1.181) | The 2.5.1 **shell** — routes, the chunk-filename map (`.u=function(e)`) for every lazily-loaded chunk, and the components that were not split out. Grep it for routing; grep the monolith above for endpoints |
+| `vue-hub2-shell-2.5.1.min.js` (~573 KB, platform 2.5.1.181) | The 2.5.1 **shell** — routes, the chunk-filename map (`.u=function(e)`) for every lazily-loaded chunk, and the components that were not split out. Grep it for routing; use the current chunks below for their endpoints and the monolith as historical reference |
 | `vue-hub2-visual-rule-builder-20.min.js` (~583 KB, platform 2.5.1.181) | The **Visual Rule Builder 2.0** code-split chunk — the entire 2.0 editor: graph compose/decompose, dialogs, and its own endpoints |
+| `vue-hub2-device-details.min.js`, `vue-hub2-device-details-shared.min.js` (platform 2.5.1.181) | Current device details and shared configuration components; use these for device read/write contracts, including preferences and Assistants |
 | `appUI.js`, `main.js`, `helpers.js`, `hub2utils.js`, `hubitat.min.js`, `success-compiled.js` | The **classic server-rendered `dynamicPage` engine** — the client side of the legacy app-config flow that Rule Machine and every other classic app still use |
 
 ## Capture state
+
+The two device chunks were captured **2026-09-08** from platform **2.5.1.181**,
+using the filenames mapped by the live shell. Their source paths are
+`/ui2/js/vue-hub2-device-details.min.js` and
+`/ui2/js/vue-hub2-device-details-shared.min.js`. SHA-256:
+
+- Device details: `8c2ca8dc92e8b0c322fcd1ec249900136b4db67dc822c4287015e7b8bff02546`
+- Shared device details: `ee7272d1bcd6a411fd937d3b23c71286696ce2cd7ac6841033c2e2a9bc3d8aba`
+
+These are the primary device interoperability reference. The current UI reads
+`/device/fullJson/<id>` and consumes `settings`, `inputValues`, and `device`
+separately. Driver declarations/defaults and saved device values are distinct.
+The independent E2E observer on firmware 2.5.1.174 returned a multiple-enum
+saved value as a JSON-array string (`["red"]`). Device reads accept that encoding
+as well as comma-separated selections; do not infer a firmware boundary from
+the different read-only capture and E2E hub versions.
+The shared component supplies the current `/device/update` form and
+`/device/updateAssistants` JSON contracts. The old monolith remains historical
+reference for components whose current chunks have not been captured.
 
 `vue-hub2-shell-2.5.1.min.js`, `main.js` and `vue-hub2-visual-rule-builder-20.min.js`
 were captured **2026-09-03** from a Hubitat **C-8** on platform **2.5.1.181**.
@@ -22,7 +42,8 @@ were captured **2026-09-03** from a Hubitat **C-8** on platform **2.5.1.181**.
 on purpose: the 2.5.1 SPA is code-split, so the shell that replaced it holds only a
 fraction of the endpoint literals (five of five sampled endpoints — `/hub2/appsList`,
 `/device/runmethod`, `/device/preference/save`, `/app/saveOrUpdateJson`, `/bundle2/uploadZip`
-— exist in the monolith and in NO 2.5.1 file vendored here). The monolith stays as the
+— were then present only in the monolith; the device chunks above now supply the
+current device endpoints). The monolith stays as the
 greppable corpus until every chunk that carries an endpoint is vendored.
 `hubitat.min.js` was re-fetched the same day and is byte-identical to the earlier
 capture, so it carries both dates.
@@ -147,10 +168,11 @@ moved into lazily-loaded chunks; that shell keeps only the routes and the
 chunk-id → filename map (the `.u=function(e)` map, `"js/vue-hub2-" + {…}[e] +
 ".min.js"`) and is vendored here as `vue-hub2-shell-2.5.1.min.js`. The
 `vue-hub2.min.js` in this folder is deliberately the 2.5.0.143 MONOLITH, because
-it still carries every endpoint literal inline. So: **grep the monolith for
-endpoints, the VRB 2.0 chunk for anything 2.0, the shell for routing** — none of
-the three `ruleBuilder20*` endpoints appear in the shell at all. Only the VRB 2.0
-chunk is vendored; fetch another from `/ui2/js/<name>` when you need it.
+it still carries the historical endpoint corpus inline. **Use the current device
+chunks for device contracts, the VRB 2.0 chunk for that editor, and the shell for
+routing.** The monolith is a historical reference for uncaptured components;
+fetch their current chunk from `/ui2/js/<name>` before relying on its contract.
+The three `ruleBuilder20*` endpoints do not appear in the shell itself.
 
 **There are TWO Vue builder components with different wire formats** behind one
 user-facing app type ("Visual Rules Builder" parent; children are hidden type
@@ -406,10 +428,11 @@ caller rather than hidden.
 | `GET  /device/drivers` | Full driver-type catalog → `{drivers:[{id, version, name, namespace, author, type(`sys`\|`usr`\|`dep`), category, ...}]}` (935 on the test hub: `sys`=built-in incl. the `Virtual *` drivers, `usr`=user). The superset of `/hub2/userDeviceTypes` (which lists only `usr`). Feeds `hub_list_drivers(include='all')`; each `id` is the deviceTypeId for `hub_create_device`. The projection buckets `usr`→user, `Virtual *`→virtual, else→system, and skips `type=='dep'` / `category=='Hidden'`. Read-only. |
 | `GET  /device/setShowOnHome?deviceId=&show=<bool>` | Per-device Home-page / status-bar flag → HTTP 200 (empty body). Sets whether the device appears on the hub Home page and counts toward its quick status summaries. **Availability varies by hub: live-found 404 on a 2.5.0.157 hub, 200 on a 2.5.0.159 hub — cause not established (NOT tied to any documented release-notes change).** Feeds `hub_update_device(showOnHome)`; when this GET is absent (404), `hub_update_device` falls back to the portable `POST /device/preference/save` (below). |
 | `GET  /device/setDefaultCurrentState?id=&currentState=<attr\|"">` | Sets which Current-States attribute shows in the Status column on the Devices/Rooms pages (`""`=None) → `true`; a 200 body that is NOT `true` (e.g. `false` for an unknown attribute) is a value rejection (the endpoint exists). **Availability varies by hub: live-found 404 on a 2.5.0.157 hub, 200 on a 2.5.0.159 hub — cause not established (NOT tied to any documented release-notes change).** Feeds `hub_update_device(defaultCurrentState)`; when this GET is absent (404), `hub_update_device` falls back to the portable `POST /device/preference/save` (below) — but a 200 rejection does NOT fall back. |
-| `POST /device/preference/save` (JSON) | The long-standing Preferences-pane save — JSON body `{deviceId, showOnHome, defaultCurrentState, commandRetry, preferences:[]}`; a PARTIAL body (e.g. just `{deviceId, showOnHome}`) sets ONLY the named field (live-verified fw 2.5.0.159 — flips `showOnHome`, preserves label/other fields). `deviceId` is numeric. Present on both hubs tested (the 2.5.0.157 e2e hub via the fallback path and a 2.5.0.159 hub directly), so it serves as the portable fallback. Backs `hub_update_device` showOnHome/defaultCurrentState as the FALLBACK when `/device/setShowOnHome` / `/device/setDefaultCurrentState` are absent (404). |
+| `POST /device/preference/save` (JSON) | Native Preferences-pane save: `{deviceId, showOnHome, defaultCurrentState, commandRetry, preferences:[]}` with numeric deviceId. On 2.5.1.181, preference rows are a delta: sequential individual rows and an empty array preserve unrelated saved preferences. Pane controls have a different contract: omitting them reset Home visibility/status selection in isolated live probes. Always read and preserve all pane controls, then override only requested values. This supersedes the older partial-body preservation claim. Used for preference writes and as the fallback when dedicated Home/status setters are absent. |
+| `POST /device/disable` (JSON) | `{id: <numeric deviceId>, disable: <boolean>}` with `Content-Type: application/json`; `true` disables and `false` enables. Vendored Vue `setDeviceDisabled` sends JSON. Confirmed on firmware 2.5.1.174 by full E2E run 34412046413: child, selected standalone and native-bypass configuration fixtures were disabled, independently observed through fresh `/device/fullJson`, then restored. HTTP success alone does not prove the flip. |
 | `GET  /device/availableTags` | JSON array of tag strings — the hub's GLOBAL tag pool (`[]` when none). Autocomplete only; tags are ASSIGNED only via the wholesale `POST /device/update` form (no dedicated setter — `setTags`/`updateTags` 404). |
 | `POST /device/update` (x-www-form-urlencoded) | Wholesale device-edit **save** — OMITTED fields are BLANKED, so a caller MUST read-merge from `/device/fullJson/<id>` and re-post the COMPLETE form. deviceModel keys: `name, label, zigbeeId, maxEvents, maxStates, spammyThreshold, deviceNetworkId, deviceTypeId, deviceTypeReadableType, roomId, meshEnabled, retryEnabled, meshFullSync, homeKitEnabled, locationId, hubId, groupId, dashboardIds, tags, defaultIcon, notes` (+ `id, version, controllerType` when `id` present); booleans emit `true`→`"on"` else `"false"`. Backs `hub_update_device(tags)` (read-merge then full re-POST; identity fields restored via SDK setters if the form blanked them). |
-| `GET  /device/sysDriverByIdJson/<deviceTypeId>` | Instantiate a device from a driver type (the "add device by driver" path) → `{success, deviceId, errorMessage}`. Creates a non-radio software/real instance; radio drivers become orphan shells (no paired node). Backs `hub_create_device`. |
+| `GET /device/sysDriverByIdJson/<deviceTypeId>` and `GET /device/createVirtual?deviceTypeId=` | Native driver-based creation returns `{success, deviceId, errorMessage}` for the system route or `{deviceId}` for the user-driver route. Resolve the unique `sys`/`usr` type from `/device/drivers` before sending one creation request. The current Vue manual-add flow uses `createVirtual` for user drivers. A standalone software/LAN device can use ordinary selected-device or native ID command paths; this does not make it equivalent to paired radio hardware or prove transport behavior. Do not fall back to another creation route after an ambiguous failure. |
 | `GET  /device/updateLabel?deviceId=&label=` · `/device/updateRoom?deviceId=&room=<roomName>` | Dedicated label / room setters → `true`. `updateRoom` is keyed on the room NAME (not the id), and SILENTLY CREATES a spurious room for a name it doesn't match exactly (so callers must validate the name exists first AND send the canonical casing). `hub_create_device` tries `updateLabel` first for the optional `label`. **`updateLabel` availability varies by hub: live-found 404 on a 2.5.0.157 hub** (same sometimes-absent dedicated-setter class as `/device/setShowOnHome` / `/device/setDefaultCurrentState` above), so BOTH the device-allowlist bypass branch of `hub_update_device` AND the `hub_create_device` post-create label step fall back to the portable wholesale `POST /device/update` form (which carries a `label` field) when this endpoint fails; only if BOTH paths fail does `hub_create_device` warn (non-fatal, pointing the caller at `hub_update_device`). |
 | `GET  /hub/compatibleDevices` | Hubitat's static compatible-device catalog — a JSON array (~1083 entries, ~1MB) of `{brand, name, deviceType, productNumber, protocol, driverName, deviceTypeId, appTypeId, integrationAppName, supportedHubs, joinInstructions, excludeInstructions, factoryResetInstructions, notes, additionalHardware, affiliateLink, zwaveAllianceId, zwaveAllianceXml, id}` with HTML pairing/exclude/factory-reset instructions. This is what the Vue "instructionSearch" page renders. Read-only. Backs `hub_get_compatible_devices` (filtered + paginated). |
 

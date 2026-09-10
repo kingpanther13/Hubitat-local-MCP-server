@@ -1026,12 +1026,23 @@ private boolean _bypassEnabled() {
 // attribute list, and the command set from this -- the Groovy device object is unavailable for
 // an unlisted device (the device model is authorization-scoped).
 private Map _fetchDeviceFullJson(deviceId) {
+    String stage = 'fetch'
     try {
         def txt = hubInternalGet("/device/fullJson/${deviceId}")
-        def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        return (parsed instanceof Map) ? parsed : null
+        if (!txt) {
+            mcpLog("error", "device", "bypass: /device/fullJson/${deviceId} returned an empty response")
+            return null
+        }
+        stage = 'parse'
+        def parsed = new groovy.json.JsonSlurper().parseText(txt)
+        if (!(parsed instanceof Map)) {
+            mcpLog("error", "device", "bypass: /device/fullJson/${deviceId} returned a non-object JSON response")
+            return null
+        }
+        return parsed
     } catch (Exception e) {
-        mcpLog("warn", "device", "bypass: /device/fullJson/${deviceId} fetch/parse failed: ${e.message ?: e.toString()}")
+        // Parser and transport messages can contain native settings or response bodies.
+        mcpLog("error", "device", "bypass: /device/fullJson/${deviceId} ${stage} failed (${e.class.simpleName})")
         return null
     }
 }
@@ -1103,23 +1114,355 @@ private List _fullJsonCommandNames(Map fullJson) {
     return (cmds instanceof List) ? cmds.collect { it?.name }.findAll { it != null } : []
 }
 
-// Read a device PREFERENCE/setting value from a fullJson device model. fullJson `settings` is an
-// ARRAY of {name, type, value}; returns the named setting's value (or null when absent). Used by
-// the bypass preference read-back to confirm a /device/preference/save actually landed.
-private _fullJsonSettingValue(deviceMap, name) {
-    def settings = deviceMap?.settings
-    if (!(settings instanceof List)) return null
-    def m = settings.find { it instanceof Map && it.name?.toString() == name }
-    return (m instanceof Map) ? m.value : null
+private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple = false) {
+    if (raw == null) return [valid: true, value: null]
+    if (multiple) {
+        if (raw == '') return [valid: true, value: []]
+        if (raw instanceof List) return [valid: true, value: raw.collect { it?.toString() }]
+        if (raw instanceof String) {
+            if (raw.trim().startsWith('[')) {
+                try {
+                    def selection = new groovy.json.JsonSlurper().parseText(raw)
+                    if (selection instanceof List) return [valid: true, value: selection.collect { it?.toString() }]
+                } catch (Exception ignored) {
+                    // Non-JSON option names still use the native comma-separated representation.
+                }
+            }
+            return [valid: true, value: raw.split(',').collect { it.trim() }]
+        }
+        return [valid: false, value: null]
+    }
+    if (raw == '') return [valid: true, value: raw]
+    if (type in ['bool', 'boolean']) {
+        if (raw == true || raw?.toString() == 'true') return [valid: true, value: true]
+        if (raw == false || raw?.toString() == 'false') return [valid: true, value: false]
+        return [valid: false, value: null]
+    }
+    if (type in ['number', 'decimal']) {
+        if (raw instanceof Number) return [valid: true, value: raw]
+        if (raw instanceof String) {
+            try { return [valid: true, value: new BigDecimal(raw.trim())] }
+            catch (Exception ignored) { return [valid: false, value: null] }
+        }
+        return [valid: false, value: null]
+    }
+    return [valid: !(raw instanceof Map || raw instanceof List), value: raw?.toString()]
 }
 
-// Infer the /device/preference/save `type` token when the caller did not supply one: a Boolean
-// is "bool", a Number is "number", everything else "string". A typed pref should pass its type
-// explicitly ({type, value}); this is the fallback for a bare value.
-private String _inferPrefType(value) {
-    if (value instanceof Boolean) return "bool"
-    if (value instanceof Number) return "number"
-    return "string"
+// Definitions and stored values are siblings of device in the current native response.
+private Map _readDevicePreferenceModel(Map fullJson) {
+    def definitions = fullJson?.get('settings')
+    if (!(definitions instanceof List)) {
+        return [status: 'unavailable', source: 'settings', entries: [],
+                reason: 'Native device details did not contain a recognized top-level settings array.']
+    }
+    def model = [status: 'complete', source: 'settings', entries: [], writeSafe: true]
+    def inputs = [:]
+    def duplicates = []
+    def rawInputs = fullJson.get('inputValues')
+    if (rawInputs != null && !(rawInputs instanceof List)) {
+        model.writeSafe = false
+        model.status = 'partial'
+        model.reason = 'Native inputValues is not a recognized array; stored values may be incomplete.'
+    } else {
+        (rawInputs ?: []).each { row ->
+            if (!(row instanceof Map) || row.name == null) {
+                model.writeSafe = false
+                model.status = 'partial'
+                model.reason = 'Native inputValues contains an unnamed or malformed value.'
+            } else {
+                String key = row.name.toString()
+                if (inputs.containsKey(key)) duplicates << key
+                inputs.put(key, row)
+            }
+        }
+    }
+    def names = []
+    definitions.each { row ->
+        if (!(row instanceof Map) || row.name == null || row.type == null) {
+            model.writeSafe = false
+            model.status = 'partial'
+            model.reason = 'Native settings contains an unnamed or malformed declaration.'
+            return
+        }
+        String name = row.name.toString()
+        String type = row.type.toString()
+        if (names.contains(name)) {
+            model.writeSafe = false
+            model.status = 'partial'
+            model.reason = 'Native settings contains duplicate preference names.'
+            model.entries.removeAll { it.name == name }
+            return
+        }
+        names << name
+        if (type in ['paragraph', 'hidden', 'button', 'image']) return
+        def input = inputs.get(name)
+        // Cleared native settings lose their storage identity; inputValues can still prefill the UI default.
+        boolean nativeUnset = row.containsKey('id') && row.get('id') == null &&
+            row.containsKey('deviceId') && row.get('deviceId') == null && row.containsKey('value') && row.get('value') == null
+        boolean present = !nativeUnset && ((input instanceof Map && input.containsKey('inputValue')) || row.containsKey('value'))
+        def raw = nativeUnset ? null : ((input instanceof Map && input.containsKey('inputValue')) ? input.get('inputValue') : row.get('value'))
+        // Unset enum rows lose stored cardinality even when the driver declares multiple:true.
+        Boolean multiple = type == 'enum' && nativeUnset && !_deviceFlag(row.multiple) ? null : _deviceFlag(row.multiple)
+        def normalized = _normalizeDevicePreferenceValue(raw, type, multiple == true)
+        def entry = [name: name, type: type, declared: true, multiple: multiple,
+                     valuePresent: present, valueStatus: present ? 'stored' : 'unset',
+                     rawValue: raw, value: normalized.value]
+        if (multiple == null) {
+            entry.multipleStatus = 'unavailable'
+            entry.multipleReason = 'Native unset enum metadata does not identify single or multiple selection. Check driverSource or previously read metadata and pass an explicit multiple boolean when setting it.'
+        }
+        ['title', 'description', 'options', 'range', 'required'].each { key ->
+            if (row.containsKey(key)) entry.put(key, row.get(key))
+        }
+        if (row.containsKey('defaultValue')) {
+            def defaultValue = _normalizeDevicePreferenceValue(row.get('defaultValue'), type, multiple == true)
+            entry.defaultValue = defaultValue.valid ? defaultValue.value : row.get('defaultValue')
+        }
+        if (!normalized.valid || duplicates.contains(name)) {
+            model.writeSafe = false
+            entry.valueStatus = duplicates.contains(name) ? 'unknown' : 'invalid'
+            entry.value = null
+            model.status = 'partial'
+            model.reason = 'A stored preference value is ambiguous or does not match its declared type.'
+        }
+        model.entries << entry
+    }
+    if (duplicates || inputs.keySet().any { key -> !names.contains(key) }) {
+        if (duplicates) model.writeSafe = false
+        model.status = 'partial'
+        model.reason = 'Native inputValues contains duplicate or undeclared preference names.'
+    }
+    return model
+}
+
+private Map _lookupDevicePreference(Map model, name) {
+    return model?.entries?.find { it.name == name?.toString() }
+}
+
+private boolean _devicePreferenceIsSecret(Map entry) {
+    return entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name)
+}
+
+private boolean _deviceConfigurationSecretKey(key) {
+    String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
+    return normalized.contains('password') || normalized.contains('token') || normalized.contains('secret') ||
+        normalized.contains('credential') || normalized.contains('apikey') || normalized.contains('privatekey') ||
+        normalized.contains('accesskey') || normalized in ['psk', 'psw']
+}
+
+private _deviceConfigurationPublicValue(value, key = '') {
+    if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
+    if (value instanceof Map) {
+        def copy = [:]
+        value.each { k, v -> copy.put(k, _deviceConfigurationPublicValue(v, k)) }
+        return copy
+    }
+    if (value instanceof List) return value.collect { _deviceConfigurationPublicValue(it) }
+    return value
+}
+
+private Map _publicDevicePreference(Map entry) {
+    def copy = [:]
+    entry.each { key, value ->
+        if (!(key in ['rawValue', 'declared'])) copy.put(key, _deviceConfigurationPublicValue(value))
+    }
+    if (_devicePreferenceIsSecret(entry)) {
+        if (copy.containsKey('value')) copy.value = '***redacted (password)***'
+        if (copy.containsKey('defaultValue')) copy.defaultValue = '***redacted (password)***'
+        copy.redacted = true
+    }
+    copy.writable = !(entry.valueStatus in ['unknown', 'invalid'])
+    return copy
+}
+
+private Map _deviceConfigurationProjection(Map source, List keys) {
+    def result = [:]
+    keys.each { key ->
+        if (source?.containsKey(key)) result.put(key, _deviceConfigurationPublicValue(source.get(key), key))
+    }
+    return result
+}
+
+private List _deviceConfigurationFieldDefinitions() {
+    return [
+        [name: 'label', type: 'string'], [name: 'name', type: 'string'],
+        [name: 'deviceNetworkId', type: 'string', requiresConfirmation: true],
+        [name: 'room', type: 'string'], [name: 'enabled', type: 'boolean'],
+        [name: 'dataValues', type: 'object'], [name: 'preferences', type: 'object'],
+        [name: 'showOnHome', type: 'boolean'], [name: 'defaultCurrentState', type: 'string'],
+        [name: 'tags', type: 'array', items: [type: 'string']],
+        [name: 'deviceTypeId', type: 'integer', requiresConfirmation: true],
+        [name: 'zigbeeId', type: 'string', requiresConfirmation: true],
+        [name: 'notes', type: 'string'], [name: 'defaultIcon', type: 'string'],
+        [name: 'maxEvents', type: 'integer', minimum: 1, maximum: 2000],
+        [name: 'maxStates', type: 'integer', minimum: 1, maximum: 2000],
+        [name: 'spammyThreshold', type: 'integer', minimum: 100, maximum: 2000],
+        [name: 'dashboardIds', type: 'array', items: [type: 'integer'], requiresConfirmation: true],
+        [name: 'meshEnabled', type: 'boolean', requiresConfirmation: true],
+        [name: 'retryEnabled', type: 'boolean'],
+        [name: 'meshFullSync', type: 'boolean', requiresConfirmation: true],
+        [name: 'homeKitEnabled', type: 'boolean', requiresConfirmation: true],
+        [name: 'amazonAlexaEnabled', type: 'boolean', requiresConfirmation: true],
+        [name: 'googleHomeEnabled', type: 'boolean', requiresConfirmation: true]
+    ]
+}
+
+private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean listed) {
+    Map d = (fj?.device instanceof Map) ? fj.device : [:]
+    def values = _deviceConfigurationProjection(d, ['label', 'name', 'deviceNetworkId', 'showOnHome',
+        'defaultCurrentState', 'deviceTypeId', 'zigbeeId', 'notes', 'defaultIcon', 'maxEvents', 'maxStates',
+        'spammyThreshold', 'meshEnabled', 'retryEnabled', 'meshFullSync'])
+    if (d.containsKey('roomName')) values.room = d.roomName
+    if (d.containsKey('disabled')) {
+        def disabled = _normalizeDevicePreferenceValue(d.disabled, 'bool')
+        if (disabled.valid && disabled.value != null) values.enabled = !disabled.value
+    }
+    if (d.containsKey('data')) values.dataValues = _deviceConfigurationPublicValue(d.data)
+    if (d.containsKey('tags')) {
+        values.tags = _normalizedDeviceTags(d.tags)
+    }
+    if (fj?.dashboards instanceof List) values.dashboardIds = fj.dashboards.findAll { it.selected == true }.collect { it.id }
+    ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].each { key ->
+        if (fj?.containsKey(key)) values.put(key, fj.get(key))
+    }
+    def applicable = [
+        label: !_deviceFlag(d.linkedAndDisabled),
+        name: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
+        deviceNetworkId: (!_deviceFlag(d.isComponent) || _deviceFlag(d.linkedDevice)) && !_deviceFlag(d.linkedLocally),
+        dataValues: listed,
+        deviceTypeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
+        zigbeeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice) && d.zigbeeId instanceof String && !d.zigbeeId.isEmpty(),
+        dashboardIds: _deviceFlag(fj?.hasDashboards),
+        meshEnabled: _deviceFlag(d.meshSelectionEnabled),
+        retryEnabled: _deviceFlag(fj?.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable),
+        meshFullSync: _deviceFlag(d.linkedDevice) && _deviceFlag(fj?.hubMeshRefreshEnabled),
+        homeKitEnabled: _deviceFlag(fj?.homeKitSelectionEnabled),
+        amazonAlexaEnabled: _deviceFlag(fj?.amazonAlexaInstalled) && _deviceFlag(fj?.amazonAlexaSupported),
+        googleHomeEnabled: _deviceFlag(fj?.googleHomeInstalled) && _deviceFlag(fj?.googleHomeSupported)
+    ]
+    def fields = _deviceConfigurationFieldDefinitions()
+    fields.each { field ->
+        String name = field.name
+        field.source = name in ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled', 'dashboardIds'] ? 'fullJson' : 'fullJson.device'
+        field.valuePresent = values.containsKey(name)
+        if (field.valuePresent) field.value = values.get(name)
+        field.readStatus = field.valuePresent ? 'complete' : 'unavailable'
+        field.applicable = !applicable.containsKey(name) || applicable.get(name)
+        field.writable = !d.isEmpty() && field.applicable
+        if (field.requiresConfirmation) field.requiresBackup = true
+        if (!field.applicable) field.reason = 'This device or installed integration does not expose this edit control.'
+        else if (!field.valuePresent) field.reason = 'The native device response did not supply this current value.'
+        if (name == 'preferences') {
+            field.source = 'fullJson.settings'
+            field.valueReference = 'preferences'
+            field.readStatus = preferences.status
+            field.valuePresent = preferences.status != 'unavailable'
+            field.applicable = !_deviceFlag(d.linkedDevice)
+            field.writable = field.applicable && preferences.writeSafe == true
+            field.remove('reason')
+            if (!field.applicable) field.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
+            else if (preferences.reason) field.reason = preferences.reason
+        }
+        if (name == 'room') field.optionsReference = [gateway: 'hub_read_rooms', tool: 'hub_list_rooms', args: [:]]
+        if (name == 'deviceTypeId') field.optionsReference = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'all']]
+        if (name == 'deviceNetworkId' && d.linkedDevice) {
+            field.options = [[value: '0', label: 'Keep current device link']]
+            try {
+                def text = hubInternalGet('/device/accessibleLinkedDevices')
+                def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
+                if (!(available?.devices instanceof List)) throw new IllegalStateException('Unrecognized linked-device choices')
+                available.devices.each { row ->
+                    if (row instanceof Map && row.hubId != null && row.deviceId != null) {
+                        field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
+                            label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
+                    }
+                }
+            } catch (Exception ignored) {
+                mcpLog('error', 'device', "Device ${d.id}: /device/accessibleLinkedDevices choices could not be read; retry configuration discovery.")
+                field.optionsStatus = 'unavailable'
+                field.reason = 'Native linked-device choices could not be read; retry configuration discovery before retargeting.'
+            }
+        }
+        if (name == 'dashboardIds') field.options = _deviceConfigurationPublicValue(fj?.dashboards ?: [])
+        if (name == 'defaultCurrentState') field.options = [''] + _fullJsonAttributeNames(fj)
+    }
+    return fields
+}
+
+private Map _deviceConfigurationDriverSource(Map d, deviceId) {
+    def lookup = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'user']]
+    if (d.systemDeviceType == true || (d.driverType ?: d.deviceTypeType) in ['sys', 'system']) {
+        return [status: 'unavailable', reason: 'Built-in driver source is not exposed by the user driver-code endpoint.', lookup: lookup]
+    }
+    if ((d.driverType ?: d.deviceTypeType) != 'usr' || !d.deviceTypeName || !d.deviceTypeNamespace) {
+        return [status: 'unresolved', reason: 'Native device details did not identify a resolvable user driver.', lookup: lookup]
+    }
+    try {
+        def text = hubInternalGet('/hub2/userDeviceTypes')
+        def catalog = text ? new groovy.json.JsonSlurper().parseText(text) : null
+        if (!(catalog instanceof List)) throw new IllegalStateException('Unrecognized user driver catalog')
+        def matches = catalog.findAll { row -> row instanceof Map && row.name == d.deviceTypeName && row.namespace == d.deviceTypeNamespace }
+        if (matches.size() > 1) {
+            matches = matches.findAll { row ->
+                row.usedBy instanceof List && row.usedBy.any { use ->
+                    use instanceof Map && use.id != null && deviceId != null && use.id.toString() == deviceId.toString()
+                }
+            }
+        }
+        if (matches.size() == 1 && matches[0].id != null) {
+            return [status: 'available', gateway: 'hub_read_apps_code', tool: 'hub_get_source',
+                    args: [type: 'driver', id: matches[0].id.toString()]]
+        }
+    } catch (Exception ignored) {
+        mcpLog('error', 'device', "Device ${deviceId}: /hub2/userDeviceTypes catalog could not be read; retry driver discovery.")
+        return [status: 'unavailable', reason: 'The user driver catalog could not be read. Retry driver discovery.', lookup: lookup]
+    }
+    return [status: 'unresolved', reason: 'No unique user driver-code entry matched the native driver name and namespace.', lookup: lookup]
+}
+
+private Map _deviceConfigurationInfo(Map fj) {
+    Map d = fj?.device instanceof Map ? fj.device : [:]
+    def info = _deviceConfigurationProjection(d, ['disabled', 'showOnHome', 'deviceNetworkId', 'roomId', 'roomName',
+        'parentDeviceId', 'parentAppId', 'isComponent', 'linkedDevice', 'lastActivityTime', 'defaultCurrentState',
+        'tags', 'notes', 'maxEvents', 'maxStates', 'spammyThreshold', 'defaultIcon', 'retryEnabled',
+        'meshEnabled', 'meshFullSync', 'createTime', 'updateTime', 'version'])
+    info.driver = [name: d.deviceTypeName, namespace: d.deviceTypeNamespace, deviceTypeId: d.deviceTypeId,
+                   type: d.driverType ?: d.deviceTypeType, readableType: d.deviceTypeReadableType,
+                   system: d.systemDeviceType]
+    return info
+}
+
+private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean listed, fields = null) {
+    def model = _readDevicePreferenceModel(fj)
+    boolean linkedDevice = (fj?.device instanceof Map) && _deviceFlag(fj.device.linkedDevice)
+    def read = [status: model.status, source: "/device/fullJson/${deviceId}".toString()]
+    if (model.reason) read.reason = model.reason
+    boolean available = fj?.device instanceof Map && !fj.device.isEmpty()
+    def infoRead = [status: available ? 'complete' : 'unavailable', source: "/device/fullJson/${deviceId}".toString()]
+    if (!available) infoRead.reason = 'Native device information could not be fetched or recognized.'
+    def result = [id: deviceId.toString(), name: identity.name, label: identity.label, mode: 'configuration',
+            editableFields: _deviceConfigurationEditableFields(fj, model, listed),
+            preferences: model.entries.collect {
+                def entry = _publicDevicePreference(it)
+                entry.writable = !linkedDevice && model.writeSafe == true && entry.writable
+                if (linkedDevice) {
+                    entry.applicable = false
+                    entry.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
+                }
+                entry
+            }, preferenceRead: read,
+            deviceInfo: _deviceConfigurationInfo(fj), deviceInfoRead: infoRead,
+            driverSource: _deviceConfigurationDriverSource(available ? fj.device : [:], deviceId)]
+    if (fields != null) {
+        result.availableFields = [editableFields: result.editableFields.collect { it.name },
+                                  preferences: result.preferences.collect { it.name },
+                                  deviceInfo: result.deviceInfo.keySet().toList()]
+        result.editableFields = result.editableFields.findAll { fields.contains(it.name) }
+        result.preferences = result.preferences.findAll { fields.contains(it.name) }
+        result.deviceInfo = _deviceConfigurationProjection(result.deviceInfo, fields)
+    }
+    return result
 }
 
 // Read one attribute's current value from a fullJson device model (currentStates keyed by name).
@@ -1188,14 +1531,307 @@ private _fullJsonCommandArgs(c) {
     return null
 }
 
-def toolGetDevice(deviceId) {
+private List _deviceDetailSections() {
+    return ['configuration', 'identity', 'attributes', 'commands', 'data', 'state', 'relationships', 'jobs', 'integrations', 'metadata']
+}
+
+private Map _deviceDetailSourceCoverage(Map fj) {
+    def rootKeys = ['device', 'settings', 'inputValues', 'commands', 'deviceState', 'scheduledJobs',
+        'parentApp', 'childDevices', 'hasChildren', 'appsUsing', 'appsUsingCount', 'appsUsingForDialog',
+        'appsUsingForDialogMore', 'amazonAlexaEnabled', 'amazonAlexaInstalled', 'amazonAlexaSupported',
+        'googleHomeEnabled', 'googleHomeInstalled', 'googleHomeSupported', 'homeKitEnabled',
+        'homeKitSelectionEnabled', 'dashboards', 'hasDashboards', 'dashboardTypes',
+        'commandRetrySelectionEnabled', 'hubMeshRefreshEnabled', 'showInstructionSearchLink',
+        'extraBreadcrumb', 'virtualFirst', 'tags']
+    def deviceKeys = ['id', 'deviceId', 'name', 'label', 'displayName', 'deviceNetworkId', 'zigbeeId',
+        'lanId', 'endpointId', 'network', 'controllerType', 'roomId', 'roomName', 'roomAssigned',
+        'hubId', 'hubName', 'locationId', 'locationName', 'groupId', 'groupName', 'virtual', 'isComponent',
+        'disabled', 'status', 'orphan', 'createTime', 'updateTime', 'lastActivityTime', 'version',
+        'capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState', 'data', 'dataJson',
+        'parentDeviceId', 'parentAppId', 'displayAsChild', 'compatibleDeviceId', 'linkedDevice',
+        'linkedAndDisabled', 'linkedLocally', 'meshEnabled', 'meshFullSync', 'meshSelectionEnabled',
+        'retryEnabled', 'retryAvailable', 'homeKitCompatible', 'remoteDeviceUrl', 'ZWave', 'zigbee',
+        'matter', 'bluetooth', 'notes', 'tags', 'maxEvents', 'maxStates', 'spammyThreshold', 'defaultIcon',
+        'icon', 'showOnHome', 'deviceTypeClassLocation', 'deviceTypePopulated', 'deviceTypeSingleThreaded',
+        'deviceTypeReadableType', 'deviceTypeType', 'driverType', 'systemDeviceType', 'deviceTypeId',
+        'deviceTypeName', 'deviceTypeNamespace']
+    def unknownRoot = fj?.keySet()?.findAll { !rootKeys.contains(it) }?.toList() ?: []
+    def unknownDevice = fj?.device instanceof Map ? fj.device.keySet().findAll { !deviceKeys.contains(it) }.toList() : []
+    return [status: fj?.device instanceof Map ? (unknownRoot || unknownDevice ? 'partial' : 'complete') : 'unavailable',
+            unmappedRootFields: unknownRoot, unmappedDeviceFields: unknownDevice,
+            representedSeparately: [settings: 'configuration.preferences', inputValues: 'configuration.preferences',
+                                   'device.dataJson': 'data (parsed native data map; raw duplicate omitted)']]
+}
+
+private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, deviceId) {
+    def status = [status: 'complete', source: "/device/fullJson/${deviceId}".toString()]
+    if (d.isEmpty()) return status + [status: 'unavailable', reason: 'Native device details could not be fetched or recognized.']
+    if (section == 'configuration') {
+        return status + [status: value.preferenceRead.status] + (value.preferenceRead.reason ? [reason: value.preferenceRead.reason] : [:])
+    }
+    def contracts = [
+        identity: [device: [id: 'scalar', name: 'scalar', label: 'scalar', deviceTypeId: 'scalar']],
+        attributes: [device: [capabilities: 'list', currentStates: 'map', displayAttributes: 'list', defaultCurrentState: 'scalar']],
+        commands: [root: [commands: 'list']], data: [device: [data: 'map']],
+        state: [root: [deviceState: 'map']], jobs: [root: [scheduledJobs: 'list']],
+        relationships: [root: [parentApp: 'map', childDevices: 'map', hasChildren: 'scalar',
+            appsUsing: 'list', appsUsingCount: 'scalar', appsUsingForDialog: 'list', appsUsingForDialogMore: 'scalar']],
+        integrations: [root: [amazonAlexaEnabled: 'scalar', amazonAlexaInstalled: 'scalar', amazonAlexaSupported: 'scalar',
+            googleHomeEnabled: 'scalar', googleHomeInstalled: 'scalar', googleHomeSupported: 'scalar',
+            homeKitEnabled: 'scalar', homeKitSelectionEnabled: 'scalar', dashboards: 'list', hasDashboards: 'scalar',
+            dashboardTypes: 'list', commandRetrySelectionEnabled: 'scalar', hubMeshRefreshEnabled: 'scalar']],
+        metadata: [device: [notes: 'scalar', tags: 'stringOrList', maxEvents: 'scalar', maxStates: 'scalar',
+            spammyThreshold: 'scalar', defaultIcon: 'scalar', showOnHome: 'scalar']]
+    ]
+    def problems = []
+    contracts.get(section)?.each { scope, definitions ->
+        Map source = scope == 'device' ? d : fj
+        definitions.each { key, shape ->
+            def nativeValue = source.get(key)
+            boolean valid = nativeValue == null || (shape == 'map' ? nativeValue instanceof Map :
+                shape == 'list' ? nativeValue instanceof List : shape == 'stringOrList' ? nativeValue instanceof String || nativeValue instanceof List :
+                !(nativeValue instanceof Map || nativeValue instanceof List))
+            if (!source.containsKey(key) || !valid) problems << "${scope}.${key}".toString()
+        }
+    }
+    if (problems) return status + [status: 'partial', reason: 'Native section fields are missing or malformed.', incompleteFields: problems]
+    return status
+}
+
+private List _deviceDetailFieldNames(String section, value) {
+    if (value instanceof Map) {
+        def names = value.keySet().toList()
+        if (section == 'attributes' && value.currentStates instanceof Map) names.addAll(value.currentStates.keySet())
+        if (section == 'attributes' && value.declaredAttributes instanceof List) names.addAll(value.declaredAttributes.collect { it.name })
+        return names.findAll { it != null }.unique()
+    }
+    if (value instanceof List) {
+        def names = []
+        value.eachWithIndex { row, index -> names << index.toString() }
+        return names
+    }
+    return []
+}
+
+private _deviceDetailSelectedFields(String section, value, List fields) {
+    if (value instanceof Map) {
+        def selected = _deviceConfigurationProjection(value, fields)
+        if (section == 'attributes') {
+            if (value.currentStates instanceof Map && !fields.contains('currentStates')) {
+                def states = _deviceConfigurationProjection(value.currentStates, fields)
+                if (states) selected.currentStates = states
+            }
+            if (value.declaredAttributes instanceof List && !fields.contains('declaredAttributes')) {
+                def attributes = value.declaredAttributes.findAll { fields.contains(it.name) }
+                if (attributes) selected.declaredAttributes = attributes
+            }
+        }
+        return selected
+    }
+    if (value instanceof List) {
+        def selected = []
+        value.eachWithIndex { row, index -> if (fields.contains(index.toString())) selected << row }
+        return selected
+    }
+    return value
+}
+
+private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed, String mode, sections, fields = null) {
+    if (mode == 'configuration') return _deviceConfigurationResult(deviceId, identity, fj, listed, fields)
+    Map d = fj?.device instanceof Map ? fj.device : [:]
+    def selected = sections == null ? _deviceDetailSections() : sections
+    def result = [id: deviceId.toString(), name: identity.name, label: identity.label, mode: 'details',
+                  sections: [:], sectionRead: [:], availableSections: _deviceDetailSections(),
+                  sourceCoverage: _deviceDetailSourceCoverage(fj),
+                  references: [events: [gateway: 'hub_read_devices', tool: 'hub_list_device_events',
+                                       args: [deviceId: deviceId.toString(), limit: 50]],
+                               dependents: [gateway: 'hub_read_apps_code', tool: 'hub_list_device_dependents',
+                                            args: [deviceId: deviceId.toString()]]]]
+    selected.each { section ->
+        def value
+        def keys = []
+        switch (section) {
+            case 'configuration':
+                value = _deviceConfigurationResult(deviceId, identity, fj, listed, fields)
+                break
+            case 'identity':
+                value = _deviceConfigurationProjection(d, ['id', 'deviceId', 'name', 'label', 'displayName',
+                    'deviceNetworkId', 'zigbeeId', 'lanId', 'endpointId', 'network', 'controllerType',
+                    'roomId', 'roomName', 'roomAssigned', 'hubId', 'hubName', 'locationId', 'locationName',
+                    'groupId', 'groupName', 'virtual', 'isComponent', 'disabled', 'status', 'orphan',
+                    'createTime', 'updateTime', 'lastActivityTime', 'version'])
+                value.driver = _deviceConfigurationInfo(fj).driver
+                break
+            case 'attributes':
+                value = _deviceConfigurationProjection(d, ['capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState'])
+                if (identity.attributes instanceof List) value.declaredAttributes = identity.attributes.collect { row ->
+                    def attribute = _deviceConfigurationPublicValue(row)
+                    if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
+                        attribute.value = '***redacted (password)***'
+                    }
+                    attribute
+                }
+                break
+            case 'commands':
+                value = _deviceConfigurationPublicValue(fj?.commands)
+                break
+            case 'data':
+                value = _deviceConfigurationPublicValue(d.get('data'))
+                break
+            case 'state':
+                value = _deviceConfigurationPublicValue(fj?.deviceState)
+                break
+            case 'relationships':
+                keys = ['parentApp', 'childDevices', 'hasChildren', 'appsUsing', 'appsUsingCount', 'appsUsingForDialog', 'appsUsingForDialogMore']
+                value = _deviceConfigurationProjection(fj, keys)
+                value.device = _deviceConfigurationProjection(d, ['parentDeviceId', 'parentAppId', 'displayAsChild', 'compatibleDeviceId', 'linkedDevice', 'linkedAndDisabled'])
+                break
+            case 'jobs':
+                value = _deviceConfigurationPublicValue(fj?.scheduledJobs)
+                break
+            case 'integrations':
+                keys = ['amazonAlexaEnabled', 'amazonAlexaInstalled', 'amazonAlexaSupported', 'googleHomeEnabled',
+                    'googleHomeInstalled', 'googleHomeSupported', 'homeKitEnabled', 'homeKitSelectionEnabled',
+                    'dashboards', 'hasDashboards', 'dashboardTypes', 'commandRetrySelectionEnabled', 'hubMeshRefreshEnabled']
+                value = _deviceConfigurationProjection(fj, keys)
+                value.device = _deviceConfigurationProjection(d, ['meshEnabled', 'meshFullSync', 'meshSelectionEnabled',
+                    'retryEnabled', 'retryAvailable', 'homeKitCompatible', 'remoteDeviceUrl', 'linkedDevice',
+                    'linkedAndDisabled', 'linkedLocally', 'ZWave', 'zigbee', 'matter', 'bluetooth'])
+                break
+            case 'metadata':
+                value = _deviceConfigurationProjection(d, ['notes', 'tags', 'maxEvents', 'maxStates', 'spammyThreshold',
+                    'defaultIcon', 'icon', 'showOnHome', 'deviceTypeClassLocation', 'deviceTypePopulated',
+                    'deviceTypeSingleThreaded', 'deviceTypeReadableType', 'deviceTypeType', 'driverType',
+                    'systemDeviceType', 'deviceTypeId', 'deviceTypeName', 'deviceTypeNamespace'])
+                value.ui = _deviceConfigurationProjection(fj, ['showInstructionSearchLink', 'extraBreadcrumb', 'virtualFirst', 'tags'])
+                break
+        }
+        result.sectionRead.put(section, _deviceDetailReadStatus(section, fj, d, value, deviceId))
+        if (fields != null && section != 'configuration') {
+            if (!result.containsKey('availableFields')) result.availableFields = [:]
+            result.availableFields.put(section, _deviceDetailFieldNames(section, value))
+            value = _deviceDetailSelectedFields(section, value, fields)
+        }
+        result.sections.put(section, value)
+    }
+    return result
+}
+
+private Map _deviceReadFragment(Map snapshot, String token, int start) {
+    String serialized = snapshot.content
+    int end = Math.min(start + 18000, serialized.length())
+    return [id: snapshot.id, mode: snapshot.mode, contentFormat: 'json-fragment',
+            content: serialized.substring(start, end), offset: start, totalCharacters: serialized.length(),
+            nextCursor: end < serialized.length() ? "v2:${token}:${end}".toString() : null,
+            note: 'Concatenate content fragments in order, then parse the joined JSON. Repeat with nextCursor and unchanged arguments within five minutes; fields=[] discovers smaller selections.']
+}
+
+private String _deviceReadSelection(deviceId, String mode, sections, fields, boolean listed) {
+    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), deviceId.toString(), mode, sections, fields, listed]))
+}
+
+private Map _deviceReadContinuation(String cursor, String selection) {
+    if (!(cursor ==~ /v2:[a-f0-9-]{36}:[0-9]+/)) {
+        throw new IllegalArgumentException('cursor must be a prior hub_get_device nextCursor; keep the same mode, sections and fields.')
+    }
+    def parts = cursor.split(':')
+    Map snapshot
+    synchronized (DEVICE_READ_SNAPSHOTS) {
+        snapshot = DEVICE_READ_SNAPSHOTS.get(parts[1])
+        if (snapshot && now() - (snapshot.at as Long) >= 300000L) {
+            DEVICE_READ_SNAPSHOTS.remove(parts[1])
+            snapshot = null
+        }
+    }
+    if (!snapshot) throw new IllegalArgumentException('Device read snapshot expired or was evicted. Restart without cursor, or select fewer fields.')
+    if (snapshot.selection != selection) throw new IllegalArgumentException('Device or selection changed. Restart without cursor and keep the same arguments for subsequent pages.')
+    int start = _parseListCursor(parts[2], snapshot.content.length(), 'hub_get_device')
+    return _deviceReadFragment(snapshot, parts[1], start)
+}
+
+// A lower bound, not an encoded size: stop before copying obviously oversized strings
+// into the JSON encoder. The exact encoded bound below still accounts for escaping.
+private int _deviceReadRawCharacters(value, int remaining) {
+    if (value instanceof CharSequence) return Math.min(value.length(), remaining + 1)
+    int count = 0
+    if (value instanceof Map) {
+        for (def entry : value.entrySet()) {
+            count += entry.key.toString().length()
+            if (count > remaining) return remaining + 1
+            count += _deviceReadRawCharacters(entry.value, remaining - count)
+            if (count > remaining) return remaining + 1
+        }
+    } else if (value instanceof List) {
+        for (def item : value) {
+            count += _deviceReadRawCharacters(item, remaining - count)
+            if (count > remaining) return remaining + 1
+        }
+    }
+    return count
+}
+
+private Map _deviceReadPage(Map result, String selection) {
+    if (_deviceReadRawCharacters(result, 2097152) > 2097152) {
+        throw new IllegalArgumentException('Device information exceeds the snapshot budget. Select fewer sections or fields, then read each selection separately.')
+    }
+    // Size the actual text-content envelope, including escaped JSON, before the shared guard.
+    String serialized = groovy.json.JsonOutput.toJson(result)
+    // Bound retained JSON to 2,097,152 UTF-16 code units across at most eight snapshots.
+    if (serialized.length() > 2097152) throw new IllegalArgumentException('Device information exceeds the snapshot budget. Select fewer sections or fields, then read each selection separately.')
+    if (serialized.length() < 95000) {
+        def envelope = [jsonrpc: '2.0', id: 1, result: [content: [[type: 'text', text: serialized]]]]
+        if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length < 95000) return result
+    }
+    String token = java.util.UUID.randomUUID().toString()
+    Map snapshot = [id: result.id, mode: result.mode, content: serialized, selection: selection, at: now()]
+    synchronized (DEVICE_READ_SNAPSHOTS) {
+        DEVICE_READ_SNAPSHOTS.entrySet().findAll { now() - (it.value.at as Long) >= 300000L }
+            .collect { it.key }.each { DEVICE_READ_SNAPSHOTS.remove(it) }
+        int retained = DEVICE_READ_SNAPSHOTS.values().sum { it.content.length() } ?: 0
+        while (DEVICE_READ_SNAPSHOTS.size() >= 8 || retained + serialized.length() > 2097152) {
+            def oldest = DEVICE_READ_SNAPSHOTS.keySet().iterator().next()
+            retained -= DEVICE_READ_SNAPSHOTS.remove(oldest).content.length()
+        }
+        DEVICE_READ_SNAPSHOTS.put(token, snapshot)
+    }
+    return _deviceReadFragment(snapshot, token, 0)
+}
+
+def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cursor = null) {
+    String selectedMode = mode == null ? 'summary' : mode.toString()
+    if (!(selectedMode in ['summary', 'configuration', 'details'])) {
+        throw new IllegalArgumentException("mode must be summary, configuration, or details.")
+    }
+    if (sections != null && (selectedMode != 'details' || !(sections instanceof List) || sections.isEmpty() ||
+        sections.any { !(it instanceof String) || !_deviceDetailSections().contains(it) })) {
+        throw new IllegalArgumentException("sections is a non-empty array for mode=details; use ${_deviceDetailSections().join(', ')}.")
+    }
+    if (fields != null && (selectedMode == 'summary' || !(fields instanceof List) || fields.any { !(it instanceof String) })) {
+        throw new IllegalArgumentException('fields is an array of field names for configuration/details; use [] to discover names.')
+    }
+    if (cursor != null && (selectedMode == 'summary' || !(cursor instanceof String))) {
+        throw new IllegalArgumentException('cursor is a string continuation for configuration/details mode only.')
+    }
     def device = findDevice(deviceId)
+    String selection = selectedMode == 'summary' ? null : _deviceReadSelection(deviceId, selectedMode, sections, fields, device != null)
+    if (cursor) {
+        if (!device && !_bypassEnabled()) throw new IllegalArgumentException("Device not found: ${deviceId}")
+        return _deviceReadContinuation(cursor, selection)
+    }
     if (!device) {
         if (_bypassEnabled()) {
             def fj = _fetchDeviceFullJson(deviceId)
-            if (fj?.device != null) return _getDeviceFromFullJson(deviceId, fj)
+            if (fj?.device instanceof Map) {
+                def identity = _getDeviceFromFullJson(deviceId, fj)
+                return selectedMode == 'summary' ? identity : _deviceReadPage(_deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections, fields), selection)
+            }
         }
         throw new IllegalArgumentException("Device not found: ${deviceId}")
+    }
+
+    if (selectedMode == 'configuration') {
+        return _deviceReadPage(_deviceExpandedResult(deviceId, [name: device.name, label: device.label ?: device.name],
+                                     _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), selection)
     }
 
     def attributes = []
@@ -1230,7 +1866,7 @@ def toolGetDevice(deviceId) {
         logDebug("Error getting commands for device ${deviceId}: ${e.message}")
     }
 
-    return [
+    def summary = [
         id: device.id.toString(),
         name: device.name,
         label: device.label ?: device.name,
@@ -1239,6 +1875,8 @@ def toolGetDevice(deviceId) {
         attributes: attributes,
         commands: commands
     ]
+    return selectedMode == 'summary' ? summary : _deviceReadPage(_deviceExpandedResult(deviceId, summary,
+        _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), selection)
 }
 
 def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
@@ -1311,7 +1949,11 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // array-or-null response contract (a non-blank String always normalizes to a List).
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
-        parameters = normalizeCommandParams(parameters)
+        def declaration = bypass ? fullJson.commands?.find { it?.name == command }
+                                 : device.supportedCommands?.find { it.name == command }
+        // SDK Command exposes arguments, while native JSON also carries richer parameters.
+        def declaredTypes = _commandParamTypes(bypass ? declaration : [arguments: declaration?.arguments])
+        parameters = normalizeCommandParams(parameters, declaredTypes)
     }
     if (bypass) {
         // Single bypass branch: fire via runmethod (empty arg list for a no-parameter command).
@@ -1871,6 +2513,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
         def fj = _fetchDeviceFullJson(deviceId)
         def cs = fj?.device?.currentStates
         if (!(cs instanceof Map)) {
+            mcpLog("error", "send-command", "bypass: fullJson currentStates unavailable for device ${deviceId}")
             if (errOut != null) errOut << "fullJson currentStates unavailable for ${deviceId}"
             return null
         }
@@ -1906,15 +2549,29 @@ private String _formatBypassStateDate(rawDate) {
     }
 }
 
-def normalizeCommandParams(params) {
+def normalizeCommandParams(params, List declaredTypes = []) {
     // Case 1: Already a List (Hubitat parsed it successfully) — go straight to element conversion
     if (params instanceof List) {
-        return convertParamElements(params)
+        return convertParamElements(params, declaredTypes)
     }
 
     // Case 2: String (Hubitat parser failed on nested JSON)
     // Example: '["{"hue":0,"saturation":100,"level":50}"]'
     def s = params.toString().trim()
+
+    if (declaredTypes) {
+        // Decode a valid outer array before legacy repair so literal JSON text stays text.
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(s)
+            if (parsed instanceof List) return convertParamElements(parsed, declaredTypes)
+        } catch (Exception ignored) {}
+        if (declaredTypes[0]?.toString()?.toUpperCase() in ['STRING', 'ENUM']) {
+            if (s.startsWith('["') && s.endsWith('"]')) {
+                return convertParamElements(s.substring(2, s.length() - 2).split('","').toList(), declaredTypes)
+            }
+            return convertParamElements([s], declaredTypes)
+        }
+    }
 
     // Try to extract an embedded JSON object between first { and last }
     def firstBrace = s.indexOf("{")
@@ -1923,7 +2580,7 @@ def normalizeCommandParams(params) {
         def jsonContent = s.substring(firstBrace, lastBrace + 1)
         try {
             def parsed = new groovy.json.JsonSlurper().parseText(jsonContent)
-            return [parsed]
+            return convertParamElements([parsed], declaredTypes)
         } catch (Exception e) {
             // Not valid JSON object, fall through
         }
@@ -1932,16 +2589,18 @@ def normalizeCommandParams(params) {
     // No JSON object found — strip outer ["..."] wrapper and split into string params
     if (s.startsWith("[\"") && s.endsWith("\"]")) {
         def inner = s.substring(2, s.length() - 2)
-        return convertParamElements(inner.split('","').toList())
+        return convertParamElements(inner.split('","').toList(), declaredTypes)
     }
 
     // Last resort: treat the whole string as a single parameter
-    return convertParamElements([s])
+    return convertParamElements([s], declaredTypes)
 }
 
-def convertParamElements(List params) {
-    return params.collect { param ->
+def convertParamElements(List params, List declaredTypes = []) {
+    return params.withIndex().collect { param, index ->
         if (param == null) return param
+        def declaredType = index < declaredTypes.size() ? declaredTypes[index]?.toString()?.toUpperCase() : null
+        if (declaredType in ['STRING', 'ENUM'] && param instanceof CharSequence) return param.toString()
         if (param instanceof Map || param instanceof List) return param
         def s = param.toString()
         // Numeric conversion
@@ -3045,6 +3704,437 @@ def _prefSaveDeviceId(deviceId) {
     catch (Exception ignored) { return deviceId }
 }
 
+private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List preferenceRows = []) {
+    def fresh = _fetchDeviceFullJson(deviceId)
+    def d = fresh?.device
+    def controls = d instanceof Map ? d : [:]
+    def showOnHome = _normalizeDevicePreferenceValue(controls.get('showOnHome'), 'bool')
+    def retryEnabled = _normalizeDevicePreferenceValue(controls.get('retryEnabled'), 'bool')
+    if (!(d instanceof Map) || !showOnHome.valid || !(showOnHome.value instanceof Boolean) ||
+        !retryEnabled.valid || !(retryEnabled.value instanceof Boolean) || !d.containsKey("defaultCurrentState") ||
+        !(d.get("defaultCurrentState") == null || d.get("defaultCurrentState") instanceof String)) {
+        throw new RuntimeException("Unable to read complete preference-pane controls before saving; no preference update sent")
+    }
+    def payload = [deviceId: _prefSaveDeviceId(deviceId),
+        defaultCurrentState: d.get("defaultCurrentState") == null ? "" : d.get("defaultCurrentState").toString(),
+        commandRetry: retryEnabled.value, showOnHome: showOnHome.value,
+        preferences: preferenceRows]
+    overrides.each { key, value -> payload.put(key, value) }
+    return payload
+}
+
+private List _deviceExtendedFormProperties() {
+    return ["deviceTypeId", "zigbeeId", "notes", "maxEvents", "maxStates", "spammyThreshold",
+        "defaultIcon", "dashboardIds", "meshEnabled", "retryEnabled", "meshFullSync"]
+}
+
+private Map _deviceAssistantProperties() {
+    return [homeKitEnabled: "homeKit", amazonAlexaEnabled: "amazonAlexa", googleHomeEnabled: "googleHome"]
+}
+
+private boolean _deviceFlag(value) {
+    return value == true || value?.toString() == "true"
+}
+
+private _normalizedDevicePreferenceValue(Map entry, value) {
+    if (value == null || (value instanceof String && !value.trim()) || (value instanceof List && value.isEmpty())) {
+        throw new IllegalArgumentException("Preference '${entry.name}' cannot use a blank value; omit it to preserve the setting or use {clear:true} to remove an optional setting")
+    }
+    def type = entry.type?.toString()
+    if (type in ["bool", "boolean"]) {
+        if (value instanceof Boolean) return value
+        if (value?.toString() in ["true", "false"]) return value.toString() == "true"
+        throw new IllegalArgumentException("Preference '${entry.name}' requires a boolean value")
+    }
+    if (type in ["number", "decimal"]) {
+        def number
+        try { number = new BigDecimal(value.toString().trim()) }
+        catch (Exception ignored) { throw new IllegalArgumentException("Preference '${entry.name}' requires a numeric value") }
+        def range = entry.range?.toString()
+        if (range && range.contains("..")) {
+            def bounds = range.split("\\.\\.", -1)
+            if (bounds.size() != 2) throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration")
+            def limits = []
+            bounds.each { bound ->
+                def token = bound.trim()
+                if (!token || token == '*') limits << null
+                else {
+                    try { limits << new BigDecimal(token) }
+                    catch (Exception ignored) { throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration") }
+                }
+            }
+            if (limits[0] != null && number < limits[0]) throw new IllegalArgumentException("Preference '${entry.name}' is below its declared range ${range}")
+            if (limits[1] != null && number > limits[1]) throw new IllegalArgumentException("Preference '${entry.name}' is above its declared range ${range}")
+        }
+        return number
+    }
+    if (type == "enum") {
+        def multiple = _deviceFlag(entry.multiple)
+        if (!multiple && value instanceof List) throw new IllegalArgumentException("Preference '${entry.name}' accepts a single option")
+        def values = multiple ? (value instanceof List ? value : value.toString().split(",").toList()) : [value]
+        def options = entry.options
+        def allowed = []
+        if (options instanceof Map) allowed = options.keySet().collect { it.toString() }
+        else if (options instanceof List) {
+            options.each { option ->
+                if (option instanceof Map) allowed.addAll(option.keySet().collect { it.toString() })
+                else if (option != null) allowed << option.toString()
+            }
+        }
+        def normalized = values.collect { it?.toString() }
+        if (allowed && normalized.any { !allowed.contains(it) }) throw new IllegalArgumentException("Preference '${entry.name}' contains an unknown option; read its configuration options first")
+        return multiple ? normalized : normalized[0]
+    }
+    if (value instanceof Map || value instanceof List || value instanceof Boolean) {
+        throw new IllegalArgumentException("Preference '${entry.name}' requires a text value")
+    }
+    return value.toString()
+}
+
+// Complete caller validation precedes every setter, including mixed old/new patches.
+private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull = null) {
+    def args = new LinkedHashMap(original)
+    def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
+    if (args.keySet().any { !allowed.contains(it.toString()) }) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
+    def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
+    stringFields.each { field ->
+        if (args.containsKey(field) && !(args.get(field) instanceof String)) throw new IllegalArgumentException("${field} must be a string")
+    }
+    def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
+    booleanFields.each { field ->
+        if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
+    }
+    [maxEvents: [1, 2000], maxStates: [1, 2000], spammyThreshold: [100, 2000], deviceTypeId: [1, 2147483647]].each { field, bounds ->
+        if (args.containsKey(field)) {
+            def value = args.get(field)
+            if (!(value instanceof Number) || value < bounds[0] || value > bounds[1] || new BigDecimal(value.toString()).stripTrailingZeros().scale() > 0) {
+                throw new IllegalArgumentException("${field} must be an integer from ${bounds[0]} to ${bounds[1]}")
+            }
+        }
+    }
+    if (args.containsKey("tags") && (!(args.tags instanceof List) || args.tags.any { !(it instanceof String) || it.contains(",") })) {
+        throw new IllegalArgumentException("tags must be an array of strings without commas")
+    }
+    if (args.containsKey("dashboardIds") && (!(args.dashboardIds instanceof List) || args.dashboardIds.any { !(it instanceof Number) || it < 1 || new BigDecimal(it.toString()).stripTrailingZeros().scale() > 0 })) {
+        throw new IllegalArgumentException("dashboardIds must be an array of positive integer IDs")
+    }
+    if (args.containsKey("dataValues") && (!(args.dataValues instanceof Map) || args.dataValues.any { k, v -> !(k instanceof String) || !(v instanceof String) })) {
+        throw new IllegalArgumentException("dataValues must be an object containing string values")
+    }
+    if (args.containsKey("preferences") && !(args.preferences instanceof Map)) throw new IllegalArgumentException("preferences must be an object keyed by declared preference name")
+    if (args.name != null && !args.name.trim()) throw new IllegalArgumentException("name cannot be empty")
+    if (args.deviceNetworkId != null && !args.deviceNetworkId.trim()) throw new IllegalArgumentException("deviceNetworkId cannot be empty")
+
+    def sensitive = ["deviceTypeId", "deviceNetworkId", "zigbeeId", "meshEnabled", "meshFullSync", "dashboardIds"] + _deviceAssistantProperties().keySet().toList()
+    if (sensitive.any { args.containsKey(it) }) requireDestructiveConfirm(args.confirm)
+    def nativeFields = _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList() + ["deviceNetworkId"]
+    def needModel = args.preferences || nativeFields.any { args.containsKey(it) }
+    if (settings.enableWrite == false && (_deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()).any { args.containsKey(it) }) {
+        throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
+    }
+    def full = suppliedFull
+    def inspectModel = needModel || ['name', 'label', 'defaultCurrentState', 'showOnHome', 'tags', 'dataValues'].any { args.containsKey(it) }
+    if (full == null && inspectModel && settings.enableWrite != false) full = _fetchDeviceFullJson(deviceId)
+    if (needModel && !(full?.device instanceof Map)) throw new IllegalArgumentException("Unable to read device configuration before updating; use hub_get_device(mode='configuration') and retry")
+    def d = full?.device
+    if (args.defaultCurrentState && settings.enableWrite != false) {
+        if (!(d?.currentStates instanceof Map)) throw new IllegalArgumentException("Unable to read authoritative current-state attributes before updating defaultCurrentState; refresh device configuration first")
+        if (!d.currentStates.containsKey(args.defaultCurrentState)) throw new IllegalArgumentException("defaultCurrentState must name one of the device's current-state attributes")
+    }
+    if (d instanceof Map) {
+        if (_deviceFlag(d.linkedAndDisabled) && args.containsKey("label")) throw new IllegalArgumentException("label cannot be edited on a disabled linked device")
+        def componentIdentityFields = ["name", "deviceTypeId", "zigbeeId"]
+        if (!_deviceFlag(d.linkedDevice)) componentIdentityFields << "deviceNetworkId"
+        if (_deviceFlag(d.isComponent) && componentIdentityFields.any { args.containsKey(it) }) throw new IllegalArgumentException("This component device cannot have its identity or driver edited independently from its parent")
+        if (_deviceFlag(d.linkedDevice) && ["name", "deviceTypeId", "zigbeeId"].any { args.containsKey(it) }) throw new IllegalArgumentException("A linked device cannot have its source name, Zigbee ID or driver edited locally")
+        if (args.containsKey("zigbeeId") && !d.zigbeeId) throw new IllegalArgumentException("zigbeeId is not editable on a device without a Zigbee ID")
+        if (args.containsKey("meshEnabled") && !_deviceFlag(d.meshSelectionEnabled)) throw new IllegalArgumentException("meshEnabled is unavailable: Hub Mesh selection is disabled for this device")
+        if (args.containsKey("meshFullSync") && !(_deviceFlag(d.linkedDevice) && _deviceFlag(full.hubMeshRefreshEnabled))) throw new IllegalArgumentException("meshFullSync requires a linked device and Hub Mesh refresh enabled")
+        if (args.containsKey("retryEnabled") && !(_deviceFlag(full.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable))) throw new IllegalArgumentException("retryEnabled is unavailable for this device; enable native command retry support first")
+        if (args.containsKey("dashboardIds")) {
+            if (!_deviceFlag(full.hasDashboards) || !(full.dashboards instanceof List)) throw new IllegalArgumentException("dashboardIds is unavailable: no native dashboard assignments are exposed")
+            def known = full.dashboards.collect { it.id?.toString() }
+            if (args.dashboardIds.any { !known.contains(it.toString()) }) throw new IllegalArgumentException("dashboardIds contains an unknown dashboard ID; read configuration options first")
+        }
+        def assistantAvailable = [homeKitEnabled: _deviceFlag(full.homeKitSelectionEnabled),
+            amazonAlexaEnabled: _deviceFlag(full.amazonAlexaInstalled) && _deviceFlag(full.amazonAlexaSupported),
+            googleHomeEnabled: _deviceFlag(full.googleHomeInstalled) && _deviceFlag(full.googleHomeSupported)]
+        _deviceAssistantProperties().each { property, integration ->
+            if (args.containsKey(property) && !assistantAvailable.get(property)) throw new IllegalArgumentException("${property} is unavailable: install/enable the native ${integration} integration and verify this device is supported")
+        }
+        if (_deviceAssistantProperties().keySet().any { args.containsKey(it) } && !_deviceAssistantProperties().keySet().every { full.containsKey(it) && full.get(it) instanceof Boolean }) {
+            throw new IllegalArgumentException("Unable to read all current assistant assignments before updating; refresh device configuration first")
+        }
+        if (args.containsKey("deviceTypeId")) {
+            def driversText = hubInternalGet("/device/drivers")
+            def drivers = driversText ? new groovy.json.JsonSlurper().parseText(driversText)?.drivers : null
+            if (!(drivers instanceof List)) throw new IllegalArgumentException("Unable to discover driver IDs from /device/drivers")
+            def driver = drivers.find { it.id?.toString() == args.deviceTypeId.toString() && ((it.type != "dep" && it.category != "Hidden") || it.id?.toString() == d.deviceTypeId?.toString()) }
+            if (!driver) throw new IllegalArgumentException("deviceTypeId is not an available driver ID; read configuration driver options first")
+        }
+        if (args.containsKey("deviceNetworkId") && _deviceFlag(d.linkedDevice)) {
+            if (args.deviceNetworkId == "0") args.remove("deviceNetworkId")
+            else {
+                def targetsText = hubInternalGet("/device/accessibleLinkedDevices")
+                def targets = targetsText ? new groovy.json.JsonSlurper().parseText(targetsText)?.devices : null
+                if (!(targets instanceof List) || !targets.any { !_deviceFlag(it.linkedLocally) && "${it.hubId}-${it.deviceId}" == args.deviceNetworkId }) {
+                    throw new IllegalArgumentException("deviceNetworkId is not an available linked-device target; read /device/accessibleLinkedDevices options first")
+                }
+            }
+        }
+    }
+    if (args.preferences) {
+        if (args.containsKey("deviceTypeId") && args.deviceTypeId?.toString() != d.deviceTypeId?.toString()) throw new IllegalArgumentException("Change the driver first, then read its new preference definitions before updating preferences")
+        if (_deviceFlag(d?.linkedDevice)) throw new IllegalArgumentException("Driver preferences cannot be saved on a linked device; edit the source device")
+        def model = _readDevicePreferenceModel(full)
+        if (model.writeSafe != true) throw new IllegalArgumentException("Unable to read complete preference definitions/storage before updating; inspect hub_get_device(mode='configuration')")
+        def normalized = [:]
+        args.preferences.each { key, setting ->
+            def name = key.toString()
+            def entry = _lookupDevicePreference(model, name)
+            if (!entry) throw new IllegalArgumentException("Unknown preference '${name}'; read hub_get_device(mode='configuration') for declared names")
+            if (entry.type in ["hidden", "paragraph"]) throw new IllegalArgumentException("Preference '${name}' is not an editable input")
+            def type = entry.type in ['bool', 'boolean'] ? 'bool' : entry.type
+            boolean clear = setting instanceof Map && setting.get('clear') == true
+            if (setting instanceof Map) {
+                def suppliedType = setting.type in ['bool', 'boolean'] ? 'bool' : setting.type
+                if ((setting.containsKey('clear') && (!clear || setting.containsKey('value'))) ||
+                    (!clear && !setting.containsKey('value')) ||
+                    (suppliedType != null && suppliedType.toString() != type) ||
+                    setting.keySet().any { !(it in ['type', 'value', 'clear', 'multiple']) }) {
+                    throw new IllegalArgumentException("Preference '${name}' requires its declared type and either a nonblank value or {clear:true}; clear and value cannot be combined")
+                }
+            }
+            if (setting instanceof Map && setting.containsKey('multiple')) {
+                if (clear || type != 'enum' || !(setting.multiple instanceof Boolean)) {
+                    throw new IllegalArgumentException("Preference '${name}' accepts a multiple boolean only with an enum value")
+                }
+                if (entry.multiple != null && setting.multiple != entry.multiple) {
+                    throw new IllegalArgumentException("Preference '${name}' multiple conflicts with its current native metadata")
+                }
+                entry = entry + [multiple: setting.multiple]
+            }
+            if (!clear && type == 'enum' && entry.multiple == null) {
+                throw new IllegalArgumentException("Preference '${name}' has unavailable selection cardinality; check driverSource or previously read metadata and supply multiple:true or multiple:false with the value")
+            }
+            if (clear && _deviceFlag(entry.required)) throw new IllegalArgumentException("Required preference '${name}' cannot be cleared")
+            def raw = setting instanceof Map ? setting.value : setting
+            def value = clear ? null : _normalizedDevicePreferenceValue(entry, raw)
+            normalized.put(name, clear ? [type: type, clear: true, value: null] : [type: type, value: value])
+        }
+        args.preferences = normalized
+    }
+    if (args.room != null && !(args.room in ["", "none", "null"])) _assertRoomExistsForBypass(args.room)
+    return [args: args, fullJson: full]
+}
+
+private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List changes, List errors) {
+    def full = _fetchDeviceFullJson(deviceId)
+    if (!(full?.device instanceof Map)) {
+        preferences.each { name, setting ->
+            errors << [property: "preference.${name}", stage: "verify", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
+        }
+        return
+    }
+    def model = _readDevicePreferenceModel(full)
+    preferences.each { name, setting ->
+        _verifyDevicePreferenceWrite(deviceId, name.toString(), setting, changes, errors, model)
+    }
+}
+
+private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, List changes, List errors, Map model = null) {
+    if (model == null) {
+        _verifyDevicePreferenceWrites(deviceId, [(name): setting], changes, errors)
+        return
+    }
+    def entry = _lookupDevicePreference(model, name)
+    if (model.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
+        errors << [property: "preference.${name}", stage: "verify", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Update accepted but could not confirm the preference -- saved-value storage is unavailable or invalid."]
+        return
+    }
+    def expected = setting.value
+    def actual = entry.value
+    boolean matches = setting.clear == true ? (!entry.valuePresent && entry.valueStatus == 'unset') :
+        (entry.valuePresent && entry.valueStatus == 'stored' && actual == expected)
+    if (matches) {
+        changes << [property: "preference.${name}", newValue: _devicePreferenceIsSecret(entry) ? [type: entry.type, value: "[REDACTED]"] : setting]
+    } else {
+        errors << [property: "preference.${name}", stage: "verify", status: "mismatch", error: "Update accepted but the preference read back as a different saved value. Inspect configuration and retry; no driver command was invoked."]
+    }
+}
+
+private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List changes, List errors) {
+    def accepted = [:]
+    def nativeSettings = [:]
+    preferences.each { name, setting ->
+        if (device == null || setting.clear == true) {
+            nativeSettings.put(name, setting)
+        } else {
+            try {
+                device.updateSetting(name.toString(), [type: setting.type, value: setting.value])
+                accepted.put(name, setting)
+            } catch (Exception ignored) {
+                errors << [property: "preference.${name}", stage: 'write', status: 'failed',
+                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+            }
+        }
+    }
+    if (nativeSettings) {
+        def stage = 'prepare'
+        try {
+            // Validation already limits enum Lists to multiple selections. Their native wire
+            // representation is a JSON string; a raw array can collapse to scalar storage.
+            def rows = nativeSettings.collect { name, setting ->
+                def value = setting.clear == true ? '' :
+                    (setting.type == 'enum' && setting.value instanceof List ? groovy.json.JsonOutput.toJson(setting.value) : setting.value)
+                [name: name.toString(), type: setting.type, value: value]
+            }
+            def payload = _devicePreferencePanePayload(deviceId, [:], rows)
+            stage = 'write'
+            def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
+            if (response instanceof Map && (response.success == false || response._unparseable == true)) {
+                nativeSettings.each { name, setting ->
+                    errors << [property: "preference.${name}", stage: 'write',
+                        status: response._unparseable == true ? 'unavailable' : 'failed',
+                        error: response._unparseable == true ?
+                            'Preference save returned an unreadable response; inspect the device configuration before retrying.' :
+                            'Native preference save was rejected; inspect the device configuration before retrying.']
+                }
+            } else {
+                accepted.putAll(nativeSettings)
+            }
+        } catch (Exception ignored) {
+            nativeSettings.each { name, setting ->
+                errors << [property: "preference.${name}", stage: stage, status: stage == 'write' ? 'failed' : 'unavailable',
+                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+            }
+        }
+    }
+    if (accepted) {
+        def ordered = preferences.findAll { name, setting -> accepted.containsKey(name) }
+        try {
+            _verifyDevicePreferenceWrites(deviceId, ordered, changes, errors)
+        } catch (Exception ignored) {
+            ordered.each { name, setting ->
+                errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
+                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+            }
+        }
+    }
+}
+
+private void _saveDevicePreferencePaneControls(deviceId, Map overrides) {
+    def payload = _devicePreferencePanePayload(deviceId, overrides)
+    def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
+    if (response instanceof Map && (response.success == false || response._unparseable == true)) {
+        throw new RuntimeException(response._unparseable == true ?
+            'Native preference-pane save returned an unreadable response; inspect configuration before retrying.' :
+            'Native preference-pane save was rejected; inspect configuration before retrying.')
+    }
+}
+
+private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean bypass, List changes, List errors) {
+    if (settings.enableWrite == false && (_deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()).any { args.containsKey(it) }) {
+        throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
+    }
+    if (args.containsKey("retryEnabled") && !_deviceFlag(full?.commandRetrySelectionEnabled) && _deviceFlag(full?.device?.retryAvailable)) {
+        def wanted = args.remove("retryEnabled")
+        try {
+            _saveDevicePreferencePaneControls(deviceId, [commandRetry: wanted])
+            def readback = _fetchDeviceFullJson(deviceId)?.device
+            if (readback?.retryEnabled instanceof Boolean && readback.retryEnabled == wanted) changes << [property: "retryEnabled", newValue: wanted]
+            else errors << [property: "retryEnabled", error: "POST accepted but could not confirm retryEnabled; native read-back did not match."]
+        } catch (Exception e) { errors << [property: "retryEnabled", error: e.message ?: e.toString()] }
+    }
+    def formProperties = _deviceExtendedFormProperties().findAll { args.containsKey(it) }
+    def linkedIdentity = args.containsKey("deviceNetworkId") && _deviceFlag(full?.device?.linkedDevice)
+    if (formProperties || (bypass && args.containsKey("tags")) || linkedIdentity) {
+        def overrides = [:]
+        (formProperties + ["label", "name", "deviceNetworkId", "tags"]).unique().each { property ->
+            if (args.containsKey(property)) overrides.put(property, property == "tags" ? args.tags.collect { it.trim() }.findAll { it }.join(",") : args.get(property))
+        }
+        def targets = new LinkedHashMap(overrides)
+        overrides.keySet().each { args.remove(it) }
+        try {
+            def updated = _postDeviceConfigurationForm(deviceId, overrides)
+            if (!bypass && updated?.device instanceof Map) {
+                // The wholesale form can blank identity despite carrying it. Restore only
+                // observed blanks, never an intentional clear or an unavailable readback.
+                def observedIdentity = updated.device
+                [label: 'setLabel', name: 'setName', deviceNetworkId: 'setDeviceNetworkId'].each { property, setter ->
+                    def original = full?.device?.get(property)
+                    if (original && observedIdentity.containsKey(property) && !observedIdentity.get(property) &&
+                            (!targets.containsKey(property) || targets.get(property))) {
+                        try {
+                            findDevice(deviceId)."${setter}"(original.toString())
+                            updated = _fetchDeviceFullJson(deviceId)
+                            if (updated?.device?.get(property)?.toString() != original.toString()) {
+                                throw new RuntimeException('Native readback did not confirm identity restoration')
+                            }
+                        } catch (Exception re) {
+                            errors << [property: property, stage: 'restore', error: "Device-edit form blanked ${property}; restoring it failed: ${re.message}. Verify and re-set ${property}."]
+                        }
+                    }
+                }
+            }
+            targets.each { property, wanted ->
+                def present = updated?.device instanceof Map && updated.device.containsKey(property)
+                def actual = present ? updated.device.get(property) : null
+                if (property == "dashboardIds") {
+                    present = updated?.dashboards instanceof List
+                    actual = present ? updated.dashboards.findAll { _deviceFlag(it.selected) }.collect { it.id?.toString() }.sort() : null
+                }
+                def expected = property == "dashboardIds" ? wanted.collect { it.toString() }.sort() : wanted
+                def equal = present && (expected instanceof Boolean ? (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == expected : expected instanceof List ? actual == expected : actual?.toString() == expected?.toString())
+                if (property == "tags") equal = present && _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
+                if (present && property in ["notes", "defaultIcon", "tags"] && wanted == "" && actual == null) equal = true
+                if (equal) changes << [property: property, oldValue: full?.device?.get(property), newValue: wanted]
+                else errors << [property: property, error: present ? "POST accepted but ${property} read back as a different value; inspect configuration before retrying." : "POST accepted but could not confirm ${property}; native read-back is unavailable."]
+            }
+        } catch (Exception e) {
+            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
+        }
+    }
+    def assistants = _deviceAssistantProperties()
+    def assistantRequests = assistants.keySet().findAll { args.containsKey(it) }
+    if (assistantRequests) {
+        def targets = [:]
+        assistantRequests.each { targets.put(it, args.remove(it)) }
+        try {
+            def fresh = _fetchDeviceFullJson(deviceId)
+            if (!(fresh?.device instanceof Map) || !assistants.keySet().every { fresh.containsKey(it) && fresh.get(it) instanceof Boolean }) throw new RuntimeException("Unable to read all current assistant assignments before saving; no assistant update sent")
+            def payload = [deviceId: _prefSaveDeviceId(deviceId)]
+            assistants.each { property, integration -> payload.put(property, fresh.get(property)) }
+            payload.putAll(targets)
+            def response = hubInternalPostJson("/device/updateAssistants", groovy.json.JsonOutput.toJson(payload))
+            def readback = _fetchDeviceFullJson(deviceId)
+            targets.each { property, wanted ->
+                def nativeResult = response?.assistants?.get(assistants.get(property))
+                if (nativeResult?.success == false) errors << [property: property, error: "Native assistant update failed: ${nativeResult.reason ?: 'unspecified integration error'}"]
+                else if (response?.success == false && nativeResult?.success != true) errors << [property: property, error: "Native assistant update was rejected without a per-integration success result; inspect the native integration settings."]
+                else if (readback?.containsKey(property) && readback.get(property) instanceof Boolean && readback.get(property) == wanted) changes << [property: property, newValue: wanted]
+                else errors << [property: property, error: "POST accepted but could not confirm ${property}; inspect the native integration settings."]
+            }
+        } catch (Exception e) {
+            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
+        }
+    }
+    if (bypass) {
+        ["showOnHome", "defaultCurrentState"].each { property ->
+            if (args.containsKey(property)) {
+                def wanted = args.remove(property)
+                try {
+                    _saveDevicePreferencePaneControls(deviceId, [(property): wanted])
+                    def readback = _fetchDeviceFullJson(deviceId)?.device
+                    def equal = readback?.containsKey(property) && (wanted instanceof Boolean ? readback.get(property) instanceof Boolean && readback.get(property) == wanted : (readback.get(property) ?: "").toString() == wanted)
+                    if (equal) changes << [property: property, newValue: wanted]
+                    else errors << [property: property, error: "POST accepted but could not confirm ${property}; native read-back did not match."]
+                } catch (Exception e) { errors << [property: property, error: e.message ?: e.toString()] }
+            }
+        }
+    }
+}
+
 def toolUpdateDevice(args) {
     def deviceId = args.deviceId
     if (!deviceId) throw new IllegalArgumentException("deviceId is required")
@@ -3053,14 +4143,22 @@ def toolUpdateDevice(args) {
     if (!device) {
         if (_bypassEnabled()) {
             def fj = _fetchDeviceFullJson(deviceId)
-            if (fj?.device != null) return _toolUpdateDeviceBypass(args, deviceId, fj)
+            if (fj?.device != null) {
+                if (args.dataValues) throw new IllegalArgumentException("dataValues requires adding this device to the MCP device scope; no evidenced native bypass data writer is available")
+                def prepared = _prepareDeviceUpdatePatch(args, deviceId, fj)
+                return _toolUpdateDeviceBypass(prepared.args, deviceId, prepared.fullJson)
+            }
         }
         throw new IllegalArgumentException("Device not found: ${deviceId}. The device must be in your selected devices or be an MCP-managed virtual device.")
     }
 
+    def prepared = _prepareDeviceUpdatePatch(args, deviceId)
+    args = prepared.args
     def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
     def changes = []
     def errors = []
+
+    _applyExtendedDeviceUpdate(args, deviceId, prepared.fullJson, false, changes, errors)
 
     def requestedProps = []
     if (args.label != null) requestedProps << "label"
@@ -3129,46 +4227,8 @@ def toolUpdateDevice(args) {
         }
     }
 
-    // Preferences (official API). updateSetting can SILENTLY no-op (e.g. a pref name the driver
-    // does not declare) yet not throw, so -- mirroring the bypass pref leg -- confirm the value
-    // actually landed via a FRESH fullJson read before recording the change.
     if (args.preferences) {
-        args.preferences.each { key, setting ->
-            def keyStr = key.toString()
-            try {
-                def rawValue
-                if (setting instanceof Map && setting.type && setting.containsKey("value")) {
-                    device.updateSetting(keyStr, [type: setting.type.toString(), value: setting.value])
-                    rawValue = setting.value
-                    mcpLog("debug", "device", "hub_update_device preference: ${keyStr}={type:${setting.type}, value:${setting.value}}")
-                } else {
-                    device.updateSetting(keyStr, setting?.toString())
-                    rawValue = setting
-                    mcpLog("debug", "device", "hub_update_device preference: ${keyStr}='${setting}'")
-                }
-                // Mandatory read-back. A FAILED re-fetch returns null, which for a CLEAR is
-                // indistinguishable from a confirmed (null/empty) value -- so guard the fetch
-                // first and report a DISTINCT error rather than recording a false success.
-                def valueStr = rawValue?.toString()
-                def cleared = (valueStr == null || valueStr == "")
-                def fjReadback = _fetchDeviceFullJson(deviceId)
-                if (fjReadback?.device == null) {
-                    errors << [property: "preference.${keyStr}", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
-                } else {
-                    def got = _fullJsonSettingValue(fjReadback.device, keyStr)
-                    def gotStr = (got == null) ? null : got.toString()
-                    def ok = cleared ? (gotStr == null || gotStr == "") : (gotStr == valueStr)
-                    if (ok) {
-                        changes << [property: "preference.${keyStr}", newValue: setting]
-                    } else {
-                        errors << [property: "preference.${keyStr}", error: "Update accepted but the preference read back as '${gotStr}' (expected '${cleared ? '(cleared)' : valueStr}')."]
-                    }
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "device", "hub_update_device preference ${keyStr}: error: ${e.message}")
-                errors << [property: "preference.${keyStr}", error: e.message]
-            }
-        }
+        _applyDevicePreferencePatch(deviceId, device, args.preferences, changes, errors)
     }
 
     // Room (internal API — write; Write master enforced centrally in executeTool)
@@ -3373,15 +4433,15 @@ def toolUpdateDevice(args) {
     }
 
     // Enable/Disable (internal API — write; Write master enforced centrally in executeTool)
-    // Hubitat's /device/disable endpoint requires POST with body params, not GET with query params
+    // Vue posts application/json with numeric id and boolean disable; verify with a fresh read.
     if (args.enabled != null) {
         if (settings.enableWrite == false) {
             errors << [property: "enabled", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
-                def disableValue = args.enabled ? "false" : "true"
+                def disableValue = !args.enabled
                 mcpLog("debug", "device", "hub_update_device enabled: POSTing to /device/disable with id=${deviceId}, disable=${disableValue}")
-                hubInternalPost("/device/disable", [id: deviceId, disable: disableValue])
+                hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: disableValue]))
                 // Confirm the flip before recording success -- a 200 from /device/disable does not
                 // prove the state changed, and the request-scoped device handle's disabled flag is
                 // execution-cached (stale to a same-request POST), so confirm via a FRESH re-read.
@@ -3407,7 +4467,7 @@ def toolUpdateDevice(args) {
     // /device/preference/save when it's absent: /device/setShowOnHome answers on some hubs and
     // 404s on others (observed 404 on a 2.5.0.157 hub, 200 on 2.5.0.159 -- cause not established,
     // and NOT attributable to any documented release-notes change), whereas /device/preference/save
-    // also carries showOnHome and was present on both. A partial body touches only the named field.
+    // was present on both. That fallback re-posts every preference-pane control because omissions reset.
     if (args.showOnHome != null) {
         if (settings.enableWrite == false) {
             errors << [property: "showOnHome", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
@@ -3420,7 +4480,7 @@ def toolUpdateDevice(args) {
                     throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
                 } catch (Exception primaryErr) {
                     mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), showOnHome: args.showOnHome]))
+                    _saveDevicePreferencePaneControls(deviceId, [showOnHome: args.showOnHome])
                 }
                 // Confirm via a FRESH read-back: a 200 from either endpoint does not prove the flag
                 // flipped, and /device/preference/save returns {success} even on a no-op. fullJson
@@ -3470,7 +4530,7 @@ def toolUpdateDevice(args) {
                 } catch (Exception primaryErr) {
                     // Dedicated endpoint absent on some hubs (404) -- fall back to the Preferences-pane save.
                     mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
-                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), defaultCurrentState: csVal]))
+                    _saveDevicePreferencePaneControls(deviceId, [defaultCurrentState: csVal])
                     applied = true
                 }
                 if (applied) {
@@ -3510,32 +4570,13 @@ def toolUpdateDevice(args) {
             errors << [property: "tags", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
-                def tagsCsv = (args.tags instanceof List) ? args.tags.collect { it?.toString()?.trim() }.findAll { it }.join(",") : args.tags.toString()
+                def tagsCsv = _normalizedDeviceTags(args.tags).join(",")
                 def fjText = hubInternalGet("/device/fullJson/${deviceId}")
                 def full = fjText ? new groovy.json.JsonSlurper().parseText(fjText) : null
                 def d = full?.device
                 if (!d) throw new RuntimeException("Could not read the device model from /device/fullJson to preserve fields")
                 def oldLabel = d.label; def oldName = d.name; def oldDni = d.deviceNetworkId
-                def dashIds = (full.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
-                // Faithful copy of the Vue device-edit form (deviceModel); omitting a field blanks it.
-                def model = [
-                    name: d.name, label: d.label, zigbeeId: d.zigbeeId,
-                    maxEvents: d.maxEvents, maxStates: d.maxStates, spammyThreshold: d.spammyThreshold,
-                    deviceNetworkId: d.deviceNetworkId, deviceTypeId: d.deviceTypeId,
-                    deviceTypeReadableType: d.deviceTypeReadableType, roomId: d.roomId,
-                    meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
-                    homeKitEnabled: full.homeKitEnabled, locationId: d.locationId, hubId: d.hubId,
-                    groupId: d.groupId, dashboardIds: dashIds, tags: tagsCsv,
-                    defaultIcon: (d.defaultIcon ?: d.icon), notes: (d.notes ?: "")
-                ]
-                if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
-                def enc = { v ->
-                    if (v == true) return "on"
-                    if (v == null) return ""
-                    if (v instanceof List) return v.collect { it?.toString() }.join(",")
-                    return v.toString()
-                }
-                def body = model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
+                def body = _deviceConfigurationFormBody(deviceId, full, [tags: tagsCsv])
                 hubInternalPostFormRaw("/device/update", body)
                 // Verify: tags applied AND identity fields not blanked by the wholesale form
                 def vText = hubInternalGet("/device/fullJson/${deviceId}")
@@ -3548,8 +4589,8 @@ def toolUpdateDevice(args) {
                 if (oldLabel && !vd?.label) { try { device.setLabel(oldLabel) } catch (Exception re) { errors << [property: "label", error: "Tags processed but the device-edit form blanked the label and restoring it failed: ${re.message}. Verify and re-set the label."] } }
                 if (oldName && !vd?.name) { try { device.setName(oldName) } catch (Exception re) { errors << [property: "name", error: "Tags processed but the device-edit form blanked the name and restoring it failed: ${re.message}. Verify and re-set the name."] } }
                 if (oldDni && !vd?.deviceNetworkId) { try { device.setDeviceNetworkId(oldDni) } catch (Exception re) { errors << [property: "deviceNetworkId", error: "Tags processed but the device-edit form blanked the deviceNetworkId and restoring it failed: ${re.message}. Verify and re-set the deviceNetworkId."] } }
-                def gotTags = vd?.tags?.toString() ?: ""
-                if (gotTags != (tagsCsv ?: "")) {
+                def gotTags = vd instanceof Map && vd.containsKey('tags') ? _normalizedDeviceTags(vd.tags) : null
+                if (gotTags != _normalizedDeviceTags(tagsCsv)) {
                     errors << [property: "tags", error: "POST accepted but tags read back as '${gotTags}' (expected '${tagsCsv}'). Other fields were preserved."]
                 } else {
                     changes << [property: "tags", oldValue: d.tags, newValue: tagsCsv]
@@ -3571,7 +4612,7 @@ def toolUpdateDevice(args) {
         ]
     }
 
-    mcpLog("info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
+    mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
     if (errors) {
         mcpLog("debug", "device", "hub_update_device errors: ${errors.collect { "${it.property}: ${it.error}" }.join('; ')}")
     }
@@ -3588,25 +4629,14 @@ def toolUpdateDevice(args) {
     ]
 }
 
-// Allowlist-bypass variant of toolUpdateDevice: edit an unlisted device (no Groovy device object)
-// via the hub's id-keyed admin endpoints. Returns the SAME {success, device, deviceId, changes,
-// errors, message} shape as the listed path. Routing per field:
-//   label / name / deviceNetworkId -> POST /device/update (one wholesale device-model form, rebuilt
-//                             FRESH; label rides this portable form because the dedicated GET
-//                             /device/updateLabel setter 404s on some firmwares -- see below)
-//   preferences            -> POST /device/preference/save ({preferences:[{name,type,value}]} array,
-//                             read-back verified -- the {success} response lies on a no-op)
-//   room (assign)          -> GET  /device/updateRoom (by room NAME, existence-checked)
-//   room (unassign)        -> POST /device/update with roomId=0
-//   enabled                -> POST /device/disable
-// showOnHome / defaultCurrentState / tags / dataValues are NOT wired here (their listed-path flows
-// lean on the Groovy device object, or on the wholesale /device/update form's unverified field
-// encoding) -- requesting them yields a per-field error pointing the caller at the MCP device scope.
+// The bypass path uses native ID-keyed endpoints after the same patch prevalidation.
 private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
     def d = fj.device
     def deviceLabel = _bypassDeviceLabel(fj, deviceId)
     def changes = []
     def errors = []
+
+    _applyExtendedDeviceUpdate(args, deviceId, fj, true, changes, errors)
 
     def requestedProps = []
     if (args.label != null) requestedProps << "label"
@@ -3616,14 +4646,6 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
     if (args.room != null) requestedProps << "room"
     if (args.enabled != null) requestedProps << "enabled"
     mcpLog("warn", "device", "hub_update_device (allowlist bypass) for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
-
-    // dataValues is dropped from the bypass path: its only id-keyed route is the wholesale
-    // /device/update form, and the form's data-value field encoding is unverified -- a wrong guess
-    // could blank or mis-set fields. showOnHome/defaultCurrentState/tags lean on the Groovy device
-    // object or the same unverified form. All four are refused with a per-field error.
-    ["showOnHome", "defaultCurrentState", "tags", "dataValues"].each { p ->
-        if (args[p] != null) errors << [property: p, error: "'${p}' is not supported when reaching a device via the allowlist bypass; add the device to the MCP device scope to edit it."]
-    }
 
     // label / name / deviceNetworkId -> ONE wholesale /device/update form POST. The form blanks any
     // omitted field, so all three ride a single faithful device-model re-POST rebuilt from a FRESH
@@ -3660,46 +4682,8 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
         }
     }
 
-    // Preferences -> POST /device/preference/save (one save per key). DRIVER prefs MUST ride the
-    // `preferences:[{name,type,value}]` ARRAY -- a flat top-level key (e.g. {deviceId, logEnable})
-    // is a SILENT NO-OP that still returns {success:true} (verified live), so the {success} response
-    // CANNOT detect it. Hence the mandatory read-back: re-fetch fullJson and confirm the pref's
-    // value actually changed before recording it as a change.
     if (args.preferences) {
-        args.preferences.each { key, setting ->
-            def keyStr = key.toString()
-            try {
-                def type = (setting instanceof Map && setting.type) ? setting.type.toString() : null
-                def rawValue = (setting instanceof Map && setting.containsKey("value")) ? setting.value : setting
-                if (type == null) type = _inferPrefType(rawValue)
-                def valueStr = rawValue?.toString()
-                // A null/empty target is a CLEAR. Send "" (not null) on the wire -- the form fields
-                // are string-typed -- and the read-back is satisfied by a null OR empty value.
-                def cleared = (valueStr == null || valueStr == "")
-                def bodyValue = cleared ? "" : valueStr
-                def body = groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId),
-                    preferences: [[name: keyStr, type: type, value: bodyValue]]])
-                hubInternalPostJson("/device/preference/save", body)
-                // Mandatory read-back. A FAILED re-fetch returns null, which for a CLEAR is
-                // indistinguishable from a confirmed (null/empty) value -- so guard the fetch
-                // first and report a DISTINCT error rather than recording a false success.
-                def fjReadback = _fetchDeviceFullJson(deviceId)
-                if (fjReadback?.device == null) {
-                    errors << [property: "preference.${keyStr}", error: "POST accepted but could not confirm the preference -- the read-back fetch failed."]
-                } else {
-                    def got = _fullJsonSettingValue(fjReadback.device, keyStr)
-                    def gotStr = (got == null) ? null : got.toString()
-                    def ok = cleared ? (gotStr == null || gotStr == "") : (gotStr == valueStr)
-                    if (ok) {
-                        changes << [property: "preference.${keyStr}", newValue: setting]
-                    } else {
-                        errors << [property: "preference.${keyStr}", error: "POST accepted but the preference read back as '${gotStr}' (expected '${cleared ? '(cleared)' : valueStr}')."]
-                    }
-                }
-            } catch (Exception e) {
-                errors << [property: "preference.${keyStr}", error: "${e.message ?: e.toString()}"]
-            }
-        }
+        _applyDevicePreferencePatch(deviceId, null, args.preferences, changes, errors)
     }
 
     // Room. /device/updateRoom takes the room NAME (NOT the id -- live-verified: sending an id
@@ -3752,7 +4736,7 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
     // a 200 from /device/disable does not by itself prove the state changed.
     if (args.enabled != null) {
         try {
-            hubInternalPost("/device/disable", [id: deviceId, disable: (args.enabled ? "false" : "true")])
+            hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: !args.enabled]))
             def res = _confirmDisabledFlip(deviceId, !args.enabled)
             if (res.fetchFailed) {
                 errors << [property: "enabled", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
@@ -3775,7 +4759,7 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
         ]
     }
 
-    mcpLog("info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}) via allowlist bypass: ${changes.size()} changes, ${errors.size()} errors")
+    mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}) via allowlist bypass: ${changes.size()} changes, ${errors.size()} errors")
     return [
         success: errors.isEmpty(),
         device: deviceLabel,
@@ -3819,12 +4803,40 @@ private Map _assertRoomExistsForBypass(room) {
 // (or null on a read-back fetch failure) so the caller can verify the change landed. Live-verified:
 // name/deviceNetworkId preserve all other fields; roomId=0 clears the room assignment.
 private Map _postBypassDeviceModel(deviceId, Map fieldOverrides) {
-    def fj = _fetchDeviceFullJson(deviceId)
-    if (fj?.device == null) {
-        // This is a PRE-write model read (the form is built from it, then POSTed) -- distinct from
-        // the post-write read-back legs, so the diagnostic says model-read, not confirm.
-        throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form")
+    return _postDeviceConfigurationForm(deviceId, fieldOverrides)?.device
+}
+
+private void _requireCompleteDeviceFormSource(Map full, deviceId) {
+    if (!(full?.device instanceof Map)) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device model; no form update sent")
+    def d = full.device
+    // All three current-firmware captures contain these keys, including nullable fields.
+    def required = ["id", "version", "controllerType", "name", "label", "zigbeeId", "maxEvents", "maxStates",
+        "spammyThreshold", "deviceNetworkId", "deviceTypeId", "deviceTypeReadableType", "roomId",
+        "meshEnabled", "retryEnabled", "meshFullSync", "locationId", "hubId", "groupId", "tags", "defaultIcon", "notes"]
+    def missing = required.findAll { !d.containsKey(it) }
+    if (missing) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device fields ${missing.join(', ')}; no form update sent")
+    if (d.id == null || d.id.toString() != deviceId.toString()) throw new RuntimeException("Invalid /device/fullJson preservation source: device id does not match; no form update sent")
+    if (d.version == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
+    if (!(full.get("homeKitEnabled") instanceof Boolean)) throw new RuntimeException("Incomplete /device/fullJson preservation source: homeKitEnabled is unavailable or invalid; no form update sent")
+    def dashboards = full.get("dashboards")
+    if (!(dashboards instanceof List) || dashboards.any { row ->
+        if (!(row instanceof Map) || !(row.get("selected") instanceof Boolean)) return true
+        def dashboardId = row.get("id")
+        return !(dashboardId instanceof Number) || dashboardId <= 0 || new BigDecimal(dashboardId.toString()).stripTrailingZeros().scale() > 0
+    }) {
+        throw new RuntimeException("Incomplete /device/fullJson preservation source: dashboards assignments are unavailable or invalid; no form update sent")
     }
+}
+
+private List _normalizedDeviceTags(value) {
+    if (value == null) return []
+    def tags = value instanceof String ? value.split(',').toList() : value
+    if (!(tags instanceof List) || tags.any { !(it instanceof String) }) return null
+    return tags.collect { it.trim() }.findAll { it }
+}
+
+private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides) {
+    _requireCompleteDeviceFormSource(fj, deviceId)
     def d = fj.device
     def dashIds = (fj.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
     def model = [
@@ -3835,7 +4847,7 @@ private Map _postBypassDeviceModel(deviceId, Map fieldOverrides) {
         meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
         homeKitEnabled: fj.homeKitEnabled, locationId: d.locationId, hubId: d.hubId,
         groupId: d.groupId, dashboardIds: dashIds, tags: (d.tags ?: ""),
-        defaultIcon: (d.defaultIcon ?: d.icon), notes: (d.notes ?: "")
+        defaultIcon: d.defaultIcon, notes: d.notes
     ]
     if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
     if (fieldOverrides) model.putAll(fieldOverrides)
@@ -3845,15 +4857,23 @@ private Map _postBypassDeviceModel(deviceId, Map fieldOverrides) {
         if (v instanceof List) return v.collect { it?.toString() }.join(",")
         return v.toString()
     }
-    def body = model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
+    return model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
+}
+
+private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
+    def fj = _fetchDeviceFullJson(deviceId)
+    if (fj?.device == null) {
+        throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form")
+    }
+    def body = _deviceConfigurationFormBody(deviceId, fj, fieldOverrides)
     hubInternalPostFormRaw("/device/update", body)
-    return _fetchDeviceFullJson(deviceId)?.device
+    return _fetchDeviceFullJson(deviceId)
 }
 
 def toolCreateDevice(args) {
-    // Instantiate a device from a driver TYPE id (the hub's "add device by driver" path:
-    // GET /device/sysDriverByIdJson/<deviceTypeId> -> {success, deviceId, errorMessage}).
-    // This creates a real, non-radio-bound device -- useful for LAN/integration/cloud and
+    // Resolve the native driver type before choosing one creation endpoint; a failed mutation
+    // cannot safely be retried through another endpoint because its device may already exist.
+    // This creates a device without radio pairing -- useful for LAN/integration/cloud and
     // software/component drivers that have no pairing flow. Radio drivers created this way
     // are orphan shells (no node), so we warn. MCP-managed virtual devices have their own
     // tool (hub_manage_virtual_device); this is the broader catalog path.
@@ -3866,9 +4886,30 @@ def toolCreateDevice(args) {
     }
     typeId = typeId.toString().trim()
 
+    String driverType
+    try {
+        def catalogText = hubInternalGet('/device/drivers')
+        def catalog = catalogText ? new groovy.json.JsonSlurper().parseText(catalogText) : null
+        if (!(catalog instanceof Map) || !(catalog.drivers instanceof List)) {
+            return [success: false, error: 'The native driver catalog is unavailable or invalid; no device create request sent.',
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+        }
+        def matches = catalog.drivers.findAll { row -> row instanceof Map && row.id?.toString() == typeId }
+        if (matches.size() != 1 || !(matches[0].type in ['sys', 'usr'])) {
+            return [success: false, error: "Could not resolve one supported native driver type for ${typeId}; no device create request sent.",
+                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+        }
+        driverType = matches[0].type.toString()
+    } catch (Exception e) {
+        return [success: false, error: 'Hub call failed reading the driver catalog; no device create request sent.',
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+    }
+
     def resp
     try {
-        def respText = hubInternalGet("/device/sysDriverByIdJson/${java.net.URLEncoder.encode(typeId, 'UTF-8')}", null, 30)
+        def respText = driverType == 'usr'
+            ? hubInternalGet('/device/createVirtual', [deviceTypeId: typeId], 30)
+            : hubInternalGet("/device/sysDriverByIdJson/${java.net.URLEncoder.encode(typeId, 'UTF-8')}", null, 30)
         // Parse INSIDE the try: a 200 carrying an HTML/login body (not JSON) makes parseText
         // throw, and it must return the same structured runtime-error shape as a fetch failure
         // rather than escaping as an unstructured tool error.
@@ -3877,6 +4918,8 @@ def toolCreateDevice(args) {
         return [success: false, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
     }
+    // Vue's /device/createVirtual response identifies success by deviceId and omits success.
+    if (resp?.deviceId != null && resp?.success == null) resp.put("success", true)
     if (resp?.success != true || resp?.deviceId == null) {
         return [success: false, error: resp?.errorMessage ?: "Hub did not create a device for driver-type ${typeId}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
@@ -4536,11 +5579,17 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
         ],
         [
             name: "hub_get_device",
-            description: """Get one device's full detail: capabilities, all attributes with current values, and supported commands (with argument types).""",
+            description: """Inspect one device. Default summary gives capabilities, current attributes and commands. Use mode='configuration' before updates to discover editable fields, saved preferences, types/defaults/options and driver information; mode='details' exposes configuration and other device information by section. Read status distinguishes unavailable information from unset values.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices, e.g. \"42\""]
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices, e.g. \"42\""],
+                    mode: [type: "string", enum: ["summary", "configuration", "details"], default: "summary",
+                           description: "summary: concise capabilities/attributes/commands; configuration: valid editable fields and preference definitions/current values; details: all available information in selectable sections."],
+                    sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
+                               description: "details mode only: non-empty section selection. Omit for all sections. Large histories remain reachable through read-tool references."],
+                    fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names. For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names."],
+                    cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON. Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads."]
                 ],
                 required: ["deviceId"]
             ]
@@ -4640,9 +5689,9 @@ Default: most-recent events for a device (deviceId + optional limit).
         ],
         [
             name: "hub_update_device",
-            description: """Update device properties[[FLAT_TRIM]]: label, name, deviceNetworkId, room, enabled, dataValues, preferences, showOnHome, defaultCurrentState, tags[[/FLAT_TRIM]].
+            description: """Update device configuration and driver preferences. Read hub_get_device(mode='configuration') first for current values, valid options, and availability.
 
-Only modify devices user explicitly requested. Writes require Write master. Call `hub_get_tool_guide(section='update_device')` for preferences format.""",
+Only modify devices user explicitly requested. Pre-flight: read configuration, choose the exact patch, obtain the update_device guide key. Writes require Write master. Identity, driver, dashboard, mesh and assistant changes additionally require confirm=true and a backup less than 24 hours old. Saved preferences do not invoke device commands. Per-property changes/errors report partial success; inspect readback before retrying.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4650,14 +5699,29 @@ Only modify devices user explicitly requested. Writes require Write master. Call
                     label: [type: "string", description: "New display label for the device"],
                     name: [type: "string", description: "New device name"],
                     deviceNetworkId: [type: "string", description: "New device network ID (must be unique across all hub devices)"],
-                    room: [type: "string", description: "Room name to assign the device to (case-sensitive, must match an existing room)"],
+                    room: [type: "string", description: "Existing room name (case-insensitive exact match); empty string removes the assignment."],
                     enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
                     dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
                         additionalProperties: [type: "string"]],
-                    preferences: [type: "object", description: "Device preferences to update. Each value must be an object with 'type' and 'value'. Example: {\"pollInterval\": {\"type\": \"number\", \"value\": 30}}"],
+                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it. Null, blank strings, empty arrays and clear combined with value are rejected. Booleans, numbers and nonempty multiple-enum arrays retain native types. If configuration reports multiple:null for an unset enum, check its driver declaration or pre-clear metadata and supply {value:...,multiple:true/false}; cardinality is never guessed."],
                     showOnHome: [type: "boolean", description: "Show this device on the hub Home page.[[FLAT_TRIM]] Also counts it in the quick status-bar summaries (climate/lights/locks/etc.)[[/FLAT_TRIM]]"],
                     defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column[[FLAT_TRIM]] (Devices/Rooms pages)[[/FLAT_TRIM]], e.g. \"switch\"; \"\" selects None."],
-                    tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]]
+                    tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]],
+                    deviceTypeId: [type: "integer", minimum: 1, description: "Driver selection ID from configuration driver options. Changes behavior; requires confirm and recent backup."],
+                    zigbeeId: [type: "string", description: "Existing Zigbee device identity; unavailable on components or linked devices. Requires confirm and recent backup."],
+                    notes: [type: "string", description: "Device note; empty string clears it."],
+                    maxEvents: [type: "integer", minimum: 1, maximum: 2000, description: "Stored events per event type. Reducing retention can remove older history."],
+                    maxStates: [type: "integer", minimum: 1, maximum: 2000, description: "Stored states per attribute. Reducing retention can remove older history."],
+                    spammyThreshold: [type: "integer", minimum: 100, maximum: 2000, description: "Events per hour that trigger the too-many-events alert."],
+                    defaultIcon: [type: "string", description: "Native custom icon identifier; empty string removes the override."],
+                    dashboardIds: [type: "array", items: [type: "integer", minimum: 1], description: "Replace native dashboard assignments using configuration option IDs; [] clears. Requires confirm and recent backup."],
+                    meshEnabled: [type: "boolean", description: "Share through Hub Mesh when native selection is available. Requires confirm and recent backup."],
+                    retryEnabled: [type: "boolean", description: "Enable native command retry when available for this device."],
+                    meshFullSync: [type: "boolean", description: "Regularly sync a linked device when Hub Mesh refresh is enabled. Requires confirm and recent backup."],
+                    homeKitEnabled: [type: "boolean", description: "Native Apple HomeKit assignment when supported/enabled. Requires confirm and recent backup."],
+                    amazonAlexaEnabled: [type: "boolean", description: "Native Amazon Alexa assignment when installed and supported. Requires confirm and recent backup."],
+                    googleHomeEnabled: [type: "boolean", description: "Native Google Home assignment when installed and supported. Requires confirm and recent backup."],
+                    confirm: [type: "boolean", description: "Explicit approval for driver, identity, dashboard, mesh or assistant changes; also requires a hub backup within 24 hours."]
                 ],
                 required: ["deviceId"]
             ]
@@ -4770,13 +5834,13 @@ def _toolDisplayMeta_partDevices() {
     return [
         // Devices
         hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
-        hub_get_device: [title: "Get Device Details", summary: "Get one device's full details: attributes, commands, capabilities."],
+        hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
         hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
-        hub_update_device: [title: "Update Device Properties", summary: "Update a device's label, room, preferences, show-on-home, status attribute, or tags."],
+        hub_update_device: [title: "Update Device Properties", summary: "Update applicable device identity, preferences, display, driver, history limits, or integration assignments."],
         hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id (LAN/integration/software drivers; not radio hardware)."],
         hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]

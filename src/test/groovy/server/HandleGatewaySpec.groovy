@@ -206,6 +206,30 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.count == 2
     }
 
+    def "hub_get_device dispatch forwards mode sections fields and cursor to the reader"() {
+        given:
+        def captured = [:]
+        script.metaClass.toolGetDevice = { deviceId, mode = 'summary', sections = null, fields = null, cursor = null ->
+            captured.put('deviceId', deviceId)
+            captured.put('mode', mode)
+            captured.put('sections', sections)
+            captured.put('fields', fields)
+            captured.put('cursor', cursor)
+            [success: true]
+        }
+
+        when:
+        def result = script.executeTool('hub_get_device', [
+            deviceId: '42', mode: 'configuration', sections: ['preferences', 'driver'],
+            fields: ['probeBool', 'maxEvents'], cursor: 'preference:probeBool:500'
+        ])
+
+        then:
+        result.success == true
+        captured == [deviceId: '42', mode: 'configuration', sections: ['preferences', 'driver'],
+                     fields: ['probeBool', 'maxEvents'], cursor: 'preference:probeBool:500']
+    }
+
     // ---- Defensive JSON-string parse for inner args ----
     // Some MCP clients (Sonnet subagents in particular) serialize the inner
     // `args` value as a JSON-encoded string rather than a Map object. Without

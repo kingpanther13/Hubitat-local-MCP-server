@@ -1,6 +1,7 @@
 package support
 
 import me.biocomp.hubitat_ci.api.common_api.Log
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Test-only Log implementation that accepts both the single-arg
@@ -19,7 +20,8 @@ class PermissiveLog implements Log {
     // every method still accepts the call and never throws. The harness clears this
     // between feature methods. Coerce to plain String so GString identity quirks
     // don't bite under either Groovy runtime.
-    final List<String> messages = []
+    // Watchdog concurrency specs log from multiple worker threads.
+    final List<String> messages = new CopyOnWriteArrayList<String>()
 
     @Override void error(String message) { messages << ("error:" + message) }
     @Override void warn(String message) { messages << ("warn:" + message) }

@@ -33,12 +33,15 @@
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
 // Per execution: never pass this clock into a destructive inner wizard operation.
 @groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
+@groovy.transform.Field Map deviceReadContext = null
 // JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
 // _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot (the trimmed page + at), fetchId
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
 // fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 @groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
+// Redacted immutable device pages; bounded in memory so changing telemetry cannot split a read.
+@groovy.transform.Field static final Map DEVICE_READ_SNAPSHOTS = new java.util.LinkedHashMap()
 // Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 @groovy.transform.Field static final Map CAPTURE_STORES = new java.util.HashMap()
@@ -1539,6 +1542,7 @@ def handleToolsCall(msg) {
 
     Map rec = null
     Map claim = null
+    String readSnapshotId = null
     String stateId = requestState?.toString()
     long reqT0 = now()
     try {
@@ -1552,7 +1556,8 @@ def handleToolsCall(msg) {
                         && _mrtrReadTools().contains(rec.leafTool?.toString())) {
                     Map replayArgs = _mrtrCopyMap(args as Map)
                     replayArgs.__reqT0 = reqT0
-                    def replayed = executeTool(toolName, replayArgs)
+                    def replayed = _executeWithDeviceReadContext(toolName, replayArgs,
+                        rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null)
                     if (replayed instanceof Map && replayed.status == "in_progress") {
                         // The snapshot is gone and a fresh fetch did not land in time; a
                         // terminal record cannot continue, so the client starts a fresh call.
@@ -1595,12 +1600,15 @@ def handleToolsCall(msg) {
                 // still pending reserves a requestState for the client to continue.
                 Map readArgs = _mrtrCopyMap(args as Map)
                 readArgs.__reqT0 = reqT0
-                def readResult = executeTool(toolName, readArgs)
+                if (_mrtrDeviceReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
+                def readResult = _executeWithDeviceReadContext(toolName, readArgs,
+                    readSnapshotId ? [id: readSnapshotId, fresh: true] : null)
                 if (!(readResult instanceof Map && readResult.status == "in_progress")) {
                     return _renderToolResult(msg.id, toolName, reactiveToolName, args, readResult, false)
                 }
             }
-            def reservation = _mrtrReserve(toolName, reactiveToolName, binding)
+            def reservation = readSnapshotId ? _mrtrReserve(toolName, reactiveToolName, binding, readSnapshotId) :
+                _mrtrReserve(toolName, reactiveToolName, binding)
             if (reservation.accepted != true) {
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                     reservation.refusal, true)
@@ -1656,7 +1664,7 @@ def handleToolsCall(msg) {
         if (rec instanceof Map && claim?.outcome == "claimed") {
             _mrtrAbandon(stateId, rec, claim, "validation_error")
         }
-        mcpLog("warn", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
+        mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
                        error: e.message]])
         return jsonRpcError(msg.id, -32602, "Invalid params: ${e.message}")
@@ -1714,7 +1722,7 @@ def handleToolsCallLegacy(msg) {
         return _renderToolResult(msg.id, toolName, reactiveToolName, args, result,
             result instanceof Map && result.isError == true)
     } catch (IllegalArgumentException e) {
-        mcpLog("warn", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
+        mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
             details: [tool: reactiveToolName,
                       gateway: (reactiveToolName != toolName) ? toolName : null,
                       error: e.message]
@@ -1801,7 +1809,8 @@ def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs"] as Set
+            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
+            "hub_get_device", "hub_list_devices"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -1810,7 +1819,7 @@ def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_delete_debug_logs"] as Set
+            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device"] as Set
 }
 
 // Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
@@ -1820,7 +1829,16 @@ def _mrtrWriteTools() {
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule"] as Set
+            "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices"] as Set
+}
+
+private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices"] as Set }
+
+private def _executeWithDeviceReadContext(tool, Map args, Map context) {
+    Map previous = deviceReadContext
+    deviceReadContext = context
+    try { return executeTool(tool, args) }
+    finally { deviceReadContext = previous }
 }
 
 // A read only continues when the request's transport carries a time budget; without one the
@@ -1831,7 +1849,8 @@ def _mrtrReadContinuationActive() {
 
 private Set _mrtrDetachedWorkerTools() {
     return ["hub_set_rule", "hub_set_native_app",
-            "hub_create_driver", "hub_update_driver", "hub_delete_item"] as Set
+            "hub_create_driver", "hub_update_driver", "hub_delete_item",
+            "hub_manage_virtual_device", "hub_update_device"] as Set
 }
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
@@ -2441,13 +2460,14 @@ private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
 
 // Duplicate detection, global write capacity, storage capacity, and record
 // creation are one transaction under the static app-wide mutex.
-def _mrtrReserve(outerTool, leafTool, Map binding) {
+def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null) {
     List cleanup = []
     Map outcome
     synchronized (WRITE_RESERVATION_LOCK) {
         cleanup = _mrtrSweepLocked()
         _writeSweepRequestsLocked()
-        def duplicate = _mrtrFindActiveLocked(leafTool, binding)
+        // Device state can change outside MCP; independent reads must never join an older snapshot.
+        def duplicate = readSnapshotId ? null : _mrtrFindActiveLocked(leafTool, binding)
         if (duplicate != null) {
             // A relay can drop the mutation-free preflight after this state was
             // reserved but before the client learned requestState. Coalesce an exact
@@ -2476,6 +2496,7 @@ def _mrtrReserve(outerTool, leafTool, Map binding) {
                     startedAt: at, updatedAt: at, expiresAt: at + _mrtrActiveTtlMs(),
                     rounds: 0, generation: 0
                 ]
+                if (readSnapshotId) rec.readSnapshotId = readSnapshotId
                 _mrtrPutLocked(stateId, rec)
                 outcome = [accepted: true, stateId: stateId]
             }
@@ -2732,8 +2753,10 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // which keeps running and publishes to the cache when it lands.
                 def readCapped = [
                     success: false, isError: true, status: "slow_read_timeout", tool: leaf,
-                    error: "The hub's Logs-page fetch did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
-                    note: "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
+                    error: "The ${leaf} read did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
+                    note: _mrtrDeviceReadTools().contains(leaf) ?
+                        "No hub state was changed. The background device read may still be running. Start a fresh call with a smaller selection; if this repeats, inspect the device page and hub performance." :
+                        "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
                 ]
                 _mrtrStoreTerminal(stateId, rec, claim, readCapped, true)
@@ -3064,6 +3087,13 @@ def runMrtrSlice(Map job = [:]) {
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
         _mrtrCommitSlice(stateId, rec, claim, executionArgs, result)
     } catch (Exception workerErr) {
+        if (workerErr instanceof IllegalArgumentException &&
+                rec.leafTool in ["hub_manage_virtual_device", "hub_update_device"]) {
+            // Preserve the device tools' validation contract on every replay, including
+            // reactive guide hints and the exact error the diagnostics consumer records.
+            _mrtrStoreTerminal(stateId, rec, claim, [__deviceValidation: workerErr.message], true)
+            return
+        }
         mcpLog("error", "mrtr", "Detached write worker failed for ${rec.leafTool}: ${workerErr.message}")
         def failure = [success: false, isError: true, tool: rec.leafTool,
                        error: "Tool error: ${workerErr.message}"]
@@ -3126,7 +3156,8 @@ private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     String leaf = rec.leafTool?.toString()
     if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
     if (leaf == "hub_import_native_app") return _mrtrImportNativeAppSlice(rec, executionArgs)
-    return executeTool(rec.outerTool, executionArgs)
+    return _executeWithDeviceReadContext(rec.outerTool, executionArgs,
+        rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null)
 }
 
 private Map _mrtrControl(String kind, Map checkpoint) {
@@ -3295,12 +3326,31 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
 }
 
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
+    if (result instanceof Map && result.__deviceValidation != null) {
+        String detail = result.__deviceValidation.toString()
+        mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${detail}", null,
+            [details: [tool: reactiveToolName,
+                       gateway: (reactiveToolName != toolName) ? toolName : null, error: detail]])
+        def hint = _reactiveBpsWarning(reactiveToolName, args, detail)
+        return jsonRpcError(id, -32602, "Invalid params: ${detail}${hint ? ' ' + hint : ''}")
+    }
     // Reactive hints mutate their result map. Terminal MRTR responses are retained
     // for replay, so render from a non-mutating structural copy and keep the cached canonical
     // result immutable across clients and retries. Do not use _mrtrCopyMap here:
     // its JSON round-trip would throw on a non-serializable tool result before the
     // guarded serialization below can turn that tool bug into a valid MCP error.
     def rendered = _publicToolResultValue(result)
+    boolean failureFlag = rendered instanceof Map && (rendered.isError == true || rendered.success == false)
+    boolean stateReadbackFailed = rendered instanceof Map && rendered.stateError instanceof CharSequence &&
+        rendered.stateError.toString().trim()
+    if (isErrorOverride || failureFlag || stateReadbackFailed) {
+        // Returned error text and arguments may contain secrets; log only safe failure context.
+        mcpLog("error", "server", "Tool ${reactiveToolName} returned a failure result", null, [
+            details: [tool: reactiveToolName,
+                      gateway: (reactiveToolName != toolName) ? toolName : null,
+                      failureKind: stateReadbackFailed ? "state_readback_failed" : "tool_failed"]
+        ])
+    }
     if (rendered instanceof Map && (rendered.isError == true || rendered.success == false)) {
         try { _applyReactiveBpsWarning(reactiveToolName, args, rendered) }
         catch (Exception bpErr) {
@@ -3835,18 +3885,18 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_devices: [
-            description: "Read-only device inspection: list devices with current states, get one device's full detail, read or block-poll a single attribute, read device/location event history, and search Hubitat's compatible-device catalog (models + pairing/reset instructions). All operations are read-only; device commands and updates live in hub_manage_devices.",
+            description: "Read-only device inspection: list devices with current states; inspect one device in summary, configuration, or sectioned details mode; read or block-poll an attribute; read device/location event history; and search Hubitat's compatible-device catalog. All operations are read-only; device commands and updates live in hub_manage_devices.",
             tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices"],
             summaries: [
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
-                hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
+                hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?"
             ],
             searchHints: [
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
-                hub_get_device: "device detail capabilities attributes commands info inspect one",
+                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch",
                 hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan"
@@ -3891,16 +3941,16 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_devices: [
-            description: "Control and inspect devices: send commands, update a device, create a device from a driver type, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
+            description: "Control and inspect devices: send commands; inspect configuration before changing identity, preferences, native properties, integration assignments, or driver; create a device from a driver type; and swap/replace a device across all referencing apps. Device reads are also in hub_read_devices.",
             tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
-                hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled, dataValues, preferences, showOnHome, defaultCurrentState (Status-column attribute), tags. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?, showOnHome?, defaultCurrentState?, tags?",
+                hub_update_device: "Update applicable device identity, configuration, driver, history, dashboard/mesh, retry, or assistant fields after hub_get_device(mode='configuration'). Args: deviceId plus one or more editable properties; confirm is required for high-impact fields.",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
-                hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
+                hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?"
             ],
@@ -3908,10 +3958,10 @@ def getGatewayConfig() {
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
                 hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
-                hub_update_device: "rename relabel move room device edit show on home status attribute default current state tags label preferences",
+                hub_update_device: "rename relabel move room device edit configuration preferences driver type zigbee history limits dashboard mesh retry homekit alexa google assistant tags",
                 hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
                 hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
-                hub_get_device: "device detail capabilities attributes commands info inspect one",
+                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch"
             ]
@@ -4552,6 +4602,23 @@ private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     }
 }
 
+private String _visibleGatewayIntro(String gatewayName, Map gatewayConfig, Set hidden, Map displayMeta) {
+    def config = gatewayConfig.get(gatewayName)
+    String description = config.description?.toString() ?: ''
+    boolean narrowed = config.tools.any { hidden.contains(it) }
+    if (!narrowed) {
+        // An unchanged read gateway can still promise writes through another gateway.
+        narrowed = description.findAll(/hub_[a-z0-9_]+/).any { reference ->
+            def referencedGateway = gatewayConfig.get(reference)
+            referencedGateway ? referencedGateway.tools.any { hidden.contains(it) } : hidden.contains(reference)
+        }
+    }
+    if (narrowed) {
+        return "${displayMeta.get(gatewayName)?.title ?: gatewayName} gateway. Its currently available operations are listed below.".toString()
+    }
+    return description
+}
+
 // When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
 // at call time. The hide rules live in the biTools / customEngineMode blocks below;
 // useGateways=false additionally flattens the catalog (every tool individually) and
@@ -4626,9 +4693,10 @@ def getToolDefinitions() {
         def catalog = visibleSubTools.collect { toolName ->
             "- ${toolName}: ${config.summaries[toolName]}"
         }.join("\n")
+        def intro = _visibleGatewayIntro(gwName, gatewayConfig, hideByName, displayMeta)
         [[
             name: gwName,
-            description: "${config.description}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
+            description: "${intro}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4783,6 +4851,9 @@ def executeTool(toolName, args) {
             throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules_and_apps.")
         }
     }
+    if (deviceReadContext != null && _mrtrDeviceReadTools().contains(toolName?.toString())) {
+        return _deviceReadSnapshot(toolName.toString(), args as Map, deviceReadContext)
+    }
     switch (toolName) {
         // Device Tools
         case "hub_list_devices":
@@ -4802,7 +4873,7 @@ def executeTool(toolName, args) {
                 return toolListVirtualDevices(args)
             }
             return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
-        case "hub_get_device": return toolGetDevice(args.deviceId)
+        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.fields, args.cursor)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
@@ -6154,8 +6225,9 @@ def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean
         try {
             return new groovy.json.JsonSlurper().parseText(bodyText)
         } catch (Exception parseErr) {
-            mcpLog("error", "hub-admin", "hubInternalPostJson ${path}: response not JSON: ${bodyText?.take(200)}")
-            return [_unparseable: true, message: "hub returned a non-JSON body from ${path}: ${bodyText?.take(200)}"]
+            def detail = path == '/device/preference/save' ? '[preference response redacted]' : bodyText.take(200)
+            mcpLog("error", "hub-admin", "hubInternalPostJson ${path}: response not JSON: ${detail}")
+            return [_unparseable: true, message: "hub returned a non-JSON body from ${path}: ${detail}"]
         }
     }
     return null
@@ -8249,7 +8321,7 @@ def _guideSectionForTool(toolName) {
               'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
     if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
               'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
-    if (t == 'hub_update_device') return 'update_device'
+    if (t in ['hub_get_device', 'hub_update_device']) return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
@@ -8651,37 +8723,36 @@ MCP-managed virtual devices:
 `{success, deviceId, deviceNetworkId, deviceLabel, message}`
 ''',
 
-        update_device: '''## hub_update_device Properties
+        update_device: '''## Device inspection and updates
 
-| Property | Requires Write master |
-|----------|-------------------------|
-| label | No |
-| name | No |
-| deviceNetworkId | No |
-| dataValues | No |
-| preferences | No |
-| room | Yes |
-| enabled | Yes |
-| showOnHome | Yes |
-| defaultCurrentState | Yes |
-| tags | Yes |
+Call `hub_get_device(deviceId=..., mode="configuration")` before an update. It reports the fields that are applicable and writable for this device, declared preference types/options/ranges/defaults and current saved values, driver identity, and source/read status. A saved false, zero, empty string or null is distinct from an unset value; a driver default does not prove the setting was saved. Use `mode="details"` with optional `sections` for wider inspection.
+
+For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then select exact names. Configuration selection applies to preference names, editable property names and device-info keys. Details selection applies to section keys; attributes also accepts an individual attribute name. Commands and jobs use the row indices returned by `availableFields`, so duplicate or unnamed rows remain selectable. Omitting `fields` retains the full selected sections.
+
+If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 4 MiB of content are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
+
+Every update requires the Write master and applicable tool permissions. When mandatory best-practice acknowledgment is enabled, put `bestPracticeKey` inside the gateway's `args` alongside the patch.
+
+| Properties | Behavior |
+|------------|----------|
+| `label`, `name`, `deviceNetworkId` | Device identity; network-ID changes require confirmation and backup. |
+| `dataValues`, `preferences` | Data-section values and declared driver preferences. Inspect configuration first. |
+| `room`, `enabled`, `showOnHome`, `defaultCurrentState`, `tags` | Room, availability, Home visibility, Status-column attribute, and replacement tag set. |
+| `deviceTypeId`, `zigbeeId` | Driver and radio identity where applicable; confirmation and backup required. |
+| `notes`, `defaultIcon` | Device note and icon override; empty string clears. |
+| `maxEvents`, `maxStates`, `spammyThreshold` | Native history limits (1-2000) and event-alert threshold (100-2000). |
+| `dashboardIds`, `meshEnabled`, `meshFullSync` | Applicable dashboard/mesh assignments; confirmation and backup required. |
+| `retryEnabled` | Command retry where the native device exposes it. |
+| `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` | Supported and installed assistant assignments; confirmation and backup required. |
+
+Omitted properties are preserved. The complete patch is validated before writes begin. A runtime partial failure reports per-property successes and errors; inspect the result before retrying.
 
 **Preferences format:**
-{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}
+`{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}`
 
-**Valid preference types:** bool, number, string, enum, decimal, text
+Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
 
-**Room assignment:** Use exact room name (case-sensitive)
-
-**showOnHome:** boolean — show the device on the hub Home page and count it in the quick status-bar summaries.
-
-**defaultCurrentState:** the attribute shown in the Status column on the Devices/Rooms pages. Use an attribute name from the device's current states (e.g. "switch", "temperature"); "" selects None.
-
-**tags:** array of strings; REPLACES the full tag set ([] clears all). Applied via the wholesale device-edit form, which preserves the device's other fields.
-
-### hub_update_device
-
-**showOnHome:** the quick status-bar summaries this device count feeds are the per-category counts (climate / lights / locks / etc.).
+If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
 ''',
 
         rules: '''## Rule Structure Reference
@@ -9682,7 +9753,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`. When the transport carries a time budget, log and diagnostic reads also continue as described below.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, and `hub_update_device`. When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
 
 The first write request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
@@ -9713,6 +9784,8 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
+
+`hub_get_device` (every mode) and `hub_list_devices` (including virtual devices) use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot require a fresh call. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous.
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 

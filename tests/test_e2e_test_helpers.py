@@ -8,6 +8,7 @@ actually runs there.
 import json
 import os
 import sys
+from collections import Counter
 from types import SimpleNamespace
 
 # tests/ is already on sys.path conceptually, but be explicit for safety.
@@ -89,6 +90,362 @@ def _watchdog_response(logs):
             "result": _raw_tool_body({"success": True, "logs": logs}),
         },
     )
+
+
+@pytest.mark.parametrize("rejection", ["unknown", "wrong-code", "wrong-name", "unavailable", "accepted"])
+def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_name_rejection(rejection):
+    prefix = f"{et.PREFIX}UnknownPreference"
+    declared = {"logEnable": True, prefix: False, prefix + "_": True}
+    preferences_before = dict(declared)
+    preference_attempts = []
+    label_attempts = []
+    bypass_changes = []
+    bypass = False
+
+    class FakeClient:
+        def call_tool(self, name, arguments=None):
+            arguments = arguments or {}
+            if not bypass:
+                raise et.McpError("Device not found")
+            if name == "hub_get_device":
+                if arguments.get("mode") == "configuration":
+                    assert arguments.get("fields") == ["label"]
+                    return {
+                        "preferenceRead": {"status": "complete"},
+                        "availableFields": {"preferences": list(declared)},
+                        "editableFields": [{"name": "label", "valuePresent": True, "value": "Native original"}],
+                    }
+                return {"id": "10", "name": "Unlisted", "label": "Original", "commands": []}
+            if name == "hub_list_device_events":
+                return {"events": [], "count": 0}
+            if name == "hub_update_device":
+                if "label" in arguments:
+                    label_attempts.append(arguments["label"])
+                    return {"success": True, "changes": [{"property": "label"}]}
+                patch = arguments["preferences"]
+                preference_attempts.append(patch)
+                assert not set(patch) & set(declared), "Boundary probe attempted an existing preference"
+                if rejection in {"unknown", "wrong-code", "wrong-name"}:
+                    rejected_name = "differentPreference" if rejection == "wrong-name" else next(iter(patch))
+                    error = {"code": -32603 if rejection == "wrong-code" else -32602, "message": (
+                        f"Invalid params: Unknown preference '{rejected_name}'; "
+                        "read hub_get_device(mode='configuration') for declared names "
+                        'See hub_get_tool_guide(section="update_device") for '
+                        "hub_update_device's reference and best practices."
+                    )}
+                    raise et.McpError(f"JSON-RPC error: {error}", rpc_error=error)
+                if rejection == "unavailable":
+                    raise et.McpError("Unable to read complete preference definitions/storage")
+                return {"success": True}
+            raise AssertionError(f"Unexpected boundary call: {name} {arguments}")
+
+    def set_bypass(value):
+        nonlocal bypass
+        bypass = value
+        bypass_changes.append(value)
+        return {"success": True, "updated": {"bypassDeviceAllowlist": value}}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = FakeClient()
+    if rejection == "unknown":
+        runner._bypass_boundary_checks("10", set_bypass)
+    else:
+        with pytest.raises(AssertionError, match=r"Undeclared preference|accepted an undeclared"):
+            runner._bypass_boundary_checks("10", set_bypass)
+
+    assert preference_attempts == [{prefix + "__": True}]
+    assert declared == preferences_before
+    assert label_attempts == ["Native original _BWTEST", "Native original"]
+    assert bypass_changes == [True, False]
+
+
+@pytest.mark.parametrize("native_label", ["Native original", ""])
+@pytest.mark.parametrize("failure", ["reported", "exception"])
+def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_failure(native_label, failure):
+    current_label = native_label
+    label_attempts = []
+    bypass_changes = []
+    bypass = False
+
+    class FakeClient:
+        def call_tool(self, name, arguments=None):
+            nonlocal current_label
+            arguments = arguments or {}
+            if not bypass:
+                raise et.McpError("Device not found")
+            if name == "hub_get_device":
+                if arguments.get("mode") == "configuration":
+                    return {"editableFields": [{"name": "label", "valuePresent": True, "value": current_label}]}
+                return {"id": "10", "name": "Fallback name", "label": "Summary fallback", "commands": []}
+            if name == "hub_list_device_events":
+                return {"events": [], "count": 0}
+            if name == "hub_update_device" and "label" in arguments:
+                current_label = arguments["label"]
+                label_attempts.append(current_label)
+                if len(label_attempts) == 1:
+                    if failure == "exception":
+                        raise et.McpError("Reply lost after committed rename")
+                    return {"success": False}
+                return {"success": True}
+            raise AssertionError(f"Unexpected boundary call: {name} {arguments}")
+
+    def set_bypass(value):
+        nonlocal bypass
+        bypass = value
+        bypass_changes.append(value)
+        return {"success": True, "updated": {"bypassDeviceAllowlist": value}}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = FakeClient()
+    error_type = et.McpError if failure == "exception" else AssertionError
+    with pytest.raises(error_type, match=r"Reply lost|rename did not succeed"):
+        runner._bypass_boundary_checks("10", set_bypass)
+
+    assert label_attempts == [f"{native_label} _BWTEST", native_label]
+    assert current_label == native_label
+    assert bypass_changes == [True, False]
+
+
+def test_validation_log_expectation_uses_reactive_gateway_tool_and_exact_reason():
+    params = {
+        "name": "hub_manage_variables",
+        "arguments": {
+            "tool": "hub_create_variable",
+            "args": {"name": "probe"},
+        },
+    }
+    error = {
+        "code": -32602,
+        "message": "Invalid params: Mandatory best-practice acknowledgment required",
+    }
+
+    assert et._validation_log_expectation("tools/call", params, error) == (
+        "Validation error in hub_create_variable: "
+        "Mandatory best-practice acknowledgment required"
+    )
+
+
+def test_validation_log_expectation_strips_only_the_exact_legacy_reactive_hint():
+    params = {
+        "name": "hub_manage_devices",
+        "arguments": {"tool": "hub_update_device", "args": {"deviceId": "42"}},
+    }
+    raw_reason = "preference probeBool must be a boolean"
+    exact_hint = (
+        ' See hub_get_tool_guide(section="update_device") for '
+        "hub_update_device's reference and best practices."
+    )
+
+    assert et._validation_log_expectation("tools/call", params, {
+        "code": -32602, "message": f"Invalid params: {raw_reason}{exact_hint}",
+    }) == f"Validation error in hub_update_device: {raw_reason}"
+
+    # Similar caller-authored text is part of the raw exception and must not be
+    # broadly removed merely because it mentions the guide.
+    altered_hint = exact_hint.replace("hub_update_device's", "another_tool's")
+    assert et._validation_log_expectation("tools/call", params, {
+        "code": -32602, "message": f"Invalid params: {raw_reason}{altered_hint}",
+    }) == f"Validation error in hub_update_device: {raw_reason}{altered_hint}"
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "error"),
+    [
+        ("tools/list", {}, {"code": -32602, "message": "Invalid params: bad"}),
+        ("tools/call", {"name": "hub_get_info", "arguments": {}},
+         {"code": -32601, "message": "Method not found"}),
+        ("tools/call", {"name": "hub_get_info", "arguments": {}},
+         {"code": -32602, "message": "different error shape"}),
+    ],
+)
+def test_validation_log_expectation_rejects_unrelated_rpc_errors(method, params, error):
+    assert et._validation_log_expectation(method, params, error) is None
+
+
+def test_partition_hub_errors_consumes_only_observed_validation_error_count():
+    intentional = "Validation error in hub_create_variable: missing bestPracticeKey"
+    stale = {"name": "12:00:00", "message": "pre-existing failure"}
+    logs = [
+        stale,
+        {"name": "12:00:01", "message": intentional},
+        {"name": "12:00:02", "message": intentional},
+        {"name": "12:00:03", "message": intentional},
+        {"name": "12:00:04", "message": "unexpected runtime failure"},
+    ]
+    baseline = {"12:00:00|pre-existing failure"}
+
+    expected, unexpected = et._partition_new_hub_errors(
+        logs, baseline, [intentional, intentional]
+    )
+
+    assert [entry["name"] for entry in expected] == ["12:00:01", "12:00:02"]
+    assert [entry["name"] for entry in unexpected] == ["12:00:03", "12:00:04"]
+
+
+def test_partition_hub_errors_decodes_exact_mcp1_envelope_without_broad_ignores():
+    intentional = "Validation error in hub_update_device: invalid preference"
+
+    def native_line(message):
+        envelope = {
+            "appId": "38", "generation": "g1", "id": "row-1",
+            "entry": {"level": "error", "component": "server", "message": message},
+        }
+        return "app|38|MCP Rule Server|[MCP1] " + json.dumps(envelope)
+
+    expected_row = {"name": "12:00:01", "message": native_line(intentional)}
+    malformed = {"name": "12:00:02", "message": "app|38|MCP Rule Server|[MCP1] {truncated"}
+    unrelated = {"name": "12:00:03", "message": native_line("unrelated runtime failure")}
+
+    expected, unexpected = et._partition_new_hub_errors(
+        [expected_row, malformed, unrelated], Counter(), [intentional]
+    )
+
+    assert expected == [expected_row]
+    assert unexpected == [malformed, unrelated]
+
+    # Baseline identity is the original raw line plus name, before nested-message
+    # decoding, so an already-present envelope is never reclassified as fresh.
+    baseline = Counter({f"{expected_row['name']}|{expected_row['message']}": 1})
+    assert et._partition_new_hub_errors(
+        [expected_row], baseline, [intentional]
+    ) == ([], [])
+
+
+def test_entries_new_since_snapshot_detects_identical_same_timestamp_duplicate():
+    old = {"timestamp": 1234, "level": "error", "message": "same refusal"}
+    unrelated = {"timestamp": 1235, "level": "error", "message": "other failure"}
+
+    fresh = et._entries_new_since_snapshot([old, dict(old), unrelated], [old])
+
+    assert fresh == [old, unrelated]
+
+
+def test_watchdog_hub_logs_reads_direct_native_history_without_main_client(monkeypatch):
+    class MainClientMustNotBeUsed:
+        def call_tool(self, _name, _arguments):
+            raise AssertionError("direct native-history proof consulted the main MCP app")
+
+    logs = [
+        {"name": "12:00:01", "level": "ERROR", "message": "first"},
+        {"name": "12:00:02", "level": "ERROR", "message": "second"},
+    ]
+    posted = []
+
+    def post(*args, **kwargs):
+        posted.append((args, kwargs))
+        return _watchdog_response(logs)
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = MainClientMustNotBeUsed()
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", post)
+
+    assert runner._watchdog_hub_logs(level="ERROR", limit=100) == logs
+    assert posted == [((), {
+        "url": "https://watchdog.invalid/mcp",
+        "json": {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "hub_get_hub_logs",
+                "arguments": {"level": "ERROR", "limit": 100},
+            },
+        },
+        "timeout": 30,
+    })]
+
+
+def test_watchdog_hub_logs_accepts_successful_empty_native_history(monkeypatch):
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body({
+                "logs": [], "count": 0, "totalParsed": 0,
+                "appliedFilters": {"level": "error", "limit": 100},
+            }),
+        },
+    )
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace()
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", lambda *args, **kwargs: response)
+
+    assert runner._watchdog_hub_logs(level="ERROR", limit=100) == []
+
+
+@pytest.mark.parametrize(
+    "response_json",
+    [
+        {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "failed"}},
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body({"success": False, "error": "native logs unavailable"}),
+        },
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body(
+                {"logs": [], "count": 0, "error": "unparseable /logs/past/json"}
+            ),
+        },
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body(
+                {"logs": [], "count": 0, "message": "No log data returned from hub"}
+            ),
+        },
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body(
+                {"success": True, "logs": []}, is_error=True
+            ),
+        },
+        {
+            "jsonrpc": "2.0", "id": 1,
+            "result": _raw_tool_body({"success": True, "logs": "not-a-list"}),
+        },
+    ],
+)
+def test_watchdog_hub_logs_fails_closed_on_unusable_payload(monkeypatch, response_json):
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: response_json,
+    )
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace()
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", lambda *args, **kwargs: response)
+
+    with pytest.raises(RuntimeError, match=r"watchdog.*logs"):
+        runner._watchdog_hub_logs(level="ERROR", limit=100)
+
+
+@pytest.mark.parametrize(
+    ("test_status", "reset_failures", "expected"),
+    [
+        pytest.param("pass", [], True, id="all-tests-pass"),
+        pytest.param("fail", [], False, id="test-failed"),
+        pytest.param("skip", [], False, id="test-skipped"),
+        pytest.param("pass", ["5329 via off: response lost"], False,
+                     id="fixture-reset-unresolved"),
+    ],
+)
+def test_print_summary_requires_tests_and_fixture_resets_to_succeed(
+    test_status, reset_failures, expected, capsys,
+):
+    runner = object.__new__(et.TestRunner)
+    runner.results = [{
+        "group": "isolated", "name": "summary_probe", "status": test_status,
+        "message": "probe result", "duration": 0.1,
+    }]
+    runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
+    runner.throttle_bounces = 0
+    runner.server_app_id = None
+    runner._fixture_reset_failures = reset_failures
+    runner._soft_passes = []
+
+    assert runner._print_summary() is expected
+    output = capsys.readouterr().out
+    assert ("[FIXTURE-RESET]" in output) is bool(reset_failures)
 
 
 def test_limiter_lines_falls_back_to_watchdog_and_filters_exact_device_method(monkeypatch):
@@ -226,7 +583,35 @@ def test_send_records_only_the_actual_http_post_duration(monkeypatch, send_clien
     assert client._http_leg_timings == [("tools/call", 8.0, 200)]
 
 
-def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client):
+def test_send_retains_structured_rpc_error_with_mixed_quotes(send_client):
+    error = {"code": -32602, "message": (
+        "Invalid params: Unknown preference 'probe'; "
+        'See hub_get_tool_guide(section="update_device") for hub_update_device\'s reference.'
+    )}
+    client = send_client(lambda *args, **kwargs: SimpleNamespace(
+        status_code=200, reason="OK", raise_for_status=lambda: None,
+        json=lambda: {"jsonrpc": "2.0", "id": 1, "error": error},
+    ))
+    with pytest.raises(et.McpError) as raised:
+        client._send("tools/call", {"name": "hub_update_device", "arguments": {"deviceId": "10"}})
+    assert raised.value.rpc_error == error
+    assert raised.value.rpc_error["message"].startswith("Invalid params: Unknown preference 'probe';")
+    assert client._expected_validation_logs == [
+        "Validation error in hub_update_device: Unknown preference 'probe'; "
+        'See hub_get_tool_guide(section="update_device") for hub_update_device\'s reference.'
+    ]
+
+
+@pytest.mark.parametrize("name,args", [
+    ("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": {
+        "appType": "basic_rule", "name": "BAT", "confirm": True,
+    }}),
+    ("hub_manage_virtual_device", {"action": "create", "deviceType": "Virtual Switch", "confirm": True}),
+    ("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": "test-dni", "confirm": True}),
+    ("hub_update_device", {"deviceId": "88", "label": "Changed"}),
+    ("hub_manage_devices", {"tool": "hub_update_device", "args": {"deviceId": "88", "label": "Changed"}}),
+])
+def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client, name, args):
     responses = iter([
         SimpleNamespace(status_code=504, reason="Gateway Timeout"),
         SimpleNamespace(
@@ -247,11 +632,8 @@ def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client):
     client = send_client(post)
 
     result = client._send("tools/call", {
-        "name": "hub_manage_native_rules_and_apps",
-        "arguments": {
-            "tool": "hub_set_native_app",
-            "args": {"appType": "basic_rule", "name": "BAT", "confirm": True},
-        },
+        "name": name,
+        "arguments": args,
     })
 
     assert result == {"resultType": "input_required", "requestState": "state-live"}

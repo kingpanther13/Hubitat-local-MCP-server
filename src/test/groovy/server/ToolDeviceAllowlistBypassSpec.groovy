@@ -39,6 +39,12 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         [
             device: [
                 id: 555, name: 'Unlisted Switch', label: 'Unlisted Switch',
+                version: 0, controllerType: 'ZWV', zigbeeId: null,
+                maxEvents: 10, maxStates: 10, spammyThreshold: 100,
+                deviceTypeId: 100, deviceTypeReadableType: 'System', roomId: 7,
+                meshEnabled: false, retryEnabled: false, meshFullSync: false,
+                showOnHome: false, defaultCurrentState: '',
+                locationId: 1, hubId: 1, groupId: null, tags: '', defaultIcon: null, notes: null,
                 roomName: 'Garage', deviceNetworkId: 'ABCD', capabilities: ['Switch', 'SwitchLevel'],
                 disabled: false, typeName: 'Generic Z-Wave Switch',
                 currentStates: [
@@ -56,6 +62,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
                 [capability: 'SwitchLevel', name: 'setLevel', arguments: ['NUMBER'],
                  parameters: [[name: 'level', type: 'NUMBER']], relatedAttribute: 'level']
             ],
+            settings: [[name: 'logEnable', type: 'bool', value: 'false'],
+                       [name: 'tempOffset', type: 'number', value: '0']],
+            inputValues: [],
+            homeKitEnabled: false,
             dashboards: []
         ]
     }
@@ -504,6 +514,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     def "bypass ON: toolSendCommand reports partial:true + stateError when the post-command snapshot fetch fails"() {
         given: 'the command fires; the snapshot re-fetch returns a model with no currentStates (read-back FAILURE sentinel)'
         settingsMap.bypassDeviceAllowlist = true
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
         def calls = 0
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
             // 1st fetch (command resolution) carries the full model; the 2nd (snapshot) has no currentStates.
@@ -521,6 +533,61 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.partial == true
         result.state == [:]
         result.stateError?.contains('device-state read-back failed')
+
+        and: 'the unsuccessful confirmation read remains visible at the default ERROR threshold'
+        script.getDebugLogEntries().any {
+            it.level == 'error' && (it.message?.contains('fullJson') || it.message?.contains('snapshot')) &&
+                (it.message?.contains(UNLISTED_ID) || it.message?.contains('Unlisted Switch'))
+        }
+    }
+
+    @spock.lang.Unroll
+    def "fullJson #failure returns null and logs safe ERROR diagnostics"() {
+        given:
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
+        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
+            if (fetchThrows) throw new RuntimeException('NATIVE-EXCEPTION-SECRET')
+            responseBody
+        }
+
+        when:
+        def result = script._fetchDeviceFullJson(UNLISTED_ID)
+
+        then:
+        result == null
+        def entries = script.getDebugLogEntries()
+        entries.any { it.level == 'error' && it.message?.contains('fullJson') && it.message?.contains(UNLISTED_ID) }
+
+        and: 'native response and exception contents cannot become log messages or structured details'
+        def serializedLogs = JsonOutput.toJson(entries)
+        !serializedLogs.contains('NATIVE-EXCEPTION-SECRET')
+        !serializedLogs.contains('NATIVE-BODY-SECRET')
+
+        where:
+        failure          | fetchThrows | responseBody
+        'fetch failure'  | true        | null
+        'parse failure'  | false       | '{"password":"NATIVE-BODY-SECRET", broken'
+        'null body'      | false       | null
+        'empty body'     | false       | ''
+        'JSON null'      | false       | 'null'
+        'array body'     | false       | '["NATIVE-BODY-SECRET"]'
+        'string body'    | false       | '"NATIVE-BODY-SECRET"'
+        'numeric body'   | false       | '42'
+    }
+
+    def "valid fullJson body is preserved without a failure ERROR"() {
+        given:
+        settingsMap.mcpLogLevel = 'error'
+        seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
+        registerFullJson({ 'on' })
+
+        when:
+        def result = script._fetchDeviceFullJson(UNLISTED_ID)
+
+        then:
+        result.device.currentStates.switch.value == 'on'
+        !script.getDebugLogEntries().any { it.level == 'error' }
     }
 
     def "bypass ON: toolSendCommand waitFor converges off the re-fetched fullJson value"() {
@@ -671,9 +738,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             JsonOutput.toJson(m)
         }
         def posted = null
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false ->
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json);
             posted = [path: path, body: body]
-            if (path == '/device/disable') disabledState = (body.disable == 'true')
+            if (path == '/device/disable') disabledState = (body.disable == true)
             return ''
         }
 
@@ -683,7 +751,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         then: 'disable:true disables the device and the read-back confirms it'
         result.success == true
         posted.path == '/device/disable'
-        posted.body.disable == 'true'
+        posted.body.disable == true
+        posted.body.id instanceof Number
         result.changes.find { it.property == 'enabled' }?.newValue == false
     }
 
@@ -691,7 +760,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         given: 'the POST is a no-op; fullJson still reports disabled:false so the requested disable did not land'
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()   // device.disabled stays false
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
@@ -711,7 +781,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             calls++
             (calls >= 2) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
         }
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
@@ -730,7 +801,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             m.device.disabled = 'true'   // string, not Boolean
             JsonOutput.toJson(m)
         }
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json); '' }
 
         when: 'request disable; the re-fetch reports disabled:"true" -> confirmed, no false mismatch error'
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
@@ -768,8 +840,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Nonexistent'])
 
         then: 'parity with the listed path: Room not found, and NO updateRoom call (no spurious-room creation)'
-        result.success == false
-        result.errors.find { it.property == 'room' }?.error?.contains('Room \'Nonexistent\' not found')
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Room \'Nonexistent\' not found')
         !hubGet.calls.any { it.path.startsWith('/device/updateRoom') }
     }
 
@@ -783,8 +855,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Garage'])
 
         then: 'the getRooms failure is reported distinctly from "room not found", and updateRoom is never called'
-        result.success == false
-        result.errors.find { it.property == 'room' }?.error?.contains('Unable to list rooms')
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Unable to list rooms')
         !hubGet.calls.any { it.path.startsWith('/device/updateRoom') }
     }
 
@@ -916,9 +988,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.errors.find { it.property == 'room' }?.error?.contains('read-back to confirm the unassign failed')
     }
 
-    @spock.lang.Unroll
-    def "bypass ON: toolUpdateDevice refuses '#field' on an unlisted device with a per-field error (no wholesale form POST)"() {
-        given: 'the field has no safe id-keyed route on the bypass path (Groovy-object-only or unverified form encoding)'
+    def "bypass ON rejects unverified dataValues writes before any mutation"() {
+        given:
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()
         def formPosted = false
@@ -927,19 +998,11 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID] + [(field): value])
+        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Do not apply', dataValues: [foo: 'bar']])
 
-        then: 'refused with the per-field "is not supported via the allowlist bypass" error and no /device/update form POST'
-        result.success == false
-        result.errors.find { it.property == field }?.error?.contains('is not supported when reaching a device via the allowlist bypass')
+        then:
+        thrown(IllegalArgumentException)
         !formPosted
-
-        where:
-        field                 | value
-        'showOnHome'          | true
-        'dataValues'          | [foo: 'bar']
-        'defaultCurrentState' | 'temperature'
-        'tags'                | ['kitchen']
     }
 
     // ---- toggle ON: the wholesale /device/update form (name + deviceNetworkId) ----
@@ -958,6 +1021,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     def "bypass ON: toolUpdateDevice name+dni POST /device/update reconstructs the full model and verifies the read-back"() {
         given: 'the fullJson read-back reflects the form POST (hub applied it)'
         settingsMap.bypassDeviceAllowlist = true
+        stateMap.lastBackupTimestamp = System.currentTimeMillis()
         def fjState = [name: 'Unlisted Switch', dni: 'ABCD']
         registerStatefulFullJson(fjState)
         def postedBody = null
@@ -968,7 +1032,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, name: 'NewName', deviceNetworkId: 'NEWDNI'])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, confirm: true, name: 'NewName', deviceNetworkId: 'NEWDNI'])
 
         then: 'the form body carries the overrides AND a preserved model field (full reconstruction)'
         postedBody.contains('name=NewName')
@@ -1019,6 +1083,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     def "bypass ON: toolUpdateDevice deviceNetworkId read-back MISMATCH records a structured error (errors list)"() {
         given: 'the hub does NOT apply the dni, so the read-back still shows the old dni'
         settingsMap.bypassDeviceAllowlist = true
+        stateMap.lastBackupTimestamp = System.currentTimeMillis()
         def fjState = [name: 'Unlisted Switch', dni: 'ABCD']
         registerStatefulFullJson(fjState)
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
@@ -1026,7 +1091,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, deviceNetworkId: 'NEWDNI'])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, confirm: true, deviceNetworkId: 'NEWDNI'])
 
         then: 'the dni leg records a per-property read-back error, no change'
         result.success == false
@@ -1140,10 +1205,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     def "bypass ON: toolUpdateDevice preferences POSTs the {preferences:[{name,type,value}]} ARRAY and read-back verifies"() {
         given: 'the hub applies only the ARRAY shape; the read-back reflects it via fullJson settings'
         settingsMap.bypassDeviceAllowlist = true
-        def applied = [:]
+        def applied = [tempOffset: '0']
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
             def m = fullJsonModel()
-            m.device.settings = applied.collect { k, v -> [name: k, type: 'number', value: v] }
+            m.settings = applied.collect { k, v -> [name: k, type: 'number', value: v] }
             JsonOutput.toJson(m)
         }
         def posts = []
@@ -1167,7 +1232,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         body.preferences instanceof List
         body.preferences[0].name == 'tempOffset'
         body.preferences[0].type == 'number'
-        body.preferences[0].value == '3'
+        body.preferences[0].value == 3
         !body.containsKey('tempOffset')
 
         and: 'the read-back confirmed the change, so it is recorded'
@@ -1177,19 +1242,21 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "bypass ON: toolUpdateDevice preferences CLEAR (#clearVal) succeeds and is NOT a false error"() {
-        given: 'clearing a pref -- the hub applies it and the read-back shows it cleared (empty/null)'
+        given: 'clearing a pref removes its stored identity while retaining its declaration'
         settingsMap.bypassDeviceAllowlist = true
-        def applied = [logEnable: 'true']   // starts set
+        def applied = [logEnable: [value: 'true', id: 1, deviceId: 555]]
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
             def m = fullJsonModel()
-            m.device.settings = applied.collect { k, v -> [name: k, type: 'bool', value: v] }
+            m.settings = applied.collect { k, v -> [name: k, type: 'bool'] + v }
             JsonOutput.toJson(m)
         }
         def posts = []
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             posts << body
             def parsed = new JsonSlurper().parseText(body)
-            if (parsed.preferences instanceof List) parsed.preferences.each { p -> applied[p.name] = p.value?.toString() }
+            if (parsed.preferences instanceof List) parsed.preferences.each { p ->
+                applied[p.name] = p.value == '' ? [value: null, id: null, deviceId: null] : [value: p.value, id: 1, deviceId: 555]
+            }
             return [success: true]
         }
 
@@ -1204,8 +1271,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         and: 'the wire body sends value:"" (not null) for the clear'
         new JsonSlurper().parseText(posts[0]).preferences[0].value == ''
 
-        where: 'a bare null and a Map {value:null} both mean clear'
-        clearVal << [null, [value: null]]
+        where: 'only the explicit marker requests a clear, with an optional declared type'
+        clearVal << [[clear: true], [type: 'bool', clear: true]]
     }
 
     def "bypass ON: toolUpdateDevice preferences read-back MISMATCH records a structured error (no false success on a silent no-op)"() {
@@ -1234,25 +1301,28 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [tempOffset: [type: 'number', value: 3]]])
 
-        then: 'the per-key error carries the cause (with the e.message ?: e.toString() fallback)'
+        then: 'the per-key error identifies the failed stage without exposing a raw exception'
         result.success == false
-        result.errors.find { it.property == 'preference.tempOffset' }?.error?.contains('pref save rejected')
+        result.errors.find { it.property == 'preference.tempOffset' }?.stage == 'write'
+        result.errors.find { it.property == 'preference.tempOffset' }?.status == 'failed'
+        result.errors.find { it.property == 'preference.tempOffset' }?.error?.contains('Preference update or verification failed')
+        !result.toString().contains('pref save rejected')
     }
 
     def "bypass ON: toolUpdateDevice preference CLEAR with a FAILED read-back fetch records the distinct could-not-confirm error (no false success)"() {
-        given: 'a CLEAR (null value); the POST is accepted but the confirming fullJson re-fetch returns no device'
+        given: 'an explicit CLEAR; the POST is accepted but the confirming fullJson re-fetch returns no device'
         settingsMap.bypassDeviceAllowlist = true
         def calls = 0
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            // 1st fetch (bypass entry) resolves the device; the 2nd (pref read-back) returns no device.
+            // 1st fetch resolves the device; the 2nd preserves the preference pane; the 3rd verifies.
             // A FAILED re-fetch must NOT read as a confirmed clear -- that is the bug this pin guards.
             calls++
-            (calls >= 2) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
+            (calls >= 3) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
         }
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: true] }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [logEnable: [value: null]]])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [logEnable: [clear: true]]])
 
         then: 'a CLEAR whose read-back fetch failed is a DISTINCT error, never a recorded change'
         result.success == false
@@ -1287,7 +1357,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, name: 'Listed', label: 'Listed Switch')
         childDevicesList << device
         def posted = null
-        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false ->
+        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            def body = new groovy.json.JsonSlurper().parseText(json);
             posted = [path: path, body: body]; return ''
         }
         // Both the listed and the bypass enabled paths now confirm the flip via a FRESH /device/fullJson
