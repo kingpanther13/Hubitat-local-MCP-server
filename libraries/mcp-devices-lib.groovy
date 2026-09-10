@@ -145,7 +145,8 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // hydrate only their page below, avoiding a fullJson request for every hub device.
     if (filterType || labelFilter || capabilityFilter || roomFilter || onlyOn == true || changedSinceDate != null) {
         try {
-            _hydrateNativeInventory(allDevices)
+            _hydrateNativeInventory(allDevices, (onlyOn == true ? ['currentStates'] : []) +
+                (capabilityFilter ? ['capabilities'] : []))
         } catch (IllegalStateException e) {
             return [success: false, error: e.message, note: "Retry the native device inventory read."]
         }
@@ -297,7 +298,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (resolvedFormat == "context") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
         try {
-            _hydrateNativeInventory(pagedDevices)
+            _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'])
         } catch (IllegalStateException e) {
             return [success: false, error: e.message, note: "Retry the native context read."]
         }
@@ -361,7 +362,15 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 
     if (fieldSet == null || fieldSet.any { !(it in ["id", "mcpManaged"]) }) {
         try {
-            _hydrateNativeInventory(pagedDevices)
+            def requiredCollections = []
+            if (useDetailed) {
+                if (fieldSet == null || fieldSet.contains('capabilities')) requiredCollections << 'capabilities'
+                if (fieldSet == null || fieldSet.contains('commands')) requiredCollections << 'commands'
+                if (fieldSet == null || fieldSet.contains('attributes')) requiredCollections << 'currentStates'
+            } else if (fieldSet == null || fieldSet.contains('currentStates')) {
+                requiredCollections << 'currentStates'
+            }
+            _hydrateNativeInventory(pagedDevices, requiredCollections)
         } catch (IllegalStateException e) {
             return [success: false, error: e.message, note: "Retry the native device inventory read."]
         }
@@ -600,27 +609,31 @@ private List _mcpVisibleDevices(List childDevs = null) {
     return byId.values() as List
 }
 
-private void _hydrateNativeInventory(List records) {
+private void _hydrateNativeInventory(List records, List requiredCollections) {
     records.each { record ->
-        if (record._nativeLoaded == true) return
-        def fj = _fetchDeviceFullJson(record.id)
-        if (!(fj?.device instanceof Map) || fj.device.id?.toString() != record.id.toString()) {
-            throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
+        if (record._nativeLoaded != true) {
+            def fj = _fetchDeviceFullJson(record.id)
+            if (!(fj?.device instanceof Map)) {
+                throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
+            }
+            def d = fj.device
+            def states = d.currentStates instanceof Map ? [] : null
+            if (states != null) d.currentStates.each { name, st ->
+                states << [name: name.toString(), value: _nativeDeviceStateValue(st),
+                           unit: st instanceof Map ? st.unit : null]
+            }
+            record.putAll([name: d.name, label: d.label, roomName: d.roomName,
+                disabled: d.disabled, status: d.status, deviceNetworkId: d.deviceNetworkId,
+                parentDeviceId: d.parentDeviceId, lastActivityTime: d.lastActivityTime,
+                capabilities: d.capabilities instanceof List ? _capabilityNames(d.capabilities).collect { [name: it] } : null,
+                currentStates: states, commands: fj.commands instanceof List ? fj.commands : null,
+                _nativeUnavailableCollections: _unavailableNativeDeviceCollections(fj), _nativeLoaded: true])
         }
-        def d = fj.device
-        if (d.currentStates != null && !(d.currentStates instanceof Map)) {
-            throw new IllegalStateException("Native device state has an unexpected shape for device ${record.id}.")
+        // Filters and page projections can consume different collections from the same fetch.
+        def unavailable = requiredCollections.findAll { record._nativeUnavailableCollections.contains(it) }
+        if (unavailable) {
+            throw new IllegalStateException("Native device collections are unavailable for device ${record.id}: ${unavailable.join(', ')}.")
         }
-        def states = []
-        (d.currentStates ?: [:]).each { name, st ->
-            states << [name: name.toString(), value: _nativeDeviceStateValue(st),
-                       unit: st instanceof Map ? st.unit : null]
-        }
-        record.putAll([name: d.name, label: d.label, roomName: d.roomName,
-            disabled: d.disabled, status: d.status, deviceNetworkId: d.deviceNetworkId,
-            parentDeviceId: d.parentDeviceId, lastActivityTime: d.lastActivityTime,
-            capabilities: _capabilityNames(d.capabilities).collect { [name: it] },
-            currentStates: states, commands: fj.commands instanceof List ? fj.commands : [], _nativeLoaded: true])
     }
 }
 
@@ -683,7 +696,7 @@ private String _truncateContextText(String text, int totalDevices) {
 // and points at the paginated tool form / hub_list_rooms.
 def _buildContextJson() {
     def allDevices = _mcpVisibleDevices()
-    _hydrateNativeInventory(allDevices)
+    _hydrateNativeInventory(allDevices, ['currentStates', 'capabilities'])
     def contextAttrs = _contextAttributeNames() as Set
     def roomIndex = [:]
     allDevices.each { d ->
@@ -997,7 +1010,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
                 note: "Retry after checking hub firmware; an incomplete device list was not returned."]
     }
     def sourceEndpoint = inventory.source
-    def capabilitiesComplete = inventory.capabilities
+    def capabilitiesComplete = inventory.capabilities && raw.every { it.capabilities instanceof List }
     def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
     (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
     // // Capability lookup for the capability-less source, built once from the authorization-scoped model.
@@ -1146,6 +1159,10 @@ private Map _fetchDeviceFullJson(deviceId) {
             mcpLog("error", "device", "bypass: /device/fullJson/${deviceId} returned a non-object JSON response")
             return null
         }
+        if (!(parsed.device instanceof Map) || parsed.device.id?.toString() != deviceId.toString()) {
+            mcpLog("error", "device", "native: /device/fullJson/${deviceId} did not identify the requested device")
+            return null
+        }
         return parsed
     } catch (Exception e) {
         // Parser and transport messages can contain native settings or response bodies.
@@ -1179,7 +1196,11 @@ private List _fetchBypassDeviceEvents(deviceId) {
     try {
         def txt = hubInternalGet("/device/eventsJson/${deviceId}")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        return (parsed instanceof List) ? parsed.findAll { it instanceof Map } : null
+        if (!(parsed instanceof List) || parsed.any { !(it instanceof Map) }) {
+            mcpLog("warn", "device", "native: /device/eventsJson/${deviceId} returned an invalid event list or row")
+            return null
+        }
+        return parsed
     } catch (Exception e) {
         mcpLog("warn", "device", "bypass: /device/eventsJson/${deviceId} fetch/parse failed: ${e.message ?: e.toString()}")
         return null
@@ -1222,6 +1243,15 @@ private List _fullJsonAttributeNames(Map fullJson) {
 private List _fullJsonCommandNames(Map fullJson) {
     def cmds = fullJson?.commands
     return (cmds instanceof List) ? cmds.collect { it?.name }.findAll { it != null } : []
+}
+
+private List _unavailableNativeDeviceCollections(Map fullJson, List required = ['currentStates', 'capabilities', 'commands']) {
+    // An empty native collection is valid; an absent or malformed collection cannot prove emptiness.
+    def values = [currentStates: fullJson?.device?.currentStates,
+                  capabilities: fullJson?.device?.capabilities, commands: fullJson?.commands]
+    return required.findAll { key ->
+        key == 'currentStates' ? !(values[key] instanceof Map) : !(values[key] instanceof List)
+    }
 }
 
 private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple = false) {
@@ -1601,6 +1631,10 @@ private _readBypassAttrValue(deviceId, attribute) {
 
 // Preserve the summary shape using reported native states and native command definitions.
 private Map _getDeviceFromFullJson(deviceId, Map fj) {
+    def unavailable = _unavailableNativeDeviceCollections(fj)
+    if (unavailable) {
+        throw new IllegalStateException("Native device collections are unavailable for device ${deviceId}: ${unavailable.join(', ')}.")
+    }
     def d = fj.device
     def attributes = []
     def cs = d?.currentStates
@@ -1939,10 +1973,15 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
         return [success: false, error: "Device metadata fetch failed (/device/fullJson/${deviceId})",
                 note: 'Check the native Devices page and retry.']
     }
-    def identity = full?.device instanceof Map ? _getDeviceFromFullJson(deviceId, full) :
-        [name: null, label: "Device ${deviceId}"]
-    return selectedMode == 'summary' ? identity : _deviceReadPage(
-        _deviceExpandedResult(deviceId, identity, full, listed, selectedMode, sections, fields), selection)
+    if (selectedMode == 'summary') {
+        try {
+            return _getDeviceFromFullJson(deviceId, full)
+        } catch (IllegalStateException e) {
+            return [success: false, error: e.message, note: 'Check the native Devices page and retry.']
+        }
+    }
+    def identity = [name: full?.device?.name, label: _bypassDeviceLabel(full, deviceId)]
+    return _deviceReadPage(_deviceExpandedResult(deviceId, identity, full, listed, selectedMode, sections, fields), selection)
 
     // Retained SDK implementation for deliberate rollback.
     //     def device = findDevice(deviceId)
@@ -2101,7 +2140,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
 
     _requireDeviceToolAccess(deviceId)
     def fullJson = _fetchDeviceFullJson(deviceId)
-    if (!(fullJson?.device instanceof Map)) {
+    if (!(fullJson?.device instanceof Map) || _unavailableNativeDeviceCollections(fullJson, ['commands'])) {
         return [success: false, deviceId: deviceId,
                 error: "Device command metadata fetch failed (/device/fullJson/${deviceId})".toString(),
                 note: "The native device metadata could not be read; no command was sent. Verify the device exists and retry."]
@@ -2360,9 +2399,8 @@ private Map _buildWaitForPollArgs(deviceId, supportedAttrs, deviceLabel, waitFor
     if (!(waitFor.attribute instanceof String) || !waitFor.attribute.trim()) {
         throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
     }
-    // supportedAttrs == null means "skip the existence check" (native fullJson
-    // cannot enumerate a declared-but-unreported attribute, so the command must not be hard-failed
-    // pre-fire). A non-null list (the listed-device path) still rejects an unknown attribute.
+    // Native command callers pass null: fullJson cannot enumerate declared-but-unreported
+    // attributes. Unknown names can therefore time out after the command has executed.
     if (supportedAttrs != null && !supportedAttrs.contains(waitFor.attribute)) {
         throw new IllegalArgumentException("waitFor.attribute '${waitFor.attribute}' not found on device '${deviceLabel}'. Available: ${supportedAttrs.join(', ')}")
     }
@@ -2591,30 +2629,32 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     def args = _buildRunMethodArgs(command, params, fullJson)
     def body = groovy.json.JsonOutput.toJson([id: _runMethodDeviceId(deviceId), method: command, args: args])
     def resp
+    def unknownOutcome = [success: false, outcomeUnknown: true,
+        note: "The command may already have executed. Inspect device state and events before deciding whether to repeat it; do not automatically replay non-idempotent commands."]
     try {
         resp = hubInternalPostJson("/device/runmethod", body)
     } catch (Exception e) {
         // Log at error: a warn is below Hubitat's default log level, so this failed-fire would
         // land in neither the hub log nor the buffer.
         mcpLog("error", "send-command", "native: /device/runmethod for '${command}' on ${deviceId} threw: ${e.message ?: e.toString()}")
-        return [success: false, error: "runmethod call failed for '${command}': ${e.message ?: e.toString()}",
-                note: "The hub call to /device/runmethod failed; the command may not have actuated. Retry, or verify the device id."]
+        return unknownOutcome + [error: "runmethod call failed for '${command}': ${e.message ?: e.toString()}"]
     }
     // FAIL-CLOSED on anything that is not a positive confirmation. A null/empty body (dropped
     // response on a write -> unknown commit), a non-JSON body, a non-Map, or a Map that does not
     // carry success==true (e.g. {}) all mean "not confirmed" -- never silently treat them as success.
     if (resp == null) {
         mcpLog("error", "send-command", "native: /device/runmethod for '${command}' on ${deviceId} returned an empty/dropped response")
-        return [success: false, error: "runmethod returned an empty/dropped response for '${command}'",
-                note: "The hub call to /device/runmethod returned no body; the command may have actuated but was not confirmed. Retry, or verify with hub_get_device."]
+        return unknownOutcome + [error: "runmethod returned an empty/dropped response for '${command}'"]
     }
     if (resp instanceof Map && resp._unparseable) {
         mcpLog("error", "send-command", "native: /device/runmethod for '${command}' on ${deviceId} returned a non-JSON body: ${resp.message}")
-        return [success: false, error: "runmethod returned a non-JSON body for '${command}': ${resp.message}",
-                note: "The hub did not return a JSON result; the command may not have actuated. Retry."]
+        return unknownOutcome + [error: "runmethod returned a non-JSON body for '${command}': ${resp.message}"]
     }
     if (!(resp instanceof Map) || resp.success != true) {
         mcpLog("error", "send-command", "native: /device/runmethod for '${command}' on ${deviceId} did not confirm success: ${resp}")
+        if (!(resp instanceof Map) || resp.success != false) {
+            return unknownOutcome + [error: "runmethod did not confirm success for '${command}': ${resp}"]
+        }
         return [success: false, error: "runmethod did not confirm success for '${command}': ${resp}",
                 note: "The hub rejected or did not confirm the command. Verify the command and arguments against hub_get_device."]
     }
@@ -4990,7 +5030,10 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
                 def vd = _postBypassDeviceModel(deviceId, [roomId: 0], errors)
                 if (vd == null) {
                     errors << [property: "room", error: "POST accepted but the read-back to confirm the unassign failed (/device/fullJson)."]
-                } else if (!vd.roomName) {
+                } else if (!vd.containsKey('roomName') ||
+                    (vd.roomName != null && !(vd.roomName instanceof String))) {
+                    errors << [property: "room", error: "POST accepted but roomName is unavailable or invalid; the unassign could not be confirmed."]
+                } else if (vd.roomName == null || vd.roomName == '') {
                     changes << [property: "room", oldValue: d.roomName ?: "none", newValue: "none"]
                 } else {
                     errors << [property: "room", error: "POST accepted but the device is still in room '${vd.roomName}' (expected unassigned)."]
@@ -5252,8 +5295,7 @@ def toolCreateDevice(args) {
     // Inspect what was created (driver type, radio-ness) and optionally apply a label.
     def info = null
     try {
-        def t = hubInternalGet("/device/fullJson/${newId}")
-        info = t ? new groovy.json.JsonSlurper().parseText(t)?.device : null
+        info = _fetchDeviceFullJson(newId)?.device
     } catch (Exception e) {
         mcpLog("warn", "device", "hub_create_device: could not read back device ${newId} to confirm type: ${e.message}")
     }
@@ -5919,7 +5961,7 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
             inputSchema: [
                 type: "object",
                 properties: [
-                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands).[[FLAT_TRIM]] WARNING: Resource-intensive for large device counts.[[/FLAT_TRIM]]"],
+                    detailed: [type: "boolean", description: "Include native device details (capabilities, reported attributes, commands).[[FLAT_TRIM]] WARNING: Resource-intensive for large device counts. Unset or cleared attributes may be absent.[[/FLAT_TRIM]]"],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return.[[FLAT_TRIM]] Recommended: 20-30 for detailed=true, higher values may slow hub.[[/FLAT_TRIM]]", default: 0],
                     filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' | 'virtual'[[FLAT_TRIM]] (this MCP app's own virtual devices; use to find their IDs/DNIs)[[/FLAT_TRIM]]."],

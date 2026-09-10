@@ -168,6 +168,21 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         result.devices.every { it.mcpAuthorized }
     }
 
+    def 'scope all fills a missing primary inventory capabilities collection before filtering'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/listWithCapabilities/json') { JsonOutput.toJson([[id: 1, label: 'Native 1']]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, null, 'Switch', 'summary', null, null, 'all')
+
+        then:
+        result.devices*.id == ['1']
+        result.devices[0].capabilities == ['Switch']
+        hubGet.calls.any { it.path == '/device/fullJson/1' }
+    }
+
     def 'a bypass inventory with an unconfirmed id set cannot look complete'() {
         given:
         nativeFixture()

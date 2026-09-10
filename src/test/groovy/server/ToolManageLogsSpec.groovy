@@ -166,10 +166,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     def "hub_get_logs scopes to a selected device and passes type=dev&id=X in query"() {
-        given: 'a selected device so findDevice succeeds'
+        given: 'selected ownership and matching native identity'
         settingsMap.enableRead = true
         def device = new TestDevice(id: 42, name: 'K', label: 'K')
         settingsMap.selectedDevices = [device]
+        hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 42, name: 'K']]) }
         def capturedParams = null
         hubGet.register('/logs/past/json') { params ->
             capturedParams = params

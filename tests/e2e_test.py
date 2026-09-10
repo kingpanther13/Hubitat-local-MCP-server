@@ -4241,11 +4241,16 @@ class TestRunner:
             # setLevel that silently did nothing would still satisfy that leg. Best-effort, but a
             # failure is COUNTED (see _fixture_reset_failures): a fixture left at 60 makes both legs
             # vacuous for the next run, which is exactly the state that must not pass unnoticed.
-            for dev, cmd, params in ((dim_id, "setLevel", ["10"]), (sw_id, "off", None)):
+            for dev, cmd, params, attribute, value in (
+                (dim_id, "setLevel", ["10"], "level", "10"), (sw_id, "off", None, "switch", "off"),
+            ):
                 if not dev:
                     continue
                 try:
-                    args: dict[str, Any] = {"deviceId": dev, "command": cmd}
+                    args: dict[str, Any] = {
+                        "deviceId": dev, "command": cmd,
+                        "waitFor": {"attribute": attribute, "expectedValue": value, "timeoutMs": 5000},
+                    }
                     if params:
                         args["parameters"] = params
                     self._native_device_command(args)
@@ -13232,7 +13237,10 @@ class TestRunner:
             # reader would inherit a half-on pair.
             for did in (a_id, b_id):
                 try:
-                    self._native_device_command({"deviceId": did, "command": "off"})
+                    self._native_device_command({
+                        "deviceId": did, "command": "off",
+                        "waitFor": {"attribute": "switch", "expectedValue": "off", "timeoutMs": 5000},
+                    })
                 except Exception as exc:
                     self._fixture_reset_failures.append(f"{did} to off: {exc}")
                     print(f"  [WARN] could not reset permanent fixture {did} to off: {exc}")
