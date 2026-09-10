@@ -825,18 +825,20 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'notes edit preserves groupId=#groupId and controllerType=#controllerType in bypass=#bypass'() {
+    def 'notes edit preserves groupId=#groupId controllerType=#controllerType and roomId=#roomId in bypass=#bypass'() {
         given:
         def model = fixture()
         model.device.groupId = groupId
         model.device.controllerType = controllerType
+        model.device.roomId = roomId
         registerFixture(model, bypass)
         def forms = []
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 30, boolean retry = false ->
             def form = decodeForm(body)
             forms << form
-            // The native form coerces a submitted blank group to zero; omission keeps it null.
+            // Native blanks coerce group/room IDs to zero; omission keeps them null.
             model.device.groupId = form.containsKey('groupId') ? (form.groupId ? form.groupId.toInteger() : 0) : null
+            model.device.roomId = form.containsKey('roomId') ? (form.roomId ? form.roomId.toInteger() : 0) : null
             if (form.containsKey('controllerType')) model.device.controllerType = form.controllerType
             model.device.notes = form.notes
             ''
@@ -851,11 +853,43 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         model.device.notes == 'Updated note'
         model.device.groupId == groupId
         model.device.controllerType == controllerType
+        model.device.roomId == roomId
         groupId == null ? !forms[0].containsKey('groupId') : forms[0].groupId == groupId.toString()
         controllerType == null ? !forms[0].containsKey('controllerType') : forms[0].controllerType == controllerType
+        roomId == null ? !forms[0].containsKey('roomId') : forms[0].roomId == roomId.toString()
 
         where:
-        [bypass, groupId, controllerType] << [[false, true], [null, 0, 37], [null, 'LAN']].combinations()
+        [bypass, groupId, controllerType, roomId] << [[false, true], [null, 0, 37], [null, 'LAN'], [null, 0, 41]].combinations()
+    }
+
+    @Unroll
+    def 'explicit room clear sends zero from original roomId=#roomId'() {
+        given:
+        def model = fixture()
+        model.device.roomId = roomId
+        model.device.roomName = roomId ? 'Assigned room' : null
+        registerFixture(model, false)
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 30, boolean retry = false ->
+            def form = decodeForm(body)
+            forms << form
+            model.device.roomId = form.containsKey('roomId') ? form.roomId.toInteger() : null
+            model.device.roomName = null
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', room: 'none'])
+
+        then:
+        result.success == true
+        forms.size() == 1
+        forms[0].roomId == '0'
+        model.device.roomId == 0
+        result.changes.any { it.property == 'room' && it.newValue == 'none' }
+
+        where:
+        roomId << [null, 0, 41]
     }
 
     def 'explicit nullable fields false and version zero survive a complete form save'() {
@@ -882,7 +916,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         then:
         result.success == true
         form.zigbeeId == ''
-        form.roomId == ''
+        !form.containsKey('roomId')
         form.label == ''
         form.defaultIcon == ''
         form.notes == ''
