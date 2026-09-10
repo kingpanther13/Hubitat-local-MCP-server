@@ -58,13 +58,14 @@ Every `tools/call` response is measured before send. If the wire-encoded respons
 
 The outer JSON-RPC envelope still reports success (this is not a tool error — the tool ran, the result just didn't fit). Treat `response_too_large=true` as a hint to either (a) narrow your query — the per-tool `suggestion` field names the specific knob — or (b) opt into pagination on tools that support it. The `tool` field reflects the actual sub-tool on gateway-routed calls so you can re-issue a narrower call directly.
 
-Opt-in cursor pagination is currently wired into the following read-only tools. All follow the same contract: omit `cursor` for the full list (backward-compatible, backstopped by the size guard), pass `cursor: ""` for the first page, then iterate `nextCursor` until absent. The one exception is `hub_get_tool_guide`, whose full-guide payload cannot fit a single response at all: it pages whether or not a cursor was passed, because a size-guard envelope leaves the caller with nothing. Cursor is opaque per the MCP convention; non-numeric / out-of-range values reject as `-32602`.
+The following read-only tools support pagination. List tools return the full list when cursor is omitted (subject to the response-size guard); pass `cursor: ""` to start a page, then follow `nextCursor`. Two reads also paginate oversized responses automatically: `hub_get_device` fragments expanded configuration/details, and `hub_get_tool_guide` pages the full guide. Cursors are opaque; malformed or out-of-range values reject as `-32602`.
 
-These tools follow an explicit opt-in convention so pre-`cursor` callers see no behaviour change — pagination is genuinely opt-in. (Pre-PR `tools/list` had its own different shape — unconditional pagination at 50/page — which is now removed; see the previous section.)
+List pagination remains opt-in. Ordinary device summaries and small expanded reads keep their structured response; see Device inspection below for fragment assembly and snapshot expiry.
 
 | Tool | Page size | Notes |
 |---|---|---|
 | `hub_list_devices` | 50 (when `limit` unset) | Cursor is an alias for the existing `offset`+`limit` shape; `nextCursor` is emitted alongside `nextOffset`. |
+| `hub_get_device` | 18,000 characters | Oversized configuration/details only: concatenate JSON fragments from one snapshot using unchanged arguments within five minutes. Empty cursor starts a new read. |
 | `hub_list_apps` | 50 | `scope='types'` (default): catalog of installable apps. `scope='instances'`: installed app instances; cursor respects `filter` — pages the filtered set. |
 | `hub_list_drivers` | 50 | Catalog of installable drivers. |
 | `hub_list_libraries` | 50 | Installed Groovy libraries (id, name, namespace, version); source omitted (read via `hub_get_source`). |
@@ -82,7 +83,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `hub_list_device_dependents` | 100 | Pages `appsUsing`. |
 | `hub_get_logs` | 100 | Filters + `limit` apply first; cursor pages within the filtered result. |
 | `hub_get_memory_history` | 100 | `limit=0` + cursor pages the full hub ring buffer (the only way to retrieve every entry without losing data). |
-| `hub_get_tool_guide` | 90,000 chars | The only tool that pages WITHOUT opting in: the no-section full-guide call is ~188 KB against the 120 KB cap, so it returns a first page plus `nextCursor` rather than a size-guard envelope. Every named section and sub-section still fits one response, so they carry no `nextCursor` and reject a `cursor` outright rather than silently serving a headless slice. Pages break on line boundaries; `offset`/`totalChars` ride along on a split response, and `nextCursor` is absent (not null) on the last page. |
+| `hub_get_tool_guide` | 90,000 chars | Pages without opting in: the no-section full-guide call is ~188 KB against the 120 KB cap, so it returns a first page plus `nextCursor` rather than a size-guard envelope. Every named section and sub-section still fits one response, so they carry no `nextCursor` and reject a `cursor` outright rather than silently serving a headless slice. Pages break on line boundaries; `offset`/`totalChars` ride along on a split response, and `nextCursor` is absent (not null) on the last page. |
 | `hub_get_jobs` | 100 | Pages `scheduledJobs`; `runningJobs` and `hubActions` stay in full. Served from a 30 s cached `/logs/json` snapshot shared with `hub_get_performance_stats`, so a traversal is best-effort past that TTL. When the transport carries a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on LAN) the fetch runs in the background and the call continues via `requestState`; legacy clients repeat the identical call on `status: "in_progress"`. |
 
 Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hub_get_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `hub_list_files`/`hub_read_file` round-trip) plus the universal size guard as the backstop.
@@ -264,17 +265,77 @@ MCP-managed virtual devices:
 
 ---
 
+## Device inspection
+
+`hub_get_device(deviceId=...)` keeps its concise summary of capabilities,
+attributes and commands. Use `mode="configuration"` before updating a device:
+it returns `editableFields`, all available preference declarations and current
+values, actual driver identity, and source/read-status information. A saved
+`false`, zero, empty string or null is distinct from an unset value. Defaults
+describe the driver declaration; they do not prove a setting was saved.
+
+Use `mode="details"` for comprehensive inspection. Optional `sections` select
+`configuration`, `identity`, `attributes`, `commands`, `data`, `state`,
+`relationships`, `jobs`, `integrations`, or `metadata`. Event/log histories use
+the linked read tools instead of inflating every device response. Missing or
+unrecognized native data is reported as partial/unavailable, never as proof
+that the device has no settings. Sensitive values are redacted.
+
+For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then
+select exact names, for example `fields=["txtEnable"]` in configuration mode or
+`sections=["state"], fields=["lastRefresh"]` in details mode. Configuration
+selection applies to preference names, editable property names and device-info
+keys. Details selection applies to section keys; attributes also accepts an
+individual attribute name. Commands and jobs use the row indices returned by
+`availableFields`, so duplicate or unnamed rows remain selectable. Omitting
+`fields` retains the full selected sections.
+
+If even one selected value exceeds the response budget, the tool returns
+`contentFormat="json-fragment"`, a `content` string and `nextCursor`. Repeat the
+same read with that cursor, concatenate the fragments in order, then parse the
+joined JSON. This also handles large field-name indexes. The cursor is bound to
+the original redacted snapshot, so later telemetry changes do not alter its
+pages. Continue within five minutes with the same device, mode, sections and
+fields. Expiry, eviction or a server reload requires restarting without cursor.
+At most eight snapshots and 2,097,152 UTF-16 code units of serialized JSON are retained in memory; select
+fewer fields if the budget is exceeded. Authorization is checked on every page.
+Ordinary reads keep their structured response.
+
+The actual driver name is separate from the device's mutable name. `driverSource`
+provides a verified source call when a user driver can be resolved, or a driver
+catalog lookup and the reason source is unavailable. Built-in source is not
+promised. Source code can supply further declarations, but cannot establish
+the device's current saved preferences.
+
+All modes are reachable through `hub_read_devices` with the Write master off;
+device authorization still applies. For example:
+
+```json
+{"tool":"hub_get_device","args":{"deviceId":"42","mode":"configuration"}}
+```
+
 ## hub_update_device Properties
 
-| Property | API Used | Requires Write master |
-|----------|----------|-------------------------|
-| label | setLabel (official) | No |
-| name | setName (official) | No |
-| deviceNetworkId | setDeviceNetworkId (official) | No |
-| dataValues | updateDataValue (official) | No |
-| preferences | updateSetting (official) | No |
-| room | hub internal API | **Yes** |
-| enabled | hub internal API | **Yes** |
+Every update requires the Write master and applicable tool permissions. When
+mandatory best-practice acknowledgment is enabled, read the guide first and put
+`bestPracticeKey` inside the gateway's `args` alongside the patch.
+
+| Properties | Read/write behavior |
+|------------|---------------------|
+| `label`, `name`, `deviceNetworkId` | Device identity; network-ID changes require confirmation and backup. |
+| `dataValues`, `preferences` | Data-section values and declared driver preferences; inspect configuration first. |
+| `room`, `enabled`, `showOnHome`, `defaultCurrentState`, `tags` | Room, device availability, Home visibility, status attribute and replacement tag set. |
+| `deviceTypeId`, `zigbeeId` | Driver and radio identity; applicable devices only, confirmation and backup required. |
+| `notes`, `defaultIcon` | Device note and icon override; empty string clears. |
+| `maxEvents`, `maxStates`, `spammyThreshold` | Native history limits (1–2000) and event-alert threshold (100–2000). |
+| `dashboardIds`, `meshEnabled`, `meshFullSync` | Applicable dashboard/mesh assignments; confirmation and backup required. |
+| `retryEnabled` | Command retry, only where the native device exposes it. |
+| `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` | Supported and installed assistant assignments; confirmation and backup required. |
+
+Configuration mode identifies each field's applicability and readback source.
+Omitted properties are
+preserved. The complete patch is validated before writes begin; runtime failures
+report per-property successes and errors, so inspect the result before retrying.
 
 **Preferences format:**
 ```json
@@ -284,9 +345,22 @@ MCP-managed virtual devices:
 }
 ```
 
-**Valid preference types:** bool, number, string, enum, decimal, text
+Use the preference's declared type, allowed values and range from configuration
+mode. Unknown names are refused. An unreadable schema/readback is reported
+separately from an unknown name or a value that did not persist. Omit a preference
+to preserve it. To clear an optional preference, pass an explicit entry such as
+`"debugLogging": {"clear": true}`. Null, empty strings, whitespace and empty arrays
+are rejected; do not combine `clear` with `value`. Required preferences cannot be cleared.
+Both `bool` and `boolean` declarations are supported. A driver default displayed
+afterward remains a default, not a saved value. Preference saves preserve Home visibility, status
+display and command-retry settings unless the patch explicitly changes them.
 
-**Room assignment:** Use exact room name as it appears in Hubitat (case-sensitive)
+If an unset enum reports `multiple: null`, check `driverSource` or metadata captured
+before clearing, then supply `multiple: true` or `multiple: false` alongside `value`
+when restoring it. For example, `{"colors": {"value": ["red"], "multiple": true}}`
+restores a declared multi-select enum; do not guess its selection cardinality.
+
+**Room assignment:** Existing names use case-insensitive exact matching; an empty string removes the assignment.
 
 ---
 
@@ -1156,7 +1230,7 @@ The `hub_manage_mcp` gateway exposes self-administration tools that let an LLM a
 - **`hub_update_mcp_settings`** — update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope `selectedDevices`)
   - Args: `settings` (map of `{key: value}`), `confirm=true`
   - Allowlisted keys (intentionally conservative): `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableRead`, `enableCustomRuleEngine`, `useGateways`, `enableMandatoryBPS`, `bypassDeviceAllowlist`, and `selectedDevices`
-  - **`bypassDeviceAllowlist`** (bool, default OFF) — **DANGEROUS.** When ON, the per-device tools ignore the device allowlist (`selectedDevices`) and reach ANY device on the hub by id, with full parity. Covered tools (5): `hub_get_device`, `hub_get_device_attribute` (incl. block-poll `expectedValue`/`waitFor` convergence), `hub_call_device_command` (incl. `waitFor`), `hub_update_device` (config writes), and `hub_list_device_events` all work on unlisted devices. **NOT bypassed:** `hub_list_devices`, device swap/replace/delete, and device-health — those still honour the allowlist. The effect is **independent of Developer Mode** — this tool is Developer-Mode-gated, but once the flag is ON the bypass works in normal operation. Settable here OR via the app's **Device Access** settings page (a checkbox with a loud warning). Leave OFF unless you intend to expose the whole hub. Unlisted-device access uses the hub's id-keyed admin endpoints (`/device/fullJson`, `/device/eventsJson`, `/device/runmethod`, `/device/updateRoom` (by room NAME, existence-checked), `/device/disable`, `/device/preference/save`, `/device/update` (the wholesale form -- `label`/`name`/`deviceNetworkId` ride it, since the dedicated `/device/updateLabel` setter 404s on some firmwares)) rather than the Groovy device object; listed and MCP-managed virtual devices keep the existing rich path unchanged. On the bypass path `hub_call_device_command` can return `success: false` (a structured hub-rejection / not-confirmed error) where the listed path is fire-and-forget. `showOnHome`/`defaultCurrentState`/`tags`/`dataValues` writes are not supported on unlisted devices **because** their only id-keyed route is the wholesale `/device/update` form whose field encoding for those properties is unverified. Bypass attribute discovery (for `hub_get_device_attribute`) is limited to attributes that have already reported a value.
+  - **`bypassDeviceAllowlist`** (bool, default OFF) — **DANGEROUS.** When ON, the per-device tools ignore the device allowlist (`selectedDevices`) and reach ANY device on the hub by id, with full parity. Covered tools (5): `hub_get_device`, `hub_get_device_attribute` (incl. block-poll `expectedValue`/`waitFor` convergence), `hub_call_device_command` (incl. `waitFor`), `hub_update_device` (config writes), and `hub_list_device_events` all work on unlisted devices. **NOT bypassed:** `hub_list_devices`, device swap/replace/delete, and device-health — those still honour the allowlist. The effect is **independent of Developer Mode** — this tool is Developer-Mode-gated, but once the flag is ON the bypass works in normal operation. Settable here OR via the app's **Device Access** settings page (a checkbox with a loud warning). Leave OFF unless you intend to expose the whole hub. Unlisted-device access uses the hub's id-keyed admin endpoints (`/device/fullJson`, `/device/eventsJson`, `/device/runmethod`, `/device/updateRoom` (by room NAME, existence-checked), `/device/disable`, `/device/preference/save`, `/device/update` (the wholesale form -- `label`/`name`/`deviceNetworkId` ride it, since the dedicated `/device/updateLabel` setter 404s on some firmwares)) rather than the Groovy device object; listed and MCP-managed virtual devices keep the existing rich path unchanged. On the bypass path `hub_call_device_command` can return `success: false` (a structured hub-rejection / not-confirmed error) where the listed path is fire-and-forget. `showOnHome`, `defaultCurrentState`, preferences and tags support native writes with preservation and readback. `dataValues` writes require adding the device to the MCP device scope; no native bypass data writer has been verified. Bypass attribute discovery (for `hub_get_device_attribute`) is limited to attributes that have already reported a value.
   - **`selectedDevices` — the MCP device-access scope** (the `selectedDevices` authorization that `findDevice`/`hub_list_devices` read), set without the Hubitat UI authorize step. Unlike the other (scalar) allowlisted keys, its value is a structured object **because** it is a `capability.*` multi-select that needs a List write plus atomic id validation — it cannot go through the scalar value coercion. Pass `{"mode":"replace"|"add"|"remove", "ids":["42","108"], "allowEmpty":false}` — or a bare array as the replace shorthand (`{"selectedDevices":["42","108"]}` == `{mode:"replace", ids:["42","108"]}`). `replace` sets the authorized set to exactly `ids`; `add` unions `ids` with the current set (safest for "grant one device" — no need to re-enumerate the whole list); `remove` subtracts `ids`. Discover ids with `hub_list_devices(scope='all')` (each carries an `mcpAuthorized` flag).
     - **Atomic validation (replace/add):** every id is checked against the full hub device inventory (`/device/listWithCapabilities/json`, or on platform 2.5.1.173 and later where that endpoint is gone, the `/hub2/devicesList` tree unioned with the `/hub2/vrb/devices` picker feed — a device either source omits is still in the inventory from the other, so it is never rejected as unknown); an unknown id is rejected (`-32602`) with the offending id named and nothing in the whole batch is written. When the id set cannot be vouched for — the tree could not be read, answered empty (against a populated feed, or with no feed answer at all), or the feed listed a device the tree lacks — an id the inventory lacks is answered as "could not validate" (an error, nothing written, retry) rather than as unknown. `remove` does NOT validate ids **because** removing an unknown/already-absent id is a harmless no-op — so a since-deleted device can still be cleaned out of scope (forcing a validation fetch there would block that legitimate cleanup)
     - **Self-lockout guard:** if the resulting set would be empty, the call is refused unless `selectedDevices.allowEmpty=true` (an empty scope blinds the server to every selected device). MCP-managed virtual devices stay reachable regardless
@@ -1332,7 +1406,7 @@ Surfaced via `hub_get_tool_guide(section='slow_ops')`. Hubitat's cloud relay can
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and `hub_delete_debug_logs`.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, and `hub_update_device`.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
@@ -1343,6 +1417,8 @@ Why `input_required`/`requestState` rather than the spec's Tasks primitive: each
 ### Slow log and diagnostic reads
 
 When the transport has a time budget, `hub_get_jobs`, `hub_get_performance_stats`, and native log reads through `hub_get_logs` use background fetches and the same `requestState` continuation. Cold MCP history recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. A warm read can finish on its first call. Reads hold no write lease, and their log payloads stay outside persisted continuation records.
+
+`hub_get_device` (every mode) and `hub_list_devices` (including virtual devices) also use background reads on budgeted modern requests. Fast reads finish in one response; slower reads continue with the same arguments and `requestState`. Each independent device read fetches fresh data. Only continuation and replay share its snapshot, preserving any device-details pagination cursor. Changes to device access or loss of the snapshot require a fresh read. Device payloads remain in bounded memory rather than persisted continuation records. Legacy device calls retain their synchronous behavior.
 
 `hub_delete_debug_logs` waits for recovery before clearing, then retains its small terminal result so replay cannot clear again. Reload recovery reads existing native history; old state-backed entries are discarded once when updating to native storage. Legacy clients that receive `status: "in_progress"` repeat the same read or clear call.
 

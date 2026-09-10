@@ -338,8 +338,32 @@ def _nativeLogSnapshot(Map query, Map args) {
     if (!_mrtrReadContinuationActive()) {
         return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
     }
+    return _hubReadSnapshot(query, args, null)
+}
+
+private String _deviceReadAccessScope() {
+    return groovy.json.JsonOutput.toJson([
+        selected: (settings.selectedDevices ?: []).collect { it.id.toString() }.sort(),
+        children: (getChildDevices() ?: []).collect { it.id.toString() }.sort(),
+        bypass: _bypassEnabled()
+    ])
+}
+
+private def _deviceReadSnapshot(String tool, Map args, Map context) {
+    Map work = [id: context.id, fresh: context.fresh, tool: tool,
+                args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
+    Map snapshot = _hubReadSnapshot(null, args, work)
+    if (work.scope != _deviceReadAccessScope()) {
+        throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
+    }
+    if (snapshot.state == "pending") return [status: "in_progress", tool: tool]
+    return new groovy.json.JsonSlurper().parseText(snapshot.text)
+}
+
+private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
     String owner = app?.id?.toString() ?: "0"
-    String key = "${owner}:${query?.type ?: 'all'}:${query?.id ?: ''}".toString()
+    String key = deviceRead != null ? "${owner}:device:${deviceRead.id}".toString() :
+        "${owner}:${query?.type ?: 'all'}:${query?.id ?: ''}".toString()
     Map job = null
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         NATIVE_LOG_SNAPSHOTS.entrySet().findAll { entry ->
@@ -347,9 +371,29 @@ def _nativeLogSnapshot(Map query, Map args) {
             long ttl = value.pending == true ? 90000L : 30000L
             now() - (value.at as Long) >= ttl
         }.collect { it.key }.each { NATIVE_LOG_SNAPSHOTS.remove(it) }
+        if (deviceRead != null) {
+            def current = NATIVE_LOG_SNAPSHOTS[key]
+            if (current instanceof Map && current.scope != deviceRead.scope) {
+                throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
+            }
+            if (!(current instanceof Map) && deviceRead.fresh != true) {
+                throw new IllegalArgumentException("Device read snapshot expired or was lost; start a fresh call.")
+            }
+            // Completed independent reads need no future cache hit; evict the oldest ready
+            // snapshot under pressure. A pending worker always retains its owned slot.
+            if (!(current instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
+                def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v -> v.pending != true }
+                if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
+                else throw new IllegalStateException("Background read capacity is full; finish pending reads before retrying.")
+            }
+        }
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
             String fetchId = java.util.UUID.randomUUID().toString()
             NATIVE_LOG_SNAPSHOTS[key] = [at: now(), pending: true, fetchId: fetchId]
+            if (deviceRead != null) {
+                NATIVE_LOG_SNAPSHOTS[key].work = deviceRead
+                NATIVE_LOG_SNAPSHOTS[key].scope = deviceRead.scope
+            }
             job = [key: key, owner: owner, fetchId: fetchId, query: query]
         }
     }
@@ -372,6 +416,7 @@ def _nativeLogSnapshot(Map query, Map args) {
             if (snapshot instanceof Map && snapshot.pending != true) {
                 if (snapshot.error) {
                     NATIVE_LOG_SNAPSHOTS.remove(key)
+                    if (snapshot.invalid == true) throw new IllegalArgumentException(snapshot.error.toString())
                     throw new IllegalStateException(snapshot.error.toString())
                 }
                 return [state: "ready", text: snapshot.text, fetchedAt: snapshot.at]
@@ -387,16 +432,33 @@ def _nativeLogSnapshot(Map query, Map args) {
 
 def runNativeLogFetch(Map job = [:]) {
     if (job.owner != (app?.id?.toString() ?: "0")) return
+    Map work = null
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         def current = NATIVE_LOG_SNAPSHOTS[job.key]
         if (!(current instanceof Map) || current.fetchId != job.fetchId || current.pending != true || current.started == true) return
         current.started = true
+        work = current.work as Map
     }
     Map result
     try {
-        result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
+        if (work != null) {
+            if (work.scope != _deviceReadAccessScope()) {
+                throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
+            }
+            def payload = _executeWithDeviceReadContext(work.tool, work.args as Map, null)
+            String text = groovy.json.JsonOutput.toJson(payload)
+            int bytes = text.getBytes("UTF-8").length
+            if (bytes > 120000) text = groovy.json.JsonOutput.toJson(
+                _responseTooLargeEnvelope(work.tool.toString(), bytes, 120000))
+            result = [text: text, scope: work.scope]
+        } else {
+            result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
+        }
     } catch (Exception fetchError) {
-        result = [error: fetchError.message ?: fetchError.toString()]
+        boolean invalid = fetchError instanceof IllegalArgumentException
+        result = [error: work != null && !invalid ? "Device read failed (${fetchError.class.simpleName})".toString() :
+                    (fetchError.message ?: fetchError.toString()), invalid: invalid]
+        if (work != null) result.scope = work.scope
     }
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         if (NATIVE_LOG_SNAPSHOTS[job.key]?.fetchId == job.fetchId) {

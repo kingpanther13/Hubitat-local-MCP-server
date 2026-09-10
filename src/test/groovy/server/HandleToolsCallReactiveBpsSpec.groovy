@@ -13,6 +13,61 @@ import support.ToolSpecBase
  */
 class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
+    @spock.lang.Unroll
+    def "legacy #refusal validation refusal is error logged at error and debug thresholds"() {
+        given:
+        def handlerCalls = []
+        script.metaClass.toolSetHsm = { a -> handlerCalls << new LinkedHashMap(a); [success: true] }
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = refusal != 'write master disabled'
+        settingsMap.enableMandatoryBPS = refusal in ['missing BPS key', 'wrong BPS key']
+        settingsMap.disabled_tools = refusal == 'advanced tool disabled' ? ['hub_set_hsm'] : []
+        def callArgs = [armCommand: 'armHome']
+        if (refusal == 'wrong BPS key') callArgs.bestPracticeKey = 'definitely-wrong-secret'
+        def observations = [:]
+
+        when:
+        ['error', 'debug'].each { threshold ->
+            settingsMap.mcpLogLevel = threshold
+            def buffer = script.initDebugLogs()
+            buffer.entries.clear()
+            script.log.messages.clear()
+            def response = mcpDriver.callTool('hub_set_hsm', callArgs)
+            def visible = script.toolGetHubLogs([mode: 'mcp', level: 'error', component: 'server'])
+            observations[threshold] = [response: response, visible: visible,
+                                       nativeLines: new ArrayList(script.log.messages)]
+        }
+
+        then: 'logging configuration never changes the actionable protocol response'
+        observations.error.response.error.code == -32602
+        observations.debug.response.error.code == -32602
+        observations.error.response.error.message == observations.debug.response.error.message
+        observations.error.response.error.message.contains(expectedReason)
+
+        and: 'the refusal is visible through both native logging and the MCP error-log reader'
+        observations.values().every { observation ->
+            observation.visible.entries.size() == 1 &&
+                observation.visible.entries[0].level == 'error' &&
+                observation.visible.entries[0].component == 'server' &&
+                observation.visible.entries[0].message.contains(expectedReason) &&
+                observation.nativeLines.any { it.startsWith('error:') && it.contains(expectedReason) }
+        }
+
+        and: 'the rejected call has no side effect and neither the real nor supplied key leaks'
+        handlerCalls.isEmpty()
+        observations.values().every { observation ->
+            def rendered = observation.visible.entries.toString() + observation.nativeLines.toString()
+            !rendered.contains(script.hubBpsGuideKey()) && !rendered.contains('definitely-wrong-secret')
+        }
+
+        where:
+        refusal                 | expectedReason
+        'missing BPS key'       | 'Mandatory best-practice acknowledgment'
+        'wrong BPS key'         | 'Mandatory best-practice acknowledgment'
+        'write master disabled' | 'Write tools are disabled'
+        'advanced tool disabled'| 'disabled in Advanced settings'
+    }
+
     // ---- THROWN-IAE path (-32602): pointer to the failing tool's section --------
 
     def "a thrown device-command error points at device_authorization (the tool's section)"() {

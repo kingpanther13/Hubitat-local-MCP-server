@@ -6,6 +6,7 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 - **Hubitat sandbox:** [eighty20results/hubitat_ci](https://github.com/eighty20results/hubitat_ci) — an actively-maintained Groovy 3.0 fork of the original [biocomp/hubitat_ci](https://github.com/biocomp/hubitat_ci) (Apache 2.0). Consumed as `com.github.eighty20results:hubitat_ci:<tag>` via JitPack; the pinned release tag in `build.gradle` is bumped by tracking issues from `.github/workflows/hubitat-ci-version-check.yml`. Sandbox-loaded production code that references `hubitat.helper.{RMUtils, NetworkUtils}` is routed through `support.PassThroughSandboxClassLoader` (installed via `support.PassThroughAppValidator`) so our literal-named stubs at `src/main/groovy/hubitat/helper/` resolve without hitting the JVM's §5.3.5 name-equality check — the raw-vs-remapped class mismatch that would otherwise NCDFE at runtime. Groovy 3 is module-aware, so the JDK 11+ `--add-opens` workaround from the Groovy-2.5 era is no longer needed.
 - **JVM:** OpenJDK 17 in CI; locally, JDK 11+ via the Gradle toolchain
 - **Build:** Gradle 9.5.1 via wrapper (`./gradlew test`)
+- **Python tests and E2E:** Python 3.11 or newer. The suite imports `datetime.UTC` and uses union type annotations and strict `zip`; CI selects the current Python 3 release.
 
 ### Additive hub-closer lanes
 

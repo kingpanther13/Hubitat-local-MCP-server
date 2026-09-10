@@ -99,6 +99,8 @@ def toolSearchTools(args) {
     }
     if (ranked.size() > maxResults) ranked = ranked.take(maxResults)
 
+    def gatewayConfig = getGatewayConfig()
+    def displayMeta = getToolDisplayMeta()
     def results = ranked.collect { r ->
         def tool = visibleCorpus[r.index]
         def entry = [
@@ -111,6 +113,10 @@ def toolSearchTools(args) {
         // pre-title cached-corpus case).
         if (tool.title) entry.title = tool.title
         if (tool.gateway) {
+            // Keep cached ranking vocabulary stable, but disclose only currently available routing context.
+            def config = gatewayConfig.get(tool.gateway)
+            def intro = _visibleGatewayIntro(tool.gateway, gatewayConfig, searchHideByName, displayMeta)
+            entry.description = "${config.summaries.get(tool.name) ?: ''} [${intro}]".toString()
             entry.gateway = tool.gateway
             entry.callAs = "Call via ${tool.gateway}(tool=\"${tool.name}\", args={...})"
         } else {
