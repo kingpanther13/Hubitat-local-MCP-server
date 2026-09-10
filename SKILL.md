@@ -387,7 +387,9 @@ def getHubSecurityCookie() {
 }
 ```
 
-The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecurityCookieExpiry`.
+The cookie is cached in `atomicState.hubSecurityCookie` with expiry in `atomicState.hubSecurityCookieExpiry`.
+
+Native requests use the fixed `http://127.0.0.1:8080` loopback endpoint on the hub. Login credentials and cookies are plaintext on that local connection; they are not sent to the hub's LAN address or cloud relay by this helper. This trusts the hub's operating system and locally installed code: a process able to inspect loopback traffic can read them. Install only trusted apps/drivers and restrict hub administration. Do not replace this origin with a remote HTTP address; remote credential transport requires authenticated TLS. The local HTTP connection does not provide confidentiality against a compromised hub.
 
 ### State Management
 
@@ -397,8 +399,6 @@ The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecur
 | `accessToken` | String | OAuth token for MCP endpoint |
 | `ruleVariables` | Map | Global variables shared across rules |
 | `debugLogs` | Map | Small `{config: {logLevel, maxEntries}}` only; entries use a bounded class cache backed by native Past Logs |
-| `hubSecurityCookie` | String | Cached auth cookie |
-| `hubSecurityCookieExpiry` | Long | Cookie expiry epoch ms |
 | `lastBackupTimestamp` | Long | Newest known hub backup epoch ms (24-hour write safety gate; stamped by hub_create_backup or refreshed from the hub's local backup list on a gate fallback) |
 | `itemBackupManifest` | Map | Metadata for source code backups stored in File Manager, keyed by `"app_<id>"` / `"driver_<id>"` / `"library_<id>"`, max 20 entries |
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
@@ -433,7 +433,7 @@ parent.findDevice(deviceId)         // Device lookup
 
 ### Device Access
 
-All device access goes through `findDevice(deviceId)`:
+Legacy SDK device lookup uses `findDevice(deviceId)`. Native device tools enforce selection through `_requireDeviceToolAccess` before their native requests, as described below:
 ```groovy
 def findDevice(deviceId) {
     if (!deviceId) return null

@@ -2924,12 +2924,11 @@ class TestRunner:
 
     @test("diagnostics")
     def test_set_zigbee_ping_device(self) -> None:
-        # hub_set_zigbee ping_device mode (updatePingDevice): toggle keep-alive ping for ONE device.
-        # The e2e hub has no devices, so target a benign/likely-absent id with enabled=false (a no-op
-        # disable). Resilient to relay 5xx / structured error (device-absent) -- the load-bearing
-        # check is that the new ping_device mode dispatches, not that a device was pinged.
+        # This endpoint takes a decimal Hubitat device ID, not a Zigbee short address.
+        # ID 0 has no device: exercise native identity refusal without changing a real
+        # device's keep-alive setting. Positive endpoint routing is covered in Spock.
         assert self._resilient_radio_write(
-            "hub_set_zigbee", {"ping_device": {"device_id": "0x0000", "enabled": False}},
+            "hub_set_zigbee", {"ping_device": {"device_id": "0", "enabled": False}},
             "hub_set_zigbee(ping_device)")
 
     @test("diagnostics")
@@ -3124,16 +3123,27 @@ class TestRunner:
             }, f"{profile['path']} configuration fixture {name}")
             assert result.get("success") is True, f"Fixture observer command failed: {result}"
 
-        def capture(explicit_summary=False):
+        def capture(explicit_summary=False, *, with_configuration=False):
             nonce = str(time.time_ns())
             command("captureConfiguration", [nonce])
-            summary = self.client.call_tool("hub_get_device", {
-                "deviceId": device_id, **({"mode": "summary"} if explicit_summary else {}),
-            })
-            assert set(summary) == {"id", "name", "label", "room", "capabilities", "attributes", "commands"}, (
-                f"Summary contract expanded: {summary.keys()}"
-            )
-            attributes = {row["name"]: row.get("value") for row in summary["attributes"]}
+            if with_configuration:
+                details = self.client.call_tool("hub_get_device", {
+                    "deviceId": device_id, "mode": "details", "sections": ["attributes", "configuration"],
+                })
+                for section in ("attributes", "configuration"):
+                    assert details.get("sectionRead", {}).get(section, {}).get("status") == "complete", (
+                        f"Combined configuration observation is incomplete: {details}"
+                    )
+                rows = details["sections"]["attributes"]["declaredAttributes"]
+            else:
+                summary = self.client.call_tool("hub_get_device", {
+                    "deviceId": device_id, **({"mode": "summary"} if explicit_summary else {}),
+                })
+                assert set(summary) == {"id", "name", "label", "room", "capabilities", "attributes", "commands"}, (
+                    f"Summary contract expanded: {summary.keys()}"
+                )
+                rows = summary["attributes"]
+            attributes = {row["name"]: row.get("value") for row in rows}
             snapshots = []
             for attribute in ("nativeConfiguration", "nativeDeviceInfo"):
                 snapshot = json.loads(attributes[attribute])
@@ -3144,9 +3154,11 @@ class TestRunner:
                     f"Stale persistent observer; provision fixture version {manifest['version']} outside E2E"
                 )
                 snapshots.append(snapshot)
+            if with_configuration:
+                snapshots.append(details["sections"]["configuration"])
             return snapshots
 
-        def update(patch):
+        def update(patch, *, require_data_change=True):
             result = self._write_once("hub_manage_devices", "hub_update_device", {
                 "deviceId": device_id, **patch,
             }, f"{profile['path']} configuration edit")
@@ -3156,7 +3168,7 @@ class TestRunner:
             changed = {row.get("property") for row in result.get("changes", [])}
             pane_fields = {"retryEnabled", "showOnHome", "defaultCurrentState"} & patch.keys()
             assert pane_fields <= changed, f"Configuration pane write was not confirmed: {result}"
-            if "dataValues" in patch:
+            if "dataValues" in patch and require_data_change:
                 assert "dataValue.configurationProbe" in changed, f"Native data write was not confirmed: {result}"
             return result
 
@@ -3295,6 +3307,7 @@ class TestRunner:
         assert editable.get("deviceTypeId", {}).get("writable") is True, "Provision a non-component fixture with an editable driver"
         restore = {key: normalized(key, baseline["roomName" if key == "room" else key]) for key in edits}
         dirty = large_dirty = driver_dirty = enabled_dirty = False
+        grouped_edit_completed = False
         try:
             dirty = True
             # Persistent fixtures may have been edited between runs. Preserve the
@@ -3305,8 +3318,7 @@ class TestRunner:
                 form_before = preserved_form_fields()
                 update(pane_values)
                 assert preserved_form_fields() == form_before, "Pane-only edit changed an unrequested native form field"
-                native, seeded = capture()
-                cfg = configuration()
+                native, seeded, cfg = capture(with_configuration=True)
                 assert_native_preferences(native, cfg, expected)
                 assert_fields(seeded, cfg, prepared)
             invalid_patches = [
@@ -3325,8 +3337,7 @@ class TestRunner:
                 except (McpToolError, McpError) as exc:
                     affected = next(iter(patch.get("preferences", patch)))
                     assert affected in str(exc), f"Refusal did not identify {affected}: {exc}"
-            native, unchanged = capture()
-            current = configuration()
+            native, unchanged, current = capture(with_configuration=True)
             assert_native_preferences(native, current, expected)
             assert_fields(unchanged, current, prepared)
 
@@ -3361,8 +3372,8 @@ class TestRunner:
             update({**edits, "confirm": True, "preferences": {
                 name: {"type": kind, "value": value} for name, (kind, value) in desired.items()
             }})
-            native, changed = capture()
-            current = configuration()
+            grouped_edit_completed = True
+            native, changed, current = capture(with_configuration=True)
             assert_fields(changed, current, edits)
             assert preserved_metadata() == metadata_baseline, "Grouped edit changed groupId or controllerType"
             assert_native_preferences(native, current, desired)
@@ -3379,8 +3390,7 @@ class TestRunner:
                     assert refused.get("success") is False, f"Implicit empty-list clear succeeded: {refused}"
                 except (McpToolError, McpError) as exc:
                     assert "probeMultiple" in str(exc), f"Refusal did not identify the empty preference: {exc}"
-                native, changed = capture()
-                current = configuration()
+                native, changed, current = capture(with_configuration=True)
                 assert_native_preferences(native, current, desired)
                 assert_fields(changed, current, edits)
                 update({"preferences": {"probeBool": {"value": False}, "probeMultiple": {"value": ["blue"]}}})
@@ -3393,8 +3403,7 @@ class TestRunner:
                     f"Single selection did not remain a stored runtime List: {native}"
                 )
                 update({"preferences": {"probeText": {"clear": True}, "probeMultiple": {"clear": True}}})
-                native, changed = capture()
-                current = configuration()
+                native, changed, current = capture(with_configuration=True)
                 remaining = {key: value for key, value in desired.items() if key not in ("probeText", "probeMultiple")}
                 assert_native_preferences(native, current, remaining)
                 assert_fields(changed, current, edits)
@@ -3414,11 +3423,11 @@ class TestRunner:
                         )
             driver_dirty = True
             update({"deviceTypeId": driver_types[manifest["replacementDriver"]], "confirm": True})
-            native, changed = capture()
+            native, changed, current = capture(with_configuration=True)
             assert int(changed["deviceTypeId"]) == driver_types[manifest["replacementDriver"]], (
                 f"Native replacement driver did not persist: {changed}"
             )
-            assert_native_preferences(native, configuration(), remaining)
+            assert_native_preferences(native, current, remaining)
             enabled_dirty = True
             update({"enabled": False})
             nonce = str(time.time_ns())
@@ -3453,7 +3462,7 @@ class TestRunner:
                     update({**restore, "confirm": True, "preferences": {
                         name: {"type": kind, "value": value, **({"multiple": True} if isinstance(value, list) else {})}
                         for name, (kind, value) in expected.items()
-                    }})
+                    }}, require_data_change=grouped_edit_completed)
                 except Exception as exc:
                     errors.append(f"grouped restoration: {exc}")
             if large_dirty:
@@ -3462,8 +3471,7 @@ class TestRunner:
                 except Exception as exc:
                     errors.append(f"large-read cleanup: {exc}")
             try:
-                native, restored = capture()
-                current = configuration()
+                native, restored, current = capture(with_configuration=True)
                 assert_native_preferences(native, current, expected)
                 assert_fields(restored, current, restore)
                 assert preserved_metadata() == metadata_baseline, "Restoration changed groupId or controllerType"
@@ -13364,8 +13372,12 @@ class TestRunner:
             if unexpected:
                 print(f"    [WARN] {len(unexpected)} unexpected hub error(s) logged during the run:")
                 for e in unexpected[:5]:
-                    msg = str(e.get("message", e.get("msg", str(e))))[:120]
-                    print(f"           - {msg}")
+                    msg = str(e.get("message", e.get("msg", str(e))))
+                    envelope = _decode_mcp1_envelope(msg)
+                    nested = envelope.get("entry") if envelope else None
+                    if isinstance(nested, dict) and isinstance(nested.get("message"), str):
+                        msg = nested["message"]
+                    print(f"           - {msg[:300]}")
                 # Soft check: warn but don't fail
         except Exception as exc:
             print(f"    [WARN] Could not check hub logs: {exc}")
@@ -14554,16 +14566,13 @@ class TestRunner:
                 print(f"    {dur:5.1f}s  {op_key:28s}  {test or '?'}{'' if ok else '  [err]'}")
             print(f"\n  [TRANSPORT] silent read-side retries (504/network, verbose-gated): "
                   f"{getattr(self.client, '_transport_retries', 0)}")
-            # Near-ceiling flag: the relay's effective per-call budget is ~10s (measured), so any op
-            # whose p95 clears ~7s on a HEALTHY hub is one relay-window jitter away from a 504 -- and
-            # a max over ~10s already 504s deterministically. Surfacing them here catches a newly-added
-            # near-ceiling op at introduction, with attribution, instead of as roulette several PRs later.
+            # These durations cover logical calls, including every continuation.
+            # Compare the physical-leg telemetry below before diagnosing relay risk.
             near = [(k, xs) for k, xs in agg.items() if _p95(xs) > 7.0]
             if near:
-                print("\n  [NEAR-CEILING] ops with p95 > 7s (relay ceiling ~10s -- flake/504 risk on cloud):")
+                print("\n  [SLOW-LOGICAL] ops with p95 > 7s (includes continuations; see physical-leg telemetry below):")
                 for k, xs in sorted(near, key=lambda kv: _p95(kv[1]), reverse=True):
-                    flag = "  <-- max over ceiling, 504s deterministically" if max(xs) > 10.0 else ""
-                    print(f"    p95 {_p95(xs):4.1f}s  max {max(xs):4.1f}s  {k}{flag}")
+                    print(f"    p95 {_p95(xs):4.1f}s  max {max(xs):4.1f}s  {k}")
 
         continuation_rows = _summarize_continuation_telemetry(
             getattr(self.client, "continuation_timings", []))

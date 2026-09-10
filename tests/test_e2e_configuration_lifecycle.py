@@ -11,6 +11,7 @@ import pytest
 @pytest.mark.parametrize("show,status,failure", [
     (False, "", "body"), (True, None, "body"), (False, "switch", "body"),
     (True, "switch", "body"), (False, "", "setup-error"), (False, "", "setup-noop"),
+    (False, "", "after-edit"), (False, "", "restore-confirmation"),
 ])
 @pytest.mark.parametrize("path,authorized", [("standalone-sdk", True), ("standalone-bypass", False)])
 def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, status, failure, path, authorized):
@@ -50,6 +51,15 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         if args.get("mode") == "configuration":
             return configuration()
         if args.get("mode") == "details":
+            if args["sections"] == ["attributes", "configuration"]:
+                return {
+                    "sectionRead": {section: {"status": "complete"} for section in args["sections"]},
+                    "sections": {
+                        "attributes": {"declaredAttributes": [
+                            {"name": key, "value": json.dumps(value)} for key, value in snapshot.items()]},
+                        "configuration": configuration(),
+                    },
+                }
             if args["sections"] == ["identity", "metadata"]:
                 assert args["fields"] == ["roomId", "zigbeeId", "notes", "tags", "defaultIcon"]
                 return {
@@ -71,6 +81,8 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
     def write_once(gateway, name, args, purpose):
         if name == "hub_call_device_command":
             assert args["command"] == "captureConfiguration"
+            if failure in ("after-edit", "restore-confirmation") and info["dataValues"]["configurationProbe"] == "changed":
+                raise RuntimeError("injected observation failure after grouped edit")
             nonce = args["parameters"][0]
             snapshot.update(nativeDeviceInfo={**deepcopy(info), "nonce": nonce}, nativeConfiguration={
                 "deviceId": "10", "fixtureVersion": 2, "nonce": nonce,
@@ -86,31 +98,36 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         body = str(patch.get("notes", "")).startswith("Native persistence:")
         if body:
             body_starts.append((info["showOnHome"], info["defaultCurrentState"]))
+        changed_data = {key for key, value in patch.get("dataValues", {}).items()
+                        if info["dataValues"].get(key) != value}
         if not (setup and failure == "setup-noop"):
             for key, value in patch.items():
                 info["roomName" if key == "room" else key] = deepcopy(value)
         if setup and failure == "setup-error":
             raise RuntimeError("injected setup failure after mutation")
-        if body:
+        if body and failure == "body":
             raise RuntimeError("injected matrix failure after mutation")
         changes = [{"property": k} for k in patch if k != "dataValues"]
-        changes.extend({"property": f"dataValue.{key}"} for key in patch.get("dataValues", {}))
+        if failure != "restore-confirmation" or body:
+            changes.extend({"property": f"dataValue.{key}"} for key in changed_data)
         return {"success": True, "mrtr": {"continued": True}, "changes": changes}
 
     runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))
     runner._write_once = write_once
     message = {"body": "injected matrix failure", "setup-error": "injected setup failure",
-               "setup-noop": "Native showOnHome"}[failure]
+               "setup-noop": "Native showOnHome", "after-edit": "injected observation failure",
+               "restore-confirmation": "Native data write was not confirmed"}[failure]
     with pytest.raises((RuntimeError, AssertionError), match=message):
         runner._device_configuration_profile(
             {"path": path, "label": "Fixture", "authorized": authorized}, "10", "11",
             {"version": 2, "driver": "Primary", "replacementDriver": "Alternate", "nativeFields": {}},
             {"Primary": 100, "Alternate": 101}, expected, "Fixture room",
         )
-    assert not runner._fixture_reset_failures
-    assert body_starts == ([(True, "switch")] if failure == "body" else [])
-    assert len(writes) == (2 if (show, status) == (True, "switch") else 3 if failure == "body" else 2)
-    if failure == "body":
+    assert bool(runner._fixture_reset_failures) is (failure == "restore-confirmation")
+    reached_edit = failure in ("body", "after-edit", "restore-confirmation")
+    assert body_starts == ([(True, "switch")] if reached_edit else [])
+    assert len(writes) == (2 if (show, status) == (True, "switch") else 3 if reached_edit else 2)
+    if reached_edit:
         assert writes[-2]["dataValues"] == {"configurationProbe": "changed"}
     assert writes[-1]["dataValues"] == {"configurationProbe": "original"}
     # Hubitat represents the None selection as either null or empty text.

@@ -889,6 +889,8 @@ If your hub has Hub Security enabled (login required for the web UI), the MCP se
 - Stale cookies are automatically cleared and re-authenticated
 - If Hub Security is not enabled, no credentials are needed
 
+Native API authentication uses HTTP over loopback (`127.0.0.1`) inside the hub. Credentials and cookies are plaintext on that local connection, so it relies on a trusted hub operating system and installed code. Install only trusted apps/drivers and restrict hub administration; this connection does not protect credentials from a process able to inspect local traffic. The helper uses a fixed loopback address, not the LAN or cloud endpoint.
+
 </details>
 
 ---
