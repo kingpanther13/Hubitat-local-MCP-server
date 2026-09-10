@@ -5965,6 +5965,36 @@ def hubBaseUri() { "http://127.0.0.1:8080" }
 def hubReadTimeoutSec() { 30 }
 def hubWriteTimeoutSec() { 420 }
 
+def _parseSinceArg(since) {
+    if (since instanceof Number) {
+        return new Date(since.toLong())
+    }
+    def s = since.toString().trim()
+    if (s.isEmpty()) return null
+    if (s.isLong()) return new Date(s.toLong())
+    // Z means UTC -- swap it for the equivalent numeric offset so the offset-bearing
+    // formats below interpret the wall-clock as UTC rather than hub-local.
+    if (s.endsWith("Z")) s = s.substring(0, s.length() - 1) + "+0000"
+    def formats = [
+        "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
+        "yyyy-MM-dd'T'HH:mm:ssZ",       // no millis, offset:    2026-06-23T10:00:00-0600
+        // Colon-bearing offsets (2026-06-23T10:00:00-06:00) -- the XXX form
+        // formatLastActivity emits, so a lastActivity value round-trips into
+        // changedSince on a non-UTC hub.
+        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+        "yyyy-MM-dd'T'HH:mm:ssXXX",
+    ]
+    // NOTE: Date.parse() is backed by a lenient SimpleDateFormat, so a structurally-valid
+    // but out-of-range field (e.g. month 13) parses to a rolled-over date rather than
+    // failing here -- a malformed bookmark shifts the window instead of erroring. Callers
+    // should round-trip the emitted 'date'/'sinceTimestamp' strings, which are always valid.
+    for (fmt in formats) {
+        // probe-parse: any exception means this format didn't match -- try the next
+        try { return Date.parse(fmt, s) } catch (Exception ignored) {}
+    }
+    return null
+}
+
 def getHubSecurityCookie() {
     if (!settings.hubSecurityEnabled) return null
     if (!settings.hubSecurityUser || !settings.hubSecurityPassword) {
@@ -8708,7 +8738,9 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_call_device_command
 
-**Response `state` snapshot (single-device form only -- the `commands` form returns none).** Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute. The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence. On the device-allowlist bypass (an UNLISTED device reached with bypassDeviceAllowlist ON) hub_call_device_command can return `success: false` (a structured hub-rejection) rather than the listed path's fire-and-forget.
+**Uncertain command outcome:** `outcomeUnknown: true` means the native command request failed without proving whether the device acted. Read the device state or event history before deciding whether to retry; blindly repeating a non-idempotent command can apply it twice.
+
+**Response `state` snapshot (single-device form only -- the `commands` form returns none).** Returns a native `state` snapshot with per-attribute values and freshness timestamps after dispatch. It may still show the previous state if the driver has not reported the effect. To confirm the resulting state, pass `waitFor` and check convergence, or read hub_get_device_attribute separately. With `waitFor`, the snapshot follows polling and the `waitFor` result reports whether the expected value converged. Native command rejection returns success: false for both selected and bypass-accessible devices.
 
 **`parameters` arg.** Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. `["{\"hue\":0,\"saturation\":100,\"level\":50}"]`) and coerced hub-side.
 
@@ -8868,7 +8900,7 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
-`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, device-filtered logs, dependent lookups and swaps use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution.
+`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, device-filtered logs, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. Native device operations require the MCP app's Hub Security credentials when Hub Security is enabled; without them, native reads and writes cannot authenticate. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution.
 
 **selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
 
@@ -8909,6 +8941,8 @@ MCP-managed virtual devices:
 - Use hub_manage_virtual_device(action="delete") to remove (not hub_delete_device)
 
 ### hub_manage_virtual_device
+
+**Partial virtual results:** `success: true, partialSuccess: true` means a created device or some inventory entries are usable, but native metadata or namespace verification is incomplete. Inspect the warnings and unreadable device IDs. A created ID/DNI already exists: repair or re-read it rather than creating another device. An entirely unreadable inventory returns `success: false, isError: true`; a partial inventory must not be treated as complete.
 
 **action="create" — `deviceType` vs `customDriver`:** Supplying both is an error, including a blank/whitespace `deviceType` supplied alongside `customDriver`.
 
@@ -9180,7 +9214,8 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - include_firmware: shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions.
 
 ### hub_get_device_health (device-staleness check + LAN/WAN network probes)
-- Stale check covers only devices authorized for MCP access (the app's selected device list). MCP-managed virtual/child devices (from hub_manage_virtual_device) are a SEPARATE population NOT included here -- list those via hub_list_devices(filter='virtual').
+- Stale checks cover selected devices plus MCP-owned children with bypass OFF, and all native hub devices with bypass ON. Use hub_list_devices(filter='virtual') for an ownership-scoped child inventory.
+- Health reads activity from one native device-tree request. An explicit null activity is reported as never; missing or invalid activity metadata is reported as unavailable with metadataUnavailable: true, and counted as unknown.
 - pingHosts/tracerouteHost/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
 - pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
 - tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
