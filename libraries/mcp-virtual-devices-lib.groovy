@@ -90,7 +90,7 @@ def toolCreateVirtualDevice(args) {
         mcpLog("info", "device", "Creating virtual device: type='${typeName}', label='${deviceLabel}', dni='${dni ?: "(auto-generate)"}'")
     }
 
-    // Fetch child devices once for DNI generation and validation
+    // Child lifecycle identities establish ownership; device metadata is read through native HTTP.
     def childDevs = getChildDevices() ?: []
 
     // Auto-generate DNI if not provided, with uniqueness retry
@@ -110,7 +110,11 @@ def toolCreateVirtualDevice(args) {
     // Validate DNI uniqueness against existing child devices
     def existingChild = childDevs.find { it.deviceNetworkId == dni }
     if (existingChild) {
-        throw new IllegalArgumentException("A device with network ID '${dni}' already exists: '${existingChild.label ?: existingChild.name}' (ID: ${existingChild.id})")
+        def nativeIdentity = _fetchDeviceFullJson(existingChild.id)?.device
+        def existingLabel = nativeIdentity instanceof Map ? (nativeIdentity.label ?: nativeIdentity.name) : null
+        throw new IllegalArgumentException("A device with network ID '${dni}' already exists: '${existingLabel ?: 'MCP-managed virtual device'}' (ID: ${existingChild.id})")
+        // Retained SDK duplicate identity read for deliberate rollback.
+        // throw new IllegalArgumentException("A device with network ID '${dni}' already exists: '${existingChild.label ?: existingChild.name}' (ID: ${existingChild.id})")
     }
 
     def newDevice = null
@@ -142,45 +146,95 @@ def toolCreateVirtualDevice(args) {
         throw new RuntimeException("Failed to create virtual device -- addChildDevice returned null. A device with DNI '${dni}' may have been partially registered. Check hub_list_devices(filter='virtual') and Hubitat UI before retrying with the same DNI.")
     }
 
-    // Persist the authoritative namespace as a device data value so hub_list_devices(filter='virtual') can
-    // read it back reliably. getDriverType()?.namespace returns null on real hubs for custom-driver
-    // virtual devices (confirmed on Hubitat 2.5.0.126), making the list path's derivation unreliable.
-    // Persisting here at create time -- when the namespace is unambiguously known -- gives the
-    // list path one authoritative read path for all MCP-created devices.
-    try {
-        newDevice.updateDataValue("mcpDriverNamespace", namespace)
-    } catch (Exception e) {
-        mcpLog("warn", "device", "Could not persist mcpDriverNamespace data value on device ${newDevice.id}: ${e.class.simpleName}: ${e.message ?: e.toString()} -- hub_list_devices(filter='virtual') will fall back to best-effort derivation for this device")
+    def deviceId = newDevice.id.toString()
+    def warnings = []
+    def dataChanges = []
+    def dataErrors = []
+    _applyNativeDeviceDataValues(deviceId, [mcpDriverNamespace: namespace], dataChanges, dataErrors)
+    dataErrors.each { failure ->
+        def warning = "mcpDriverNamespace: ${failure.error}".toString()
+        warnings << warning
+        mcpLog("warn", "device", "Device ${deviceId} was created, but ${warning}")
     }
 
-    // Read back device info
-    def deviceInfo = [
-        id: newDevice.id.toString(),
-        name: newDevice.name,
-        label: newDevice.label ?: newDevice.name,
-        deviceNetworkId: newDevice.deviceNetworkId,
-        driverNamespace: namespace,
-        driverType: typeName,
-        typeName: typeName,  // deprecated alias for driverType; retained so callers reading result.device.typeName after create do not break -- prefer driverType
-        capabilities: newDevice.capabilities?.collect { it.name } ?: [],
-        commands: newDevice.supportedCommands?.collect { it.name } ?: [],
-        attributes: newDevice.supportedAttributes?.collect { attr ->
-            [name: attr.name, value: newDevice.currentValue(attr.name)]
-        } ?: []
-    ]
+    // The child already exists. Keep its identity even when the follow-up native read fails.
+    def deviceInfo = [id: deviceId, deviceNetworkId: dni, driverNamespace: namespace,
+        driverType: typeName, typeName: typeName]
+    try {
+        def fullJson = _fetchDeviceFullJson(deviceId)
+        if (!(fullJson?.device instanceof Map) || !fullJson.device) {
+            warnings << "Native device information could not be read from /device/fullJson/${deviceId}.".toString()
+        } else {
+            def summary = _getDeviceFromFullJson(deviceId, fullJson)
+            deviceInfo.putAll([name: summary.name, label: summary.label,
+                deviceNetworkId: fullJson.device.deviceNetworkId ?: dni,
+                capabilities: summary.capabilities, commands: summary.commands.collect { it.name },
+                attributes: summary.attributes.findAll { it.value != null }.collect { [name: it.name, value: it.value] }])
+        }
+    } catch (Exception ignored) {
+        warnings << "Native device information could not be interpreted from /device/fullJson/${deviceId}.".toString()
+    }
 
-    mcpLog("info", "device", "Virtual device created successfully: '${deviceLabel}' (ID: ${newDevice.id}, DNI: ${dni})")
-
-    return [
+    mcpLog("info", "device", "Virtual device created: '${deviceLabel}' (ID: ${deviceId}, DNI: ${dni})")
+    def result = [
         success: true,
         message: "Virtual device '${deviceLabel}' created successfully. It is now accessible via all MCP device tools (hub_call_device_command, hub_get_device, etc.) without needing to be added to the device selection list. It also appears in the Hubitat device list and can be shared with other apps like Maker API.",
         device: deviceInfo,
         tips: [
-            "Use hub_call_device_command with deviceId '${newDevice.id}' to control this device",
+            "Use hub_call_device_command with deviceId '${deviceId}' to control this device",
             "The device is visible in Hubitat web UI under Devices for sharing with other apps",
             "To add it to Maker API: open Maker API app settings and select this device"
         ]
     ]
+    if (warnings) {
+        result.partialSuccess = true
+        result.warnings = warnings
+        result.message = "Virtual device '${deviceLabel}' was created, but its namespace persistence or native information could not be fully verified."
+        result.note = "Inspect the existing device ID ${deviceId} (DNI '${dni}') with hub_get_device or the Hubitat UI. Do not recreate it to recover missing metadata."
+    }
+    return result
+
+    // Retained SDK namespace persistence and metadata reads for deliberate rollback.
+    //     // Persist the authoritative namespace as a device data value so hub_list_devices(filter='virtual') can
+    //     // read it back reliably. getDriverType()?.namespace returns null on real hubs for custom-driver
+    //     // virtual devices (confirmed on Hubitat 2.5.0.126), making the list path's derivation unreliable.
+    //     // Persisting here at create time -- when the namespace is unambiguously known -- gives the
+    //     // list path one authoritative read path for all MCP-created devices.
+    //     try {
+    //         newDevice.updateDataValue("mcpDriverNamespace", namespace)
+    //     } catch (Exception e) {
+    //         mcpLog("warn", "device", "Could not persist mcpDriverNamespace data value on device ${newDevice.id}: ${e.class.simpleName}: ${e.message ?: e.toString()} -- hub_list_devices(filter='virtual') will fall back to best-effort derivation for this device")
+    //     }
+    //
+    //     // Read back device info
+    //     def deviceInfo = [
+    //         id: newDevice.id.toString(),
+    //         name: newDevice.name,
+    //         label: newDevice.label ?: newDevice.name,
+    //         deviceNetworkId: newDevice.deviceNetworkId,
+    //         driverNamespace: namespace,
+    //         driverType: typeName,
+    //         typeName: typeName,  // deprecated alias for driverType; retained so callers reading result.device.typeName after create do not break -- prefer driverType
+    //         capabilities: newDevice.capabilities?.collect { it.name } ?: [],
+    //         commands: newDevice.supportedCommands?.collect { it.name } ?: [],
+    //         attributes: newDevice.supportedAttributes?.collect { attr ->
+    //             [name: attr.name, value: newDevice.currentValue(attr.name)]
+    //         } ?: []
+    //     ]
+    //
+    //     mcpLog("info", "device", "Virtual device created successfully: '${deviceLabel}' (ID: ${newDevice.id}, DNI: ${dni})")
+    //
+    //     return [
+    //         success: true,
+    //         message: "Virtual device '${deviceLabel}' created successfully. It is now accessible via all MCP device tools (hub_call_device_command, hub_get_device, etc.) without needing to be added to the device selection list. It also appears in the Hubitat device list and can be shared with other apps like Maker API.",
+    //         device: deviceInfo,
+    //         tips: [
+    //             "Use hub_call_device_command with deviceId '${newDevice.id}' to control this device",
+    //             "The device is visible in Hubitat web UI under Devices for sharing with other apps",
+    //             "To add it to Maker API: open Maker API app settings and select this device"
+    //         ]
+    //     ]
+
 }
 
 def toolListVirtualDevices(args) {
@@ -212,66 +266,129 @@ def toolListVirtualDevices(args) {
         return empty
     }
 
-    def devices = childDevs.collect { device ->
-        // driverNamespace: authoritative for MCP-created devices via the mcpDriverNamespace data value
-        // persisted at create time. For devices created before this version or by other means, falls back
-        // to getDriverType()?.namespace (which returns null on real hubs for custom-driver virtual
-        // devices -- confirmed on Hubitat 2.5.0.126), then to "hubitat" as the last resort.
-        // driverType: the driver type name. typeName kept as deprecated alias -- prefer driverType in new code.
-        def devNamespace = device.getDataValue("mcpDriverNamespace")
-        if (!devNamespace) {
-            // Backward-compat fallback for devices not created by this version
-            try {
-                devNamespace = device.getDriverType()?.namespace
-            } catch (Exception e) {
-                devNamespace = null
-                mcpLog("debug", "device", "getDriverType() unavailable for ${device.id}: ${e.class.simpleName}: ${e.message}")
-            }
-        }
-        devNamespace = devNamespace ?: "hubitat"  // final fallback when both data value and getDriverType() yield null.
-        def devTypeName  = device.typeName ?: device.name
-        def info = [
-            id: device.id.toString(),
-            name: device.name,
-            label: device.label ?: device.name,
-            deviceNetworkId: device.deviceNetworkId,
-            driverNamespace: devNamespace,
-            driverType: devTypeName,
-            typeName: devTypeName,  // deprecated alias; use driverType
-            capabilities: device.capabilities?.collect { it.name } ?: [],
-            commands: device.supportedCommands?.collect { it.name } ?: [],
-            currentStates: [:]
-        ]
-        // Gather common attribute values
-        ["switch", "level", "contact", "motion", "temperature", "humidity",
-         "presence", "lock", "water", "button", "speed", "position"].each { attr ->
-            def val = device.currentValue(attr)
-            if (val != null) info.currentStates[attr] = val
-        }
-        return info
-    }
-
-    int startIndex = Math.min(offset, devices.size())
+    int startIndex = Math.min(offset, childDevs.size())
     int endIndex = limit > 0
-        ? (int) Math.min(((long) startIndex) + limit, devices.size())
-        : devices.size()
-    def page = devices.subList(startIndex, endIndex)
+        ? (int) Math.min(((long) startIndex) + limit, childDevs.size())
+        : childDevs.size()
+    def page = childDevs.subList(startIndex, endIndex).collect { device ->
+        def deviceId = device.id.toString()
+        try {
+            def fullJson = _fetchDeviceFullJson(deviceId)
+            if (!(fullJson?.device instanceof Map) || !fullJson.device) {
+                return [id: deviceId, success: false,
+                    error: "Native device information unavailable from /device/fullJson/${deviceId}.",
+                    note: "The device remains MCP-owned. Inspect this device in the Hubitat UI and retry the read."]
+            }
+            def nativeDevice = fullJson.device
+            def summary = _getDeviceFromFullJson(deviceId, fullJson)
+            def persistedNamespace = nativeDevice.data instanceof Map ? nativeDevice.data.mcpDriverNamespace : null
+            def namespace = persistedNamespace ?: nativeDevice.deviceTypeNamespace
+            def typeName = nativeDevice.deviceTypeName
+            def info = [id: deviceId, name: summary.name, label: summary.label,
+                deviceNetworkId: nativeDevice.deviceNetworkId,
+                driverNamespace: namespace, driverType: typeName, typeName: typeName,
+                capabilities: summary.capabilities, commands: summary.commands.collect { it.name },
+                currentStates: [:]]
+            summary.attributes.each { attr ->
+                if (attr.value != null) info.currentStates[attr.name] = attr.value
+            }
+            if (!namespace || !typeName) {
+                info.warnings = ['Native driver namespace or type metadata is unavailable; no driver identity was inferred.']
+            }
+            return info
+        } catch (Exception ignored) {
+            return [id: deviceId, success: false,
+                error: "Native device information could not be interpreted from /device/fullJson/${deviceId}.",
+                note: "The device remains MCP-owned. Inspect this device in the Hubitat UI and retry the read."]
+        }
+    }
     def result = [
         devices: page,
         count: page.size(),
-        total: devices.size(),
-        message: "Found ${devices.size()} MCP-managed virtual ${devices.size() == 1 ? 'device' : 'devices'}. These are automatically accessible to all MCP device tools."
+        total: childDevs.size(),
+        message: "Found ${childDevs.size()} MCP-managed virtual ${childDevs.size() == 1 ? 'device' : 'devices'}. These are automatically accessible to all MCP device tools."
     ]
+    if (page.any { it.success == false }) {
+        result.success = false
+        result.error = 'Native information could not be read for one or more MCP-managed virtual devices.'
+        result.note = 'Device IDs and counts include unreadable devices. Inspect the failed entries and retry the read.'
+    }
+    if (page.any { it.warnings } || (page.any { it.success == false } && page.any { it.success != false })) {
+        result.partialSuccess = true
+    }
     if (limit > 0) {
         result.offset = startIndex
         result.limit = limit
-        result.hasMore = endIndex < devices.size()
-        if (endIndex < devices.size()) {
+        result.hasMore = endIndex < childDevs.size()
+        if (endIndex < childDevs.size()) {
             result.nextOffset = endIndex
             if (cursor != null) result.nextCursor = endIndex.toString()
         }
     }
     return result
+
+    // Retained SDK virtual inventory for deliberate rollback.
+    //     def devices = childDevs.collect { device ->
+    //         // driverNamespace: authoritative for MCP-created devices via the mcpDriverNamespace data value
+    //         // persisted at create time. For devices created before this version or by other means, falls back
+    //         // to getDriverType()?.namespace (which returns null on real hubs for custom-driver virtual
+    //         // devices -- confirmed on Hubitat 2.5.0.126), then to "hubitat" as the last resort.
+    //         // driverType: the driver type name. typeName kept as deprecated alias -- prefer driverType in new code.
+    //         def devNamespace = device.getDataValue("mcpDriverNamespace")
+    //         if (!devNamespace) {
+    //             // Backward-compat fallback for devices not created by this version
+    //             try {
+    //                 devNamespace = device.getDriverType()?.namespace
+    //             } catch (Exception e) {
+    //                 devNamespace = null
+    //                 mcpLog("debug", "device", "getDriverType() unavailable for ${device.id}: ${e.class.simpleName}: ${e.message}")
+    //             }
+    //         }
+    //         devNamespace = devNamespace ?: "hubitat"  // final fallback when both data value and getDriverType() yield null.
+    //         def devTypeName  = device.typeName ?: device.name
+    //         def info = [
+    //             id: device.id.toString(),
+    //             name: device.name,
+    //             label: device.label ?: device.name,
+    //             deviceNetworkId: device.deviceNetworkId,
+    //             driverNamespace: devNamespace,
+    //             driverType: devTypeName,
+    //             typeName: devTypeName,  // deprecated alias; use driverType
+    //             capabilities: device.capabilities?.collect { it.name } ?: [],
+    //             commands: device.supportedCommands?.collect { it.name } ?: [],
+    //             currentStates: [:]
+    //         ]
+    //         // Gather common attribute values
+    //         ["switch", "level", "contact", "motion", "temperature", "humidity",
+    //          "presence", "lock", "water", "button", "speed", "position"].each { attr ->
+    //             def val = device.currentValue(attr)
+    //             if (val != null) info.currentStates[attr] = val
+    //         }
+    //         return info
+    //     }
+    //
+    //     int startIndex = Math.min(offset, devices.size())
+    //     int endIndex = limit > 0
+    //         ? (int) Math.min(((long) startIndex) + limit, devices.size())
+    //         : devices.size()
+    //     def page = devices.subList(startIndex, endIndex)
+    //     def result = [
+    //         devices: page,
+    //         count: page.size(),
+    //         total: devices.size(),
+    //         message: "Found ${devices.size()} MCP-managed virtual ${devices.size() == 1 ? 'device' : 'devices'}. These are automatically accessible to all MCP device tools."
+    //     ]
+    //     if (limit > 0) {
+    //         result.offset = startIndex
+    //         result.limit = limit
+    //         result.hasMore = endIndex < devices.size()
+    //         if (endIndex < devices.size()) {
+    //             result.nextOffset = endIndex
+    //             if (cursor != null) result.nextCursor = endIndex.toString()
+    //         }
+    //     }
+    //     return result
+
 }
 
 def toolDeleteVirtualDevice(args) {
@@ -285,8 +402,16 @@ def toolDeleteVirtualDevice(args) {
         throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use hub_list_devices(filter='virtual') to see available devices.")
     }
 
-    def deviceLabel = childDevice.label ?: childDevice.name ?: "Unknown"
     def deviceId = childDevice.id.toString()
+    def fullJson = _fetchDeviceFullJson(deviceId)
+    if (!(fullJson?.device instanceof Map) || !fullJson.device) {
+        return [success: false, deviceId: deviceId, deviceNetworkId: dni,
+            error: "Native device identity unavailable from /device/fullJson/${deviceId}.",
+            note: "No deletion was attempted. Inspect this device in the Hubitat UI and retry once native information is available."]
+    }
+    def deviceLabel = fullJson.device.label ?: fullJson.device.name ?: "Unknown"
+    // Retained SDK identity read for deliberate rollback.
+    // def deviceLabel = childDevice.label ?: childDevice.name ?: "Unknown"
 
     mcpLog("warn", "device", "DELETE VIRTUAL DEVICE: Deleting '${deviceLabel}' (ID: ${deviceId}, DNI: ${dni})")
 

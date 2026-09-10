@@ -117,6 +117,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         result.devices[0].commands == ['on']
         result.devices[0].currentStates == [switch: 'on', temperature: 21.50]
         !hubGet.calls.any { it.path == '/device/fullJson/99' }
+        !hubGet.calls.any { it.path == '/device/fullJson/78' }
 
         where:
         bypass << [false, true]
