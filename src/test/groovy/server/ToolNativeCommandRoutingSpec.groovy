@@ -102,10 +102,12 @@ class ToolNativeCommandRoutingSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/10') { null }
 
         when:
-        script.toolSendCommand('10', 'on', [])
+        def result = script.toolSendCommand('10', 'on', [])
 
         then:
-        thrown(IllegalArgumentException)
+        result.success == false
+        result.error.contains('fullJson')
+        result.note
         writes.empty
     }
 
