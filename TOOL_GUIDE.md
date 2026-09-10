@@ -297,7 +297,7 @@ joined JSON. This also handles large field-name indexes. The cursor is bound to
 the original redacted snapshot, so later telemetry changes do not alter its
 pages. Continue within five minutes with the same device, mode, sections and
 fields. Expiry, eviction or a server reload requires restarting without cursor.
-At most eight snapshots and 4 MiB of content are retained in memory; select
+At most eight snapshots and 2,097,152 UTF-16 code units of serialized JSON are retained in memory; select
 fewer fields if the budget is exceeded. Authorization is checked on every page.
 Ordinary reads keep their structured response.
 

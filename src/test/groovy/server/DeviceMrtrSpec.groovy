@@ -33,6 +33,32 @@ class DeviceMrtrSpec extends ToolSpecBase {
         script."${scheduled[1]}"(new LinkedHashMap(scheduled[2].data as Map))
     }
 
+    def "pending #leaf read gives device-specific recovery advice at the continuation cap"() {
+        given:
+        Map args = [tool: leaf, args: leafArgs]
+        String token = call('hub_read_devices', args).result.requestState
+        int cap = script._mrtrMaxContinuationSlices() as Integer
+
+        when:
+        def legs = (1..cap).collect { this.call('hub_read_devices', args, token) }
+        def result = mcpDriver.parseInner(legs[-1])
+
+        then:
+        legs[-1].result.resultType == 'complete'
+        result.status == 'slow_read_timeout'
+        result.error.contains(leaf)
+        !result.error.contains('Logs')
+        !result.note.contains('Logs')
+        result.note.contains('fresh')
+        result.note.contains('No hub state was changed')
+        runInMillisCalls.size() == 1
+
+        where:
+        leaf               | leafArgs
+        'hub_get_device'   | [deviceId: '88', mode: 'details']
+        'hub_list_devices' | [scope: 'all']
+    }
+
     def "slow #leaf completes outside the relay and retries never repeat the write"() {
         given:
         int writes = 0

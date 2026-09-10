@@ -1776,7 +1776,7 @@ private Map _deviceReadPage(Map result, String selection) {
     }
     // Size the actual text-content envelope, including escaped JSON, before the shared guard.
     String serialized = groovy.json.JsonOutput.toJson(result)
-    // Bound retained UTF-16 content to 4 MiB across at most eight snapshots, outside persisted app state.
+    // Bound retained JSON to 2,097,152 UTF-16 code units across at most eight snapshots.
     if (serialized.length() > 2097152) throw new IllegalArgumentException('Device information exceeds the snapshot budget. Select fewer sections or fields, then read each selection separately.')
     if (serialized.length() < 95000) {
         def envelope = [jsonrpc: '2.0', id: 1, result: [content: [[type: 'text', text: serialized]]]]
@@ -4057,6 +4057,26 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
         overrides.keySet().each { args.remove(it) }
         try {
             def updated = _postDeviceConfigurationForm(deviceId, overrides)
+            if (!bypass && updated?.device instanceof Map) {
+                // The wholesale form can blank identity despite carrying it. Restore only
+                // observed blanks, never an intentional clear or an unavailable readback.
+                def observedIdentity = updated.device
+                [label: 'setLabel', name: 'setName', deviceNetworkId: 'setDeviceNetworkId'].each { property, setter ->
+                    def original = full?.device?.get(property)
+                    if (original && observedIdentity.containsKey(property) && !observedIdentity.get(property) &&
+                            (!targets.containsKey(property) || targets.get(property))) {
+                        try {
+                            findDevice(deviceId)."${setter}"(original.toString())
+                            updated = _fetchDeviceFullJson(deviceId)
+                            if (updated?.device?.get(property)?.toString() != original.toString()) {
+                                throw new RuntimeException('Native readback did not confirm identity restoration')
+                            }
+                        } catch (Exception re) {
+                            errors << [property: property, stage: 'restore', error: "Device-edit form blanked ${property}; restoring it failed: ${re.message}. Verify and re-set ${property}."]
+                        }
+                    }
+                }
+            }
             targets.each { property, wanted ->
                 def present = updated?.device instanceof Map && updated.device.containsKey(property)
                 def actual = present ? updated.device.get(property) : null
@@ -4413,7 +4433,7 @@ def toolUpdateDevice(args) {
     }
 
     // Enable/Disable (internal API — write; Write master enforced centrally in executeTool)
-    // Hubitat's /device/disable endpoint requires POST with body params, not GET with query params
+    // Vue posts application/json with numeric id and boolean disable; verify with a fresh read.
     if (args.enabled != null) {
         if (settings.enableWrite == false) {
             errors << [property: "enabled", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]

@@ -1239,6 +1239,42 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def 'mixed form update restores blanked #property through SDK and reports #outcome accurately'() {
+        given:
+        def model = fixture()
+        registerFixture(model, false)
+        def original = model.device.get(property)
+        def device = childDevicesList[0]
+        def restores = []
+        def setter = [label: 'setLabel', name: 'setName', deviceNetworkId: 'setDeviceNetworkId'].get(property)
+        device.metaClass."${setter}" = { String value ->
+            restores << value
+            if (outcome == 'throws') throw new RuntimeException('SDK restore failed')
+            if (outcome == 'restored') model.device.put(property, value)
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false ->
+            model.device.notes = 'New note'
+            model.device.put(property, '')
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', notes: 'New note', confirm: true] + [(property): 'New identity'])
+
+        then:
+        restores == [original]
+        model.device.get(property) == (outcome == 'restored' ? original : '')
+        result.success == false
+        !result.changes.any { it.property == property }
+        result.changes.find { it.property == 'notes' }?.newValue == 'New note'
+        result.errors.any { it.property == property }
+        outcome == 'restored' || result.errors.any { it.property == property && it.error.contains('restor') }
+
+        where:
+        [property, outcome] << [['label', 'name', 'deviceNetworkId'], ['restored', 'throws', 'no-op']].combinations()
+    }
+
+    @Unroll
     def 'failed preference update writes a safe native ERROR summary in bypass=#bypass'() {
         given:
         def model = fixture()
