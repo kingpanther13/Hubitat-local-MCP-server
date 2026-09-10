@@ -9,7 +9,7 @@ class NativePollFixture {
         hubGet.register("/device/fullJson/${device.id}") { Map params ->
             def states = device.currentStates
             def nativeStates = states == null ? null : states.collectEntries { row ->
-                [(row.name): [value: row.value, date: row.date]]
+                [(row.name): NativeInventoryFixture.nativeStateValue(row.value) + [date: row.date]]
             }
             JsonOutput.toJson([
                 device: [id: device.id, name: device.name, label: device.label,

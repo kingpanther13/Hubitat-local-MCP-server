@@ -4,6 +4,15 @@ import groovy.json.JsonOutput
 
 /** Explicit HTTP fixture adapter for inventory specs; never installed in the global harness. */
 class NativeInventoryFixture {
+    static Map nativeStateValue(Object raw) {
+        def row = [value: raw?.toString()]
+        if (raw instanceof Number) {
+            row.dataType = 'NUMBER'
+            row.numberValue = raw
+        }
+        row
+    }
+
     static void register(HubInternalGetMock hubGet, String id, Closure lookup) {
         hubGet.register("/device/fullJson/${id}") {
             def device = lookup()
@@ -11,11 +20,7 @@ class NativeInventoryFixture {
             def states = [:]
             device.currentStates?.each { st ->
                 def raw = device.attributeValues?.containsKey(st.name) ? device.attributeValues[st.name] : st.value
-                def row = [value: raw?.toString(), unit: st.unit]
-                if (raw instanceof Number) {
-                    row.dataType = 'NUMBER'
-                    row.numberValue = raw
-                }
+                def row = nativeStateValue(raw) + [unit: st.unit]
                 states[st.name] = row
             }
             JsonOutput.toJson([device: [id: device.id, name: device.name, label: device.label,

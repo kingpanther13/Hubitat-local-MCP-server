@@ -424,11 +424,12 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.contains('could not read memory values')
     }
 
+    private List nativeHealthRows = []
+
     private void nativeHealthDevice(TestDevice device, Long activityTime) {
-        def metadata = [id: device.id, name: device.name, label: device.label,
-                        lastActivityTime: activityTime, currentStates: [:]]
-        hubGet.register("/device/fullJson/${device.id}") {
-            JsonOutput.toJson([device: metadata, commands: []])
+        nativeHealthRows << [data: [id: device.id, name: device.label ?: device.name, lastActivity: activityTime]]
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: nativeHealthRows])
         }
     }
 
@@ -462,6 +463,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.healthyCount == 1
         result.summary.staleCount == 1
         result.summary.unknownCount == 1
+        hubGet.calls.count { it.path == '/hub2/devicesList' } == 1
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
         result.staleDevices[0].name == 'Stale Sensor'
         result.unknownDevices[0].lastActivity == 'never'
         result.recommendation.contains('1 stale and 1 unknown')

@@ -220,6 +220,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         // all SDK state access so this transport adapter cannot hide a production SDK fallback.
         hubGet.register("/device/fullJson/${device.id}") {
             def states = [:]
+            // Keep command metadata readable before dispatch; only the later snapshot
+            // should observe the throwing or partial currentStates fixtures.
             if (nativeWrites.any { it.id == device.id }) {
                 (device.currentStates ?: []).each { st ->
                     states.put(st.name, [value: st.value,

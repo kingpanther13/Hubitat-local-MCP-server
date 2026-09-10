@@ -739,6 +739,8 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         then: 'the numeric-string fallback converges even though "50.0".toString() != "50"'
         r.success == true
         r.timedOut == false
+        r.finalValue instanceof Number
+        r.finalValue == new BigDecimal('50.0')
     }
 
     def "a converged (success) response omits the timeout-only transitioning and neverReported fields"() {

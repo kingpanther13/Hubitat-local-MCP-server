@@ -25,7 +25,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         "largeReadProbePresent": False, "roomName": None, "dataValues": {"configurationProbe": "original"},
         "maxEvents": 40, "maxStates": 30, "spammyThreshold": 300, "notes": "", "tags": [],
         "defaultIcon": "", "name": "Fixture", "label": "Fixture", "deviceNetworkId": "fixture-10",
-        "retryEnabled": False, "controllerType": "", "groupId": None,
+        "retryEnabled": False, "controllerType": "", "groupId": None, "roomId": None, "zigbeeId": None,
     }
     original = deepcopy(info)
     writes, body_starts = [], []
@@ -50,8 +50,16 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         if args.get("mode") == "configuration":
             return configuration()
         if args.get("mode") == "details":
-            assert args["sections"] == ["identity"]
-            assert args["fields"] == ["groupId", "controllerType"]
+            if args["sections"] == ["identity", "metadata"]:
+                assert args["fields"] == ["roomId", "zigbeeId", "notes", "tags", "defaultIcon"]
+                return {
+                    "sectionRead": {section: {"status": "complete"} for section in args["sections"]},
+                    "sections": {
+                        "identity": {key: info[key] for key in ("roomId", "zigbeeId")},
+                        "metadata": {key: info[key] for key in ("notes", "tags", "defaultIcon")},
+                    },
+                }
+            assert args["sections"] == ["identity"] and args["fields"] == ["groupId", "controllerType"]
             return {
                 "sectionRead": {"identity": {"status": "complete"}},
                 "sections": {"identity": {key: info[key] for key in args["fields"]}},

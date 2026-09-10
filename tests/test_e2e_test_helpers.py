@@ -92,6 +92,32 @@ def _watchdog_response(logs):
     )
 
 
+@pytest.mark.parametrize("denial", ["access", "confirmation", "accepted"])
+def test_device_replace_boundary_requires_access_denial_for_both_positions(denial):
+    calls = []
+
+    def call_tool(name, args):
+        assert name == "hub_call_device_replace"
+        assert args.get("list_options") is True or args.get("confirm") is False
+        calls.append(args)
+        if denial == "accepted":
+            return {"success": True}
+        reason = "Device not found: 10" if denial == "access" else "confirm=true is required"
+        raise et.McpError(reason)
+
+    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool))
+    if denial == "access":
+        runner._device_replace_boundary_checks("10", "20")
+        assert calls == [
+            {"old_device_id": "10", "list_options": True},
+            {"old_device_id": "10", "new_device_id": "20", "confirm": False},
+            {"old_device_id": "20", "new_device_id": "10", "confirm": False},
+        ]
+    else:
+        with pytest.raises(AssertionError, match="unselected device|reject device access"):
+            runner._device_replace_boundary_checks("10", "20")
+
+
 @pytest.mark.parametrize("rejection", ["unknown", "wrong-code", "wrong-name", "unavailable", "accepted"])
 def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_name_rejection(rejection):
     prefix = f"{et.PREFIX}UnknownPreference"

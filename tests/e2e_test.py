@@ -3094,6 +3094,17 @@ class TestRunner:
             assert {"groupId", "controllerType"} <= identity.keys(), f"Missing preservation metadata: {result}"
             return {key: identity[key] for key in ("groupId", "controllerType")}
 
+        def preserved_form_fields():
+            result = self.client.call_tool("hub_get_device", {
+                "deviceId": device_id, "mode": "details", "sections": ["identity", "metadata"],
+                "fields": ["roomId", "zigbeeId", "notes", "tags", "defaultIcon"],
+            })
+            for section in ("identity", "metadata"):
+                assert result.get("sectionRead", {}).get(section, {}).get("status") == "complete", (
+                    f"Native form preservation fields are unreadable: {result}"
+                )
+            return result["sections"]
+
         def command(name, parameters=None):
             result = self._write_once(None, "hub_call_device_command", {
                 "deviceId": device_id, "command": name, "parameters": parameters or [], "includeState": False,
@@ -3278,7 +3289,9 @@ class TestRunner:
             pane_values = {"showOnHome": True, "defaultCurrentState": "switch"}
             prepared = {**restore, **pane_values}
             if any(normalized(key, baseline[key]) != value for key, value in pane_values.items()):
+                form_before = preserved_form_fields()
                 update(pane_values)
+                assert preserved_form_fields() == form_before, "Pane-only edit changed an unrequested native form field"
                 native, seeded = capture()
                 cfg = configuration()
                 assert_native_preferences(native, cfg, expected)
@@ -3913,6 +3926,28 @@ class TestRunner:
                     f"'{value}' snapshot switch timestamp not formatted yyyy-MM-dd HH:mm:ss: {snap!r}"
             return _poll_switch(value)
 
+        def _assert_filtered_switch(value: str) -> None:
+            summary = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
+            label = summary.get("label")
+            assert isinstance(label, str) and label.startswith(f"{PREFIX}CmdRoundtrip"), summary
+            inventory = self.client.call_tool("hub_list_devices", {
+                "labelFilter": label, "onlyOn": True,
+            })
+            devices = inventory.get("devices")
+            assert isinstance(devices, list), f"Filtered native inventory unavailable: {inventory}"
+            assert [str(row["id"]) for row in devices] == ([dev_id] if value == "on" else []), (
+                f"Filtered native inventory did not reflect confirmed switch={value}: {inventory}"
+            )
+            if value == "on":
+                assert devices[0].get("currentStates", {}).get("switch") == value, inventory
+            owned = self.client.call_tool("hub_list_devices", {
+                "filter": "virtual", "labelFilter": label, "capabilityFilter": "Switch",
+            })
+            assert [str(row["id"]) for row in owned.get("devices", [])] == [dev_id], (
+                f"Virtual label/capability filters lost the owned switch: {owned}"
+            )
+            assert owned["devices"][0].get("currentStates", {}).get("switch") == value, owned
+
         try:
             cur = self.client.call_tool("hub_get_device_attribute", {
                 "deviceId": dev_id, "attribute": "switch",
@@ -3930,6 +3965,7 @@ class TestRunner:
             if result.get("timedOut") is not False or result.get("finalValue") != first:
                 assert False, \
                     f"Expected switch={first} (from {start!r}) within the poll budget, got: {result}\n    DIAG {_switch_diagnostics()}"
+            _assert_filtered_switch(first)
 
             # Toggle back the other way
             result = _drive(second, with_wait=True)
@@ -3939,6 +3975,7 @@ class TestRunner:
             if result.get("timedOut") is not False or result.get("finalValue") != second:
                 assert False, \
                     f"Expected switch={second} (from {first!r}) within the poll budget, got: {result}\n    DIAG {_switch_diagnostics()}"
+            _assert_filtered_switch(second)
 
             missing = f"{PREFIX}UnreportedAttribute"
             summary = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
@@ -12506,15 +12543,16 @@ class TestRunner:
             )
             unauth = str(matches[0]["id"])
             membership = {str(row["id"]): row.get("mcpAuthorized") for row in all_devs}
-            self._bypass_boundary_checks(unauth, self._set_device_bypass)
-
-            # Retain the selected-child enabled readback scenario using its raw native value.
             children = [row for row in all_devs
                         if row.get("label") == f"{SCAFFOLD_PREFIX}Configuration_Child"]
             assert len(children) == 1 and children[0].get("mcpAuthorized") is True, (
                 f"Provision the authorized configuration child: {children}"
             )
             auth = str(children[0]["id"])
+            self._device_replace_boundary_checks(unauth, auth)
+            self._bypass_boundary_checks(unauth, self._set_device_bypass)
+
+            # Retain the selected-child enabled readback scenario using its raw native value.
             original = self.client.call_tool("hub_get_device", {
                 "deviceId": auth, "mode": "configuration", "fields": ["enabled"],
             })
@@ -12540,6 +12578,25 @@ class TestRunner:
         finally:
             # Includes failed OFF preparation, inventory errors, boundary failures and SkipTest.
             self._set_device_bypass(True)
+
+    def _device_replace_boundary_checks(self, unauth: str, auth: str) -> None:
+        # With confirm=False, a missing access gate still cannot replace fixture hardware.
+        for args in (
+            {"old_device_id": unauth, "list_options": True},
+            {"old_device_id": unauth, "new_device_id": auth, "confirm": False},
+            {"old_device_id": auth, "new_device_id": unauth, "confirm": False},
+        ):
+            try:
+                result = self.client.call_tool("hub_call_device_replace", args)
+                assert isinstance(result, dict) and result.get("success") is False, (
+                    f"Device replacement reached an unselected device with bypass OFF: {result}"
+                )
+                error = str(result.get("error", ""))
+            except McpError as exc:
+                error = str(exc)
+            assert unauth in error and any(word in error.lower() for word in ("not found", "allowlist", "access")), (
+                f"Replacement must reject device access before lookup or confirmation: {error}"
+            )
 
     def _bypass_boundary_checks(self, unauth, _set_bypass) -> None:
         """Boundary + bypass-reach assertions for test_bypass_device_allowlist_reaches_unlisted_device.
