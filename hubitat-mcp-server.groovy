@@ -6629,7 +6629,7 @@ List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     }
 }
 
-private void _deleteItemBackupFile(String fileName) {
+private Map _deleteItemBackupFile(String fileName) {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         Map previous = _itemBackupManifest()
         List keys = previous.findAll { key, entry -> entry?.fileName?.toString() == fileName }.keySet().toList()
@@ -6650,7 +6650,15 @@ private void _deleteItemBackupFile(String fileName) {
         }
         // If unlinking fails, the durable pending marker prevents baseline reuse
         // while retaining enough metadata to retry bookkeeping after a reload.
-        unlinkItemBackupManifestFile(fileName)
+        try { unlinkItemBackupManifestFile(fileName) }
+        catch (Exception cleanupError) {
+            mcpLog("error", "hub-admin", "File '${fileName}' deleted but backup metadata cleanup failed: ${cleanupError.message}")
+            return [partial: true, fileDeleted: true, manifestCleanupPending: true,
+                    pendingBackupKeys: keys.collect { it.toString() },
+                    manifestCleanupError: cleanupError.message,
+                    note: "The file is already deleted; do not repeat the deletion. Its durable deletePending entries cannot be reused as baselines and remain discoverable until replacement or retention cleanup succeeds."]
+        }
+        return [:]
     }
 }
 

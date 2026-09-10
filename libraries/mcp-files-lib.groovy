@@ -296,7 +296,7 @@ def toolDeleteFile(args) {
 
     // Delete the file
     try {
-        _deleteItemBackupFile(args.fileName.toString())
+        Map deletionDetails = _deleteItemBackupFile(args.fileName.toString())
         mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
 
         def result = [
@@ -321,6 +321,7 @@ def toolDeleteFile(args) {
         if (!backedUp && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
         }
+        result.putAll(deletionDetails)
         return result
     } catch (Exception e) {
         mcpLogError("file-manager", "Failed to delete file '${args.fileName}'", e)

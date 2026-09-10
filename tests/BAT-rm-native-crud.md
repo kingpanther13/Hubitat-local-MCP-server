@@ -1958,7 +1958,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Create an inert, disabled native Rule Machine rule named BAT-RM-T465-Backup. Make two harmless log-action edits and check that they share the same recent rollback baseline. Delete only that temporary rule's baseline file, then make another harmless edit and verify it takes a fresh, readable backup. Restore that fresh backup and confirm the preceding edits remain while the last edit is undone. Check that the source-backup listing has no more than 20 entries. Do not change existing rules or their backup files.",
+  "test_prompt": "Run only on an isolated, disposable test hub whose existing rollback files may be pruned; stop before creating anything if that condition is not confirmed. Backup retention is global, so this scenario can prune unrelated rollback files at the 20-entry limit. Create an inert, disabled native Rule Machine rule named BAT-RM-T465-Backup. Make two harmless log-action edits and check that they share the same recent rollback baseline. Delete only that temporary rule's baseline file, then make another harmless edit and verify it takes a fresh, readable backup. Restore that fresh backup and confirm the preceding edits remain while the last edit is undone. Check that the source-backup listing has no more than 20 entries. Do not edit or explicitly delete existing rules or their backup files.",
   "teardown_prompt": "Delete BAT-RM-T465-Backup and only the backup files created for it. Verify its rule and backup entries are gone."
 }
 ```

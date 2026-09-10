@@ -155,6 +155,30 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         script._itemBackupManifest().app_99 == entry('99')
     }
 
+    def 'successful deletion reports partial completion when manifest unlink fails'() {
+        given:
+        enableWrite()
+        def backing = new FailingManifest()
+        backing.itemBackupManifest = [app_99: entry('99')]
+        backing.failAt = 3 // Initial fixture, pending marker, then failed unlink.
+        script.binding.setVariable('atomicState', backing)
+        List deleted = []
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+
+        when:
+        def result = script.toolDeleteFile([fileName: 'mcp-backup-app-99.groovy', confirm: true])
+
+        then:
+        result.success && result.partial && result.fileDeleted
+        result.manifestCleanupPending
+        result.pendingBackupKeys == ['app_99']
+        result.manifestCleanupError == 'manifest unavailable'
+        result.note.contains('do not repeat the deletion')
+        deleted == ['mcp-backup-app-99.groovy']
+        backing.itemBackupManifest.app_99.deletePending
+        script._itemBackupManifest().app_99.deletePending
+    }
+
     def 'pending-deletion publication failure never deletes the rollback file'() {
         given:
         def backing = new FailingManifest()
