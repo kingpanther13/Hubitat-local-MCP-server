@@ -13091,7 +13091,7 @@ class TestRunner:
         4. Native RM apps + Visual Rules (tracked + prefix sweeps)
         5. mcptest throwaway app + driver code classes (namespace+name)
         6. Rooms (prefix sweep)
-        7. Throwaway bundle + library (mcptest namespace)
+        7. Throwaway bundle (mcptest namespace)
         8. Easy Dashboards (tracked + prefix sweep)
         9. File Manager files (prefix sweep, originals then their _backup_ spawn)
 

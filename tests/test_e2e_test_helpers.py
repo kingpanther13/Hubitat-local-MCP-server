@@ -1737,7 +1737,7 @@ def test_bundle_fixture_contains_only_unused_app_code():
     fixtures = Path(__file__).resolve().parent / "fixtures"
     source_name = "mcptest.E2eThrowawayApp.groovy"
     with zipfile.ZipFile(fixtures / "mcp-e2e-throwaway-bundle.zip") as bundle:
-        assert set(bundle.namelist()) == {source_name, "install.txt", "update.txt"}
+        assert bundle.namelist() == [source_name, "install.txt", "update.txt"]
         for manifest_name in ("install.txt", "update.txt"):
             assert bundle.read(manifest_name).decode("utf-8").splitlines() == [
                 "mcptest", "mcptest_e2e_throwaway", f"app {source_name}",
