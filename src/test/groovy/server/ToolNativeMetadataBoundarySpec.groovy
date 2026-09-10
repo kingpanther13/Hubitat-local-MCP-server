@@ -143,6 +143,38 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         writes.empty
     }
 
+    def 'created native device keeps its ID without accepting another devices readback'() {
+        given:
+        hubGet.register('/device/sysDriverByIdJson/500') { '{"success":true,"deviceId":10}' }
+        model.device.id = 11
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '10'
+        result.name == null
+        result.label == null
+        result.warnings.any { it.contains('could not read it back') }
+    }
+
+    def 'configuration projection does not depend on summary state or command collections'() {
+        given:
+        model.remove('commands')
+        model.device.remove('capabilities')
+        model.device.remove('currentStates')
+        model.settings = []
+        model.inputValues = []
+
+        when:
+        def result = script.toolGetDevice('10', 'configuration')
+
+        then:
+        result.preferenceRead.status == 'complete'
+        result.id == '10'
+    }
+
     @Unroll
     def '#operation rejects malformed event rows #rows instead of losing activity'() {
         given:

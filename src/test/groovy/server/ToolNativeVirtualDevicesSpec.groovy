@@ -203,6 +203,24 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         creations == 1
     }
 
+    def 'virtual creation retains owned identity when native readback identifies another device'() {
+        given:
+        creator()
+        models['77'].device.id = 78
+
+        when:
+        def result = script.toolCreateVirtualDevice([customDriver: [namespace: 'custom-ns', name: 'Custom Driver'],
+            deviceLabel: 'Created child', deviceNetworkId: 'mcp-77', confirm: true])
+
+        then:
+        result.success == true
+        result.partialSuccess == true
+        result.device.id == '77'
+        !result.device.containsKey('name')
+        result.note.contains('Do not recreate')
+        creations == 1
+    }
+
     def 'virtual delete captures native label and preserves child lifecycle deletion'() {
         given:
         owned('77')
