@@ -820,11 +820,13 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
     def "toolCreateDevice creates a device from a driver-type id and applies the optional label"() {
         given:
+        def label = 'My LAN Device'
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
-            '{"device":{"id":777,"label":"My LAN Device","name":"Generic LAN Driver","deviceTypeName":"Generic LAN Driver","virtual":false,"capabilities":["Switch"]}}'
+            groovy.json.JsonOutput.toJson([device: [id: 777, label: label, name: 'Generic LAN Driver',
+                deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
         }
-        hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { params -> 'true' }
+        hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { params -> label = 'Garage Bridge'; 'true' }
 
         when:
         def result = script.toolCreateDevice([deviceTypeId: '500', label: 'Garage Bridge', confirm: true])
@@ -836,6 +838,90 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.deviceTypeId == '500'
         result.warnings == null
         hubGet.calls.any { it.key == '/device/updateLabel?deviceId=777&label=Garage Bridge' }
+        hubGet.calls.last().path == '/device/fullJson/777'
+    }
+
+    @spock.lang.Unroll
+    def "toolCreateDevice verifies a true-but-no-op label setter and reports #fallback native fallback accurately"() {
+        given:
+        def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":777,"label":"My LAN Device","name":"Generic LAN Driver"}}'))
+        def events = []
+        hubGet.register('/device/sysDriverByIdJson/500') { '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/fullJson/777') { events << 'read'; groovy.json.JsonOutput.toJson(model) }
+        hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { events << 'label'; 'true' }
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body ->
+            assert path == '/device/update'
+            def form = decodeForm(body)
+            forms << form
+            events << 'form'
+            if (fallback == 'applied') model.device.label = form.label
+            ''
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', label: 'Garage Bridge', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '777'
+        forms.size() == 1
+        forms[0].label == 'Garage Bridge'
+        events.take(3) == ['read', 'label', 'read']
+        events.last() == 'read'
+        result.label == model.device.label
+        if (fallback == 'applied') {
+            assert result.label == 'Garage Bridge'
+            assert !result.warnings
+        } else {
+            assert result.label == 'My LAN Device'
+            assert result.warnings.any { it.contains('label') }
+            assert result.message.contains('WARNING')
+            assert !result.message.contains("labeled 'Garage Bridge'")
+        }
+
+        where:
+        fallback << ['applied', 'no-op']
+    }
+
+    @spock.lang.Unroll
+    def "toolCreateDevice surfaces #failure identity recovery as warnings while retaining the created ID"() {
+        given:
+        def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":777,"label":"My LAN Device","name":"Generic LAN Driver","version":3}}'))
+        hubGet.register('/device/sysDriverByIdJson/500') { '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/fullJson/777') { groovy.json.JsonOutput.toJson(model) }
+        hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { throw new RuntimeException('Not Found (404)') }
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body ->
+            assert path == '/device/update'
+            def form = decodeForm(body)
+            forms << form
+            if (forms.size() == 1) {
+                model.device.label = form.label
+                model.device.name = ''
+                model.device.version = 4
+            } else if (failure == 'throws') {
+                throw new RuntimeException('Native identity restoration failed')
+            }
+            ''
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', label: 'Garage Bridge', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '777'
+        forms.size() == 2
+        forms[1].version == '4'
+        forms[1].label == 'Garage Bridge'
+        forms[1].name == 'Generic LAN Driver'
+        model.device.name == ''
+        result.warnings.any { it.contains('name') && it.toLowerCase().contains('restor') }
+        result.message.contains('WARNING')
+
+        where:
+        failure << ['throws', 'no-op']
     }
 
     @spock.lang.Unroll
