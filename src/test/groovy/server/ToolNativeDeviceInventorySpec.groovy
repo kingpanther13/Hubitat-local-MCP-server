@@ -2,10 +2,18 @@ package server
 
 import groovy.json.JsonOutput
 import spock.lang.Unroll
+import spock.lang.Shared
+import support.TestLocation
 import support.TestDevice
 import support.ToolSpecBase
 
 class ToolNativeDeviceInventorySpec extends ToolSpecBase {
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
+    def setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
+    }
+
     private Map models
 
     private void nativeFixture() {
