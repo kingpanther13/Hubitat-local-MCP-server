@@ -40,7 +40,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
         int cap = script._mrtrMaxContinuationSlices() as Integer
 
         when:
-        def legs = (1..cap).collect { call('hub_read_devices', args, token) }
+        def legs = (1..cap).collect { this.call('hub_read_devices', args, token) }
         def result = mcpDriver.parseInner(legs[-1])
 
         then:
