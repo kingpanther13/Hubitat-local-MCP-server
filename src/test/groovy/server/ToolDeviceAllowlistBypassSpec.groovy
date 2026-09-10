@@ -254,17 +254,23 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.note
     }
 
-    def "bypass ON but fullJson reports no device: toolUpdateDevice throws Device not found"() {
+    def "bypass ON but fullJson reports no device: toolUpdateDevice refuses before any write"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params -> JsonOutput.toJson([device: null]) }
+        def writes = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> writes << path; '' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> writes << path; [success: true] }
 
         when:
-        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'X'])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'X'])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("Device not found: ${UNLISTED_ID}")
+        result.success == false
+        result.error.contains('/device/fullJson')
+        result.note
+        writes.empty
+        !hubGet.calls.any { it.path == '/device/updateLabel' }
     }
 
     // ---- toggle ON: events path (/device/eventsJson) ---------------------------
@@ -713,9 +719,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
 
     // ---- toggle ON: update path -------------------------------------------------
 
-    def "bypass ON: toolUpdateDevice label routes to the wholesale POST /device/update form (not GET /device/updateLabel)"() {
-        given: 'label rides the portable /device/update form -- the dedicated GET /device/updateLabel 404s on some firmwares (2.5.0.157)'
+    def "bypass ON: toolUpdateDevice label falls back to the wholesale POST when its native dedicated setter is absent"() {
+        given: 'the dedicated GET /device/updateLabel 404s on some firmwares (2.5.0.157)'
         settingsMap.bypassDeviceAllowlist = true
+        hubGet.register("/device/updateLabel?deviceId=${UNLISTED_ID}&label=Renamed") { throw new RuntimeException('Not Found (404)') }
         def fjLabel = 'Unlisted Switch'
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
             def m = fullJsonModel()
@@ -732,11 +739,11 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Renamed'])
 
-        then: 'the wholesale form carried the label, read-back verified it, and updateLabel was never called'
+        then: 'the fallback form carried the label and fresh read-back verified it'
         result.success == true
         result.changes.find { it.property == 'label' }?.newValue == 'Renamed'
         postedBody.contains('label=Renamed')
-        !hubGet.calls.any { it.path.startsWith('/device/updateLabel') }
+        hubGet.calls.any { it.key == "/device/updateLabel?deviceId=${UNLISTED_ID}&label=Renamed" }
     }
 
     def "bypass ON: toolUpdateDevice enabled routes to POST /device/disable"() {
@@ -846,13 +853,18 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()
         script.metaClass.getRooms = { -> [[id: 7, name: 'Garage', deviceIds: []]] }
+        def writes = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> writes << path; '' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> writes << path; [success: true] }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Nonexistent'])
+        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Must not apply', room: 'Nonexistent'])
 
         then: 'parity with the listed path: Room not found, and NO updateRoom call (no spurious-room creation)'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Room \'Nonexistent\' not found')
+        writes.empty
+        !hubGet.calls.any { it.path == '/device/updateLabel' }
         !hubGet.calls.any { it.path.startsWith('/device/updateRoom') }
     }
 
@@ -861,13 +873,18 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()
         script.metaClass.getRooms = { -> throw new RuntimeException('rooms read exploded') }
+        def writes = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> writes << path; '' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> writes << path; [success: true] }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Garage'])
+        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Must not apply', room: 'Garage'])
 
         then: 'the getRooms failure is reported distinctly from "room not found", and updateRoom is never called'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Unable to list rooms')
+        writes.empty
+        !hubGet.calls.any { it.path == '/device/updateLabel' }
         !hubGet.calls.any { it.path.startsWith('/device/updateRoom') }
     }
 
@@ -999,7 +1016,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.errors.find { it.property == 'room' }?.error?.contains('read-back to confirm the unassign failed')
     }
 
-    def "bypass ON rejects unverified dataValues writes before any mutation"() {
+    def "bypass ON rejects invalid dataValues before an earlier label mutation"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()
@@ -1009,11 +1026,12 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Do not apply', dataValues: [foo: 'bar']])
+        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Do not apply', dataValues: [foo: 7]])
 
         then:
         thrown(IllegalArgumentException)
         !formPosted
+        !hubGet.calls.any { it.path == '/device/updateLabel' }
     }
 
     // ---- toggle ON: the wholesale /device/update form (name + deviceNetworkId) ----
@@ -1362,8 +1380,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/device/fullJson') }
     }
 
-    def "regression: bypass ON does NOT divert a LISTED device through the bypass HTTP path (toolUpdateDevice)"() {
-        given: 'the toggle is ON but the device IS listed -- the enabled write must use the LISTED toolUpdateDevice flow, never _toolUpdateDeviceBypass'
+    def "regression: bypass ON updates a LISTED device through native HTTP with fresh verification"() {
+        given: 'the toggle is ON and a listed device must still receive a verified native update'
         settingsMap.bypassDeviceAllowlist = true
         def device = new TestDevice(id: 10, name: 'Listed', label: 'Listed Switch')
         childDevicesList << device
@@ -1372,20 +1390,17 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
             def body = new groovy.json.JsonSlurper().parseText(json);
             posted = [path: path, body: body]; return ''
         }
-        // Both the listed and the bypass enabled paths now confirm the flip via a FRESH /device/fullJson
-        // re-read, so a "no fullJson fetch" assertion no longer discriminates them. The listed flow is
-        // identified instead by its result message, which never carries the bypass path's "(allowlist
-        // bypass)" suffix.
         hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Listed Switch","disabled":false}}' }
 
         when: 'enable the already-enabled device (no-op flip; the listed read-back stays disabled:false == wanted)'
         def result = script.toolUpdateDevice([deviceId: '10', enabled: true])
 
-        then: 'routed through the listed Groovy flow: /device/disable posted, read-back confirmed, and NOT the bypass variant'
+        then: 'the native write is recorded and an independent read confirms the requested flag'
         posted.path == '/device/disable'
+        posted.body == [id: 10, disable: false]
         result.changes.find { it.property == 'enabled' }?.newValue == true
         result.success == true
-        !result.message.contains('allowlist bypass')
+        hubGet.calls.count { it.path == '/device/fullJson/10' } == 2
     }
 
     def "regression: bypass ON commands a LISTED device via native runmethod"() {

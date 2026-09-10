@@ -64,6 +64,38 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         result.errors.any { it.property == 'dataValue.probe' && it.stage == 'verify' }
     }
 
+    @Unroll
+    def 'native dedicated label update #wanted preserves raw nullable metadata for #ownership'() {
+        given:
+        def model = fixture()
+        model.device.groupId = null
+        model.device.controllerType = null
+        registerFixture(model, ownership == 'unlisted')
+        if (ownership == 'selected') settingsMap.selectedDevices = [childDevicesList.remove(0)]
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> forms << body; '' }
+        hubGet.register("/device/updateLabel?deviceId=10&label=${wanted}") {
+            model.device.label = wanted
+            'true'
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', label: wanted])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == 'label' }?.newValue == wanted
+        model.device.label == wanted
+        model.device.groupId == null
+        model.device.controllerType == null
+        forms.empty
+        hubGet.calls.count { it.path == '/device/updateLabel' } == 1
+        hubGet.calls.count { it.path == '/device/fullJson/10' } == 2
+
+        where:
+        [ownership, wanted] << [['selected', 'child', 'unlisted'], ['', 'New label']].combinations()
+    }
+
     private static Map fixture() {
         [device: [id: 10, version: 0, name: 'Fixture', label: 'Fixture', deviceNetworkId: 'fixture-10',
                   deviceTypeId: 100, deviceTypeReadableType: 'User', controllerType: 'VIRTUAL',
@@ -85,9 +117,19 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
     private void registerFixture(Map model, boolean bypass) {
         settingsMap.bypassDeviceAllowlist = bypass
-        if (!bypass) childDevicesList << new TestDevice(id: 10, name: 'Fixture', label: 'Fixture', deviceNetworkId: 'fixture-10')
+        if (!bypass) {
+            def device = new TestDevice(id: 10, name: 'Fixture', label: 'Fixture', deviceNetworkId: 'fixture-10')
+            device.metaClass.updateSetting = { String name, setting -> throw new AssertionError('SDK preference setter must not execute') }
+            device.metaClass.setLabel = { String value -> throw new AssertionError('SDK identity setter must not execute') }
+            device.metaClass.setName = { String value -> throw new AssertionError('SDK identity setter must not execute') }
+            device.metaClass.setDeviceNetworkId = { String value -> throw new AssertionError('SDK identity setter must not execute') }
+            childDevicesList << device
+        }
         hubGet.register('/device/fullJson/10') { JsonOutput.toJson(model) }
         hubGet.register('/device/drivers') { JsonOutput.toJson([drivers: [[id: 100, name: 'Fixture', type: 'usr'], [id: 101, name: 'Other', type: 'usr']]]) }
+        ['/device/updateLabel', '/device/setShowOnHome', '/device/setDefaultCurrentState'].each { path ->
+            hubGet.register(path) { throw new RuntimeException('Not Found (404)') }
+        }
         stateMap.lastBackupTimestamp = System.currentTimeMillis()
     }
 
@@ -280,7 +322,6 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
             def value = setting instanceof Map ? setting.value : setting
             model.settings.find { it.name == key }.value = value == null ? null : value.toString()
         }
-        if (!bypass) childDevicesList[0].metaClass.updateSetting = applyPreference
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             new JsonSlurper().parseText(body).preferences.each { applyPreference(it.name, it) }
             [success: true]
@@ -693,7 +734,6 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
             model.settings.find { it.name == 'logEnable' }.remove('value')
             model.inputValues = [logEnable: 'ambiguous storage']
         }
-        if (!bypass) childDevicesList[0].metaClass.updateSetting = { String name, setting -> loseStorage() }
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             loseStorage()
             [success: true]
@@ -913,7 +953,6 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
             writes << [name: name, value: setting.value]
             model.settings.find { it.name == name }.value = setting.value.toString()
         }
-        if (!bypass) childDevicesList[0].metaClass.updateSetting = applyPreference
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             new JsonSlurper().parseText(body).preferences.each { applyPreference(it.name, it) }
             [success: true]
@@ -948,7 +987,6 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
             writes << name
             model.settings.find { it.name == name }.value = setting.value.toString()
         }
-        if (!bypass) childDevicesList[0].metaClass.updateSetting = applyPreference
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             new JsonSlurper().parseText(body).preferences.each { applyPreference(it.name, it) }
             [success: true]
@@ -978,7 +1016,6 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
             writes << key
             model.settings.find { it.name == key }.value = savedValue
         }
-        if (!bypass) childDevicesList[0].metaClass.updateSetting = applyUnexpectedValue
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             new JsonSlurper().parseText(body).preferences.each { applyUnexpectedValue(it.name, it) }
             [success: true]
@@ -1179,10 +1216,18 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'preference patch uses one final readback and batches native rows in bypass=#bypass'() {
+    def 'preference patch uses one final readback and batches native rows for #ownership with bypass=#bypass'() {
         given:
         def model = fixture()
         registerFixture(model, bypass)
+        if (ownership == 'selected') {
+            settingsMap.selectedDevices = [childDevicesList ? childDevicesList.remove(0) : new TestDevice(id: 10)]
+        } else if (ownership == 'child' && childDevicesList.empty) {
+            childDevicesList << new TestDevice(id: 10)
+        }
+        (settingsMap.selectedDevices ?: childDevicesList).each { device ->
+            device.metaClass.updateSetting = { String name, setting -> throw new AssertionError('SDK preference setter must not execute') }
+        }
         def events = []
         hubGet.register('/device/fullJson/10') {
             events << 'read'
@@ -1191,13 +1236,10 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         def applyPreference = { String name, setting ->
             model.settings.find { it.name == name }.value = setting.value.toString()
         }
-        if (!bypass) childDevicesList[0].metaClass.updateSetting = { String name, setting ->
-            events << "sdk:${name}".toString()
-            applyPreference(name, setting)
-        }
         def posts = []
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             def payload = new JsonSlurper().parseText(body)
+            assert path == '/device/preference/save'
             events << 'post'
             posts << payload
             payload.preferences.each { applyPreference(it.name, it) }
@@ -1210,31 +1252,34 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         then:
         result.success == true
         result.changes*.property == ['preference.logEnable', 'preference.offset']
-        events == expectedEvents
-        if (bypass) {
-            assert posts == [[deviceId: 10, defaultCurrentState: '', commandRetry: false, showOnHome: false,
-                preferences: [[name: 'logEnable', type: 'bool', value: false], [name: 'offset', type: 'number', value: 2]]]]
-        } else {
-            assert posts.empty
-        }
+        events == ['read', 'read', 'post', 'read']
+        posts == [[deviceId: 10, defaultCurrentState: '', commandRetry: false, showOnHome: false,
+            preferences: [[name: 'logEnable', type: 'bool', value: false], [name: 'offset', type: 'number', value: 2]]]]
 
         where:
-        bypass | expectedEvents
-        false  | ['read', 'sdk:logEnable', 'sdk:offset', 'read']
-        true   | ['read', 'read', 'post', 'read']
+        ownership  | bypass
+        'selected' | false
+        'selected' | true
+        'child'    | false
+        'child'    | true
+        'unlisted' | true
     }
 
-    def 'listed preference setters continue after a safe write failure and verify successful writes together'() {
+    def 'native partial preference save retains successful rows and verifies the failed row independently'() {
         given:
         def model = fixture()
         model.settings << [name: 'probeText', type: 'text', value: 'old']
         registerFixture(model, false)
         def events = []
         hubGet.register('/device/fullJson/10') { events << 'read'; JsonOutput.toJson(model) }
-        childDevicesList[0].metaClass.updateSetting = { String name, setting ->
-            events << name
-            if (name == 'logEnable') throw new RuntimeException('fixture-secret-in-exception')
-            model.settings.find { it.name == name }.value = setting.value.toString()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            assert path == '/device/preference/save'
+            def payload = new JsonSlurper().parseText(body)
+            payload.preferences.each { setting ->
+                events << setting.name
+                if (setting.name != 'logEnable') model.settings.find { it.name == setting.name }.value = setting.value.toString()
+            }
+            [success: true, message: 'fixture-secret-in-response']
         }
 
         when:
@@ -1242,12 +1287,12 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        events == ['read', 'logEnable', 'offset', 'probeText', 'read']
+        events == ['read', 'read', 'logEnable', 'offset', 'probeText', 'read']
         result.changes*.property == ['preference.offset', 'preference.probeText']
         def failure = result.errors.find { it.property == 'preference.logEnable' }
-        failure.stage == 'write'
-        failure.status == 'failed'
-        !JsonOutput.toJson(result).contains('fixture-secret-in-exception')
+        failure.stage == 'verify'
+        failure.status == 'mismatch'
+        !JsonOutput.toJson(result).contains('fixture-secret-in-response')
     }
 
     @Unroll
@@ -1330,22 +1375,29 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'mixed form update restores blanked #property through SDK and reports #outcome accurately'() {
+    def 'mixed form update restores blanked #property for #ownership through a fresh native form and reports #outcome accurately'() {
         given:
         def model = fixture()
-        registerFixture(model, false)
+        registerFixture(model, ownership == 'unlisted')
+        if (ownership == 'selected') settingsMap.selectedDevices = [childDevicesList.remove(0)]
         def original = model.device.get(property)
-        def device = childDevicesList[0]
         def restores = []
-        def setter = [label: 'setLabel', name: 'setName', deviceNetworkId: 'setDeviceNetworkId'].get(property)
-        device.metaClass."${setter}" = { String value ->
-            restores << value
-            if (outcome == 'throws') throw new RuntimeException('SDK restore failed')
-            if (outcome == 'restored') model.device.put(property, value)
-        }
+        def forms = []
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false ->
-            model.device.notes = 'New note'
-            model.device.put(property, '')
+            assert path == '/device/update'
+            def form = decodeForm(body)
+            forms << form
+            if (forms.size() == 1) {
+                model.device.notes = form.notes
+                model.device.version = 1
+                model.device.put(property, '')
+            } else {
+                restores << form.get(property)
+                assert form.version == '1'
+                assert form.notes == 'New note'
+                if (outcome == 'throws') throw new RuntimeException('Native restore failed')
+                if (outcome == 'restored') model.device.put(property, form.get(property))
+            }
             ''
         }
 
@@ -1354,6 +1406,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
         then:
         restores == [original]
+        forms.size() == 2
         model.device.get(property) == (outcome == 'restored' ? original : '')
         result.success == false
         !result.changes.any { it.property == property }
@@ -1362,7 +1415,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         outcome == 'restored' || result.errors.any { it.property == property && it.error.contains('restor') }
 
         where:
-        [property, outcome] << [['label', 'name', 'deviceNetworkId'], ['restored', 'throws', 'no-op']].combinations()
+        [property, outcome, ownership] << [['label', 'name', 'deviceNetworkId'], ['restored', 'throws', 'no-op'], ['selected', 'child', 'unlisted']].combinations()
     }
 
     @Unroll
@@ -1373,9 +1426,6 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         registerFixture(model, bypass)
         settingsMap.mcpLogLevel = 'error'
         script.log.messages.clear()
-        if (!bypass) childDevicesList[0].metaClass.updateSetting = { String name, setting ->
-            throw new RuntimeException('fixture-exception-secret')
-        }
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             throw new RuntimeException('fixture-exception-secret')
         }
@@ -1421,7 +1471,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         'false' | true     | false        | true
     }
 
-    def 'listed enabled-only update skips preparation fullJson but retains fresh post-write verification'() {
+    def 'listed enabled-only update reads native identity and retains fresh post-write verification'() {
         given:
         def model = fixture()
         model.device.disabled = false
@@ -1442,20 +1492,19 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         then:
         result.success == true
         result.changes.find { it.property == 'enabled' }?.newValue == false
-        events == ['disable', 'read']
+        events == ['read', 'disable', 'read']
     }
 
-    def 'listed room-only update uses room inventory and verification without fullJson'() {
+    def 'listed room-only update resolves canonical room and verifies fresh native identity'() {
         given:
-        registerFixture(fixture(), false)
+        def model = fixture()
+        model.device.roomName = null
+        registerFixture(model, false)
         def rooms = [[id: 7, name: 'Foyer', deviceIds: []]]
         script.metaClass.getRooms = { -> rooms }
-        def saves = []
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
-            def payload = new JsonSlurper().parseText(body)
-            saves << [path: path, body: payload]
-            rooms[0].deviceIds = payload.deviceIds
-            [success: true]
+        hubGet.register('/device/updateRoom?deviceId=10&room=Foyer') {
+            model.device.roomName = 'Foyer'
+            'true'
         }
 
         when:
@@ -1464,8 +1513,8 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         then:
         result.success == true
         result.changes.find { it.property == 'room' }?.newValue == 'Foyer'
-        saves == [[path: '/room/save', body: [roomId: 7, name: 'Foyer', deviceIds: [10]]]]
-        !hubGet.calls.any { it.path == '/device/fullJson/10' }
+        hubGet.calls.findAll { it.path == '/device/updateRoom' }*.key == ['/device/updateRoom?deviceId=10&room=Foyer']
+        hubGet.calls.count { it.path == '/device/fullJson/10' } == 2
     }
 
     @Unroll

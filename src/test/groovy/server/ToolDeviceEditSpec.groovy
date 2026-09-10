@@ -30,6 +30,13 @@ import support.ToolSpecBase
  */
 class ToolDeviceEditSpec extends ToolSpecBase {
 
+    private static Map decodeForm(String body) {
+        body.split('&').collectEntries { pair ->
+            def parts = pair.split('=', 2)
+            [(URLDecoder.decode(parts[0], 'UTF-8')): URLDecoder.decode(parts.length > 1 ? parts[1] : '', 'UTF-8')]
+        }
+    }
+
     def setup() {
         hubGet.register('/device/drivers') {
             '{"drivers":[{"id":500,"type":"sys"},{"id":12,"type":"sys"},{"id":999,"type":"sys"}]}'
@@ -114,9 +121,11 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the /device/disable POST is accepted but the read-back fullJson fetch yields nothing'
         def device = new TestDevice(id: 10, name: 'Sw', label: 'Switch')
         childDevicesList << device
+        def accepted = false
         script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
+            accepted = true
             def body = new groovy.json.JsonSlurper().parseText(json); '' }
-        hubGet.register('/device/fullJson/10') { params -> '' }
+        hubGet.register('/device/fullJson/10') { params -> accepted ? '' : '{"device":{"id":10,"label":"Switch","disabled":false}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', enabled: false])
@@ -152,18 +161,19 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "toolUpdateDevice showOnHome records a per-property error when the Write master is off"() {
-        given: 'Write disabled -- direct call bypasses the central gate, so the per-property guard fires'
+    def "toolUpdateDevice showOnHome rejects the call when the Write master is off"() {
+        given: 'the direct entrypoint enforces the Write master before native reads or writes'
         settingsMap.enableWrite = false
         def device = new TestDevice(id: 10, label: 'Porch Light')
         childDevicesList << device
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', showOnHome: true])
+        script.toolUpdateDevice([deviceId: '10', showOnHome: true])
 
         then: 'no hub call was made; the error names the Write toggle'
-        result.success == false
-        result.errors.find { it.property == 'showOnHome' }?.error?.contains('Enable Write Tools')
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Enable Write Tools')
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson') }
         !hubGet.calls.any { it.path.startsWith('/device/setShowOnHome') }
     }
 
@@ -242,8 +252,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the POST is accepted but the read-back fullJson fetch yields nothing'
         def device = new TestDevice(id: 10, label: 'Porch Light')
         childDevicesList << device
-        hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> '' }
-        hubGet.register('/device/fullJson/10') { params -> '' }
+        def accepted = false
+        hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> accepted = true; '' }
+        hubGet.register('/device/fullJson/10') { params -> accepted ? '' : '{"device":{"id":10,"label":"Porch Light","showOnHome":false}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', showOnHome: true])
@@ -345,7 +356,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('Hub did not accept')
     }
 
-    def "toolUpdateDevice defaultCurrentState records a per-property error when the Write master is off"() {
+    def "toolUpdateDevice defaultCurrentState rejects the call when the Write master is off"() {
         given:
         settingsMap.enableWrite = false
         def device = new TestDevice(id: 10, label: 'Thermostat')
@@ -353,11 +364,12 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"currentStates":{"temperature":{},"humidity":{},"switch":{}}}}' }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'switch'])
+        script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'switch'])
 
         then: 'no hub call was made; the error names the Write toggle'
-        result.success == false
-        result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('Enable Write Tools')
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Enable Write Tools')
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson') }
         !hubGet.calls.any { it.path.startsWith('/device/setDefaultCurrentState') }
     }
 
@@ -454,33 +466,46 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     // ============================================================
 
     def "toolUpdateDevice preferences read-back HAPPY PATH confirms via fullJson settings and records the change"() {
-        given: 'updateSetting applies the pref; the FRESH fullJson read shows it in the settings array'
+        given: 'native preference/save applies the pref; the fresh fullJson read shows it in the settings array'
         def device = new TestDevice(id: 10, label: 'Sensor')
-        device.metaClass.updateSetting = { String k, v -> }
+        device.metaClass.updateSetting = { String k, v -> throw new AssertionError('SDK preference setter must not execute') }
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"3"}],"inputValues":[]}' }
+        def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"0"}],"inputValues":[]}'))
+        hubGet.register('/device/fullJson/10') { groovy.json.JsonOutput.toJson(model) }
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            def payload = new groovy.json.JsonSlurper().parseText(body)
+            posts << [path: path, body: payload]
+            payload.preferences.each { row -> model.settings.find { it.name == row.name }.value = row.value.toString() }
+            [success: true]
+        }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', preferences: [tempOffset: [type: 'number', value: 3]]])
 
         then: 'the confirmed value is recorded as a change, no error'
         result.success == true
+        posts == [[path: '/device/preference/save', body: [deviceId: 10, showOnHome: false,
+            commandRetry: false, defaultCurrentState: '', preferences: [[name: 'tempOffset', type: 'number', value: 3]]]]]
         result.changes.find { it.property == 'preference.tempOffset' } != null
         !(result.errors?.find { it.property == 'preference.tempOffset' })
     }
 
     def "toolUpdateDevice preferences read-back MISMATCH records a 'read back as' error (no false success on a silent no-op)"() {
-        given: 'updateSetting is a silent no-op; the pref never appears in fullJson settings'
+        given: 'native preference/save is a silent no-op; fullJson retains the previous saved value'
         def device = new TestDevice(id: 10, label: 'Sensor')
-        device.metaClass.updateSetting = { String k, v -> }
+        device.metaClass.updateSetting = { String k, v -> throw new AssertionError('SDK preference setter must not execute') }
         childDevicesList << device
-        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"0"}],"inputValues":[]}' }
+        hubGet.register('/device/fullJson/10') { completeDeviceFormJson('{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"0"}],"inputValues":[]}') }
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> posts << path; [success: true] }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', preferences: [tempOffset: [type: 'number', value: 3]]])
 
         then: 'the unconfirmed write is a structured error, NOT a false change'
         result.success == false
+        posts == ['/device/preference/save']
         result.errors.find { it.property == 'preference.tempOffset' }?.error?.contains('read back as')
         !(result.changes.find { it.property == 'preference.tempOffset' })
     }
@@ -488,11 +513,16 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     def "toolUpdateDevice preferences read-back FETCH-NULL records the distinct could-not-confirm error"() {
         given: 'the confirming fullJson re-fetch returns no device'
         def device = new TestDevice(id: 10, label: 'Sensor')
-        device.metaClass.updateSetting = { String k, v -> }
+        device.metaClass.updateSetting = { String k, v -> throw new AssertionError('SDK preference setter must not execute') }
         childDevicesList << device
-        def reads = 0
+        def accepted = false
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            assert path == '/device/preference/save'
+            accepted = true
+            [success: true]
+        }
         hubGet.register('/device/fullJson/10') { params ->
-            ++reads == 1 ? '{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"0"}],"inputValues":[]}' : '{"device":null}'
+            accepted ? '{"device":null}' : completeDeviceFormJson('{"device":{"id":10,"label":"Sensor"},"settings":[{"name":"tempOffset","type":"number","value":"0"}],"inputValues":[]}')
         }
 
         when:
@@ -500,6 +530,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
         then: 'a failed read-back fetch is a DISTINCT error, never a recorded change'
         result.success == false
+        accepted
         result.errors.find { it.property == 'preference.tempOffset' }?.error?.contains('could not confirm the preference -- the read-back fetch failed')
         !(result.changes.find { it.property == 'preference.tempOffset' })
     }
@@ -512,8 +543,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given: 'the device is already in room "Foyer"; the caller passes the lowercase "foyer"'
         def device = new TestDevice(id: 10, label: 'Lamp', roomName: 'Foyer')
         childDevicesList << device
-        // deviceIds contains 10 so the assign short-circuits "already in room" and the verify confirms.
         script.metaClass.getRooms = { -> [[id: 7, name: 'Foyer', deviceIds: [10]]] }
+        hubGet.register('/device/fullJson/10') { '{"device":{"id":10,"label":"Lamp","roomName":"Foyer"}}' }
+        hubGet.register('/device/updateRoom?deviceId=10&room=Foyer') { 'true' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', room: 'foyer'])
@@ -521,6 +553,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         then: 'newValue is the canonical "Foyer" (matched-room casing), not the raw "foyer"'
         result.success == true
         result.changes.find { it.property == 'room' }?.newValue == 'Foyer'
+        hubGet.calls.findAll { it.path == '/device/updateRoom' }*.key == ['/device/updateRoom?deviceId=10&room=Foyer']
     }
 
     // ============================================================
@@ -612,17 +645,19 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         route << ['listed', 'bypass']
     }
 
-    def "a listed tags form preserves an earlier SDK label update and explicit null icon and notes"() {
+    def "a listed tags form applies the requested native label and preserves explicit null icon and notes"() {
         given:
         def device = new TestDevice(id: 10, label: 'Office Lamp')
         childDevicesList << device
         def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":10,"label":"Office Lamp","tags":"","defaultIcon":null,"icon":"fallback-must-not-be-used","notes":null}}'))
-        device.metaClass.setLabel = { String value -> model.device.label = value }
+        device.metaClass.setLabel = { String value -> throw new AssertionError('SDK identity setter must not execute') }
         hubGet.register('/device/fullJson/10') { groovy.json.JsonOutput.toJson(model) }
         def posted
         script.metaClass.hubInternalPostFormRaw = { String path, String body ->
             posted = body
-            model.device.tags = 'kitchen'
+            def form = decodeForm(body)
+            model.device.tags = form.tags
+            model.device.label = form.label
             ''
         }
 
@@ -637,29 +672,37 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         !posted.contains('fallback-must-not-be-used')
     }
 
-    def "toolUpdateDevice tags restores label/name/dni via SDK when the wholesale form blanked them"() {
+    def "toolUpdateDevice tags restores label/name/dni via a fresh native form when the wholesale form blanked them"() {
         given:
-        def restored = [:]
+        def forms = []
         def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
-        device.metaClass.setLabel = { String v -> restored.label = v }
-        device.metaClass.setName = { String v -> restored.name = v }
-        device.metaClass.setDeviceNetworkId = { String v -> restored.dni = v }
+        device.metaClass.setLabel = { String v -> throw new AssertionError('SDK identity setter must not execute') }
+        device.metaClass.setName = { String v -> throw new AssertionError('SDK identity setter must not execute') }
+        device.metaClass.setDeviceNetworkId = { String v -> throw new AssertionError('SDK identity setter must not execute') }
         childDevicesList << device
-        def formApplied = false
-        def preModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}')
-        // Verify read: tags applied but identity fields BLANKED by the wholesale form.
-        def postModel = completeDeviceFormJson('{"device":{"id":10,"name":"","label":"","deviceNetworkId":"","tags":"kitchen","version":4,"controllerType":"LAN"}}')
-        hubGet.register('/device/fullJson/10') { params -> formApplied ? postModel : preModel }
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> formApplied = true; '' }
+        def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}'))
+        hubGet.register('/device/fullJson/10') { groovy.json.JsonOutput.toJson(model) }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body ->
+            assert path == '/device/update'
+            def form = decodeForm(body)
+            forms << form
+            model.device.tags = form.tags
+            model.device.version++
+            ['label', 'name', 'deviceNetworkId'].each { property -> model.device.put(property, forms.size() == 1 ? '' : form.get(property)) }
+            ''
+        }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
 
-        then: 'tags applied AND the blanked identity fields were restored via the SDK setters'
+        then: 'tags applied and a second form restores identity using the fresh version and applied tags'
         result.success == true
-        restored.label == 'Office Lamp'
-        restored.name == 'Generic Switch'
-        restored.dni == 'AB'
+        forms.size() == 2
+        forms[1].version == '4'
+        forms[1].tags == 'kitchen'
+        model.device.label == 'Office Lamp'
+        model.device.name == 'Generic Switch'
+        model.device.deviceNetworkId == 'AB'
     }
 
     def "toolUpdateDevice tags reports an error when the read-back tags do not match"() {
@@ -703,38 +746,45 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
     def "toolUpdateDevice tags restores blanked label even when the tags read-back MISMATCHES"() {
         given: 'the wholesale form blanked the label AND tags did not take'
-        def restored = [:]
+        def forms = []
         def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
-        device.metaClass.setLabel = { String v -> restored.label = v }
+        device.metaClass.setLabel = { String v -> throw new AssertionError('SDK identity setter must not execute') }
         childDevicesList << device
-        def formApplied = false
-        def preModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}')
-        // Verify read: label blanked AND tags wrong (still empty, expected "kitchen").
-        def postModel = completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}')
-        hubGet.register('/device/fullJson/10') { params -> formApplied ? postModel : preModel }
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> formApplied = true; '' }
+        def model = new groovy.json.JsonSlurper().parseText(completeDeviceFormJson('{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}'))
+        hubGet.register('/device/fullJson/10') { groovy.json.JsonOutput.toJson(model) }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body ->
+            assert path == '/device/update'
+            def form = decodeForm(body)
+            forms << form
+            model.device.version++
+            model.device.label = forms.size() == 1 ? '' : form.label
+            ''
+        }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
 
         then: 'identity restore fired on the mismatch path AND the tags error is recorded'
         result.success == false
-        restored.label == 'Office Lamp'
+        forms.size() == 2
+        forms[1].version == '4'
+        forms[1].tags == ''
+        model.device.label == 'Office Lamp'
         result.errors.find { it.property == 'tags' }?.error?.contains('read back as')
     }
 
-    def "toolUpdateDevice tags records a per-property error when the Write master is off"() {
+    def "toolUpdateDevice tags rejects the call when the Write master is off"() {
         given:
         settingsMap.enableWrite = false
         def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
         childDevicesList << device
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
+        script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
 
         then: 'no hub call was made; the error names the Write toggle'
-        result.success == false
-        result.errors.find { it.property == 'tags' }?.error?.contains('Enable Write Tools')
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Enable Write Tools')
         !hubGet.calls.any { it.path.startsWith('/device/fullJson') }
     }
 
