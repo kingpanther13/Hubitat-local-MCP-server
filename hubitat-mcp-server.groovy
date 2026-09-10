@@ -2753,8 +2753,10 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // which keeps running and publishes to the cache when it lands.
                 def readCapped = [
                     success: false, isError: true, status: "slow_read_timeout", tool: leaf,
-                    error: "The hub's Logs-page fetch did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
-                    note: "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
+                    error: "The ${leaf} read did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
+                    note: _mrtrDeviceReadTools().contains(leaf) ?
+                        "No hub state was changed. The background device read may still be running. Start a fresh call with a smaller selection; if this repeats, inspect the device page and hub performance." :
+                        "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
                 ]
                 _mrtrStoreTerminal(stateId, rec, claim, readCapped, true)
