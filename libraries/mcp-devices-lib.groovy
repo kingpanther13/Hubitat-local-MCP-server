@@ -5620,10 +5620,24 @@ def toolCallDeviceSwap(args) {
     if (!fromId) throw new IllegalArgumentException("from_device_id is required")
     if (!toId) throw new IllegalArgumentException("to_device_id is required")
     if (fromId == toId) throw new IllegalArgumentException("from_device_id and to_device_id must be different devices")
-    def fromDevice = findDevice(fromId)
-    if (!fromDevice) throw new IllegalArgumentException("Device not found: ${fromId}")
-    def toDevice = findDevice(toId)
-    if (!toDevice) throw new IllegalArgumentException("Device not found: ${toId}")
+    // SDK handle-only access checks retained for rollback:
+    // def fromDevice = findDevice(fromId)
+    // if (!fromDevice) throw new IllegalArgumentException("Device not found: ${fromId}")
+    // def toDevice = findDevice(toId)
+    // if (!toDevice) throw new IllegalArgumentException("Device not found: ${toId}")
+    boolean fromListed = _requireDeviceToolAccess(fromId)
+    boolean toListed = _requireDeviceToolAccess(toId)
+    // Resolve both permissions before any native request, and verify bypass-only
+    // identities before the direct alias creates a transient Swap Device instance.
+    for (def entry in [[id: fromId, listed: fromListed], [id: toId, listed: toListed]]) {
+        if (!entry.listed) {
+            def metadata = _fetchDeviceFullJson(entry.id)
+            if (!(metadata?.device instanceof Map) || metadata.device.id?.toString() != entry.id) {
+                return [success: false, error: "Device metadata could not be verified for ${entry.id}.",
+                        note: "Verify the device exists in the native Devices page and retry. Nothing was swapped."]
+            }
+        }
+    }
 
     // Before-count is the verification baseline AND the reported blast radius.
     def beforeCount = _deviceSwapDependentCount(fromId)
