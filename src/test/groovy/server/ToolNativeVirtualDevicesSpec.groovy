@@ -11,6 +11,7 @@ import support.ToolSpecBase
 class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
     Map models = [:]
     List writes = []
+    List deletions = []
     int creations = 0
     boolean acceptWrite = true
     boolean persistWrite = true
@@ -19,6 +20,18 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
 
     def setup() {
         stateMap.lastBackupTimestamp = 1234567890000L
+        def self = this
+        def factory = HubitatAppScript.getDeclaredField('childDeviceFactory')
+        factory.accessible = true
+        factory.set(script, { Object... args ->
+            if (args.length == 1 && args[0] == 'list') return self.childDevicesList
+            if (args[0] == 'delete') {
+                self.deletions << args[2]
+                self.childDevicesList.removeAll { it.deviceNetworkId == args[2] }
+                return null
+            }
+            throw new IllegalStateException('Unexpected child lifecycle call')
+        } as Closure)
         script.metaClass.hubInternalPostJson = { String path, String body ->
             assert path == '/device/runmethod'
             def payload = new JsonSlurper().parseText(body)
@@ -189,7 +202,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         def result = script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-77', confirm: true])
 
         then:
-        1 * appExecutor.deleteChildDevice('mcp-77') >> { childDevicesList.clear() }
+        deletions == ['mcp-77']
         result.success == true
         result.deviceId == '77'
         result.deviceLabel == 'Native label'
@@ -206,7 +219,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         def result = script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-77', confirm: true])
 
         then:
-        0 * appExecutor.deleteChildDevice(_)
+        deletions.empty
         result.success == false
         result.deviceId == '77'
         result.error.contains('fullJson')
