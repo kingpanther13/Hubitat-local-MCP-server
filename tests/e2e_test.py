@@ -9122,8 +9122,7 @@ class TestRunner:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4d: app_code_update (2 tests) -- the hub_update_app code-deploy path
-    # (POST /app/saveOrUpdateJson).
+    # GROUP 4d: app_code_update -- app lifecycle and library source updates.
     #
     # test_update_app_code_lifecycle: one throwaway code class, five legs before its delete:
     # a real round-trip edit (success + version advance + source landed), the
@@ -9140,6 +9139,61 @@ class TestRunner:
     # on current firmware and silently never fired) AND that the re-submit round-trips the
     # instance's configured settings instead of re-applying the code's defaults.
     # -----------------------------------------------------------------------
+
+    @test("app_code_update")
+    def test_update_library_preserves_backup_and_uses_current_version(self) -> None:
+        name = f"{PREFIX}LibraryUpdate_{_run_artifact_suffix()}"
+        original = (f'library(name: "{name}", namespace: "mcptest", author: "MCP E2E", '
+                    'description: "Disposable library update regression")\n'
+                    'def e2eLibraryRevision() { return 1 }\n')
+        library_id = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_library", "args": {"source": original, "confirm": True},
+            })
+            library_id = created.get("libraryId")
+            assert created.get("success") is True and library_id, f"library creation failed: {created}"
+            current = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source", "args": {"type": "library", "id": library_id, "noSave": True},
+            })
+            assert current.get("source") == original, f"initial library source differs: {current}"
+            for revision in (2, 3):
+                source = original.replace("return 1", f"return {revision}")
+                updated = self.client.call_tool("hub_manage_code", {
+                    "tool": "hub_update_library",
+                    "args": {"libraryId": library_id, "source": source, "confirm": True},
+                })
+                assert updated.get("success") is True, f"library update {revision} failed: {updated}"
+                assert updated.get("previousVersion") == current.get("version"), \
+                    f"library update used a stale version: before={current}, update={updated}"
+                after = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_source", "args": {"type": "library", "id": library_id, "noSave": True},
+                })
+                assert after.get("source") == source, f"library update {revision} did not persist: {after}"
+                assert int(after["version"]) > int(current["version"]), f"library version did not advance: {after}"
+                current = after
+            backup = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": f"library_{library_id}"},
+            })
+            assert backup.get("source") == original, f"rapid library updates replaced the baseline: {backup}"
+        finally:
+            if library_id:
+                try:
+                    deleted = self._write_once("hub_manage_code", "hub_delete_item", {
+                        "type": "library", "item_id": library_id, "confirm": True,
+                    }, "library update fixture cleanup")
+                    assert deleted.get("success") is True, f"library cleanup failed: {deleted}"
+                finally:
+                    backup_name = f"mcp-backup-library-{library_id}.groovy"
+                    backup = self.client.call_tool("hub_read_apps_code", {
+                        "tool": "hub_get_backup", "args": {"backupKey": f"library_{library_id}"},
+                    })
+                    if backup.get("fileName") == backup_name:
+                        removed = self._write_once("hub_manage_files", "hub_delete_file", {
+                            "fileName": backup_name, "confirm": True,
+                        }, "library source backup cleanup")
+                        assert removed.get("success") is True, f"library backup cleanup failed: {removed}"
+                        assert not removed.get("backupFile"), f"backup deletion created another backup: {removed}"
 
     @test("app_code_update")
     def test_update_app_code_lifecycle(self) -> None:
@@ -13360,9 +13414,9 @@ class TestRunner:
         except Exception as exc:
             print(f"  [WARN] throwaway bundle sweep failed: {exc}")
 
-        # Layer 7b: the throwaway LIBRARY (mcptest namespace) the bundle delivered. Bundle delete does
-        # not cascade it, and the disarm no-stale gate only sweeps the 'mcp' namespace, so a crashed run
-        # can strand it in Libraries Code. Reclaim it here.
+        # Layer 7b: throwaway libraries in mcptest from the bundle and library-update tests.
+        # Bundle delete does not cascade its library, and a crashed update test can strand its
+        # fixture. The disarm no-stale gate only sweeps 'mcp', so reclaim mcptest libraries here.
         try:
             lres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
             for lib in (lres.get("libraries", []) if isinstance(lres, dict) else []):
