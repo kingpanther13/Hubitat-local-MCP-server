@@ -10822,7 +10822,8 @@ class TestRunner:
 
         # The default scope=source (code backups) still works unchanged.
         src = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {}})
-        assert src.get("total", 0) <= 20, f"shared source-backup retention exceeded 20 entries: {src}"
+        assert isinstance(src.get("total"), int) and src["total"] == len(src.get("backups", [])) <= 20, \
+            f"shared source-backup retention/count contract failed: {src}"
         assert isinstance(src, dict) and "backups" in src, \
             f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
 

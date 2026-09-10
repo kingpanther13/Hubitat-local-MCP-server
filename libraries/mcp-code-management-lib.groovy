@@ -1980,7 +1980,7 @@ private Map _backupLibrarySourceLocked(String libraryId) {
     def key = "library_${libraryId}"
     def existing = manifest[key]
 
-    if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
+    if (!existing?.deletePending && existing?.timestamp && (now() - existing.timestamp) < 3600000) {
         mcpLog("debug", "hub-admin", "Library backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
         if (manifest.size() > 20) _publishItemBackup(key.toString(), existing as Map)
         return existing
@@ -2246,6 +2246,10 @@ def toolInstallLibrary(args) {
 }
 
 def toolUpdateLibraryCode(args) {
+    synchronized (ITEM_BACKUP_MANIFESTS) { return _toolUpdateLibraryCodeLocked(args) }
+}
+
+private Map _toolUpdateLibraryCodeLocked(args) {
     requireDestructiveConfirm(args.confirm)
     def libraryId = args.libraryId
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
@@ -2305,11 +2309,12 @@ def toolUpdateLibraryCode(args) {
     // toolUpdateItemCodeInner which calls backupItemSource() without try/catch.
     def backupFileName = null
     def existingEntry = (_itemBackupManifest())["library_${libraryId}"]
-    def skipBackup = (existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000)
+    def skipBackup = (!existingEntry?.deletePending && existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000)
 
     def versionFetchError = null
     if (skipBackup) {
         mcpLog("debug", "hub-admin", "Library backup for library_${libraryId} already exists (${formatTimestamp(existingEntry.timestamp)}), skipping")
+        if (_itemBackupManifest().size() > 20) _publishItemBackup("library_${libraryId}".toString(), existingEntry as Map)
         backupFileName = existingEntry.fileName
         // Still need fresh version for optimistic locking when the source-resolution path
         // didn't provide it (i.e., source/sourceFile modes -- resave already set it).

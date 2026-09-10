@@ -41,6 +41,7 @@ private _listSourceItemBackups(args) {
     def backupList = manifest.collect { key, entry ->
         def base = [
             backupKey: key,
+            deletionPending: entry.deletePending == true,
             type: entry.type,
             id: entry.id,
             fileName: entry.fileName,
@@ -238,8 +239,8 @@ private Map _toolRestoreItemBackupLocked(args) {
     // Save a copy of the entry before modifying manifest
     def entryCopy = entry.clone()
 
-    // Before restoring, back up the CURRENT source under a different filename so it's not overwritten
-    // (the original backup file uses the same deterministic name, so backupItemSource would overwrite it)
+    // Keep the current source under a separate undo key and preserve the requested
+    // restore target when enforcing the shared retention cap.
     def preRestoreFileName = _itemBackupFileName("mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy")
     def preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
     try {

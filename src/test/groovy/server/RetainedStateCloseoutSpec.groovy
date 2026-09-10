@@ -10,10 +10,18 @@ import support.ToolSpecBase
 class RetainedStateCloseoutSpec extends ToolSpecBase {
     private static class FailingManifest extends LinkedHashMap {
         boolean fail
+        String failedKey = "itemBackupManifest"
+        int failAt
+        int writes
         Object put(Object key, Object value) {
-            if (fail && key == 'itemBackupManifest') throw new IllegalStateException('manifest unavailable')
+            if (key == failedKey && (++writes == failAt || fail)) throw new IllegalStateException('manifest unavailable')
             super.put(key, value)
         }
+    }
+
+    private void enableWrite() {
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
     }
 
     private Map entry(String id, long timestamp = 1L) {
@@ -116,6 +124,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def entered = new CountDownLatch(1)
         def release = new CountDownLatch(1)
         def secondStarted = new CountDownLatch(1)
+        def secondThread = new java.util.concurrent.atomic.AtomicReference<Thread>()
         def workers = Executors.newFixedThreadPool(2)
         List files = Collections.synchronizedList([])
         hubGet.register('/app/ajax/code') { params -> '{"source":"original","version":2}' }
@@ -129,10 +138,17 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def first = workers.submit({ -> script.backupItemSource('app', '99') } as java.util.concurrent.Callable)
         assert entered.await(10, TimeUnit.SECONDS)
         def second = workers.submit({ ->
+            secondThread.set(Thread.currentThread())
             secondStarted.countDown()
             script.backupItemSource('app', '99')
         } as java.util.concurrent.Callable)
         assert secondStarted.await(10, TimeUnit.SECONDS)
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (secondThread.get().state != Thread.State.BLOCKED && !second.isDone() && System.nanoTime() < deadline) {
+            Thread.yield()
+        }
+        assert secondThread.get().state == Thread.State.BLOCKED
+        assert files.size() == 1
         release.countDown()
         def firstResult = first.get(10, TimeUnit.SECONDS)
         def secondResult = second.get(10, TimeUnit.SECONDS)
@@ -161,7 +177,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         script._itemBackupManifest().app_99 == entry('99')
     }
 
-    def 'manifest unlink failure never deletes the rollback file'() {
+    def 'pending-deletion publication failure never deletes the rollback file'() {
         given:
         def backing = new FailingManifest()
         backing.put('itemBackupManifest', [app_99: entry('99')])
@@ -179,6 +195,116 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         backing.itemBackupManifest.app_99 == entry('99')
     }
 
+    def 'failed writes keep newer committed backup and predicate views over stale snapshots'() {
+        given:
+        def backing = new FailingManifest()
+        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        peer._publishItemBackup('app_1', entry('1'))
+        backing.put('itemBackupManifest', [:])
+        backing.@fail = true
+
+        when:
+        peer._publishItemBackup('app_2', entry('2'))
+
+        then:
+        thrown(IllegalStateException)
+        peer._itemBackupManifest().keySet() == ['app_1'] as Set
+
+        when:
+        backing.@fail = false
+        peer._publishItemBackup('app_3', entry('3'))
+        peer._rmMarkPredClearPending(10)
+        backing.put('predClearPending', [:])
+        backing.@failedKey = 'predClearPending'
+        backing.@fail = true
+        peer.metaClass.hubInternalGet = { String path, Map params = null -> '{"apps":[]}' }
+        peer.toolListInstalledApps([:])
+
+        then:
+        backing.itemBackupManifest.keySet() == ['app_1', 'app_3'] as Set
+        peer._rmPendingPredClearSnapshot().keySet() == ['10'] as Set
+
+        when:
+        backing.@fail = false
+        peer._rmMarkPredClearPending(11)
+
+        then:
+        backing.predClearPending.keySet() == ['10', '11'] as Set
+    }
+
+    def 'double deletion failure retains durable pending metadata and both errors'() {
+        given:
+        def backing = new FailingManifest()
+        backing.put('itemBackupManifest', [app_99: entry('99')])
+        backing.@writes = 0
+        backing.@failAt = 2
+        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        peer.metaClass.deleteHubFile = { String name -> throw new IllegalStateException('file busy') }
+
+        when:
+        peer._deleteItemBackupFile('mcp-backup-app-99.groovy')
+
+        then:
+        def error = thrown(IllegalStateException)
+        error.message.contains('file busy') && error.message.contains('manifest unavailable')
+        backing.itemBackupManifest.app_99.deletePending == true
+        backing.itemBackupManifest.app_99.fileName == 'mcp-backup-app-99.groovy'
+        peer._itemBackupManifest().app_99.deletePending == true
+    }
+
+    def 'pre-restore backup failure stops the restore write'() {
+        given:
+        enableWrite()
+        def backing = new FailingManifest()
+        backing.put('itemBackupManifest', [app_99: entry('99')])
+        backing.@fail = failure == 'publication'
+        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        peer.metaClass.downloadHubFile = { String name -> 'original'.getBytes('UTF-8') }
+        peer.metaClass.hubInternalGet = { String path, Map params = null ->
+            failure == 'read' ? null : '{"source":"current","version":2}'
+        }
+        peer.metaClass.uploadHubFile = { String name, byte[] bytes ->
+            if (failure == 'upload') throw new IllegalStateException('upload unavailable')
+        }
+        List writes = []
+        peer.metaClass.hubInternalPostJson = { String path, String body -> writes << path; '{"status":"success"}' }
+
+        when:
+        def result = peer.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('pre-restore backup')
+        writes.isEmpty()
+        backing.itemBackupManifest.app_99 == entry('99')
+
+        where:
+        failure << ['read', 'upload', 'publication']
+    }
+
+    def 'pre-restore publication protects the requested oldest backup and new undo point'() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = (1..23).collectEntries {
+            String id = it == 1 ? '99' : it.toString()
+            [("app_${id}".toString()): entry(id, it)]
+        }
+        List deleted = []
+        script.metaClass.downloadHubFile = { String name -> 'original'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params -> '{"source":"current","version":2}' }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        script.metaClass.hubInternalPostJson = { String path, String body -> '{"status":"success"}' }
+
+        when:
+        script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+
+        then:
+        atomicStateMap.itemBackupManifest.size() == 20
+        atomicStateMap.itemBackupManifest.keySet().containsAll(['app_99', 'prerestore_app_99'])
+        !deleted.contains('mcp-backup-app-99.groovy')
+    }
+
     def 'unreadable or incomplete app inventory never discards recovery intent'() {
         given:
         atomicStateMap.predClearPending = ['10': true]
@@ -191,7 +317,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         atomicStateMap.predClearPending == ['10': true]
 
         where:
-        response << ['{}', '{"apps":[],"error":"partial"}', '{"apps":[{"data":{}}]}',
+        response << ['{}', '{"apps":[],"error":"partial"}', '{"apps":[],"success":false}', '{"apps":[{"data":{}}]}',
                      '{"apps":[{"data":{"id":11},"children":"unreadable"}]}']
     }
 }

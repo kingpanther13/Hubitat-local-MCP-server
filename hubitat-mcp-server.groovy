@@ -52,7 +52,7 @@
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 @groovy.transform.Field static final Map CAPTURE_STORES = new java.util.HashMap()
 // Latest committed backup view bridges stale worker snapshots; all file/manifest
-// writers share this monitor. Per-app entries contain at most the retained manifest.
+// writers share this monitor. Per-app entries mirror the retained manifest; publication enforces its cap.
 @groovy.transform.Field static final Map ITEM_BACKUP_MANIFESTS = new java.util.HashMap()
 @groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
 @groovy.transform.Field static final Object VARIABLE_HISTORY_LOCK = new Object()
@@ -6528,7 +6528,7 @@ private Map _backupItemSourceLocked(String type, String id) {
     def existing = manifest[key]
 
     // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
-    if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
+    if (!existing?.deletePending && existing?.timestamp && (now() - existing.timestamp) < 3600000) {
         mcpLog("debug", "hub-admin", "Item backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
         if (manifest.size() > 20) _publishItemBackup(key.toString(), existing as Map)
         return existing
@@ -6583,13 +6583,10 @@ Map _itemBackupManifest() {
 
 private void _commitItemBackupManifest(Map manifest) {
     String owner = app?.id?.toString() ?: "unidentified"
-    try {
-        atomicState.itemBackupManifest = manifest
-        ITEM_BACKUP_MANIFESTS[owner] = new LinkedHashMap(manifest)
-    } catch (Exception e) {
-        ITEM_BACKUP_MANIFESTS.remove(owner)
-        throw e
-    }
+    // Keep the last successful view if persistence throws; reloading an execution's
+    // stale snapshot would lose another worker's already committed entries.
+    atomicState.itemBackupManifest = manifest
+    ITEM_BACKUP_MANIFESTS[owner] = new LinkedHashMap(manifest)
 }
 
 private String _itemBackupFileName(String preferred) {
@@ -6636,12 +6633,25 @@ List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
 private void _deleteItemBackupFile(String fileName) {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         Map previous = _itemBackupManifest()
-        List removed = unlinkItemBackupManifestFile(fileName)
-        try { deleteHubFile(fileName) }
-        catch (Exception e) {
-            if (removed) _commitItemBackupManifest(previous)
-            throw e
+        List keys = previous.findAll { key, entry -> entry?.fileName?.toString() == fileName }.keySet().toList()
+        if (keys) {
+            Map pending = new LinkedHashMap(previous)
+            keys.each { key -> pending[key] = previous[key] + [deletePending: true] }
+            _commitItemBackupManifest(pending)
         }
+        try { deleteHubFile(fileName) }
+        catch (Exception deleteError) {
+            if (keys) {
+                try { _commitItemBackupManifest(previous) }
+                catch (Exception resetError) {
+                    throw new IllegalStateException("File '${fileName}' deletion failed: ${deleteError.message}; resetting pending deletion also failed: ${resetError.message}. Backup metadata remains retained under ${keys}; retry deletion.")
+                }
+            }
+            throw deleteError
+        }
+        // If unlinking fails, the durable pending marker prevents baseline reuse
+        // while retaining enough metadata to retry bookkeeping after a reload.
+        unlinkItemBackupManifestFile(fileName)
     }
 }
 

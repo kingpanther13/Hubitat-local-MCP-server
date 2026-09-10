@@ -9182,7 +9182,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     long nowMs = now()
     def mfst = _itemBackupManifest()
     def recent = mfst.findAll { key, value ->
-        if (!(value instanceof Map) || value.type?.toString() != "rm-rule") return false
+        if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
         def savedRuleId = value.ruleId != null ? value.ruleId : value.id
         if (savedRuleId?.toString() != ruleId?.toString()) return false
         Long savedAt = null
@@ -9236,7 +9236,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
 //
 // Entries get type="rm-rule" so hub_list_backups + hub_restore_backup
 // (the existing tools) handle them too — no separate RM-only backup
-// tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>.
+// tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>[-<uuid>].
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     synchronized (ITEM_BACKUP_MANIFESTS) { return _rmBackupRuleSnapshotLocked(ruleId, reason) }
 }
@@ -10778,13 +10778,8 @@ private Map _rmPendingPredClearSnapshot() {
 
 private void _rmCommitPredClearPending(Map pending) {
     String owner = app?.id?.toString() ?: "unidentified"
-    try {
-        atomicState.predClearPending = pending
-        PRED_CLEAR_STORES[owner] = new LinkedHashMap(pending)
-    } catch (Exception e) {
-        PRED_CLEAR_STORES.remove(owner)
-        throw e
-    }
+    atomicState.predClearPending = pending
+    PRED_CLEAR_STORES[owner] = new LinkedHashMap(pending)
 }
 
 void _rmMarkPredClearPending(Integer appId) {
