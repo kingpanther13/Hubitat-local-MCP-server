@@ -1197,6 +1197,31 @@ def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():
     ]
 
 
+def test_failure_diagnostic_retains_transport_operation_after_successful_cleanup():
+    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
+    failure = et.RelayLostResponseError("504 Gateway Timeout on tools/call")
+
+    def send(method, params=None, **_kwargs):
+        if params["name"] == "hub_get_source":
+            raise failure
+        assert params["name"] == "hub_delete_file"
+        return _raw_tool_body({"success": True})
+
+    client._send = send
+    with pytest.raises(et.RelayLostResponseError) as caught:
+        try:
+            client.call_tool("hub_get_source", {"type": "library", "id": "42"}, flat=True)
+        finally:
+            client.call_tool("hub_delete_file", {"fileName": "owned-backup", "confirm": True}, flat=True)
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    assert caught.value is failure
+    assert client._last_op[0] == "hub_delete_file"
+    assert runner._last_op_str(caught.value).startswith("hub_get_source ")
+    assert runner._last_op_str(caught.value).endswith(" [err]")
+
+
 def test_call_tool_paces_ten_same_state_contention_rounds_and_still_completes(monkeypatch):
     client = object.__new__(et.HubitatMcpClient)
     client.op_timings = []

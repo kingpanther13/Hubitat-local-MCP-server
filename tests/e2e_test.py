@@ -905,8 +905,10 @@ class HubitatMcpClient:
                 # a client-side hot loop while preserving one logical call.
                 time.sleep(state_only_delay)
                 state_only_delay = min(state_only_delay * 2, 0.25)
-        except BaseException:
+        except BaseException as exc:
             _op_ok = False
+            # Cleanup can make more calls before the runner sees this exception.
+            exc._mcp_failed_op = (op_key, time.monotonic() - _t0, False)
             raise
         finally:
             _dur = time.monotonic() - _t0
@@ -1744,10 +1746,9 @@ class TestRunner:
             "duration": duration,
         })
 
-    def _last_op_str(self) -> str:
-        """The most recent MCP call + its elapsed, for the FULL-FAILURE line -- so a 504 names the
-        exact op that hit the ~10s ceiling in one log read, even when the exception text doesn't."""
-        lo = getattr(self.client, "_last_op", None)
+    def _last_op_str(self, error: BaseException | None = None) -> str:
+        """Prefer the failing call's identity over any subsequent cleanup call."""
+        lo = getattr(error, "_mcp_failed_op", None) or getattr(self.client, "_last_op", None)
         if not lo:
             return "unknown"
         op_key, dur, ok = lo
@@ -1816,9 +1817,9 @@ class TestRunner:
                     continue
                 if "504" in str(exc):
                     print(f"    FULL-FAILURE {name}: persistent relay 504 across retry "
-                          f"(last op {self._last_op_str()}): {exc}")
+                          f"(failure op {self._last_op_str(exc)}): {exc}")
                     self._record(name, group, "fail",
-                                 message=f"persistent relay 504 [{self._last_op_str()}]: {exc}"[:200],
+                                 message=f"persistent relay 504 [{self._last_op_str(exc)}]: {exc}"[:200],
                                  duration=elapsed)
                 else:
                     self._record(name, group, "skip", message=str(exc), duration=elapsed)
@@ -1845,9 +1846,9 @@ class TestRunner:
                 # failure goes to the run log here -- a truncated structured response
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
                 # extra run just to learn why a test failed.
-                print(f"    FULL-FAILURE {name} (last op {self._last_op_str()}): {exc}")
+                print(f"    FULL-FAILURE {name} (failure op {self._last_op_str(exc)}): {exc}")
                 self._record(name, group, "fail",
-                             message=f"[{self._last_op_str()}] {exc}"[:200], duration=elapsed)
+                             message=f"[{self._last_op_str(exc)}] {exc}"[:200], duration=elapsed)
                 return
         # Inter-test breathing room for the hub's per-app load limiter. The limiter has
         # tripped MID-RUN on a freshly-booted hub, and the suite's recent speedups all
@@ -9907,6 +9908,10 @@ class TestRunner:
                 "tool": "hub_get_backup", "args": {"backupKey": f"library_{library_id}"},
             })
             assert backup.get("source") == original, f"rapid library updates replaced the baseline: {backup}"
+        except Exception as exc:
+            # A later cleanup failure must not erase the original failing operation.
+            print(f"    LIBRARY_UPDATE before cleanup [{self._last_op_str(exc)}]: {exc}")
+            raise
         finally:
             if library_id:
                 try:
