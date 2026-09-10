@@ -3171,8 +3171,10 @@ class TestRunner:
         assert int(baseline["deviceTypeId"]) == driver_types[manifest["driver"]], (
             f"Persistent fixture was left on the replacement driver: {baseline}"
         )
-        assert baseline["showOnHome"] is True and baseline["defaultCurrentState"] == "switch", (
-            f"Provision/restore nonempty pane sentinels before E2E: {baseline}"
+        assert type(baseline.get("showOnHome")) is bool and "defaultCurrentState" in baseline and (
+            baseline["defaultCurrentState"] is None or isinstance(baseline["defaultCurrentState"], str)
+        ), (
+            f"Native pane values are not readable/restorable: {baseline}"
         )
         for key, lower in (("maxEvents", 1), ("maxStates", 1), ("spammyThreshold", 100)):
             assert type(baseline.get(key)) is int and lower <= baseline[key] <= 2000, (
@@ -3271,6 +3273,16 @@ class TestRunner:
         dirty = large_dirty = driver_dirty = enabled_dirty = False
         try:
             dirty = True
+            # Persistent fixtures may have been edited between runs. Preserve the
+            # actual baseline, but exercise preference preservation with nonempty panes.
+            pane_values = {"showOnHome": True, "defaultCurrentState": "switch"}
+            prepared = {**restore, **pane_values}
+            if any(normalized(key, baseline[key]) != value for key, value in pane_values.items()):
+                update(pane_values)
+                native, seeded = capture()
+                cfg = configuration()
+                assert_native_preferences(native, cfg, expected)
+                assert_fields(seeded, cfg, prepared)
             invalid_patches = [
                 {"preferences": {"missingProbe": {"type": "bool", "value": True}}},
                 {"preferences": {"probeBool": {"type": "bool", "value": "perhaps"}}},
@@ -3288,8 +3300,9 @@ class TestRunner:
                     affected = next(iter(patch.get("preferences", patch)))
                     assert affected in str(exc), f"Refusal did not identify {affected}: {exc}"
             native, unchanged = capture()
-            assert_native_preferences(native, configuration(), expected)
-            assert_fields(unchanged, cfg, restore)
+            current = configuration()
+            assert_native_preferences(native, current, expected)
+            assert_fields(unchanged, current, prepared)
 
             if common_contract:
                 large_dirty = True

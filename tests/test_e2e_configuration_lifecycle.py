@@ -4,9 +4,8 @@ import json
 from copy import deepcopy
 from types import SimpleNamespace
 
-import pytest
-
 import e2e_test as et
+import pytest
 
 
 @pytest.mark.parametrize("show,status,failure", [

@@ -47,7 +47,12 @@ running E2E. Do not rely only on declaration defaults or `installed()` firing.
 | `probeEnum` | `eco` |
 | `probeMultiple` | Runtime List `["red"]`, with the native multiple declaration retained |
 
-Set `showOnHome=true`, `defaultCurrentState="switch"`, and leave the room empty.
+Leave the room empty. The matrix reads the actual `showOnHome` and
+`defaultCurrentState` values at the start of each run. If needed, it sets them to
+`true` and `"switch"` in one grouped update and verifies them independently before
+testing preference preservation. Cleanup restores the original values, including
+false or empty selections, even if setup fails. Already-prepared panes add no
+setup calls; the permanent devices and drivers are still installed only once.
 Keep each device enabled and save the owned Data key `configurationProbe=original`
 on all three devices during provisioning. The SDK profiles change and restore
 that saved key; bypass explicitly refuses the unsupported Data writer.
