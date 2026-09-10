@@ -725,16 +725,16 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_list_variables`.
 
-### T25 - Retained native hub-variable history
+### T25 — Discover hub_set_variable (hub_manage_variables)
 
 ```json
 {
-  "test_prompt": "Create a temporary native Hubitat String variable named BAT_History, set it to first and then second, and show its recorded changes newest first. Confirm the full values are present, then request history starting exactly at the newest change timestamp and confirm that change is included. Use only this temporary variable.",
-  "teardown_prompt": "Delete the temporary BAT_History hub variable."
+  "test_prompt": "Create a hub variable called 'bat_test_var' and set it to 'hello'.",
+  "teardown_prompt": "Set the variable 'bat_test_var' to empty string to clean up."
 }
 ```
 
-**Expected**: Uses supported hub-variable tools and the history reader. Full values, names, descriptions and timestamps remain available, including the inclusive timestamp boundary. No custom rules are created or exercised.
+**Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_set_variable`.
 
 ### T26 — Discover hub_get_variable (hub_manage_variables)
 

@@ -10532,27 +10532,6 @@ class TestRunner:
         assert got.get("value") == "round-trip-v1", f"hub variable value mismatch: {got}"
         assert got.get("type"), f"hub variable read-back carries no type metadata: {got}"
 
-        # A subscribed change exercises the compact durable history through its public shape.
-        changed_value = "round-trip-v2 " + "complete history value " * 12
-        changed = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_set_variable", "args": {"name": var_name, "value": changed_value}})
-        assert changed.get("success") is True, f"hub variable update failed: {changed}"
-        history = {}
-        for attempt in range(5):
-            history = self.client.call_tool("hub_read_variables", {
-                "tool": "hub_list_variable_changes", "args": {"name": var_name, "limit": 200}})
-            if any(e.get("value") == changed_value for e in history.get("entries", [])):
-                break
-            if attempt < 4:
-                time.sleep(1)
-        event = next((e for e in history.get("entries", []) if e.get("value") == changed_value), None)
-        assert event is not None, f"subscribed variable change was not retained in full: {history}"
-        assert event.get("name") == var_name and "descriptionText" in event, f"history fields changed: {event}"
-        boundary = self.client.call_tool("hub_read_variables", {
-            "tool": "hub_list_variable_changes",
-            "args": {"name": var_name, "sinceMs": event["timestamp"], "limit": 200}})
-        assert event in boundary.get("entries", []), f"inclusive history boundary lost its event: {boundary}"
-
         # DELETE -- response carries deleted/previousValue; the gone-check below binds
         # the real effect, so a relay 504 skips the response-shape assertions.
         dw = self._soft_write(
@@ -10569,7 +10548,7 @@ class TestRunner:
             assert deleted.get("success") is True and deleted.get("deleted") is True, \
                 f"hub_delete_variable failed: {deleted}"
             assert deleted.get("source") == "hub", f"delete resolved the wrong namespace: {deleted}"
-            assert deleted.get("previousValue") == changed_value, \
+            assert deleted.get("previousValue") == "round-trip-v1", \
                 f"delete did not report the previous value: {deleted}"
 
         # Verify gone from BOTH namespaces (hub_get_variable searches hub first,

@@ -1953,3 +1953,14 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: `hub_set_rule(appId, addAction={capability:'shade', action:'open', deviceIds:[<id>]})` returns `success:true` and **`partial:false`** — the `shadeOpenClose.<N>` device write commits even though the wizard reveals no further schema, so it must NOT be reported as a cosmetic partial. If a device-list write genuinely fails (IDs not committed), `partial:true` still fires. `hub_get_app_config` shows the open-shade action baked. Same class covers the sibling `onOffSwitch`/`lockLockUnlock`/`fanRL` device pickers. SAFETY: only BAT-prefixed devices/rules touched.
+
+### T465 - Retained backup recovery for a temporary native rule
+
+```json
+{
+  "test_prompt": "Create an inert, disabled native Rule Machine rule named BAT-RM-T465-Backup. Make two harmless log-action edits and check that they share the same recent rollback baseline. Delete only that temporary rule's baseline file, then make another harmless edit and verify it takes a fresh, readable backup. Restore that fresh backup and confirm the preceding edits remain while the last edit is undone. Check that the source-backup listing has no more than 20 entries. Do not change existing rules or their backup files.",
+  "teardown_prompt": "Delete BAT-RM-T465-Backup and only the backup files created for it. Verify its rule and backup entries are gone."
+}
+```
+
+**Expected**: Native-rule edits reuse a valid one-hour baseline, a deleted/pending baseline cannot authorize reuse, the replacement is readable and restorable, and file deletion removes its manifest handles. Fault-injection and concurrent-writer cases are covered by unit tests. Execution is pending authorization for a test hub; this scenario does not authorize personal-hub access.

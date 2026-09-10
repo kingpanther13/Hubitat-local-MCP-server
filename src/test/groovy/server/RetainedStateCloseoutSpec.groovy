@@ -1,6 +1,5 @@
 package server
 
-import groovy.json.JsonOutput
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -81,27 +80,6 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         atomicStateMap.itemBackupManifest.keySet() == ['app_1', 'app_2'] as Set
-    }
-
-    def 'compact variable history preserves full values boundary ordering rename and cold reads'() {
-        given:
-        String fullValue = 'a' * 4096
-        String description = 'description ' * 40
-        List old = (1..200).collect { [name: 'old', value: fullValue, timestamp: it, descriptionText: description] }
-        atomicStateMap.variableHistory = old
-
-        when:
-        script.handleHubVariableEvent([name: 'variable:old', value: fullValue, descriptionText: description])
-        script.renameVariable('old', 'new')
-        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: atomicStateMap])
-        def result = peer.toolGetVariableHistory([name: 'new', sinceMs: 200, limit: 200])
-
-        then:
-        result.bufferSize == 200
-        result.entries*.timestamp == [1234567890000L, 200]
-        result.entries.every { it.value == fullValue && it.descriptionText == description && it.name == 'new' }
-        atomicStateMap.variableHistory.collect { it instanceof List }.unique() == [true]
-        JsonOutput.toJson(atomicStateMap.variableHistory).length() < JsonOutput.toJson(old).length() - 8000
     }
 
     def 'complete app inventory reconciles deleted recovery flags but preserves hidden apps and new flags'() {

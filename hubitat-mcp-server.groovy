@@ -55,7 +55,6 @@
 // writers share this monitor. Per-app entries mirror the retained manifest; publication enforces its cap.
 @groovy.transform.Field static final Map ITEM_BACKUP_MANIFESTS = new java.util.HashMap()
 @groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
-@groovy.transform.Field static final Object VARIABLE_HISTORY_LOCK = new Object()
 // Snapshots of the two atomicState keys the reservation/MRTR machinery below reads:
 // every atomicState property access is a hub DB round trip, and one tool call reads
 // these keys many times over (the scheduled-worker observation re-reads mrtrRequests
