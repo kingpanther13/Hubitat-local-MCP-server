@@ -1910,60 +1910,87 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     }
     deviceId = canonicalId
 
-    def device = findDevice(deviceId)
-    // Allowlist bypass: an unlisted device (bypass on) resolves through /device/fullJson and is
-    // commanded via the id-keyed runmethod endpoint. A LISTED device keeps the Groovy-device path
-    // unchanged (bypass stays false). fullJson==null leaves bypass off so the not-found throw fires.
-    def bypass = false
-    def fullJson = null
-    if (!device) {
-        if (_bypassEnabled()) fullJson = _fetchDeviceFullJson(deviceId)
-        if (fullJson?.device == null) {
-            throw new IllegalArgumentException("Device not found: ${deviceId}")
-        }
-        bypass = true
+    // SDK dispatch retained for deliberate rollback; access membership no longer selects transport.
+    // def device = findDevice(deviceId)
+    // // Allowlist bypass: an unlisted device (bypass on) resolves through /device/fullJson and is
+    // // commanded via the id-keyed runmethod endpoint. A LISTED device keeps the Groovy-device path
+    // // unchanged (bypass stays false). fullJson==null leaves bypass off so the not-found throw fires.
+    // def bypass = false
+    // def fullJson = null
+    // if (!device) {
+    //     if (_bypassEnabled()) fullJson = _fetchDeviceFullJson(deviceId)
+    //     if (fullJson?.device == null) {
+    //         throw new IllegalArgumentException("Device not found: ${deviceId}")
+    //     }
+    //     bypass = true
+    // }
+    //
+    // // Capture label before command execution to avoid serialization issues
+    // def deviceLabel = bypass ? _bypassDeviceLabel(fullJson, deviceId)
+    //                          : (device.label ?: device.name ?: "Device ${deviceId}")
+    //
+    // def supportedCommands = bypass ? _fullJsonCommandNames(fullJson)
+    //                                : device.supportedCommands?.collect { it.name }
+    // if (!supportedCommands?.contains(command)) {
+    //     throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
+    // }
+    //
+    // // Validate waitFor BEFORE firing the command so a bad spec fails the call without
+    // // a side effect (the command would otherwise have already actuated the device). The
+    // // attribute set comes from the Groovy device for a listed device; under bypass it is null
+    // // (NOT the fullJson reported-attribute set) so the pre-fire attribute-existence check is
+    // // SKIPPED -- fullJson cannot list a declared-but-not-yet-reported attribute, and hard-failing
+    // // on it would block a legitimate command. The poll then reports neverReported if it never shows.
+    // def supportedAttrs = bypass ? null
+    //                             : (device.supportedAttributes?.collect { it.name } ?: [])
+    // def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, supportedAttrs, deviceLabel, waitFor) : null
+    //
+    // // Normalize parameters once (when present) so both paths see the typed values. A blank
+    // // String means "no parameters" -- null it so the reported parameters stay inside the
+    // // array-or-null response contract (a non-blank String always normalizes to a List).
+    // if (parameters instanceof String && !parameters.trim()) parameters = null
+    // if (parameters && parameters.size() > 0) {
+    //     def declaration = bypass ? fullJson.commands?.find { it?.name == command }
+    //                              : device.supportedCommands?.find { it.name == command }
+    //     // SDK Command exposes arguments, while native JSON also carries richer parameters.
+    //     def declaredTypes = _commandParamTypes(bypass ? declaration : [arguments: declaration?.arguments])
+    //     parameters = normalizeCommandParams(parameters, declaredTypes)
+    // }
+    // if (bypass) {
+    //     // Single bypass branch: fire via runmethod (empty arg list for a no-parameter command).
+    //     def fireErr = _fireBypassCommand(deviceId, command, (parameters && parameters.size() > 0) ? parameters : [], fullJson)
+    //     if (fireErr != null) return fireErr
+    // } else if (parameters && parameters.size() > 0) {
+    //     device."${command}"(*parameters)
+    // } else {
+    //     device."${command}"()
+    // }
+
+    if (!findDevice(deviceId) && !_bypassEnabled()) {
+        throw new IllegalArgumentException("Device not found: ${deviceId}")
     }
-
-    // Capture label before command execution to avoid serialization issues
-    def deviceLabel = bypass ? _bypassDeviceLabel(fullJson, deviceId)
-                             : (device.label ?: device.name ?: "Device ${deviceId}")
-
-    def supportedCommands = bypass ? _fullJsonCommandNames(fullJson)
-                                   : device.supportedCommands?.collect { it.name }
+    def fullJson = _fetchDeviceFullJson(deviceId)
+    if (!(fullJson?.device instanceof Map)) {
+        return [success: false, deviceId: deviceId,
+                error: "Device command metadata fetch failed (/device/fullJson/${deviceId})".toString(),
+                note: "The native device metadata could not be read; no command was sent. Verify the device exists and retry."]
+    }
+    def deviceLabel = _bypassDeviceLabel(fullJson, deviceId)
+    def supportedCommands = _fullJsonCommandNames(fullJson)
     if (!supportedCommands?.contains(command)) {
         throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
 
-    // Validate waitFor BEFORE firing the command so a bad spec fails the call without
-    // a side effect (the command would otherwise have already actuated the device). The
-    // attribute set comes from the Groovy device for a listed device; under bypass it is null
-    // (NOT the fullJson reported-attribute set) so the pre-fire attribute-existence check is
-    // SKIPPED -- fullJson cannot list a declared-but-not-yet-reported attribute, and hard-failing
-    // on it would block a legitimate command. The poll then reports neverReported if it never shows.
-    def supportedAttrs = bypass ? null
-                                : (device.supportedAttributes?.collect { it.name } ?: [])
-    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, supportedAttrs, deviceLabel, waitFor) : null
-
-    // Normalize parameters once (when present) so both paths see the typed values. A blank
-    // String means "no parameters" -- null it so the reported parameters stay inside the
-    // array-or-null response contract (a non-blank String always normalizes to a List).
+    // Native fullJson lists reported states, which cannot reject a declared but unreported
+    // waitFor attribute. The poll reports neverReported if the attribute never appears.
+    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, null, deviceLabel, waitFor) : null
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
-        def declaration = bypass ? fullJson.commands?.find { it?.name == command }
-                                 : device.supportedCommands?.find { it.name == command }
-        // SDK Command exposes arguments, while native JSON also carries richer parameters.
-        def declaredTypes = _commandParamTypes(bypass ? declaration : [arguments: declaration?.arguments])
-        parameters = normalizeCommandParams(parameters, declaredTypes)
+        def declaration = fullJson.commands?.find { it?.name == command }
+        parameters = normalizeCommandParams(parameters, _commandParamTypes(declaration))
     }
-    if (bypass) {
-        // Single bypass branch: fire via runmethod (empty arg list for a no-parameter command).
-        def fireErr = _fireBypassCommand(deviceId, command, (parameters && parameters.size() > 0) ? parameters : [], fullJson)
-        if (fireErr != null) return fireErr
-    } else if (parameters && parameters.size() > 0) {
-        device."${command}"(*parameters)
-    } else {
-        device."${command}"()
-    }
+    def fireErr = _fireBypassCommand(deviceId, command, (parameters && parameters.size() > 0) ? parameters : [], fullJson)
+    if (fireErr != null) return fireErr
 
     def result = [
         success: true,
@@ -2021,8 +2048,8 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         result.waitFor = waitForBlock
     }
 
-    // Batch entries skip the read-back entirely: their response drops state anyway, and under
-    // bypass the snapshot is a SECOND /device/fullJson fetch per entry -- up to 20 wasted reads
+    // Batch entries skip the read-back entirely: their response drops state anyway, and the
+    // snapshot is a SECOND /device/fullJson fetch per entry -- up to 20 wasted reads
     // against the same relay budget the batch is trying to stay inside.
     if (!includeState) return result
 
@@ -2031,8 +2058,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // FAILURE sentinel (distinct from a legitimately empty [:]); surface why so the agent
     // can tell a failed confirmation read apart from a device with no readable attributes.
     def stateErr = []
-    def snap = bypass ? _snapshotBypassDeviceState(deviceId, deviceLabel, stateErr)
-                      : _snapshotDeviceState(device, deviceLabel, stateErr)
+    // def snap = bypass ? _snapshotBypassDeviceState(deviceId, deviceLabel, stateErr)
+    //                   : _snapshotDeviceState(device, deviceLabel, stateErr)
+    def snap = _snapshotBypassDeviceState(deviceId, deviceLabel, stateErr)
     if (snap == null) {
         // Genuine read-back failure: state is empty AND stateError says why, so the agent
         // distinguishes this from a device that legitimately has no readable attributes
@@ -2345,86 +2373,84 @@ private BigDecimal _parseBigDecimalOrNull(v) {
     return null
 }
 
-// Compact current-state snapshot for a command response: per attribute, its current
-// value plus the event timestamp (freshness signal). Reads device.currentStates (each
-// State has name/value/date). Includes only attributes that have a current state; if the
-// device reports no states at all, falls back to supportedAttributes + currentValue (each
-// with a null timestamp). Never returns the full device object -- values and timestamps only.
+// Compact native current-state snapshot for a command response: values and timestamps only.
 // NOTE: this is an IMMEDIATE read taken in the same request that fired the command -- the
 // hub commits a command's effect AFTER that request returns, so without waitFor the value
 // here is the PRE-effect state even for virtual/local devices. The timestamp is the freshness
 // signal; waitFor (block-poll) is what makes this snapshot reflect the converged state.
 private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
-    def snapshot = [:]
-    try {
-        def states = device.currentStates
-        if (states) {
-            states.each { st ->
-                if (st?.name != null) {
-                    // st.date is a java.util.Date on a live hub -- format it directly
-                    // (formatTimestamp has no Date branch and would mangle it via toString).
-                    // Guard ONLY the date format locally: a single date that fails to format
-                    // yields timestamp:null for THAT attribute (keeping its value) instead of
-                    // discarding the whole snapshot. A structural read throw (currentStates /
-                    // name / value) still falls to the outer catch and clears to [:].
-                    def ts = null
-                    if (st.date) {
-                        try {
-                            ts = st.date.format("yyyy-MM-dd HH:mm:ss")
-                        } catch (Throwable dt) {
-                            // Log at error so an operator can tell a date-format failure (value
-                            // kept, timestamp null) apart from an attribute that never reported.
-                            // Error -- not warn -- because warn is below Hubitat's default level
-                            // and returns before writing, so this degradation would be invisible.
-                            ts = null
-                            mcpLog("error", "send-command", "date format failed for attribute '${st.name}' on ${deviceLabel}: ${dt.class.simpleName}")
-                        }
-                    }
-                    snapshot.put(st.name, [value: st.value, timestamp: ts])
-                }
-            }
-        } else {
-            // Fallback to currentValue only because currentStates is empty -- the device has
-            // emitted no state event at all, so there is no prior event for currentValue to be
-            // stale against; staleness (the reason the poll engine avoids currentValue) is moot
-            // here. Each entry carries a null timestamp since there is no event to date it.
-            device.supportedAttributes?.each { attr ->
-                def name = attr?.name
-                if (name != null) {
-                    // Per-attribute guard for parity with the currentStates branch's date guard:
-                    // one attribute whose currentValue read throws degrades to value:null for
-                    // THAT attribute, keeping the rest, instead of the outer catch discarding the
-                    // whole snapshot. name is non-null here, so the entry is always present.
-                    def val = null
-                    try {
-                        val = device.currentValue(name)
-                    } catch (Throwable cv) {
-                        // Error -- not warn -- because this guard degrades to value:null with no
-                        // stateError/partial, so a warn (below the default level, returns before
-                        // writing) would leave a systemic read failure fully invisible.
-                        mcpLog("error", "send-command", "currentValue read failed for attribute '${name}' on ${deviceLabel}: ${cv.class.simpleName}")
-                    }
-                    snapshot.put(name, [value: val, timestamp: null])
-                }
-            }
-        }
-    } catch (Throwable t) {
-        // Read-back must never break the command (which already fired). Discard any
-        // partial snapshot built before a mid-iteration throw and return the null FAILURE
-        // sentinel so the caller can distinguish a failed read from a legitimately empty
-        // device. Log at error so it writes under the hub's default log level (a warn here
-        // is below default and would be invisible -- a silently-failed confirmation read).
-        // t.message can be null.
-        def detail = "${t.class.simpleName}: ${t.message ?: '(no message)'}".toString()
-        mcpLog("error", "send-command", "Failed to snapshot device state for ${deviceLabel}: ${detail}")
-        if (errOut != null) errOut << detail
-        return null
-    }
-    return snapshot
+    // SDK snapshot retained for deliberate rollback. Native reads never fall back to it.
+    // def snapshot = [:]
+    // try {
+    //     def states = device.currentStates
+    //     if (states) {
+    //         states.each { st ->
+    //             if (st?.name != null) {
+    //                 // st.date is a java.util.Date on a live hub -- format it directly
+    //                 // (formatTimestamp has no Date branch and would mangle it via toString).
+    //                 // Guard ONLY the date format locally: a single date that fails to format
+    //                 // yields timestamp:null for THAT attribute (keeping its value) instead of
+    //                 // discarding the whole snapshot. A structural read throw (currentStates /
+    //                 // name / value) still falls to the outer catch and clears to [:].
+    //                 def ts = null
+    //                 if (st.date) {
+    //                     try {
+    //                         ts = st.date.format("yyyy-MM-dd HH:mm:ss")
+    //                     } catch (Throwable dt) {
+    //                         // Log at error so an operator can tell a date-format failure (value
+    //                         // kept, timestamp null) apart from an attribute that never reported.
+    //                         // Error -- not warn -- because warn is below Hubitat's default level
+    //                         // and returns before writing, so this degradation would be invisible.
+    //                         ts = null
+    //                         mcpLog("error", "send-command", "date format failed for attribute '${st.name}' on ${deviceLabel}: ${dt.class.simpleName}")
+    //                     }
+    //                 }
+    //                 snapshot.put(st.name, [value: st.value, timestamp: ts])
+    //             }
+    //         }
+    //     } else {
+    //         // Fallback to currentValue only because currentStates is empty -- the device has
+    //         // emitted no state event at all, so there is no prior event for currentValue to be
+    //         // stale against; staleness (the reason the poll engine avoids currentValue) is moot
+    //         // here. Each entry carries a null timestamp since there is no event to date it.
+    //         device.supportedAttributes?.each { attr ->
+    //             def name = attr?.name
+    //             if (name != null) {
+    //                 // Per-attribute guard for parity with the currentStates branch's date guard:
+    //                 // one attribute whose currentValue read throws degrades to value:null for
+    //                 // THAT attribute, keeping the rest, instead of the outer catch discarding the
+    //                 // whole snapshot. name is non-null here, so the entry is always present.
+    //                 def val = null
+    //                 try {
+    //                     val = device.currentValue(name)
+    //                 } catch (Throwable cv) {
+    //                     // Error -- not warn -- because this guard degrades to value:null with no
+    //                     // stateError/partial, so a warn (below the default level, returns before
+    //                     // writing) would leave a systemic read failure fully invisible.
+    //                     mcpLog("error", "send-command", "currentValue read failed for attribute '${name}' on ${deviceLabel}: ${cv.class.simpleName}")
+    //                 }
+    //                 snapshot.put(name, [value: val, timestamp: null])
+    //             }
+    //         }
+    //     }
+    // } catch (Throwable t) {
+    //     // Read-back must never break the command (which already fired). Discard any
+    //     // partial snapshot built before a mid-iteration throw and return the null FAILURE
+    //     // sentinel so the caller can distinguish a failed read from a legitimately empty
+    //     // device. Log at error so it writes under the hub's default log level (a warn here
+    //     // is below default and would be invisible -- a silently-failed confirmation read).
+    //     // t.message can be null.
+    //     def detail = "${t.class.simpleName}: ${t.message ?: '(no message)'}".toString()
+    //     mcpLog("error", "send-command", "Failed to snapshot device state for ${deviceLabel}: ${detail}")
+    //     if (errOut != null) errOut << detail
+    //     return null
+    // }
+    // return snapshot
+    return _snapshotBypassDeviceState(device.id, deviceLabel, errOut)
 }
 
-// Fire a device command on an unlisted device via the hub's id-keyed runmethod endpoint (the
-// allowlist-bypass analogue of device."cmd"(*params)). POST /device/runmethod with
+// Fire an access-permitted device command via the hub's id-keyed native endpoint.
+// POST /device/runmethod with
 // {id, method, args:[{type, value}, ...]}; empty args for a no-parameter command. Each arg's
 // type comes from the command's declared parameters in fullJson when available, else inferred
 // from the value. Returns null on success, or a structured [success:false, error, note] runtime-
@@ -2439,7 +2465,7 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     } catch (Exception e) {
         // Log at error: a warn is below Hubitat's default log level, so this failed-fire would
         // land in neither the hub log nor the buffer.
-        mcpLog("error", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} threw: ${e.message ?: e.toString()}")
+        mcpLog("error", "send-command", "native: /device/runmethod for '${command}' on ${deviceId} threw: ${e.message ?: e.toString()}")
         return [success: false, error: "runmethod call failed for '${command}': ${e.message ?: e.toString()}",
                 note: "The hub call to /device/runmethod failed; the command may not have actuated. Retry, or verify the device id."]
     }
@@ -2447,17 +2473,17 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     // response on a write -> unknown commit), a non-JSON body, a non-Map, or a Map that does not
     // carry success==true (e.g. {}) all mean "not confirmed" -- never silently treat them as success.
     if (resp == null) {
-        mcpLog("error", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} returned an empty/dropped response")
+        mcpLog("error", "send-command", "native: /device/runmethod for '${command}' on ${deviceId} returned an empty/dropped response")
         return [success: false, error: "runmethod returned an empty/dropped response for '${command}'",
                 note: "The hub call to /device/runmethod returned no body; the command may have actuated but was not confirmed. Retry, or verify with hub_get_device."]
     }
     if (resp instanceof Map && resp._unparseable) {
-        mcpLog("error", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} returned a non-JSON body: ${resp.message}")
+        mcpLog("error", "send-command", "native: /device/runmethod for '${command}' on ${deviceId} returned a non-JSON body: ${resp.message}")
         return [success: false, error: "runmethod returned a non-JSON body for '${command}': ${resp.message}",
                 note: "The hub did not return a JSON result; the command may not have actuated. Retry."]
     }
     if (!(resp instanceof Map) || resp.success != true) {
-        mcpLog("error", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} did not confirm success: ${resp}")
+        mcpLog("error", "send-command", "native: /device/runmethod for '${command}' on ${deviceId} did not confirm success: ${resp}")
         return [success: false, error: "runmethod did not confirm success for '${command}': ${resp}",
                 note: "The hub rejected or did not confirm the command. Verify the command and arguments against hub_get_device."]
     }
@@ -2505,7 +2531,7 @@ private String _inferRunMethodArgType(v) {
     return "STRING"
 }
 
-// Compact current-state snapshot for an unlisted device's command response, mirroring
+// Compact native current-state snapshot for a device command response, preserving
 // _snapshotDeviceState's {attr: {value, timestamp}} shape but sourced from /device/fullJson
 // currentStates. Returns null (the read-back FAILURE sentinel) when fullJson is unavailable.
 private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
@@ -2513,7 +2539,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
         def fj = _fetchDeviceFullJson(deviceId)
         def cs = fj?.device?.currentStates
         if (!(cs instanceof Map)) {
-            mcpLog("error", "send-command", "bypass: fullJson currentStates unavailable for device ${deviceId}")
+            mcpLog("error", "send-command", "native: fullJson currentStates unavailable for device ${deviceId}")
             if (errOut != null) errOut << "fullJson currentStates unavailable for ${deviceId}"
             return null
         }
@@ -2528,7 +2554,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
         return snapshot
     } catch (Throwable t) {
         def detail = "${t.class.simpleName}: ${t.message ?: '(no message)'}".toString()
-        mcpLog("error", "send-command", "Failed to snapshot bypass device state for ${deviceLabel}: ${detail}")
+        mcpLog("error", "send-command", "Failed to snapshot native device state for ${deviceLabel}: ${detail}")
         if (errOut != null) errOut << detail
         return null
     }

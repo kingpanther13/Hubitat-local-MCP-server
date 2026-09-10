@@ -240,17 +240,18 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         ex.message == "Device not found: ${UNLISTED_ID}"
     }
 
-    def "bypass ON but fullJson reports no device: toolSendCommand throws Device not found"() {
-        given: 'the device is unlisted AND fullJson has no device -- bypass stays off so the not-found throw fires'
+    def "bypass ON but fullJson reports no device: toolSendCommand returns a native metadata runtime failure"() {
+        given: 'native metadata cannot confirm the bypass-permitted device'
         settingsMap.bypassDeviceAllowlist = true
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params -> JsonOutput.toJson([device: null]) }
 
         when:
-        script.toolSendCommand(UNLISTED_ID, 'on', [])
+        def result = script.toolSendCommand(UNLISTED_ID, 'on', [])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message == "Device not found: ${UNLISTED_ID}"
+        result.success == false
+        result.error.contains('fullJson')
+        result.note
     }
 
     def "bypass ON but fullJson reports no device: toolUpdateDevice throws Device not found"() {
@@ -630,11 +631,19 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     }
 
     def "bypass ON: a batch mixing a listed device with an unconfirmable unlisted one reports both outcomes"() {
-        given: 'the listed entry runs on its Groovy object; the unlisted one fires through runmethod, which does not confirm'
+        given: 'both entries use native commands and only the unlisted command is unconfirmed'
         settingsMap.bypassDeviceAllowlist = true
         registerFullJson()
+        def posted = []
+        hubGet.register('/device/fullJson/10') {
+            def model = fullJsonModel()
+            model.device.id = 10
+            JsonOutput.toJson(model)
+        }
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
-            [success: false, message: 'device rejected the command']
+            def payload = new JsonSlurper().parseText(body)
+            posted << payload
+            [success: payload.id == 10, message: 'device rejected the command']
         }
         def listed = Spy(TestDevice) {
             getId() >> 10
@@ -652,7 +661,9 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         ])
 
         then: 'the listed entry actuated'
-        1 * listed.on()
+        posted*.id == [10, 555]
+        posted*.method == ['on', 'on']
+        0 * listed.on()
 
         and: 'the unconfirmed bypass fire counts as a failure -- it is returned, not thrown, so the batch has to notice'
         result.sentCount == 1
@@ -1377,9 +1388,14 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         !result.message.contains('allowlist bypass')
     }
 
-    def "regression: bypass ON commands a LISTED device via the device object, not runmethod"() {
+    def "regression: bypass ON commands a LISTED device via native runmethod"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/fullJson/10') {
+            def model = fullJsonModel()
+            model.device.id = 10
+            JsonOutput.toJson(model)
+        }
         def runmethodHit = false
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             if (path == '/device/runmethod') runmethodHit = true
@@ -1397,10 +1413,10 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the Groovy command fired, runmethod was NOT used, and no fullJson fetch happened'
-        1 * device.on()
-        !runmethodHit
-        !hubGet.calls.any { it.path.startsWith('/device/fullJson') }
+        then: 'the native command fired with metadata and snapshot reads'
+        0 * device.on()
+        runmethodHit
+        hubGet.calls.any { it.path.startsWith('/device/fullJson') }
         result.success == true
     }
 

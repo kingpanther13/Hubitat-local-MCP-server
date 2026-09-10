@@ -13,22 +13,24 @@ class ToolCommandParameterTypesSpec extends ToolSpecBase {
         def received = []
         if (path == 'bypass') {
             settingsMap.bypassDeviceAllowlist = true
-            hubGet.register('/device/fullJson/10') { JsonOutput.toJson([
-                device: [id: 10, name: 'Fixture'],
-                commands: [[name: 'probe', parameters: [[name: 'value', type: type]]]]
-            ]) }
-            script.metaClass.hubInternalPostJson = { String url, String body, int timeout = 420, boolean retry = false ->
-                assert url == '/device/runmethod'
-                def payload = new JsonSlurper().parseText(body)
-                assert payload.args[0].type == type
-                received << payload.args[0].value
-                [success: true]
-            }
         } else {
             def device = new TestDevice(id: 10, name: 'Fixture', supportedCommands: [[name: 'probe', arguments: [type]]])
-            device.metaClass.probe = { value -> received << value }
+            device.metaClass.probe = { value -> throw new AssertionError('SDK command must not execute') }
             if (path == 'selected') settingsMap.selectedDevices = [device]
             else childDevicesList << device
+        }
+        hubGet.register('/device/fullJson/10') { JsonOutput.toJson([
+            device: [id: 10, name: 'Fixture'],
+            commands: [[name: 'probe', parameters: [[name: 'value', type: type]]]]
+        ]) }
+        script.metaClass.hubInternalPostJson = { String url, String body, int timeout = 420, boolean retry = false ->
+            assert url == '/device/runmethod'
+            def payload = new JsonSlurper().parseText(body)
+            assert payload.id == 10
+            assert payload.method == 'probe'
+            assert payload.args[0].type == type
+            received << payload.args[0].value
+            [success: true]
         }
 
         when:
