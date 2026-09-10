@@ -40,9 +40,10 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         hubGet.register("/device/fullJson/${id}") { params -> JsonOutput.toJson(model) }
     }
 
-    def "omitted and explicit summary preserve the seven-key response without supplemental reads"() {
+    def "omitted and explicit summary preserve the seven-key response through native reads"() {
         given:
         addListedDevice()
+        registerFixture()
 
         when:
         def omitted = script.toolGetDevice(DEVICE_ID)
@@ -53,7 +54,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         omitted.keySet() == ['id', 'name', 'label', 'room', 'capabilities', 'attributes', 'commands'] as Set
         !omitted.containsKey('mode')
         !omitted.containsKey('preferences')
-        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 2
     }
 
     def "unknown mode is rejected before authorization detail is fetched"() {
@@ -365,7 +366,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         'wrong-shape' | '{"devices":"fixture-linked-secret"}'
     }
 
-    def "native fetch failure preserves useful identity and explicitly unavailable discovery"() {
+    def "native fetch failure reports unavailable discovery without falling back to SDK identity"() {
         given:
         addListedDevice()
         hubGet.register("/device/fullJson/${DEVICE_ID}") { throw new RuntimeException('offline') }
@@ -375,7 +376,8 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
 
         then:
         result.id == DEVICE_ID
-        result.label == 'Synthetic Hall Climate'
+        result.name == null
+        result.label == "Device ${DEVICE_ID}"
         result.preferenceRead.status == 'unavailable'
         result.preferenceRead.reason
         result.deviceInfoRead.status == 'unavailable'
@@ -567,15 +569,17 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
 
     def "details redacts secret attribute records from the listed device path"() {
         given:
-        childDevicesList << new TestDevice(id: 901, name: 'Fixture', supportedAttributes: [[name: 'apiToken', dataType: 'STRING']],
-            attributeValues: [apiToken: 'private-attribute-value'])
-        registerFixture()
+        childDevicesList << new TestDevice(id: 901, name: 'Fixture')
+        def nativeModel = fixture()
+        nativeModel.device.currentStates = [apiToken: [name: 'apiToken', value: 'private-attribute-value', dataType: 'STRING']]
+        registerFixture(DEVICE_ID, nativeModel)
 
         when:
         def result = script.toolGetDevice(DEVICE_ID, 'details', ['attributes'])
 
         then:
-        !result.toString().contains('private-attribute-value')
+        !JsonOutput.toJson(result).contains('private-attribute-value')
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
         result.sections.attributes.declaredAttributes[0].name == 'apiToken'
         result.sections.attributes.declaredAttributes[0].value == '***redacted (password)***'
     }

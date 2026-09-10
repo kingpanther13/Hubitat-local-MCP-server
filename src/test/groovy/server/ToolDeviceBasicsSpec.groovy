@@ -93,6 +93,18 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     // no dispatch counterparts for findDevice: helper, not a tool
 
+    private void registerNativeSummaryDevice(TestDevice device) {
+        def states = device.attributeValues.collectEntries { name, value ->
+            [(name): [value: value, dataType: device.supportedAttributes.find { it.name == name }?.dataType]]
+        }
+        def model = [device: [id: device.id, name: device.name, label: device.label,
+            roomName: device.roomName, capabilities: device.capabilities, currentStates: states],
+            commands: device.supportedCommands]
+        hubGet.register("/device/fullJson/${device.id}") { JsonOutput.toJson(model) }
+        device.metaClass.currentValue = { String attribute -> throw new AssertionError('SDK value read is forbidden') }
+        device.metaClass.getSupportedAttributes = { -> throw new AssertionError('SDK declaration read is forbidden') }
+    }
+
     // ---- toolGetDevice response shape ---------------------------------------
 
     def "toolGetDevice returns device summary shape for an existing device"() {
@@ -108,11 +120,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             attributeValues: [switch: 'off']
         )
         childDevicesList << device
+        registerNativeSummaryDevice(device)
 
         when:
         def result = script.toolGetDevice('10')
 
         then:
+        hubGet.calls.count { it.path == '/device/fullJson/10' } == 1
         result.id == '10'
         result.label == 'Test Switch'
         result.room == 'Living Room'
@@ -137,6 +151,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             attributeValues: [switch: 'off']
         )
         childDevicesList << device
+        registerNativeSummaryDevice(device)
 
         when:
         def response = mcpDriver.callTool('hub_get_device', [deviceId: '10'])
@@ -145,6 +160,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
+        hubGet.calls.count { it.path == '/device/fullJson/10' } == 1
         inner.id == '10'
         inner.label == 'Test Switch'
         inner.room == 'Living Room'
@@ -212,8 +228,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             }
             JsonOutput.toJson([
                 device: [id: device.id, name: device.name, label: device.label, currentStates: states],
-                commands: device.supportedCommands ?: [],
-                attributes: device.supportedAttributes ?: []
+                commands: device.supportedCommands ?: []
             ])
         }
     }
@@ -1019,25 +1034,30 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         0 * device.on()
     }
 
-    def "toolSendCommand waitFor with an unsupported attribute throws before firing the command"() {
-        given: 'the device does not support the requested waitFor attribute'
+    def "toolSendCommand waitFor with an unreported attribute actuates then times out"() {
+        given: 'reported native states cannot prove whether an absent attribute is supported'
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
-            getSupportedAttributes() >> [[name: 'switch']]
+            getSupportedAttributes() >> { throw new AssertionError('SDK declaration read is forbidden') }
         }
         childDevicesList << device
         childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
-        script.toolSendCommand('10', 'on', [], [attribute: 'level', expectedValue: '50'])
+        def result = script.toolSendCommand('10', 'on', [],
+            [attribute: 'level', expectedValue: '50', timeoutMs: 100, pollIntervalMs: 50])
 
-        then: 'rejected pre-fire so the device is never actuated'
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("waitFor.attribute 'level' not found")
-        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
+        then: 'the command is native and waitFor reports the absent attribute honestly'
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.timedOut == true
+        result.waitFor.neverReported == true
+        result.waitFor.finalValue == null
+        !result.waitFor.readError
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
         0 * device.on()
     }
 
