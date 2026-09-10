@@ -832,42 +832,7 @@ def _buildContextJson() {
     return result
 }
 
-// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
-// as {key, data:{id,name,...}, children:[...]}. Flatten to the {id, label} shape the caller
-// expects; `name` there is the user-facing label (the driver name is `secondaryName`).
-private List _flattenHub2DeviceTree(nodes, List acc = null) {
-    // A non-List at the TOP level means the contract moved -- return null so the caller raises it,
-    // rather than an empty list that would read as "this hub has no devices". Nested `children`
-    // legitimately arrive absent, so those recurse into the accumulator.
-    if (!(nodes instanceof List)) return acc
-    if (acc == null) acc = []
-    // A node that is not a Map is contract drift. Skipping it would hand back a SHORTER inventory
-    // that reads as authoritative -- and since an empty inventory now means "this hub has no
-    // devices", devices:[null] would read as an empty hub. Fail the whole read instead; the caller
-    // reports "shape" and callers of THAT keep their existing behaviour for an unreadable source.
-    boolean malformed = false
-    nodes.each { node ->
-        if (!(node instanceof Map)) { malformed = true; return }
-        def data = node.data
-        // A node without a data.id is the same drift as a non-map node: skipping it would return
-        // a SHORTER list that still reads as authoritative (the live tree carries an id on every
-        // node, container or leaf).
-        if (!(data instanceof Map) || data.id == null) { malformed = true; return }
-        def record = [id: data.id, label: data.name]
-        ['lastActivity', 'roomId', 'roomName'].each { key -> if (data.containsKey(key)) record.put(key, data.get(key)) }
-        acc << record
-        // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
-        // discarding that let a bad node nested under a valid parent produce a short list that
-        // still read as authoritative -- the exact failure the top-level check exists to stop.
-        // An absent `children` is not malformed: the recursion returns the accumulator unchanged.
-        if (_flattenHub2DeviceTree(node.children, acc) == null) malformed = true
-    }
-    if (malformed) {
-        mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a node that is not a map or has no data.id -- treating the inventory as unreadable rather than returning a short list")
-        return null
-    }
-    return acc
-}
+
 
 // Every hub device, authorized or not -- it lives with its primary consumer
 // (hub_list_devices scope='all') and the selectedDevices settings validator calls it

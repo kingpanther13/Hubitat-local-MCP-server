@@ -5965,6 +5965,43 @@ def hubBaseUri() { "http://127.0.0.1:8080" }
 def hubReadTimeoutSec() { 30 }
 def hubWriteTimeoutSec() { 420 }
 
+// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
+// as {key, data:{id,name,...}, children:[...]}. Retain identity plus available activity and room fields the caller
+// expects; `name` there is the user-facing label (the driver name is `secondaryName`).
+private List _flattenHub2DeviceTree(nodes, List acc = null) {
+    // A non-List at the TOP level means the contract moved -- return null so the caller raises it,
+    // rather than an empty list that would read as "this hub has no devices". Nested `children`
+    // legitimately arrive absent, so those recurse into the accumulator.
+    if (!(nodes instanceof List)) return acc
+    if (acc == null) acc = []
+    // A node that is not a Map is contract drift. Skipping it would hand back a SHORTER inventory
+    // that reads as authoritative -- and since an empty inventory now means "this hub has no
+    // devices", devices:[null] would read as an empty hub. Fail the whole read instead; the caller
+    // reports "shape" and callers of THAT keep their existing behaviour for an unreadable source.
+    boolean malformed = false
+    nodes.each { node ->
+        if (!(node instanceof Map)) { malformed = true; return }
+        def data = node.data
+        // A node without a data.id is the same drift as a non-map node: skipping it would return
+        // a SHORTER list that still reads as authoritative (the live tree carries an id on every
+        // node, container or leaf).
+        if (!(data instanceof Map) || data.id == null) { malformed = true; return }
+        def record = [id: data.id, label: data.name]
+        ['lastActivity', 'roomId', 'roomName'].each { key -> if (data.containsKey(key)) record.put(key, data.get(key)) }
+        acc << record
+        // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
+        // discarding that let a bad node nested under a valid parent produce a short list that
+        // still read as authoritative -- the exact failure the top-level check exists to stop.
+        // An absent `children` is not malformed: the recursion returns the accumulator unchanged.
+        if (_flattenHub2DeviceTree(node.children, acc) == null) malformed = true
+    }
+    if (malformed) {
+        mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a node that is not a map or has no data.id -- treating the inventory as unreadable rather than returning a short list")
+        return null
+    }
+    return acc
+}
+
 def _parseSinceArg(since) {
     if (since instanceof Number) {
         return new Date(since.toLong())
@@ -8900,7 +8937,7 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
-`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, device-filtered logs, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. Native device operations require the MCP app's Hub Security credentials when Hub Security is enabled; without them, native reads and writes cannot authenticate. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution.
+`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. Native device operations require the MCP app's Hub Security credentials when Hub Security is enabled; without them, native reads and writes cannot authenticate. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution.
 
 **selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
 
