@@ -1591,9 +1591,27 @@ def toolDeviceHealthCheck(args) {
         }
     }
 
-    if (!settings.selectedDevices) {
+    def inventory
+    try {
+        inventory = toolListDevices(false, 0, 0, null, null, null, "summary", ["id", "label", "lastActivity"])
+    } catch (Exception e) {
+        inventory = [success: false, error: "Native device inventory could not be read (${e.class.simpleName})."]
+    }
+    if (inventory?.success == false || !(inventory?.devices instanceof List)) {
+        def failedResult = [success: false,
+            error: inventory?.error ?: "Native device inventory returned an unexpected response.",
+            note: inventory?.note ?: "Retry the native inventory read; device health could not be assessed."]
+        if (pingResults != null) failedResult.pingResults = pingResults
+        if (tracerouteResult != null) failedResult.traceroute = tracerouteResult
+        if (speedtestResult != null) failedResult.speedtest = speedtestResult
+        if (identifyHubFields != null) failedResult.putAll(identifyHubFields)
+        return failedResult
+    }
+    def devices = inventory.devices
+    // SDK inventory retained for rollback: if (!settings.selectedDevices) {
+    if (!devices) {
         def emptyResult = [
-            message: "No devices selected for MCP access",
+            message: inventory.message ?: "No devices available for MCP access",
             summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]
         ]
         if (pingResults != null) emptyResult.pingResults = pingResults
@@ -1609,7 +1627,8 @@ def toolDeviceHealthCheck(args) {
     def stale = []
     def unknown = []
 
-    settings.selectedDevices.each { device ->
+    // SDK inventory retained for rollback: settings.selectedDevices.each { device ->
+    devices.each { device ->
         try {
             def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
             def entry = [
@@ -1617,17 +1636,15 @@ def toolDeviceHealthCheck(args) {
                 name: deviceLabel
             ]
 
-            def lastActivity = null
-            try {
-                lastActivity = device.lastActivity
-            } catch (MissingPropertyException ignored) {
-                // Expected: some device types don't expose lastActivity. Fall through to "never".
-            } catch (Exception e) {
-                // Unexpected -- a sandbox tightening or device-proxy change rather than the
-                // documented MissingPropertyException case. Log so a "why are all my devices
-                // unknown" report has a breadcrumb to chase; still fall through to "never".
-                mcpLog("debug", "monitoring", "hub_get_device_health could not read lastActivity for device ${device.id}: ${e.class.simpleName}: ${e.message}")
-            }
+            // SDK activity read retained for rollback:
+            // def lastActivity = null
+            // try {
+            //     lastActivity = device.lastActivity
+            // } catch (MissingPropertyException ignored) {
+            // } catch (Exception e) {
+            //     mcpLog("debug", "monitoring", "hub_get_device_health could not read lastActivity for device ${device.id}: ${e.class.simpleName}: ${e.message}")
+            // }
+            def lastActivity = device.lastActivity != null ? _parseSinceArg(device.lastActivity) : null
 
             if (lastActivity) {
                 try {
@@ -1669,7 +1686,8 @@ def toolDeviceHealthCheck(args) {
 
     def result = [
         summary: [
-            totalDevices: settings.selectedDevices.size(),
+            // SDK count retained for rollback: totalDevices: settings.selectedDevices.size(),
+            totalDevices: devices.size(),
             healthyCount: healthy.size(),
             staleCount: stale.size(),
             unknownCount: unknown.size(),

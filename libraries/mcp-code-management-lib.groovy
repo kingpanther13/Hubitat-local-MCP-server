@@ -2577,13 +2577,11 @@ def toolListInstalledApps(args) {
 def toolGetDeviceInUseBy(args) {
     if (!args?.deviceId) throw new IllegalArgumentException("deviceId is required")
     def deviceId = args.deviceId.toString().trim()
-    // /device/fullJson/<id> returns a parseable non-empty body even for unknown ids
-    // (empty appsUsing, null fields), which would read as "device has no apps" rather
-    // than "device doesn't exist". Validate up front against the hub's device registry
-    // so callers get an explicit Device-not-found error. Mirrors toolGetHubLogs.
-    if (!findDevice(deviceId)) {
-        throw new IllegalArgumentException("Device not found: ${deviceId}")
-    }
+    // SDK registry-only gate retained for rollback:
+    // if (!findDevice(deviceId)) {
+    //     throw new IllegalArgumentException("Device not found: ${deviceId}")
+    // }
+    boolean listed = _requireDeviceToolAccess(deviceId)
 
     try {
         def responseText = hubInternalGet("/device/fullJson/${deviceId}")
@@ -2595,6 +2593,15 @@ def toolGetDeviceInUseBy(args) {
             parsed = new groovy.json.JsonSlurper().parseText(responseText)
         } catch (Exception parseErr) {
             return [success: false, error: "Failed to parse device JSON: ${parseErr.message}", note: "Device ID '${deviceId}' may not exist, or firmware changed the endpoint format."]
+        }
+
+        // Unknown native ids can return parseable JSON with empty appsUsing. Require
+        // matching identity for bypass-only access before reporting no dependents.
+        if (!(parsed instanceof Map) || (!listed &&
+            (!(parsed.device instanceof Map) || parsed.device.id?.toString() != deviceId))) {
+            return [success: false, deviceId: deviceId,
+                    error: "Device metadata could not be verified for ${deviceId}.",
+                    note: "Verify the device exists in the native Devices page and retry."]
         }
 
         // Defensive shape check: if firmware drifts and appsUsing arrives as a Map

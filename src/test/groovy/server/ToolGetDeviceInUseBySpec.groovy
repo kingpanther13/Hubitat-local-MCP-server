@@ -7,9 +7,9 @@ import support.ToolSpecBase
  * Spec for toolGetDeviceInUseBy (libraries/mcp-code-management-lib.groovy).
  * Gateway: hub_read_apps_code -> hub_list_device_dependents.
  *
- * Critical: PR-79-review fix tightened deviceId validation -- findDevice()
- * is called before any HTTP request, so unknown IDs throw
- * IllegalArgumentException without a network round-trip.
+ * Device access is checked before native HTTP. Unselected IDs require bypass;
+ * bypass-only IDs additionally require matching native identity before dependents
+ * can be reported. Selected and child identities do not require SDK metadata.
  *
  * Covers: gate-throw, missing deviceId, unknown-deviceId (throws before HTTP),
  * golden path with deviceName fallback chain, non-numeric appsUsingCount warn
