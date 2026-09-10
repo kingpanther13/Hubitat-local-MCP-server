@@ -846,7 +846,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.deviceId == '42'
         result.deviceName == 'Audit Device'
         result.message.contains('permanently deleted') == verified
-        verified || result.warnings.any { it.contains('UNVERIFIED') }
+        result.warnings.any { it.contains('UNVERIFIED') } == !verified
         hubGet.calls.count { it.path == '/device/forceDelete/42/yes' } == 1
 
         where:
@@ -900,4 +900,28 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+    @spock.lang.Unroll
+    def 'delete distinguishes unavailable activity history from a quiet device with events=#events'() {
+        given:
+        enableWrite()
+        def reads = 0
+        hubGet.register('/device/fullJson/42') {
+            ++reads == 1 ? '{"device":{"id":42,"name":"Audit Device","deviceNetworkId":"scratch-42","lastActivityTime":"unparseable"}}' : '{"device":null}'
+        }
+        hubGet.register('/device/eventsJson/42') { events }
+        hubGet.register('/device/forceDelete/42/yes') { 'ok' }
+
+        when:
+        def result = script.toolDeleteDevice([deviceId: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.warnings.any { it.contains('ACTIVITY UNAVAILABLE') }
+        result.warnings.any { it.contains('EVENT HISTORY UNAVAILABLE') } == (events != '[]')
+        !result.warnings.any { it.contains('HAS RECENT EVENTS') }
+
+        where:
+        events << ['[]', null, '<html>offline</html>']
+    }
+
 }

@@ -641,6 +641,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace list_options returns the hub's compatible replacement candidates (read-only, no confirm)"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         hubGet.register('/device/getReplacementOptions/80') { params ->
             '[{"deviceTypes":["Graph"],"id":23,"name":"Alice T&H 2"},{"deviceTypes":["Graph"],"id":55,"name":"Hue Group"}]'
         }
@@ -659,6 +660,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace happy path: GET /device/replace?oldId&newId, old id preserved"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         enableWriteWithBackup()
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> '{"success":true}' }
 
@@ -674,6 +676,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "hub_call_device_replace via dispatch returns the success envelope (useGateways=#useGateways)"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         settingsMap.useGateways = useGateways
         enableWriteWithBackup()
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> '{"success":true}' }
@@ -692,6 +695,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace without confirm maps to -32602 via dispatch (useGateways=#useGateways)"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         settingsMap.useGateways = useGateways
 
         when:
@@ -707,6 +711,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace surfaces a hub failure without false-greening"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         enableWriteWithBackup()
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> '{"success":false,"message":"incompatible device"}' }
 
@@ -720,6 +725,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace rejects identical old and new device ids"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         enableWriteWithBackup()
 
         when:
@@ -732,6 +738,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace without new_device_id (and no list_options) throws asking for it"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         enableWriteWithBackup()
 
         when:
@@ -744,6 +751,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace list_options read FAILURE returns success:false (not an empty no-candidates result)"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         // The read endpoint throws (relay/auth/transient) -- must surface as a failure, NOT as
         // success:true with empty options (which would read as 'this device is unreplaceable').
         hubGet.register('/device/getReplacementOptions/80') { params -> throw new RuntimeException("hub unreachable") }
@@ -758,6 +766,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace list_options non-list response returns success:false (not empty success)"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         // A 2xx-but-non-array body (e.g. an {error:...} object or HTML) is a failed read, not
         // 'no candidates'.
         hubGet.register('/device/getReplacementOptions/80') { params -> '{"error":"unknown device"}' }
@@ -772,6 +781,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace list_options empty array is a clean no-candidates success"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         hubGet.register('/device/getReplacementOptions/80') { params -> '[]' }
 
         when:
@@ -785,6 +795,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace apply: a thrown hub error returns a structured failure with a recovery note"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         enableWriteWithBackup()
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> throw new RuntimeException("relay 504") }
 
@@ -799,6 +810,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace apply: an unparseable hub response is not greened"() {
         given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         enableWriteWithBackup()
         hubGet.register('/device/replace?oldId=80&newId=23') { params -> '<html>error</html>' }
 
@@ -813,6 +825,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     def "device replace apply without a recent backup throws BACKUP REQUIRED"() {
         given: 'no lastBackupTimestamp seeded'
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         settingsMap.enableWrite = true
 
         when:
@@ -822,4 +835,47 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('BACKUP REQUIRED')
     }
+    @spock.lang.Unroll
+    def 'replace rejects inaccessible #deniedId before any endpoint call in options=#options'() {
+        given:
+        enableWriteWithBackup()
+        childDevicesList.addAll([[id: '80'], [id: '23']].findAll { it.id != deniedId })
+
+        when:
+        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', list_options: options, confirm: true])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains(deniedId)
+        hubGet.calls.empty
+
+        where:
+        [deniedId, options] << [['80', '23'], [false, true]].combinations()
+    }
+
+    @spock.lang.Unroll
+    def 'replace authorizes both IDs for #ownership with bypass=#bypass via MCP'() {
+        given:
+        enableWriteWithBackup()
+        settingsMap.bypassDeviceAllowlist = bypass
+        if (ownership == 'selected') settingsMap.selectedDevices = [[id: '80'], [id: '23']]
+        if (ownership == 'child') childDevicesList.addAll([[id: '80'], [id: '23']])
+        hubGet.register('/device/replace?oldId=80&newId=23') { '{"success":true}' }
+
+        when:
+        def response = mcpDriver.callTool('hub_call_device_replace', [old_device_id: '80', new_device_id: '23', confirm: true])
+
+        then:
+        if (ownership == 'unlisted' && !bypass) {
+            assert response.error.code == -32602
+            assert hubGet.calls.empty
+        } else {
+            assert mcpDriver.parseInner(response).success == true
+            assert hubGet.calls.count { it.path == '/device/replace' } == 1
+        }
+
+        where:
+        [ownership, bypass] << [['selected', 'child', 'unlisted'], [false, true]].combinations()
+    }
+
 }

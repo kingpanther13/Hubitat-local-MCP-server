@@ -1496,7 +1496,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         !result.changes.any { it.property == property }
         result.changes.find { it.property == 'notes' }?.newValue == 'New note'
         result.errors.any { it.property == property }
-        outcome == 'restored' || result.errors.any { it.property == property && it.error.contains('restor') }
+        result.errors.any { it.property == property && it.stage == 'restore' } == (outcome != 'restored')
 
         where:
         [property, outcome, ownership] << [['label', 'name', 'deviceNetworkId'], ['restored', 'throws', 'no-op'], ['selected', 'child', 'unlisted']].combinations()

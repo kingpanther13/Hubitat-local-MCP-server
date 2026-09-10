@@ -59,7 +59,7 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         result.summary.contains('Native 1 (1, Den) - Switch; switch=on')
         result.hasMore == bypass
         (result.nextCursor == '1') == bypass
-        !hubGet.calls.any { it.path == '/device/fullJson/3' } || bypass
+        hubGet.calls.any { it.path == '/device/fullJson/3' } == bypass
 
         where:
         bypass << [false, true]
@@ -255,6 +255,84 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         then:
         result.success == false
         !result.containsKey('devices')
+    }
+
+    @Unroll
+    def 'context retains healthy devices and marks #failure native reads unavailable'() {
+        given:
+        nativeFixture()
+        if (failure == 'identity') models['1'].device.id = 99
+        else models['1'].device.remove('currentStates')
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, null, null, 'context')
+        def summary = script._buildContextSummaryText()
+        def structured = script._buildContextJson()
+
+        then:
+        result.summary.contains('state unavailable')
+        summary.contains('state unavailable')
+        structured.devices*.id == ['1', '2']
+        structured.devices[0].stateUnavailable == true
+        structured.devices[1].attributes.switch == 'off'
+        structured.devices[1].stateUnavailable != true
+        structured.partial == true
+
+        where:
+        failure << ['identity', 'currentStates']
+    }
+
+    @Unroll
+    def 'scope all keeps an explicit partial capability result for format=#format and filter=#filter'() {
+        given:
+        nativeFixture()
+        hubGet.register('/device/listWithCapabilities/json') {
+            JsonOutput.toJson([[id: 1, label: 'Native 1'], [id: 2, label: 'Native 2', capabilities: ['Switch']]])
+        }
+        models['1'].device.id = 99
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, null, filter, format, null, null, 'all')
+
+        then:
+        result.success != false
+        result.capabilitiesPartial == true
+        result.capabilitiesUnavailableIds == ['1']
+        result.capabilitiesNote.toString().contains('unavailable')
+        result.total == (filter ? 1 : 2)
+        if (format == 'summary' && !filter) assert result.devices[0].capabilitiesUnavailable == true
+
+        where:
+        [format, filter] << [['summary', 'ids'], [null, 'Switch']].combinations()
+    }
+
+    def 'label-only filtering uses native bulk labels before page hydration'() {
+        given:
+        nativeFixture()
+
+        when:
+        def result = script.toolListDevices(false, 0, 1, null, 'Native 2')
+
+        then:
+        result.total == 1
+        result.devices*.id == ['2']
+        hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path == ['/device/fullJson/2']
+    }
+
+    def 'malformed native activity logs once across filtering and projection'() {
+        given:
+        nativeFixture()
+        models['1'].device.lastActivityTime = 'not a timestamp'
+        def messages = []
+        script.metaClass.mcpLog = { String level, String category, String message ->
+            if (level == 'error') messages << message
+        }
+
+        when:
+        script.toolListDevices(false, 0, 10, 'stale:1')
+
+        then:
+        messages.count { it.contains('lastActivityTime') && it.contains('1') } == 1
     }
 
 }

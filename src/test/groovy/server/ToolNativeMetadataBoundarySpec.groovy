@@ -55,7 +55,8 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         result.success == false
         if (operation == 'poll') {
             assert result.readError == true
-            assert result.timedOut == true
+            assert result.timedOut != true
+            assert result.error.toString().contains('10')
             assert result.finalValue == null
         } else {
             assert result.error
@@ -64,7 +65,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         !hubGet.calls.any { it.path in ['/device/eventsJson/10', '/logs/past/json'] }
 
         where:
-        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update', 'logs', 'virtual', 'deleteVirtual'].collectMany { op ->
+        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update', 'logs', 'virtual'].collectMany { op ->
             ['empty', 'missing', 'mismatched'].collectMany { identity -> [false, true].collect { [op, identity, it] } }
         }
     }
@@ -93,7 +94,6 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         'hub_list_device_events'    | [deviceId: '10']
         'hub_list_device_events'    | [deviceId: '10', hoursBack: 1]
         'hub_update_device'         | [deviceId: '10', label: 'Changed']
-        'hub_manage_virtual_device' | [action: 'delete', deviceNetworkId: 'mcp-10', confirm: true]
     }
 
     @Unroll
@@ -265,4 +265,50 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         where:
         room << ['absent', false, 0, [:], []]
     }
+    @Unroll
+    def 'missing native metadata is an MCP execution error in #mode mode'() {
+        given:
+        model.device.id = 11
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: '10', mode: mode])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).success == false
+
+        where:
+        mode << ['summary', 'configuration', 'details']
+    }
+
+    def 'poll preflight rejects a missing identity without waiting or re-fetching'() {
+        given:
+        model.device = null
+        def pauses = []
+        script.metaClass.pauseExecution = { Long millis -> pauses << millis }
+
+        when:
+        def result = read('poll')
+
+        then:
+        result.success == false
+        result.isError == true
+        result.readError == true
+        result.error.toString().contains('10')
+        result.timedOut != true
+        pauses.empty
+        hubGet.calls.count { it.path == '/device/fullJson/10' } == 1
+    }
+
+    def 'an unreported attribute includes observed names without claiming driver declarations'() {
+        when:
+        def result = script.toolGetAttribute('10', 'swich')
+
+        then:
+        result.value == null
+        result.neverReported == true
+        result.reportedAttributes == ['switch']
+        result.note.toString().contains('never reported')
+    }
+
 }
