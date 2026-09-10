@@ -185,6 +185,50 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         !result.containsKey('deviceIds')
     }
 
+    @Unroll
+    def 'inventory #fields rejects unavailable required #field metadata'() {
+        given:
+        nativeFixture()
+        def source = field == 'commands' ? models['1'] : models['1'].device
+        source.remove(field)
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, null, null, 'summary', fields)
+
+        then:
+        result.success == false
+        result.error.toString().contains(field)
+        !result.containsKey('devices')
+
+        where:
+        field           | fields
+        'commands'      | ['commands']
+        'capabilities'  | ['capabilities']
+        'currentStates' | ['currentStates']
+        'currentStates' | ['attributes']
+    }
+
+    @Unroll
+    def 'inventory #fields does not require unrelated missing collections'() {
+        given:
+        nativeFixture()
+        models.values().each { full ->
+            full.remove('commands')
+            full.device.remove('capabilities')
+            full.device.remove('currentStates')
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, 'Native', null, 'summary', fields)
+
+        then:
+        result.devices*.id == ['1', '2']
+        result.devices*.label == ['Native 1', 'Native 2']
+
+        where:
+        fields << [['label'], ['id', 'label']]
+    }
+
     def 'scope all rejects malformed inventory records rather than omitting them'() {
         given:
         nativeFixture()
