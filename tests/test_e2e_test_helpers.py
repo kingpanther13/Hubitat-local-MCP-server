@@ -2224,14 +2224,23 @@ def test_poll_wall_clock_scenarios_use_observed_state_without_device_commands(mo
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("stays_stale", [False, True])
-def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observations(monkeypatch, stays_stale):
+@pytest.mark.parametrize("stays_stale,logs_fail", [(False, False), (True, False), (True, True)])
+def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observations(
+    monkeypatch, capsys, stays_stale, logs_fail,
+):
     clock = [0.0]
     monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(et.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     reads = []
+    log_reads = []
 
     def call_tool(name, arguments):
+        if name == "hub_get_logs":
+            assert arguments == {"deviceId": "10", "level": "error", "limit": 10}
+            log_reads.append(arguments.copy())
+            if logs_fail:
+                raise et.McpToolError("hub_get_logs", "diagnostic unavailable")
+            return {"logs": [{"message": "fixture command rejected"}]}
         assert name == "hub_get_device_attribute", "identity wait must not repeat the observer command"
         assert arguments == {"deviceId": "10", "attribute": "nativeDeviceInfo"}
         reads.append(arguments.copy())
@@ -2246,7 +2255,12 @@ def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observ
         with pytest.raises(AssertionError, match="observer did not complete for device 10, nonce 123"):
             runner._wait_configuration_fixture_identity("10", "123")
         assert clock[0] == 10.0
+        assert len(log_reads) == 1
+        output = capsys.readouterr().out
+        assert "CONFIGURATION_OBSERVER_LOGS device 10" in output
+        assert ("diagnostic unavailable" if logs_fail else "fixture command rejected") in output
     else:
         result = runner._wait_configuration_fixture_identity("10", "123")
         assert result["nonce"] == "123" and result["deviceId"] == "10"
         assert len(reads) == 2
+        assert not log_reads
