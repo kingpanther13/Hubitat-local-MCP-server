@@ -193,6 +193,45 @@ class MrtrCleanupSpec extends ToolSpecBase {
         paths == ['/installedapp/forcedelete/77/quiet']
     }
 
+    def 'detached worker finally rearms parked cleanup after an uncaught Error'() {
+        given:
+        long at = script.now()
+        atomicStateMap.mrtrRequests = [active: [status: 'active', leafTool: 'hub_set_rule',
+            outerTool: 'hub_set_rule', expiresAt: at + 1000L, claimId: 'worker', generation: 1,
+            checkpoint: [clonerAppId: 77]]]
+        script._writeStateCacheInvalidate()
+        (scriptStaticField('MRTR_WORK_ITEMS') as Map).put('worker',
+            [stateId: 'active', generation: 1, started: false, arguments: [:]])
+        List paths = []
+        script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
+            paths << path
+            [status: 302, data: '']
+        }
+        script.metaClass.executeTool = { String tool, Map args ->
+            NOW_OVERRIDE.set({ at + 2000L })
+            script.runMrtrCleanup()
+            assert jobs().isEmpty()
+            throw new AssertionError('injected worker failure' as Object)
+        }
+
+        when:
+        script.runMrtrSlice([stateId: 'active', claimId: 'worker', generation: 1])
+
+        then:
+        thrown(AssertionError)
+        !(scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).contains('worker')
+        jobs().last()[0] == 1
+        paths.isEmpty()
+
+        when:
+        NOW_OVERRIDE.set({ at + 3000L })
+        script.runMrtrCleanup()
+
+        then:
+        atomicStateMap.mrtrRequests.isEmpty()
+        paths == ['/installedapp/forcedelete/77/quiet']
+    }
+
     def 'scheduler failure is visible at the default log level and backs off without failing publication'() {
         given:
         long at = script.now()
