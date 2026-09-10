@@ -1113,6 +1113,7 @@ private boolean _bypassEnabled() {
 
 // Selection grants access; native HTTP execution does not grant it implicitly.
 private boolean _requireDeviceToolAccess(deviceId) {
+    _validateNativeDeviceId(deviceId)
     boolean listed = findDevice(deviceId) != null
     if (!listed && !_bypassEnabled()) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -1120,11 +1121,18 @@ private boolean _requireDeviceToolAccess(deviceId) {
     return listed
 }
 
+private void _validateNativeDeviceId(deviceId) {
+    if (deviceId == null || !(deviceId.toString() ==~ /[0-9]+/)) {
+        throw new IllegalArgumentException('deviceId must contain only decimal digits from hub_list_devices')
+    }
+}
+
 // Fetch + parse /device/fullJson/<id>. Returns the parsed Map ({device, commands, ...}) or null
 // on a fetch/parse failure or a non-object body. The bypass fallbacks read device state, the
 // attribute list, and the command set from this -- the Groovy device object is unavailable for
 // an unlisted device (the device model is authorization-scoped).
 private Map _fetchDeviceFullJson(deviceId) {
+    _validateNativeDeviceId(deviceId)
     String stage = 'fetch'
     try {
         def txt = hubInternalGet("/device/fullJson/${deviceId}")
@@ -1156,6 +1164,9 @@ private Map _confirmDisabledFlip(deviceId, boolean wantDisabled) {
     def fj = _fetchDeviceFullJson(deviceId)
     if (fj?.device == null) return [ok: false, fetchFailed: true]
     def raw = fj.device.disabled
+    if (!(raw instanceof Boolean) && !(raw instanceof CharSequence && raw.toString() in ['true', 'false'])) {
+        return [ok: false, fetchFailed: true]
+    }
     def nowDisabled = (raw == true || raw?.toString() == "true")
     return (nowDisabled == wantDisabled) ? [ok: true] : [ok: false, actualDisabled: nowDisabled]
 }
@@ -5398,6 +5409,7 @@ def toolDeleteDevice(args) {
     if (!args.deviceId) throw new IllegalArgumentException("deviceId is required")
 
     def deviceId = args.deviceId.toString()
+    _validateNativeDeviceId(deviceId)
 
     // Step 1: Gather device information for audit trail via hub internal API
     // We intentionally do NOT restrict to findDevice() (selectedDevices only) because

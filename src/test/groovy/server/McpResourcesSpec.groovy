@@ -36,7 +36,7 @@ class McpResourcesSpec extends ToolSpecBase {
     }
 
     private Map dispatch(Map body, Map headers = null) {
-        if (body.method == 'resources/read' && body.params?.uri?.startsWith('hubitat://context')) {
+        if (body.method == 'resources/read' && body.params?.uri instanceof String && body.params.uri.startsWith('hubitat://context')) {
             ((settingsMap.selectedDevices ?: []) + childDevicesList).each { device ->
                 NativeInventoryFixture.register(hubGet, device.id.toString()) { device }
             }
