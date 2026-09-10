@@ -1076,7 +1076,10 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
 
     def "device-count cap rejects more than 20 deviceIds -> IAE naming the cap and the count"() {
         given:
-        (700..722).each { nativePollDevice(new) TestDevice(id: it, label: "D${it}", supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on']) }
+        (700..722).each {
+            nativePollDevice(new TestDevice(id: it, label: "D${it}",
+                supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on']))
+        }
         def ids = (700..720).collect { it.toString() }   // 21 devices
 
         when:
