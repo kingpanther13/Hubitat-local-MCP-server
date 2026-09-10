@@ -141,6 +141,22 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         !result.devices[0].containsKey('capabilities')
     }
 
+    def 'virtual inventory does not invent hubitat namespace when native namespace metadata is missing'() {
+        given:
+        owned('77')
+        models['77'].device.data = [:]
+        models['77'].device.remove('deviceTypeNamespace')
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.partialSuccess == true
+        result.devices[0].driverNamespace == null
+        result.devices[0].warnings
+        result.devices[0].driverType == 'Native Driver'
+    }
+
     def 'create persists namespace through fixed native writer with readback and returns native reported attributes'() {
         given:
         creator()
