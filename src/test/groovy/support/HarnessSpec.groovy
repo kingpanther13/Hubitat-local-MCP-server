@@ -332,6 +332,7 @@ abstract class HarnessSpec extends Specification {
         // feature's sweep or cleanup observe work it never scheduled.
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         (scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map).clear()
+        (scriptStaticField('MRTR_CLEANUP_CHECK_AT') as Map).clear()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         (scriptStaticField('TOOL_METADATA_CACHE') as Map).clear()
         (scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set).clear()

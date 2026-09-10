@@ -14,11 +14,14 @@ class MrtrCleanupSpec extends ToolSpecBase {
     private static class FailingState extends LinkedHashMap {
         int writes
         int failWrite
+        Closure afterWrite
         Object put(Object key, Object value) {
             if (key == 'mrtrRequests' && ++writes == failWrite) {
                 throw new IllegalStateException('injected MRTR persistence failure')
             }
-            return super.put(key, value)
+            def previous = super.put(key, value)
+            if (key == 'mrtrRequests' && afterWrite != null) afterWrite.call(value)
+            return previous
         }
     }
 
@@ -126,6 +129,7 @@ class MrtrCleanupSpec extends ToolSpecBase {
 
         when: 'a code reload loses static scheduling metadata'
         (scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map).clear()
+        (scriptStaticField('MRTR_CLEANUP_CHECK_AT') as Map).clear()
         script._writeStateCacheInvalidate()
         script._mrtrEnsureCleanupScheduled()
 
@@ -382,26 +386,26 @@ class MrtrCleanupSpec extends ToolSpecBase {
 
     def 'rescan failure after committed eviction reports rescheduling and still cleans helpers'() {
         given:
-        atomicStateMap.mrtrRequests = [expired: [status: 'active', expiresAt: script.now() - 1L,
-            checkpoint: [clonerAppId: 77]]]
-        script._writeStateCacheInvalidate()
+        Map expired = [status: 'active', expiresAt: script.now() - 1L, checkpoint: [clonerAppId: 77]]
+        def (peer, backing) = failingPeer([expired: expired, keep: terminal(script.now() + 600000L)], 0)
+        // Inject an unreadable surviving deadline only after the eviction write commits.
+        backing.@afterWrite = { Map records -> records.keep.expiresAt = 'unreadable' }
         List paths = []
-        script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
+        peer.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
             paths << path
             [status: 302, data: '']
         }
-        script.metaClass._mrtrScheduleNextCleanupLocked = { -> throw new IllegalStateException('rescan unavailable') }
-        def errors = script.initDebugLogs().entries
+        def errors = peer.initDebugLogs().entries
 
         when:
-        script.runMrtrCleanup()
+        peer.runMrtrCleanup()
 
         then:
-        atomicStateMap.mrtrRequests.isEmpty()
+        backing.get('mrtrRequests').keySet() == ['keep'] as Set
         paths == ['/installedapp/forcedelete/77/quiet']
         jobs().last()[0] == 60
-        errors.any { it.entry.message.contains('rescheduling') && it.entry.message.contains('rescan unavailable') }
-        !errors.any { it.entry.message.contains('Expiry cleanup deferred') }
+        errors.any { it.entry.message.contains('rescheduling') }
+        !errors.any { it.entry.message.contains('Expiry sweep failed') }
     }
 
     def 'background persistence failure requeues a bounded retry and later removes expired records'() {

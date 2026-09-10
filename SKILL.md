@@ -396,13 +396,14 @@ The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecur
 |-----|------|---------|
 | `accessToken` | String | OAuth token for MCP endpoint |
 | `ruleVariables` | Map | Global variables shared across rules |
-| `capturedDeviceStates` | Map | Snapshots of device states |
 | `debugLogs` | Map | Small `{config: {logLevel, maxEntries}}` only; entries use a bounded class cache backed by native Past Logs |
 | `hubSecurityCookie` | String | Cached auth cookie |
 | `hubSecurityCookieExpiry` | Long | Cookie expiry epoch ms |
 | `lastBackupTimestamp` | Long | Newest known hub backup epoch ms (24-hour write safety gate; stamped by hub_create_backup or refreshed from the hub's local backup list on a gate fallback) |
 | `itemBackupManifest` | Map | Metadata for source code backups stored in File Manager, keyed by `"app_<id>"` / `"driver_<id>"` / `"library_<id>"`, max 20 entries |
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
+
+Legacy device captures live in per-app class-static memory, not `state` or `atomicState`. Existing `capturedDeviceStates` keys are imported and removed on capture-store access; captures are intentionally lost on app code reload or hub restart. See `docs/capture-storage.md`.
 
 MCP log entries are emitted through Hubitat's native logger with structured metadata for recovery after reload. `atomicState.debugLogGeneration` is a small clear marker; do not put log entries or history arrays back into `state` or `atomicState`. The MCP memory view is bounded to 100 entries, and native recovery follows Hubitat's shared Past Logs retention. See `TOOL_GUIDE.md` for logging behavior.
 

@@ -259,6 +259,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         def schedules = scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map
         def cleaned = scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set
         def retries = scriptStaticField('RETIRED_TOOL_STATE_RETRY_AT') as Map
+        script._mrtrEnsureCleanupScheduled()
         schedules.putAll(['1': [checked: true], 'other': [checked: true]])
         cleaned.addAll(['1', 'other'])
         retries.putAll(['1': 123L, 'other': 456L])
@@ -268,6 +269,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
         then:
         schedules.keySet() == ['other'] as Set
+        !(scriptStaticField('MRTR_CLEANUP_CHECK_AT') as Map).containsKey('1')
         cleaned == ['other'] as Set
         retries == [other: 456L]
     }

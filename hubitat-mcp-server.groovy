@@ -34,6 +34,9 @@
 // Per-app scheduler hints only; records remain durable. Class reloads bootstrap
 // from the first request or lifecycle initialization under WRITE_RESERVATION_LOCK.
 @groovy.transform.Field static final Map MRTR_CLEANUP_SCHEDULES = new java.util.HashMap()
+// Copy-on-write deadline snapshots let warm reads bypass the write mutex. Publish
+// only under WRITE_RESERVATION_LOCK; never mutate a published map in production.
+@groovy.transform.Field static volatile Map MRTR_CLEANUP_CHECK_AT = [:]
 // Per execution: never pass this clock into a destructive inner wizard operation.
 @groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
 // JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
@@ -69,7 +72,7 @@
 // warm. The tool surface is code, so within one class lifetime the value cannot change --
 // concurrent computers race to the same answer -- and a code deploy recompiles the class,
 // clearing it, which is exactly the event the fingerprint exists to catch. updated() clears
-// it too. The only non-final static here; it is assigned, not mutated in place.
+// it too. It is assigned, not mutated in place.
 @groovy.transform.Field static String TOOL_SEARCH_CORPUS_FP = null
 // The BM25 search index (corpus + per-doc tokens, keyed by the corpus fingerprint). A class static,
 // NOT atomicState: persisted, the two lists were ~244 KB of app state that Hubitat re-serialised
@@ -632,6 +635,17 @@ def updated() {
 def uninstalled() {
     log.info "MCP Rule Server uninstalled"
     _resetCaptureStore()
+    String appKey = app?.id?.toString() ?: "unidentified"
+    synchronized (WRITE_RESERVATION_LOCK) {
+        MRTR_CLEANUP_SCHEDULES.remove(appKey)
+        Map checks = [:] + MRTR_CLEANUP_CHECK_AT
+        checks.remove(appKey)
+        MRTR_CLEANUP_CHECK_AT = checks
+    }
+    synchronized (RETIRED_TOOL_STATE_CLEANED) {
+        RETIRED_TOOL_STATE_CLEANED.remove(appKey)
+        RETIRED_TOOL_STATE_RETRY_AT.remove(appKey)
+    }
 
     // Clean up this app's hub-variable in-use registrations so deleting the
     // app doesn't leave Hubitat warning users about vars no rule references
@@ -2282,6 +2296,26 @@ private Map _mrtrCleanupScheduleLocked() {
     return hint
 }
 
+private void _mrtrPublishCleanupCheckLocked(Map hint) {
+    long nextCheck = 0L
+    if (hint.retryAt != null) nextCheck = hint.retryAt as Long
+    else if (hint.dueAt != null) nextCheck = (hint.dueAt as Long) + 60000L
+    else if (hint.checked == true) nextCheck = Long.MAX_VALUE
+    String appKey = app?.id?.toString() ?: "unidentified"
+    if (MRTR_CLEANUP_CHECK_AT.get(appKey) != nextCheck) {
+        MRTR_CLEANUP_CHECK_AT = MRTR_CLEANUP_CHECK_AT + [(appKey): nextCheck]
+    }
+}
+
+// Expired live owners need no polling: their release path rearms cleanup. A
+// platform-killed owner that skips finally stays protected until class reload.
+private void _mrtrReleaseExecutionLocked(executionId) {
+    if (executionId == null || !LIVE_WRITE_EXECUTIONS.remove(executionId.toString())) return
+    if (_mrtrCleanupScheduleLocked().waitingOnLive == true) {
+        _mrtrScheduleCleanupLocked(now() + 1000L)
+    }
+}
+
 // Scheduling errors must not turn an already-durable result into a failed write.
 // A request can retry after backoff; successful scheduling needs no further traffic.
 private void _mrtrScheduleCleanupLocked(long expiry) {
@@ -2299,7 +2333,9 @@ private void _mrtrScheduleCleanupLocked(long expiry) {
         hint.remove("retryAt")
     } catch (Exception scheduleErr) {
         hint.retryAt = at + 60000L
-        _cleanupWarn("mrtr", "Expiry cleanup scheduling deferred for 60 seconds: ${_cleanupFailureDetail(scheduleErr)}")
+        _cleanupError("mrtr", "Expiry cleanup scheduling deferred for 60 seconds: ${_cleanupFailureDetail(scheduleErr)}")
+    } finally {
+        _mrtrPublishCleanupCheckLocked(hint)
     }
 }
 
@@ -2308,25 +2344,32 @@ private void _mrtrScheduleNextCleanupLocked() {
     Map hint = _mrtrCleanupScheduleLocked()
     Map records = _writeStateMapLocked("mrtrRequests")
     hint.checked = true
+    hint.remove("waitingOnLive")
     if (records.isEmpty()) {
         hint.remove("retryAt")
         hint.remove("compactRetryAt")
+        _mrtrPublishCleanupCheckLocked(hint)
         return
     }
     long at = now()
     long earliest = Long.MAX_VALUE
     records.each { id, rec ->
         long expiry = rec instanceof Map ? ((rec.expiresAt ?: at) as Long) : at
-        if (rec instanceof Map && rec.status == "active" && _writeExecutionLiveLocked(rec.claimId)) {
-            expiry = Math.max(expiry, at + 60000L)
+        if (expiry <= at && rec instanceof Map && rec.status == "active" && _writeExecutionLiveLocked(rec.claimId)) {
+            hint.waitingOnLive = true
+            return
         }
         earliest = Math.min(earliest, expiry)
     }
     if (hint.compactRetryAt != null) earliest = Math.min(earliest, hint.compactRetryAt as Long)
-    _mrtrScheduleCleanupLocked(earliest)
+    if (earliest != Long.MAX_VALUE) _mrtrScheduleCleanupLocked(earliest)
+    _mrtrPublishCleanupCheckLocked(hint)
 }
 
 def _mrtrEnsureCleanupScheduled(boolean reset = false) {
+    String appKey = app?.id?.toString() ?: "unidentified"
+    def nextCheck = MRTR_CLEANUP_CHECK_AT.get(appKey)
+    if (!reset && nextCheck != null && (nextCheck as Long) > now()) return
     synchronized (WRITE_RESERVATION_LOCK) {
         Map hint = _mrtrCleanupScheduleLocked()
         if (reset) hint.clear() // initialize() has just unscheduled this app's jobs.
@@ -2339,7 +2382,9 @@ def _mrtrEnsureCleanupScheduled(boolean reset = false) {
             _mrtrScheduleNextCleanupLocked()
         } catch (Exception loadErr) {
             hint.retryAt = at + 60000L
-            _cleanupWarn("mrtr", "Expiry cleanup bootstrap deferred for 60 seconds: ${_cleanupFailureDetail(loadErr)}")
+            _cleanupError("mrtr", "Expiry cleanup bootstrap deferred for 60 seconds: ${_cleanupFailureDetail(loadErr)}")
+        } finally {
+            _mrtrPublishCleanupCheckLocked(hint)
         }
     }
 }
@@ -2352,15 +2397,25 @@ def runMrtrCleanup() {
         // An older accepted job can fire after its replacement was rejected. It must
         // rearm survivors even while ordinary requests are backing off that rejection.
         hint.remove("retryAt")
+        boolean swept = false
         try {
             cleanup = _mrtrSweepLocked()
-            _mrtrScheduleNextCleanupLocked()
+            swept = true
         } catch (Exception sweepErr) {
             // Required eviction failures remain errors on reservation/replay paths.
             // Background work has no caller to fail, so preserve records and retry.
             _mrtrScheduleCleanupLocked(now() + 60000L)
-            _cleanupWarn("mrtr", "Expiry cleanup deferred for 60 seconds: ${_cleanupFailureDetail(sweepErr)}")
+            _cleanupError("mrtr", "Expiry sweep failed; retrying in 60 seconds: ${_cleanupFailureDetail(sweepErr)}")
         }
+        if (swept) {
+            try {
+                _mrtrScheduleNextCleanupLocked()
+            } catch (Exception rescheduleErr) {
+                _mrtrScheduleCleanupLocked(now() + 60000L)
+                _cleanupError("mrtr", "Expiry cleanup rescheduling deferred for 60 seconds: ${_cleanupFailureDetail(rescheduleErr)}")
+            }
+        }
+        _mrtrPublishCleanupCheckLocked(hint)
     }
     cleanup.each { _mrtrCleanupRecord(it as Map) }
 }
@@ -2498,17 +2553,16 @@ private List _mrtrSweepLocked() {
     _mrtrSweepWorkItemsLocked()
     Map hint = _mrtrCleanupScheduleLocked()
     if (((hint.compactRetryAt ?: 0L) as Long) <= at) {
-        Map compacted = [:]
-        boolean changed = false
+        Map compacted = null
         kept.each { k, v ->
             if (v.status == "terminal" && v.containsKey("terminalResult") && v.containsKey("aggregate")) {
-                v = [:] + (v as Map)
-                v.remove("aggregate")
-                changed = true
+                if (compacted == null) compacted = [:] + kept
+                Map terminal = [:] + (v as Map)
+                terminal.remove("aggregate")
+                compacted.put(k, terminal)
             }
-            compacted.put(k, v)
         }
-        if (changed) {
+        if (compacted != null) {
             try {
                 _mrtrSetLocked(compacted)
                 hint.remove("compactRetryAt")
@@ -2516,7 +2570,7 @@ private List _mrtrSweepLocked() {
                 // Keep the already-committed eviction, while replay uses durable survivors.
                 hint.compactRetryAt = at + 60000L
                 _mrtrScheduleCleanupLocked(at + 60000L)
-                _cleanupWarn("mrtr", "Terminal record compaction deferred for 60 seconds: ${_cleanupFailureDetail(compactErr)}")
+                _cleanupError("mrtr", "Terminal record compaction deferred for 60 seconds: ${_cleanupFailureDetail(compactErr)}")
             }
         } else {
             hint.remove("compactRetryAt")
@@ -2817,7 +2871,7 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
     synchronized (WRITE_RESERVATION_LOCK) {
         rec = _mrtrOwnedRecordLocked(stateId, claim)
         if (rec == null) {
-            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            _mrtrReleaseExecutionLocked(claim?.claimId)
             return null
         }
         try {
@@ -2837,7 +2891,7 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
             rec.expiresAt = rec.updatedAt + _mrtrActiveTtlMs()
             _mrtrPutLocked(stateId, rec)
         } finally {
-            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            _mrtrReleaseExecutionLocked(claim?.claimId)
         }
     }
     return rec
@@ -3066,7 +3120,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
     synchronized (WRITE_RESERVATION_LOCK) {
         def rec = _mrtrOwnedRecordLocked(stateId, claim)
         if (rec == null) {
-            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            _mrtrReleaseExecutionLocked(claim?.claimId)
             return false
         }
         try {
@@ -3104,7 +3158,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             _mrtrSweepTerminalEvidenceLocked()
             return true
         } finally {
-            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            _mrtrReleaseExecutionLocked(claim?.claimId)
         }
     }
 }
@@ -3130,7 +3184,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         synchronized (WRITE_RESERVATION_LOCK) {
             def queued = MRTR_WORK_ITEMS[claimId]
             if (queued instanceof Map && queued.started != true) {
-                LIVE_WRITE_EXECUTIONS.remove(claimId)
+                _mrtrReleaseExecutionLocked(claimId)
             }
         }
         return [accepted: true]
@@ -3178,7 +3232,7 @@ def runMrtrSlice(Map job = [:]) {
                 claim.record = rec
             } else {
                 MRTR_WORK_ITEMS.remove(claimId)
-                LIVE_WRITE_EXECUTIONS.remove(claimId)
+                _mrtrReleaseExecutionLocked(claimId)
             }
         }
     }
@@ -3215,7 +3269,7 @@ def runMrtrSlice(Map job = [:]) {
             // and keeps its requestState record unsweepable until recompile. Only
             // when no successor work item exists; a rescheduled slice manages its
             // own liveness marker.
-            if (MRTR_WORK_ITEMS[claimId] == null) LIVE_WRITE_EXECUTIONS.remove(claimId)
+            if (MRTR_WORK_ITEMS[claimId] == null) _mrtrReleaseExecutionLocked(claimId)
         }
     }
 }
@@ -3225,7 +3279,7 @@ private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String rea
     synchronized (WRITE_RESERVATION_LOCK) {
         def rec = _mrtrOwnedRecordLocked(stateId, claim)
         if (rec == null) {
-            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            _mrtrReleaseExecutionLocked(claim?.claimId)
             return
         }
         try {
@@ -3243,7 +3297,7 @@ private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String rea
             rec.remove("checkpoint")
             _mrtrPutLocked(stateId, rec)
         } finally {
-            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            _mrtrReleaseExecutionLocked(claim?.claimId)
         }
     }
     if (cleanup != null) _mrtrCleanupRecord(cleanup)
@@ -3398,7 +3452,7 @@ private void _mrtrCleanupRecord(Map rec) {
     if (clonerId == null) return
     try { _appClonerCleanup(clonerId as Integer) }
     catch (Exception e) {
-        _cleanupWarn("mrtr", "Could not clean temporary appCloner ${clonerId}: ${_cleanupFailureDetail(e)}")
+        _cleanupError("mrtr", "Could not clean temporary appCloner ${clonerId}: ${_cleanupFailureDetail(e)}")
     }
 }
 
@@ -3623,13 +3677,14 @@ private String _cleanupFailureDetail(Exception error) {
     return error.message ?: error.cause?.message ?: error.toString()
 }
 
-private void _cleanupWarn(String component, String message) {
+private void _cleanupError(String component, String message) {
     try {
-        mcpLog("warn", component, message)
+        // Failed cleanup must be visible even at the default error-only threshold.
+        mcpLog("error", component, message)
     } catch (Exception loggingErr) {
         // Cold MCP logging accesses durable configuration, which may be the failed store.
         // Native logging is the fallback; diagnostics must not change a committed outcome.
-        try { log.warn "[${component}] ${message} (MCP logging unavailable: ${_cleanupFailureDetail(loggingErr)})" }
+        try { log.error "[${component}] ${message} (MCP logging unavailable: ${_cleanupFailureDetail(loggingErr)})" }
         catch (Exception ignored) { /* Both logging sinks are unavailable; preserve recovery. */ }
     }
 }
@@ -3651,7 +3706,7 @@ def _cleanupRetiredToolState() {
             RETIRED_TOOL_STATE_RETRY_AT.remove(appKey)
         } catch (Exception e) {
             RETIRED_TOOL_STATE_RETRY_AT.put(appKey, now() + 60000L)
-            _cleanupWarn("server", "Retired tool metadata cleanup deferred for 60 seconds: ${_cleanupFailureDetail(e)}")
+            _cleanupError("server", "Retired tool metadata cleanup deferred for 60 seconds: ${_cleanupFailureDetail(e)}")
         }
     }
 }
