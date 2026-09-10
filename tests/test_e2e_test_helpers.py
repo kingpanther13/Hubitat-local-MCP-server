@@ -30,6 +30,32 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
+@pytest.mark.parametrize("method", ["test_device_health_traceroute", "test_device_health_speedtest"])
+@pytest.mark.parametrize("failure", [None, "relay", "slow_leg"])
+def test_health_probes_require_completed_bounded_transport(method, failure):
+    def call_tool(tool, args):
+        assert tool == "hub_get_device_health"
+        if failure == "relay":
+            raise et.McpError("504 Gateway Timeout")
+        return {"traceroute": {"host": args.get("tracerouteHost"), "output": "route"},
+                "speedtest": {"output": "download complete"}}
+
+    runner = et.TestRunner.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(
+        call_tool=call_tool, _last_continuation_rounds=3, _last_logical_elapsed=12.0,
+        _last_http_legs=[(10.1 if failure == "slow_leg" else 4.0, 200, True)],
+    )
+    invoke = getattr(runner, method)
+    if failure == "relay":
+        with pytest.raises(et.McpError, match="504"):
+            invoke()
+    elif failure == "slow_leg":
+        with pytest.raises(AssertionError, match="relay limits"):
+            invoke()
+    else:
+        invoke()
+
+
 @pytest.mark.parametrize("failure", [None, "flip", "read", "restore"])
 def test_metadata_mode_switch_is_registered_and_restores_without_catalog(monkeypatch, failure):
     name = "test_metadata_after_mode_switch"

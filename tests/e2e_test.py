@@ -2734,6 +2734,17 @@ class TestRunner:
             assert "matter" in str(result.get("note", "")).lower(), \
                 f"sdk_only fallback missing an actionable Matter note: {result}"
 
+    def _assert_health_probe_transport(self) -> None:
+        legs = self.client._last_http_legs
+        rounds = self.client._last_continuation_rounds
+        print(f"    health transport: continuation_rounds={rounds}, physical_legs={legs}")
+        assert legs, "Health probe returned without physical HTTP-leg evidence"
+        assert all(status is not None and 200 <= status < 300 and decoded
+                   and duration < MRTR_RELAY_LEG_CEILING_SECONDS
+                   for duration, status, decoded in legs), f"Health probe exceeded relay limits: {legs}"
+        if self.client._last_logical_elapsed >= MRTR_MIN_LOGICAL_SECONDS:
+            assert rounds > 0, "Slow health probe completed without requestState continuation"
+
     @test("diagnostics")
     def test_device_health_traceroute(self) -> None:
         # FOLD 2 (#257): traceroute folds the hub's route trace into hub_get_device_health
@@ -2742,6 +2753,7 @@ class TestRunner:
         # output (the plain-text route table), otherwise a structured error -- tolerate either so the
         # test is resilient, but assert the fold fired (traceroute present with host + output|error).
         result = self.client.call_tool("hub_get_device_health", {"tracerouteHost": "8.8.8.8"})
+        self._assert_health_probe_transport()
         assert isinstance(result, dict), "hub_get_device_health did not return an object"
         tr = result.get("traceroute")
         assert isinstance(tr, dict), f"traceroute fold did not attach a traceroute object: {result}"
@@ -2751,20 +2763,10 @@ class TestRunner:
 
     @test("diagnostics")
     def test_device_health_speedtest(self) -> None:
-        # FOLD 2 (#257): speedtest folds the hub's WAN download test into hub_get_device_health
-        # (GET /hub/networkTest/speedtest -- a fixed ~10 MB S3 blob). Unlike traceroute, the
-        # download time is inherently variable and on a slow link can exceed the ~10s cloud-relay
-        # ceiling, dropping the response with a 504 even though the hub completed it. That's an
-        # infra limit, not a tool fault, so tolerate a relay 504 as an acceptable outcome; when the
-        # response DOES come back in time, assert the fold fired (speedtest object with output|error).
-        try:
-            result = self.client.call_tool("hub_get_device_health", {"speedtest": True})
-        except (McpError, McpToolError, requests.HTTPError) as exc:
-            if "504" in str(exc) or "502" in str(exc) or "503" in str(exc):
-                print("    speedtest response lost to relay 5xx (10 MB download > ~10s ceiling) -- "
-                      "acceptable; fold reached the hub")
-                return
-            raise
+        # Native WAN download time varies; the snapshot worker must keep each relay
+        # leg bounded while returning either the probe output or its explicit error.
+        result = self.client.call_tool("hub_get_device_health", {"speedtest": True})
+        self._assert_health_probe_transport()
         assert isinstance(result, dict), "hub_get_device_health did not return an object"
         st = result.get("speedtest")
         assert isinstance(st, dict), f"speedtest fold did not attach a speedtest object: {result}"
