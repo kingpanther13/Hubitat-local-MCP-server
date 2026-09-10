@@ -34,10 +34,9 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         mcpDriver.parseResponseJson() as Map
     }
 
-    def 'queued device log worker rechecks access before HTTP when bypass is revoked'() {
+    def 'queued device log worker and continuation remain available when bypass is revoked'() {
         given:
         settingsMap.bypassDeviceAllowlist = true
-        hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 42]]) }
         hubGet.register('/logs/past/json') { '[]' }
         def args = [tool: 'hub_get_logs', args: [deviceId: '42']]
         def first = call('hub_read_diagnostics', args)
@@ -47,9 +46,13 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
 
         when:
         script.runNativeLogFetch(runInMillisCalls[0][2].data as Map)
+        def completed = call('hub_read_diagnostics', args, first.result.requestState)
 
         then:
-        !hubGet.calls.any { it.path == '/logs/past/json' }
+        completed.result.resultType == 'complete'
+        completed.result.isError != true
+        mcpDriver.parseInner(completed).count == 0
+        hubGet.calls*.path == ['/logs/past/json']
     }
 
     def "native log reads continue without foreground HTTP and preserve scoped full messages"() {

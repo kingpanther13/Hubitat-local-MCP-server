@@ -28,23 +28,35 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         bypass << [false, true]
     }
 
-    def 'scoped device logs reject unselected identity before HTTP through dispatch'() {
+    @Unroll
+    def 'scoped device logs permit unselected identity through dispatch with bypass #bypass'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = bypass
+        hubGet.register('/logs/past/json') { params ->
+            assert params == [type: 'dev', id: '42']
+            JsonOutput.toJson(['2026-09-10 10:00:00.000\tERROR\tdev|42|Unselected fixture|scoped diagnostic'])
+        }
+
         when:
         def response = mcpDriver.callTool('hub_get_logs', [deviceId: '42'])
 
         then:
-        response.error.code == -32602
-        hubGet.calls.empty
+        response.error == null
+        response.result.isError != true
+        mcpDriver.parseInner(response).logs[0].message == 'scoped diagnostic'
+        hubGet.calls*.path == ['/logs/past/json']
+
+        where:
+        bypass << [false, true]
     }
 
     @Unroll
-    def 'native device logs respect #ownership ownership with bypass #bypass'() {
+    def 'native device logs remain hub wide for #ownership ownership with bypass #bypass'() {
         given:
         def device = new TestDevice(id: 42, name: 'Log fixture')
         if (ownership == 'selected') settingsMap.selectedDevices = [device]
         if (ownership == 'child') childDevicesList << device
         settingsMap.bypassDeviceAllowlist = bypass
-        hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 42, name: 'Log fixture']]) }
         hubGet.register('/logs/past/json') { params ->
             assert params == [type: 'dev', id: '42']
             JsonOutput.toJson(['2026-09-10 10:00:00.000\tERROR\tdev|42|Log fixture|native diagnostic'])
@@ -56,7 +68,7 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         then:
         result.count == 1
         result.logs[0].message.contains('native diagnostic')
-        hubGet.calls.any { it.path == '/logs/past/json' }
+        hubGet.calls*.path == ['/logs/past/json']
 
         where:
         ownership    | bypass
@@ -64,27 +76,27 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         'selected'   | true
         'child'      | false
         'child'      | true
+        'unselected' | false
         'unselected' | true
     }
 
-    def 'device log access is rechecked after disabling bypass'() {
+    def 'device log access remains available after disabling bypass'() {
         given:
         settingsMap.bypassDeviceAllowlist = true
-        hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 42]]) }
         hubGet.register('/logs/past/json') { '[]' }
         script.toolGetHubLogs([deviceId: '42'])
         int priorCalls = hubGet.calls.size()
         settingsMap.bypassDeviceAllowlist = false
 
         when:
-        script.toolGetHubLogs([deviceId: '42'])
+        def result = script.toolGetHubLogs([deviceId: '42'])
 
         then:
-        thrown(IllegalArgumentException)
-        hubGet.calls.size() == priorCalls
+        result.count == 0
+        hubGet.calls.size() == priorCalls + 1
     }
 
-    def 'bypass cannot turn an unreadable device into a successful empty log history'() {
+    def 'historical device logs do not require current device metadata'() {
         given:
         settingsMap.bypassDeviceAllowlist = true
         hubGet.register('/device/fullJson/42') { throw new IOException('unavailable') }
@@ -94,8 +106,21 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([deviceId: '42'])
 
         then:
-        result.success == false
-        result.error.contains('Device metadata')
-        !hubGet.calls.any { it.path == '/logs/past/json' }
+        result.success != false
+        result.count == 0
+        hubGet.calls*.path == ['/logs/past/json']
+    }
+
+    @Unroll
+    def 'device log filter rejects nonnumeric or unsafe identity #deviceId before HTTP'() {
+        when:
+        def response = mcpDriver.callTool('hub_get_logs', [deviceId: deviceId])
+
+        then:
+        response.error.code == -32602
+        hubGet.calls.empty
+
+        where:
+        deviceId << ['-1', '0x1234', '../42', '42?type=app', 'name']
     }
 }

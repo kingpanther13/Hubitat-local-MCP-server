@@ -452,7 +452,6 @@ def runNativeLogFetch(Map job = [:]) {
                 _responseTooLargeEnvelope(work.tool.toString(), bytes, 120000))
             result = [text: text, scope: work.scope]
         } else {
-            if (job.query?.type == "dev") _requireDeviceToolAccess(job.query.id)
             result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
         }
     } catch (Exception fetchError) {
@@ -673,17 +672,14 @@ def toolGetHubLogs(args) {
     // source filters plus the limit below still apply client-side on top of the scoped
     // result; they are not replaced by deviceId/appId.
     //
-    // Both ids must be validated before the HTTP call. The hub returns 200 OK with an
-    // empty array for unknown or non-numeric ids, which would otherwise be indistinguishable
-    // from a real device that simply has no log entries.
+    // Logs are hub-wide diagnostics, including history for deleted devices. Validate
+    // filter syntax without requiring current device metadata or allowlist membership.
     def query = null
     if (deviceIdFilter) {
-        if (!deviceIdFilter.isInteger()) throw new IllegalArgumentException("deviceId must be numeric: ${deviceIdFilter}")
-        _requireDeviceToolAccess(deviceIdFilter)
-        if (!(_fetchDeviceFullJson(deviceIdFilter)?.device instanceof Map)) {
-            return [success: false, isError: true, error: "Device metadata could not be read for ${deviceIdFilter}; no log history was fetched.",
-                    note: "Verify the device exists in the native Devices page and retry."]
-        }
+        _validateNativeDeviceId(deviceIdFilter)
+        // Retained SDK log lookup for deliberate rollback.
+        // def device = findDevice(deviceIdFilter)
+        // if (!device) throw new IllegalArgumentException("Device not found: ${deviceIdFilter}")
         query = [type: "dev", id: deviceIdFilter]
     } else if (appIdFilter) {
         if (!appIdFilter.isInteger()) {
@@ -2461,7 +2457,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     ruleId: [type: "string", description: "MCP mode: filter by custom rule ID."],
                     level: [type: "string", description: "Filter by log level. Default: all levels.", enum: ["trace", "debug", "info", "warn", "error", "all"]],
                     source: [type: "string", description: "Hub mode: Filter by source/app name (case-insensitive substring match against the log entry)"],
-                    deviceId: [type: "string", description: "Hub mode: Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
+                    deviceId: [type: "string", description: "Hub mode: Filter hub-wide history by numeric device ID, regardless of device selection or bypass (mutually exclusive with appId)."],
                     appId: [type: "string", description: "Hub mode: Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
                     limit: [type: "integer", description: "Max entries: hub default 100/max 500; MCP default 50/max 100."],
                     pattern: [type: "string", description: "Hub mode: Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"],
