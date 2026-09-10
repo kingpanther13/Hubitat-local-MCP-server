@@ -143,7 +143,7 @@ def test_device_replace_boundary_requires_access_denial_for_both_positions(denia
             {"old_device_id": "20", "new_device_id": "10", "confirm": False},
         ]
     else:
-        with pytest.raises(AssertionError, match="unselected device|reject device access"):
+        with pytest.raises(AssertionError, match=r"unselected device|reject device access"):
             runner._device_replace_boundary_checks("10", "20")
 
 
