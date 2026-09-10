@@ -19,8 +19,8 @@ class PermissiveLog implements Log {
     // (e.g. URL redaction on the success-path log.debug). Recording is additive —
     // every method still accepts the call and never throws. The harness clears this
     // between feature methods. Coerce to plain String so GString identity quirks
-    // don't bite under either Groovy runtime.
-    // Watchdog concurrency specs log from multiple worker threads.
+    // don't bite under either Groovy runtime. Concurrent callbacks must not lose
+    // lines or throw while appending; snapshot iteration also stays safe.
     final List<String> messages = new CopyOnWriteArrayList<String>()
 
     @Override void error(String message) { messages << ("error:" + message) }
