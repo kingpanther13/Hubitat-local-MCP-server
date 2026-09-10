@@ -24,7 +24,7 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
 
         then:
         result.count == 1
-        result.logs[0].message == 'native diagnostic'
+        result.logs[0].message.contains('native diagnostic')
         hubGet.calls.any { it.path == '/logs/past/json' }
 
         where:

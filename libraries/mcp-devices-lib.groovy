@@ -1021,6 +1021,15 @@ private boolean _bypassEnabled() {
     return settings.bypassDeviceAllowlist == true
 }
 
+// Selection grants access; native HTTP execution does not grant it implicitly.
+private boolean _requireDeviceToolAccess(deviceId) {
+    boolean listed = findDevice(deviceId) != null
+    if (!listed && !_bypassEnabled()) {
+        throw new IllegalArgumentException("Device not found: ${deviceId}. Select it in MCP settings or enable device-allowlist bypass.")
+    }
+    return listed
+}
+
 // Fetch + parse /device/fullJson/<id>. Returns the parsed Map ({device, commands, ...}) or null
 // on a fetch/parse failure or a non-object body. The bypass fallbacks read device state, the
 // attribute list, and the command set from this -- the Groovy device object is unavailable for
@@ -1330,7 +1339,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences, boolean
         label: !_deviceFlag(d.linkedAndDisabled),
         name: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
         deviceNetworkId: (!_deviceFlag(d.isComponent) || _deviceFlag(d.linkedDevice)) && !_deviceFlag(d.linkedLocally),
-        dataValues: listed,
+        dataValues: true,
         deviceTypeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
         zigbeeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice) && d.zigbeeId instanceof String && !d.zigbeeId.isEmpty(),
         dashboardIds: _deviceFlag(fj?.hasDashboards),
@@ -1467,11 +1476,21 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, boolean l
 
 // Read one attribute's current value from a fullJson device model (currentStates keyed by name).
 // Returns the String value or null when the attribute has not reported.
+private _nativeDeviceStateValue(entry) {
+    if (!(entry instanceof Map)) return entry
+    if (entry.dataType?.toString()?.toUpperCase() == 'NUMBER') {
+        if (entry.numberValue instanceof Number) return entry.numberValue
+        def numeric = _parseBigDecimalOrNull(entry.value)
+        if (numeric != null) return numeric
+    }
+    return entry.value
+}
+
 private _readBypassAttrValueFrom(Map fullJson, attribute) {
     def st = fullJson?.device?.currentStates
     if (!(st instanceof Map)) return null
     def entry = st.get(attribute)
-    return (entry instanceof Map) ? entry.value : entry
+    return _nativeDeviceStateValue(entry)
 }
 
 // Re-fetch fullJson and read one attribute's value. The bypass poll value-reader: re-fetching
@@ -1492,7 +1511,7 @@ private Map _getDeviceFromFullJson(deviceId, Map fj) {
         cs.each { name, st ->
             if (name != null) {
                 def dataType = (st instanceof Map) ? st.dataType?.toString() : null
-                def value = (st instanceof Map) ? st.value : st
+                def value = _nativeDeviceStateValue(st)
                 attributes << [name: name, dataType: dataType, value: value]
             }
         }
@@ -1812,71 +1831,85 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
     if (cursor != null && (selectedMode == 'summary' || !(cursor instanceof String))) {
         throw new IllegalArgumentException('cursor is a string continuation for configuration/details mode only.')
     }
-    def device = findDevice(deviceId)
-    String selection = selectedMode == 'summary' ? null : _deviceReadSelection(deviceId, selectedMode, sections, fields, device != null)
-    if (cursor) {
-        if (!device && !_bypassEnabled()) throw new IllegalArgumentException("Device not found: ${deviceId}")
-        return _deviceReadContinuation(cursor, selection)
+    boolean listed = _requireDeviceToolAccess(deviceId)
+    String selection = selectedMode == 'summary' ? null : _deviceReadSelection(deviceId, selectedMode, sections, fields, listed)
+    if (cursor) return _deviceReadContinuation(cursor, selection)
+    def full = _fetchDeviceFullJson(deviceId)
+    if (!(full?.device instanceof Map) && selectedMode == 'summary') {
+        return [success: false, error: "Device metadata fetch failed (/device/fullJson/${deviceId})",
+                note: 'Check the native Devices page and retry.']
     }
-    if (!device) {
-        if (_bypassEnabled()) {
-            def fj = _fetchDeviceFullJson(deviceId)
-            if (fj?.device instanceof Map) {
-                def identity = _getDeviceFromFullJson(deviceId, fj)
-                return selectedMode == 'summary' ? identity : _deviceReadPage(_deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections, fields), selection)
-            }
-        }
-        throw new IllegalArgumentException("Device not found: ${deviceId}")
-    }
+    def identity = full?.device instanceof Map ? _getDeviceFromFullJson(deviceId, full) :
+        [name: null, label: "Device ${deviceId}"]
+    return selectedMode == 'summary' ? identity : _deviceReadPage(
+        _deviceExpandedResult(deviceId, identity, full, listed, selectedMode, sections, fields), selection)
 
-    if (selectedMode == 'configuration') {
-        return _deviceReadPage(_deviceExpandedResult(deviceId, [name: device.name, label: device.label ?: device.name],
-                                     _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), selection)
-    }
-
-    def attributes = []
-    try {
-        attributes = device.supportedAttributes?.collect { attr ->
-            [name: attr.name, dataType: attr.dataType?.toString(), value: device.currentValue(attr.name)]
-        } ?: []
-    } catch (Exception e) {
-        logDebug("Error getting attributes for device ${deviceId}: ${e.message}")
-    }
-
-    def commands = []
-    try {
-        commands = device.supportedCommands?.collect { cmd ->
-            def args = null
-            try {
-                args = cmd.arguments?.collect { arg ->
-                    if (arg instanceof Map) {
-                        [name: arg.name ?: "arg", type: arg.type ?: "unknown"]
-                    } else if (arg.respondsTo("getName")) {
-                        [name: arg.getName() ?: "arg", type: arg.getType()?.toString() ?: "unknown"]
-                    } else {
-                        [name: arg.toString(), type: "unknown"]
-                    }
-                }
-            } catch (Exception e) {
-                args = null
-            }
-            [name: cmd.name, arguments: args]
-        } ?: []
-    } catch (Exception e) {
-        logDebug("Error getting commands for device ${deviceId}: ${e.message}")
-    }
-
-    def summary = [
-        id: device.id.toString(),
-        name: device.name,
-        label: device.label ?: device.name,
-        room: device.roomName,
-        capabilities: device.capabilities?.collect { it.name } ?: [],
-        attributes: attributes,
-        commands: commands
-    ]
-    return selectedMode == 'summary' ? summary : _deviceReadPage(_deviceExpandedResult(deviceId, summary,
-        _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), selection)
+    // Retained SDK implementation for deliberate rollback.
+    //     def device = findDevice(deviceId)
+    //     String selection = selectedMode == 'summary' ? null : _deviceReadSelection(deviceId, selectedMode, sections, fields, device != null)
+    //     if (cursor) {
+    //         if (!device && !_bypassEnabled()) throw new IllegalArgumentException("Device not found: ${deviceId}")
+    //         return _deviceReadContinuation(cursor, selection)
+    //     }
+    //     if (!device) {
+    //         if (_bypassEnabled()) {
+    //             def fj = _fetchDeviceFullJson(deviceId)
+    //             if (fj?.device instanceof Map) {
+    //                 def identity = _getDeviceFromFullJson(deviceId, fj)
+    //                 return selectedMode == 'summary' ? identity : _deviceReadPage(_deviceExpandedResult(deviceId, identity, fj, false, selectedMode, sections, fields), selection)
+    //             }
+    //         }
+    //         throw new IllegalArgumentException("Device not found: ${deviceId}")
+    //     }
+    //
+    //     if (selectedMode == 'configuration') {
+    //         return _deviceReadPage(_deviceExpandedResult(deviceId, [name: device.name, label: device.label ?: device.name],
+    //                                      _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), selection)
+    //     }
+    //
+    //     def attributes = []
+    //     try {
+    //         attributes = device.supportedAttributes?.collect { attr ->
+    //             [name: attr.name, dataType: attr.dataType?.toString(), value: device.currentValue(attr.name)]
+    //         } ?: []
+    //     } catch (Exception e) {
+    //         logDebug("Error getting attributes for device ${deviceId}: ${e.message}")
+    //     }
+    //
+    //     def commands = []
+    //     try {
+    //         commands = device.supportedCommands?.collect { cmd ->
+    //             def args = null
+    //             try {
+    //                 args = cmd.arguments?.collect { arg ->
+    //                     if (arg instanceof Map) {
+    //                         [name: arg.name ?: "arg", type: arg.type ?: "unknown"]
+    //                     } else if (arg.respondsTo("getName")) {
+    //                         [name: arg.getName() ?: "arg", type: arg.getType()?.toString() ?: "unknown"]
+    //                     } else {
+    //                         [name: arg.toString(), type: "unknown"]
+    //                     }
+    //                 }
+    //             } catch (Exception e) {
+    //                 args = null
+    //             }
+    //             [name: cmd.name, arguments: args]
+    //         } ?: []
+    //     } catch (Exception e) {
+    //         logDebug("Error getting commands for device ${deviceId}: ${e.message}")
+    //     }
+    //
+    //     def summary = [
+    //         id: device.id.toString(),
+    //         name: device.name,
+    //         label: device.label ?: device.name,
+    //         room: device.roomName,
+    //         capabilities: device.capabilities?.collect { it.name } ?: [],
+    //         attributes: attributes,
+    //         commands: commands
+    //     ]
+    //     return selectedMode == 'summary' ? summary : _deviceReadPage(_deviceExpandedResult(deviceId, summary,
+    //         _fetchDeviceFullJson(deviceId), true, selectedMode, sections, fields), selection)
 }
 
 def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
@@ -1966,9 +1999,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     //     device."${command}"()
     // }
 
-    if (!findDevice(deviceId) && !_bypassEnabled()) {
-        throw new IllegalArgumentException("Device not found: ${deviceId}")
-    }
+    _requireDeviceToolAccess(deviceId)
     def fullJson = _fetchDeviceFullJson(deviceId)
     if (!(fullJson?.device instanceof Map)) {
         return [success: false, deviceId: deviceId,
@@ -2229,7 +2260,7 @@ private Map _buildWaitForPollArgs(deviceId, supportedAttrs, deviceLabel, waitFor
     if (!(waitFor.attribute instanceof String) || !waitFor.attribute.trim()) {
         throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
     }
-    // supportedAttrs == null means "skip the existence check" (the allowlist-bypass path: fullJson
+    // supportedAttrs == null means "skip the existence check" (native fullJson
     // cannot enumerate a declared-but-unreported attribute, so the command must not be hard-failed
     // pre-fire). A non-null list (the listed-device path) still rejects an unknown attribute.
     if (supportedAttrs != null && !supportedAttrs.contains(waitFor.attribute)) {
@@ -2546,7 +2577,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
         def snapshot = [:]
         cs.each { name, st ->
             if (name != null) {
-                def val = (st instanceof Map) ? st.value : st
+                def val = _nativeDeviceStateValue(st)
                 def rawDate = (st instanceof Map) ? st.date : null
                 snapshot.put(name, [value: val, timestamp: _formatBypassStateDate(rawDate)])
             }
@@ -2647,90 +2678,116 @@ def convertParamElements(List params, List declaredTypes = []) {
 
 def toolGetDeviceEvents(deviceId, limit) {
     if (limit == null || limit < 1) limit = 10
-    def device = findDevice(deviceId)
-    if (!device) {
-        if (_bypassEnabled()) {
-            def fj = _fetchDeviceFullJson(deviceId)
-            if (fj?.device != null) {
-                def label = _bypassDeviceLabel(fj, deviceId)
-                // /device/eventsJson returns newest-first with no query params, so apply the
-                // limit client-side. Rows carry descriptionText + an ISO date string; map to the
-                // SAME shape the Groovy-device path returns. A null return is the FETCH-FAILURE
-                // sentinel (distinct from [] = real empty history) -- surface it as a structured
-                // error, never an empty-success that silently lies about the device having no events.
-                def rows = _fetchBypassDeviceEvents(deviceId)
-                if (rows == null) {
-                    return [success: false, error: "Device event history fetch failed (/device/eventsJson/${deviceId})", device: label,
-                            note: "The device is reachable via the allowlist bypass but its event store could not be read -- likely a transient hub blip; retry."]
-                }
-                def events = rows.take(limit as Integer).collect { evt -> _mapBypassEventRow(evt) }
-                return [device: label, events: events, count: events.size()]
-            }
-        }
-        throw new IllegalArgumentException("Device not found: ${deviceId}")
-    }
-
-    def events = device.events(max: limit)?.collect { evt ->
-        [
-            name: evt.name,
-            value: evt.value,
-            unit: evt.unit,
-            description: evt.descriptionText,
-            date: evt.date?.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-            isStateChange: evt.isStateChange
-        ]
-    }
-
-    return [
-        device: device.label,
-        events: events ?: [],
-        count: events?.size() ?: 0
-    ]
+    _requireDeviceToolAccess(deviceId)
+    def full = _fetchDeviceFullJson(deviceId)
+    if (!(full?.device instanceof Map)) return [success: false, error: "Device metadata fetch failed (/device/fullJson/${deviceId})", note: 'Check native device details and retry.']
+    def label = _bypassDeviceLabel(full, deviceId)
+    def rows = _fetchBypassDeviceEvents(deviceId)
+    if (rows == null) return [success: false, error: "Device event history fetch failed (/device/eventsJson/${deviceId})", device: label, note: 'Check the native device Events page and retry.']
+    def events = rows.take(limit as Integer).collect { _mapBypassEventRow(it) }
+    return [device: label, events: events, count: events.size()]
+    // Retained SDK implementation for deliberate rollback.
+    // if (limit == null || limit < 1) limit = 10
+    //     def device = findDevice(deviceId)
+    //     if (!device) {
+    //         if (_bypassEnabled()) {
+    //             def fj = _fetchDeviceFullJson(deviceId)
+    //             if (fj?.device != null) {
+    //                 def label = _bypassDeviceLabel(fj, deviceId)
+    //                 // /device/eventsJson returns newest-first with no query params, so apply the
+    //                 // limit client-side. Rows carry descriptionText + an ISO date string; map to the
+    //                 // SAME shape the Groovy-device path returns. A null return is the FETCH-FAILURE
+    //                 // sentinel (distinct from [] = real empty history) -- surface it as a structured
+    //                 // error, never an empty-success that silently lies about the device having no events.
+    //                 def rows = _fetchBypassDeviceEvents(deviceId)
+    //                 if (rows == null) {
+    //                     return [success: false, error: "Device event history fetch failed (/device/eventsJson/${deviceId})", device: label,
+    //                             note: "The device is reachable via the allowlist bypass but its event store could not be read -- likely a transient hub blip; retry."]
+    //                 }
+    //                 def events = rows.take(limit as Integer).collect { evt -> _mapBypassEventRow(evt) }
+    //                 return [device: label, events: events, count: events.size()]
+    //             }
+    //         }
+    //         throw new IllegalArgumentException("Device not found: ${deviceId}")
+    //     }
+    //
+    //     def events = device.events(max: limit)?.collect { evt ->
+    //         [
+    //             name: evt.name,
+    //             value: evt.value,
+    //             unit: evt.unit,
+    //             description: evt.descriptionText,
+    //             date: evt.date?.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+    //             isStateChange: evt.isStateChange
+    //         ]
+    //     }
+    //
+    //     return [
+    //         device: device.label,
+    //         events: events ?: [],
+    //         count: events?.size() ?: 0
+    //     ]
 }
 
 def toolGetAttribute(deviceId, attribute) {
-    // Same canonical form as every other device-id entry point: reject a fractional or
-    // non-scalar id before it can spend a bypass fullJson fetch below.
-    def canonicalId = _canonicalDeviceIdArg(deviceId)
-    if (canonicalId == null) {
-        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(deviceId)})")
+    deviceId = _canonicalDeviceIdArg(deviceId)
+    if (deviceId == null) throw new IllegalArgumentException('deviceId must be a non-empty string or integral number')
+    if (!(attribute instanceof String) || !attribute) throw new IllegalArgumentException('attribute is required and must be a non-empty string')
+    _requireDeviceToolAccess(deviceId)
+    def full = _fetchDeviceFullJson(deviceId)
+    if (!(full?.device?.currentStates instanceof Map)) {
+        return [success: false, deviceId: deviceId, attribute: attribute,
+                error: 'Native device current states could not be read.', note: 'Check the native Devices page and retry.']
     }
-    deviceId = canonicalId
+    def result = [device: _bypassDeviceLabel(full, deviceId), attribute: attribute,
+                  value: _readBypassAttrValueFrom(full, attribute)]
+    if (!full.device.currentStates.containsKey(attribute)) result.neverReported = true
+    return result
 
-    def device = findDevice(deviceId)
-    if (!device) {
-        if (_bypassEnabled()) {
-            def fj = _fetchDeviceFullJson(deviceId)
-            if (fj?.device != null) {
-                def label = _bypassDeviceLabel(fj, deviceId)
-                // fullJson lists only REPORTED attributes, so a declared-but-unreported attribute
-                // reads as "not found" here -- bypass attribute discovery is limited to reported
-                // attributes (the message says so), unlike the listed path's supportedAttributes.
-                def attrs = _fullJsonAttributeNames(fj)
-                if (!attrs.contains(attribute)) {
-                    throw new IllegalArgumentException("Attribute '${attribute}' not found among the reported attributes of device '${label}' (allowlist bypass sees only reported attributes). Reported: ${attrs}")
-                }
-                return [device: label, attribute: attribute, value: _readBypassAttrValueFrom(fj, attribute)]
-            }
-        }
-        throw new IllegalArgumentException("Device not found: ${deviceId}")
-    }
-
-    // Capture label before operations to avoid serialization issues
-    def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
-
-    // Check if attribute exists on this device before reading its value
-    def supportedAttrs = device.supportedAttributes?.collect { it.name } ?: []
-    if (!supportedAttrs.contains(attribute)) {
-        throw new IllegalArgumentException("Attribute '${attribute}' not found on device '${deviceLabel}'. Available: ${supportedAttrs}")
-    }
-
-    def value = device.currentValue(attribute)
-    return [
-        device: deviceLabel,
-        attribute: attribute,
-        value: value
-    ]
+    // Retained SDK implementation for deliberate rollback.
+    //
+    //     // Same canonical form as every other device-id entry point: reject a fractional or
+    //     // non-scalar id before it can spend a bypass fullJson fetch below.
+    //     def canonicalId = _canonicalDeviceIdArg(deviceId)
+    //     if (canonicalId == null) {
+    //         throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(deviceId)})")
+    //     }
+    //     deviceId = canonicalId
+    //
+    //     def device = findDevice(deviceId)
+    //     if (!device) {
+    //         if (_bypassEnabled()) {
+    //             def fj = _fetchDeviceFullJson(deviceId)
+    //             if (fj?.device != null) {
+    //                 def label = _bypassDeviceLabel(fj, deviceId)
+    //                 // fullJson lists only REPORTED attributes, so a declared-but-unreported attribute
+    //                 // reads as "not found" here -- bypass attribute discovery is limited to reported
+    //                 // attributes (the message says so), unlike the listed path's supportedAttributes.
+    //                 def attrs = _fullJsonAttributeNames(fj)
+    //                 if (!attrs.contains(attribute)) {
+    //                     throw new IllegalArgumentException("Attribute '${attribute}' not found among the reported attributes of device '${label}' (allowlist bypass sees only reported attributes). Reported: ${attrs}")
+    //                 }
+    //                 return [device: label, attribute: attribute, value: _readBypassAttrValueFrom(fj, attribute)]
+    //             }
+    //         }
+    //         throw new IllegalArgumentException("Device not found: ${deviceId}")
+    //     }
+    //
+    //     // Capture label before operations to avoid serialization issues
+    //     def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
+    //
+    //     // Check if attribute exists on this device before reading its value
+    //     def supportedAttrs = device.supportedAttributes?.collect { it.name } ?: []
+    //     if (!supportedAttrs.contains(attribute)) {
+    //         throw new IllegalArgumentException("Attribute '${attribute}' not found on device '${deviceLabel}'. Available: ${supportedAttrs}")
+    //     }
+    //
+    //     def value = device.currentValue(attribute)
+    //     return [
+    //         device: deviceLabel,
+    //         attribute: attribute,
+    //         value: value
+    //     ]
 }
 
 // Single source of truth for the per-value match logic, shared by the single- and multi-device
@@ -2836,42 +2893,53 @@ def toolPollUntilAttribute(args) {
         throw new IllegalArgumentException("attribute is required and must be a non-empty string")
     }
 
-    // Resolve every device up front (a missing ID names WHICH one) and confirm each supports
-    // the attribute (fail fast, naming the device that lacks it) -- the same per-device check
-    // the single path runs, looped over the resolved set. devices[i] aligns with deviceIdList[i].
+    // The first native response supplies identity and the first poll sample. Attribute
+    // absence cannot reject a declaration that has not emitted a current state.
     def devices = []
     def deviceLabels = []
-    // devices[i] aligns with deviceIdList[i]: the Groovy device for a listed/MCP device, or null
-    // for an unlisted device reached via the allowlist bypass. The per-poll read (_readPollValue)
-    // is source-agnostic over that pair -- a listed device reads its live currentStates list; a
-    // bypass device re-fetches /device/fullJson each poll -- so the converge/timeout/honesty logic
-    // below is shared unchanged.
     deviceIdList.each { did ->
-        def dev = findDevice(did)
-        if (dev) {
-            def label = dev.label ?: dev.name ?: "Device ${did}"
-            def supportedAttrs = dev.supportedAttributes?.collect { it.name } ?: []
-            if (!supportedAttrs.contains(args.attribute)) {
-                throw new IllegalArgumentException("Attribute '${args.attribute}' not found on device '${label}'. Available: ${supportedAttrs}")
-            }
-            devices << dev
-            deviceLabels << label
-        } else if (_bypassEnabled()) {
-            def fj = _fetchDeviceFullJson(did)
-            if (fj?.device == null) {
-                throw new IllegalArgumentException("Device not found: ${did}")
-            }
-            def label = _bypassDeviceLabel(fj, did)
-            // No attribute-existence check on the bypass path: fullJson lists only reported
-            // attributes, so a declared-but-unreported attribute would be wrongly rejected. The
-            // per-poll read returns null until the attribute reports, so an unknown/unreported
-            // attribute simply times out with neverReported instead of hard-failing.
-            devices << null
-            deviceLabels << label
-        } else {
-            throw new IllegalArgumentException("Device not found: ${did}")
-        }
+        _requireDeviceToolAccess(did)
+        def full = _fetchDeviceFullJson(did)
+        devices << [initial: full]
+        deviceLabels << (full?.device instanceof Map ? _bypassDeviceLabel(full, did) : "Device ${did}")
     }
+    // Retained SDK declaration preflight for deliberate rollback.
+    //     // Resolve every device up front (a missing ID names WHICH one) and confirm each supports
+    //     // the attribute (fail fast, naming the device that lacks it) -- the same per-device check
+    //     // the single path runs, looped over the resolved set. devices[i] aligns with deviceIdList[i].
+    //     def devices = []
+    //     def deviceLabels = []
+    //     // devices[i] aligns with deviceIdList[i]: the Groovy device for a listed/MCP device, or null
+    //     // for an unlisted device reached via the allowlist bypass. The per-poll read (_readPollValue)
+    //     // is source-agnostic over that pair -- a listed device reads its live currentStates list; a
+    //     // bypass device re-fetches /device/fullJson each poll -- so the converge/timeout/honesty logic
+    //     // below is shared unchanged.
+    //     deviceIdList.each { did ->
+    //         def dev = findDevice(did)
+    //         if (dev) {
+    //             def label = dev.label ?: dev.name ?: "Device ${did}"
+    //             def supportedAttrs = dev.supportedAttributes?.collect { it.name } ?: []
+    //             if (!supportedAttrs.contains(args.attribute)) {
+    //                 throw new IllegalArgumentException("Attribute '${args.attribute}' not found on device '${label}'. Available: ${supportedAttrs}")
+    //             }
+    //             devices << dev
+    //             deviceLabels << label
+    //         } else if (_bypassEnabled()) {
+    //             def fj = _fetchDeviceFullJson(did)
+    //             if (fj?.device == null) {
+    //                 throw new IllegalArgumentException("Device not found: ${did}")
+    //             }
+    //             def label = _bypassDeviceLabel(fj, did)
+    //             // No attribute-existence check on the bypass path: fullJson lists only reported
+    //             // attributes, so a declared-but-unreported attribute would be wrongly rejected. The
+    //             // per-poll read returns null until the attribute reports, so an unknown/unreported
+    //             // attribute simply times out with neverReported instead of hard-failing.
+    //             devices << null
+    //             deviceLabels << label
+    //         } else {
+    //             throw new IllegalArgumentException("Device not found: ${did}")
+    //         }
+    //     }
     // Single-path label kept for the existing single-device return shape and the read-fault log.
     def deviceLabel = deviceLabels[0]
 
@@ -3214,9 +3282,14 @@ def toolPollUntilAttribute(args) {
 //     Only device.currentStates re-reads live; a State's .value is the reported value (a String).
 //   - bypass device (dev == null) -> re-fetch /device/fullJson each poll via _readBypassAttrValue.
 private _readPollValue(dev, deviceId, attribute) {
-    return (dev != null)
-        ? dev.currentStates?.find { it.name == attribute }?.value
-        : _readBypassAttrValue(deviceId, attribute)
+    // Retained SDK read for deliberate rollback:
+    // return (dev != null) ? dev.currentStates?.find { it.name == attribute }?.value : _readBypassAttrValue(deviceId, attribute)
+    _requireDeviceToolAccess(deviceId)
+    def full = dev instanceof Map && dev.containsKey('initial') ? dev.remove('initial') : _fetchDeviceFullJson(deviceId)
+    if (!(full?.device instanceof Map) || !(full.device.currentStates instanceof Map)) {
+        throw new RuntimeException("Native current states unavailable for device ${deviceId}")
+    }
+    return _readBypassAttrValueFrom(full, attribute)
 }
 
 // Multi-device poll: await the mode predicate (any/all) across devices, the SAME condition
@@ -3613,84 +3686,82 @@ def toolGetDeviceHistory(args) {
         return locResult
     }
 
-    def device = findDevice(args.deviceId)
-    if (!device) {
-        // Allowlist bypass: read an unlisted device's windowed history from /device/eventsJson with
-        // the SAME client-side attribute/strictly-after/limit filtering the app + location branches
-        // use (no Groovy eventsSince available). The appId and location branches above are not
-        // device-allowlist-gated, so only this device branch gains the fallback.
-        if (_bypassEnabled()) {
-            def fj = _fetchDeviceFullJson(args.deviceId)
-            if (fj?.device != null) {
-                return _deviceHistoryBypass(args, fj, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit)
-            }
-        }
-        throw new IllegalArgumentException("Device not found: ${args.deviceId}. Device must be selected in MCP Rule Server app settings.")
-    }
+    _requireDeviceToolAccess(args.deviceId)
+    def full = _fetchDeviceFullJson(args.deviceId)
+    if (!(full?.device instanceof Map)) return [success: false, error: "Device metadata fetch failed (/device/fullJson/${args.deviceId})", note: 'Check native device details and retry.']
+    return _deviceHistoryBypass(args, full, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit)
 
-    def deviceLabel = device.label ?: device.name ?: "Device ${args.deviceId}"
-
-    def events
-    try {
-        events = device.eventsSince(sinceDate, [max: limit])
-    } catch (Exception e) {
-        mcpLogError("monitoring", "eventsSince failed for ${deviceLabel}", e)
-        return [success: false, error: "eventsSince not supported or failed: ${e.message}", device: deviceLabel, deviceId: args.deviceId,
-                note: "Retry; if persistent, drop hoursBack/attribute to read the most-recent events instead, or check the device's Events page in the hub UI."]
-    }
-
-    // eventsSince inclusivity at the boundary is undocumented, so post-filter to
-    // strictly-after sinceDate for parity with the app/location branches -- an event
-    // whose timestamp equals `since` must not replay when a returned `date` is fed
-    // back as the bookmark. A row with no usable date is kept (don't silently drop),
-    // matching the other branches' parse-fail tolerance.
-    def results = (events ?: []).findAll { evt ->
-        evt.date == null || evt.date.after(sinceDate)
-    }.collect { evt ->
-        [
-            name: evt.name,
-            value: evt.value,
-            unit: evt.unit,
-            description: evt.descriptionText,
-            date: evt.date?.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
-            isStateChange: evt.isStateChange
-        ]
-    }
-
-    if (attributeFilter) {
-        results = results.findAll { it.name == attributeFilter }
-    }
-
-    mcpLog("info", "monitoring", "Retrieved ${results.size()} history event${results.size() == 1 ? '' : 's'} for ${deviceLabel} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")})")
-    def deviceResult = [
-        source: "device",
-        device: deviceLabel,
-        deviceId: args.deviceId,
-        attributeFilter: attributeFilter,
-        events: results,
-        count: results.size(),
-        sinceMode: sinceMode,
-        sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
-    ]
-    if (sinceMode == "relative") deviceResult.hoursBack = effectiveHoursBack
-    else deviceResult.since = sinceEcho
-    return deviceResult
+    // Retained SDK history implementation for deliberate rollback.
+    //     def device = findDevice(args.deviceId)
+    //     if (!device) {
+    //         // Allowlist bypass: read an unlisted device's windowed history from /device/eventsJson with
+    //         // the SAME client-side attribute/strictly-after/limit filtering the app + location branches
+    //         // use (no Groovy eventsSince available). The appId and location branches above are not
+    //         // device-allowlist-gated, so only this device branch gains the fallback.
+    //         if (_bypassEnabled()) {
+    //             def fj = _fetchDeviceFullJson(args.deviceId)
+    //             if (fj?.device != null) {
+    //                 return _deviceHistoryBypass(args, fj, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit)
+    //             }
+    //         }
+    //         throw new IllegalArgumentException("Device not found: ${args.deviceId}. Device must be selected in MCP Rule Server app settings.")
+    //     }
+    //
+    //     def deviceLabel = device.label ?: device.name ?: "Device ${args.deviceId}"
+    //
+    //     def events
+    //     try {
+    //         events = device.eventsSince(sinceDate, [max: limit])
+    //     } catch (Exception e) {
+    //         mcpLogError("monitoring", "eventsSince failed for ${deviceLabel}", e)
+    //         return [success: false, error: "eventsSince not supported or failed: ${e.message}", device: deviceLabel, deviceId: args.deviceId,
+    //                 note: "Retry; if persistent, drop hoursBack/attribute to read the most-recent events instead, or check the device's Events page in the hub UI."]
+    //     }
+    //
+    //     // eventsSince inclusivity at the boundary is undocumented, so post-filter to
+    //     // strictly-after sinceDate for parity with the app/location branches -- an event
+    //     // whose timestamp equals `since` must not replay when a returned `date` is fed
+    //     // back as the bookmark. A row with no usable date is kept (don't silently drop),
+    //     // matching the other branches' parse-fail tolerance.
+    //     def results = (events ?: []).findAll { evt ->
+    //         evt.date == null || evt.date.after(sinceDate)
+    //     }.collect { evt ->
+    //         [
+    //             name: evt.name,
+    //             value: evt.value,
+    //             unit: evt.unit,
+    //             description: evt.descriptionText,
+    //             date: evt.date?.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+    //             isStateChange: evt.isStateChange
+    //         ]
+    //     }
+    //
+    //     if (attributeFilter) {
+    //         results = results.findAll { it.name == attributeFilter }
+    //     }
+    //
+    //     mcpLog("info", "monitoring", "Retrieved ${results.size()} history event${results.size() == 1 ? '' : 's'} for ${deviceLabel} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")})")
+    //     def deviceResult = [
+    //         source: "device",
+    //         device: deviceLabel,
+    //         deviceId: args.deviceId,
+    //         attributeFilter: attributeFilter,
+    //         events: results,
+    //         count: results.size(),
+    //         sinceMode: sinceMode,
+    //         sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+    //     ]
+    //     if (sinceMode == "relative") deviceResult.hoursBack = effectiveHoursBack
+    //     else deviceResult.since = sinceEcho
+    //     return deviceResult
 }
 
-// Allowlist-bypass device-history branch: window an unlisted device's /device/eventsJson rows with
-// the same attribute / strictly-after / limit filtering the app + location branches apply, and
-// return the identical device-branch shape (source:"device", device, deviceId, attributeFilter,
-// events, count, sinceMode, sinceTimestamp, hoursBack|since, optional timeFilterUnparseable).
-// NOTE: like the app/location branches, this caps at `limit` AFTER the attribute filter (returns up
-// to `limit` MATCHING rows), whereas the listed device branch caps the raw stream first
-// (eventsSince max:limit) THEN filters -- so with an attributeFilter the bypass can surface more
-// matching rows than the listed path. The window/shape are otherwise identical.
 private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit) {
     def deviceLabel = _bypassDeviceLabel(fj, args.deviceId)
     def rows = _fetchBypassDeviceEvents(args.deviceId)
     if (rows == null) {
         return [success: false, error: "Device event history fetch failed (/device/eventsJson/${args.deviceId})", source: "device", device: deviceLabel, deviceId: args.deviceId,
-                note: "The device is reachable via the allowlist bypass but its event store could not be read -- likely a transient hub blip; retry."]
+                note: "The native device event store could not be read. Check the device Events page and retry."]
     }
     def results = []
     def timeFilterUnparseable = 0
@@ -3989,22 +4060,49 @@ private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, Li
     }
 }
 
-private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List changes, List errors) {
-    def accepted = [:]
-    def nativeSettings = [:]
-    preferences.each { name, setting ->
-        if (device == null || setting.clear == true) {
-            nativeSettings.put(name, setting)
-        } else {
-            try {
-                device.updateSetting(name.toString(), [type: setting.type, value: setting.value])
-                accepted.put(name, setting)
-            } catch (Exception ignored) {
-                errors << [property: "preference.${name}", stage: 'write', status: 'failed',
-                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors) {
+    values.each { key, value ->
+        String stage = 'write'
+        try {
+            def payload = [id: _prefSaveDeviceId(deviceId), method: 'updateDataValue',
+                           args: [[type: 'STRING', value: key], [type: 'STRING', value: value]]]
+            def result = hubInternalPostJson('/device/runmethod', groovy.json.JsonOutput.toJson(payload))
+            if (!(result instanceof Map) || result.success != true) {
+                errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update was not accepted; inspect device data before retrying.']
+                return
             }
+            stage = 'verify'
+            def readback = _fetchDeviceFullJson(deviceId)
+            def data = readback?.device?.data
+            if (data instanceof Map && data.containsKey(key) && data.get(key)?.toString() == value) {
+                changes << [property: "dataValue.${key}", newValue: value]
+            } else {
+                errors << [property: "dataValue.${key}", stage: stage, error: 'Native update accepted but the data value could not be confirmed; inspect device data before retrying.']
+            }
+        } catch (Exception ignored) {
+            errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update or verification failed; inspect device data before retrying.']
         }
     }
+}
+
+private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List changes, List errors) {
+    def accepted = [:]
+    def nativeSettings = new LinkedHashMap(preferences)
+    // Retained SDK preference setter for deliberate rollback.
+    //     def nativeSettings = [:]
+    //     preferences.each { name, setting ->
+    //         if (device == null || setting.clear == true) {
+    //             nativeSettings.put(name, setting)
+    //         } else {
+    //             try {
+    //                 device.updateSetting(name.toString(), [type: setting.type, value: setting.value])
+    //                 accepted.put(name, setting)
+    //             } catch (Exception ignored) {
+    //                 errors << [property: "preference.${name}", stage: 'write', status: 'failed',
+    //                     error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+    //             }
+    //         }
+    //     }
     if (nativeSettings) {
         def stage = 'prepare'
         try {
@@ -4082,27 +4180,28 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
         def targets = new LinkedHashMap(overrides)
         overrides.keySet().each { args.remove(it) }
         try {
-            def updated = _postDeviceConfigurationForm(deviceId, overrides)
-            if (!bypass && updated?.device instanceof Map) {
-                // The wholesale form can blank identity despite carrying it. Restore only
-                // observed blanks, never an intentional clear or an unavailable readback.
-                def observedIdentity = updated.device
-                [label: 'setLabel', name: 'setName', deviceNetworkId: 'setDeviceNetworkId'].each { property, setter ->
-                    def original = full?.device?.get(property)
-                    if (original && observedIdentity.containsKey(property) && !observedIdentity.get(property) &&
-                            (!targets.containsKey(property) || targets.get(property))) {
-                        try {
-                            findDevice(deviceId)."${setter}"(original.toString())
-                            updated = _fetchDeviceFullJson(deviceId)
-                            if (updated?.device?.get(property)?.toString() != original.toString()) {
-                                throw new RuntimeException('Native readback did not confirm identity restoration')
-                            }
-                        } catch (Exception re) {
-                            errors << [property: property, stage: 'restore', error: "Device-edit form blanked ${property}; restoring it failed: ${re.message}. Verify and re-set ${property}."]
-                        }
-                    }
-                }
-            }
+            def updated = _postDeviceConfigurationForm(deviceId, overrides, errors)
+            // Retained SDK identity recovery; the native form helper now verifies recovery for every device.
+    //             if (!bypass && updated?.device instanceof Map) {
+    //                 // The wholesale form can blank identity despite carrying it. Restore only
+    //                 // observed blanks, never an intentional clear or an unavailable readback.
+    //                 def observedIdentity = updated.device
+    //                 [label: 'setLabel', name: 'setName', deviceNetworkId: 'setDeviceNetworkId'].each { property, setter ->
+    //                     def original = full?.device?.get(property)
+    //                     if (original && observedIdentity.containsKey(property) && !observedIdentity.get(property) &&
+    //                             (!targets.containsKey(property) || targets.get(property))) {
+    //                         try {
+    //                             findDevice(deviceId)."${setter}"(original.toString())
+    //                             updated = _fetchDeviceFullJson(deviceId)
+    //                             if (updated?.device?.get(property)?.toString() != original.toString()) {
+    //                                 throw new RuntimeException('Native readback did not confirm identity restoration')
+    //                             }
+    //                         } catch (Exception re) {
+    //                             errors << [property: property, stage: 'restore', error: "Device-edit form blanked ${property}; restoring it failed: ${re.message}. Verify and re-set ${property}."]
+    //                         }
+    //                     }
+    //                 }
+    //             }
             targets.each { property, wanted ->
                 def present = updated?.device instanceof Map && updated.device.containsKey(property)
                 def actual = present ? updated.device.get(property) : null
@@ -4113,7 +4212,7 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
                 def expected = property == "dashboardIds" ? wanted.collect { it.toString() }.sort() : wanted
                 def equal = present && (expected instanceof Boolean ? (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == expected : expected instanceof List ? actual == expected : actual?.toString() == expected?.toString())
                 if (property == "tags") equal = present && _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
-                if (present && property in ["notes", "defaultIcon", "tags"] && wanted == "" && actual == null) equal = true
+                if (present && property in ["label", "notes", "defaultIcon", "tags"] && wanted == "" && actual == null) equal = true
                 if (equal) changes << [property: property, oldValue: full?.device?.get(property), newValue: wanted]
                 else errors << [property: property, error: present ? "POST accepted but ${property} read back as a different value; inspect configuration before retrying." : "POST accepted but could not confirm ${property}; native read-back is unavailable."]
             }
@@ -4145,518 +4244,550 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, boolean by
             targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
         }
     }
-    if (bypass) {
-        ["showOnHome", "defaultCurrentState"].each { property ->
-            if (args.containsKey(property)) {
-                def wanted = args.remove(property)
+    ["showOnHome", "defaultCurrentState"].each { property ->
+        if (args.containsKey(property)) {
+            def wanted = args.remove(property)
+            try {
+                boolean accepted = true
                 try {
+                    if (property == "showOnHome") {
+                        hubInternalGet("/device/setShowOnHome", [deviceId: deviceId, show: wanted ? "true" : "false"])
+                    } else {
+                        def result = hubInternalGet("/device/setDefaultCurrentState", [id: deviceId, currentState: wanted])
+                        accepted = result?.toString()?.trim()?.toLowerCase() == "true"
+                    }
+                } catch (IllegalStateException guardError) {
+                    throw guardError
+                } catch (Exception unavailable) {
                     _saveDevicePreferencePaneControls(deviceId, [(property): wanted])
-                    def readback = _fetchDeviceFullJson(deviceId)?.device
-                    def equal = readback?.containsKey(property) && (wanted instanceof Boolean ? readback.get(property) instanceof Boolean && readback.get(property) == wanted : (readback.get(property) ?: "").toString() == wanted)
-                    if (equal) changes << [property: property, newValue: wanted]
-                    else errors << [property: property, error: "POST accepted but could not confirm ${property}; native read-back did not match."]
-                } catch (Exception e) { errors << [property: property, error: e.message ?: e.toString()] }
-            }
+                }
+                if (!accepted) {
+                    errors << [property: property, error: "Hub did not accept defaultCurrentState; use an attribute name from the device's current states."]
+                    return
+                }
+                def readback = _fetchDeviceFullJson(deviceId)?.device
+                def actual = readback?.get(property)
+                def equal = readback?.containsKey(property) && (wanted instanceof Boolean ?
+                    (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == wanted :
+                    (actual == null ? "" : actual.toString()) == wanted)
+                if (equal) changes << [property: property, newValue: wanted]
+                else errors << [property: property, error: "POST accepted but could not confirm ${property}; native read-back did not match."]
+            } catch (Exception e) { errors << [property: property, error: e.message ?: e.toString()] }
         }
     }
 }
 
 def toolUpdateDevice(args) {
-    def deviceId = args.deviceId
-    if (!deviceId) throw new IllegalArgumentException("deviceId is required")
-
-    def device = findDevice(deviceId)
-    if (!device) {
-        if (_bypassEnabled()) {
-            def fj = _fetchDeviceFullJson(deviceId)
-            if (fj?.device != null) {
-                if (args.dataValues) throw new IllegalArgumentException("dataValues requires adding this device to the MCP device scope; no evidenced native bypass data writer is available")
-                def prepared = _prepareDeviceUpdatePatch(args, deviceId, fj)
-                return _toolUpdateDeviceBypass(prepared.args, deviceId, prepared.fullJson)
-            }
-        }
-        throw new IllegalArgumentException("Device not found: ${deviceId}. The device must be in your selected devices or be an MCP-managed virtual device.")
+    def deviceId = _canonicalDeviceIdArg(args.deviceId)
+    if (deviceId == null) throw new IllegalArgumentException("deviceId is required")
+    if (settings.enableWrite == false) {
+        throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
     }
-
-    def prepared = _prepareDeviceUpdatePatch(args, deviceId)
-    args = prepared.args
-    def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
-    def changes = []
-    def errors = []
-
-    _applyExtendedDeviceUpdate(args, deviceId, prepared.fullJson, false, changes, errors)
-
-    def requestedProps = []
-    if (args.label != null) requestedProps << "label"
-    if (args.name != null) requestedProps << "name"
-    if (args.deviceNetworkId != null) requestedProps << "deviceNetworkId"
-    if (args.dataValues) requestedProps << "dataValues(${args.dataValues.size()})"
-    if (args.preferences) requestedProps << "preferences(${args.preferences.size()})"
-    if (args.room != null) requestedProps << "room"
-    if (args.enabled != null) requestedProps << "enabled"
-    if (args.showOnHome != null) requestedProps << "showOnHome"
-    if (args.defaultCurrentState != null) requestedProps << "defaultCurrentState"
-    if (args.tags != null) requestedProps << "tags"
-    mcpLog("debug", "device", "hub_update_device called for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
-
-    // Label (official API)
-    if (args.label != null) {
-        try {
-            def oldLabel = deviceLabel
-            device.setLabel(args.label)
-            changes << [property: "label", oldValue: oldLabel, newValue: args.label]
-            deviceLabel = args.label
-            mcpLog("debug", "device", "hub_update_device label: '${oldLabel}' -> '${args.label}'")
-        } catch (Exception e) {
-            mcpLog("debug", "device", "hub_update_device label: error: ${e.message}")
-            errors << [property: "label", error: e.message]
-        }
+    _requireDeviceToolAccess(deviceId)
+    def full = _fetchDeviceFullJson(deviceId)
+    if (!(full?.device instanceof Map)) {
+        return [success: false, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
+                note: "Read hub_get_device(mode='configuration') and retry when native device details are available."]
     }
+    def prepared = _prepareDeviceUpdatePatch(args, deviceId, full)
+    return _toolUpdateDeviceNative(prepared.args, deviceId, prepared.fullJson)
 
-    // Name (official API)
-    if (args.name != null) {
-        try {
-            def oldName = device.name
-            device.setName(args.name)
-            changes << [property: "name", oldValue: oldName, newValue: args.name]
-            mcpLog("debug", "device", "hub_update_device name: '${oldName}' -> '${args.name}'")
-        } catch (Exception e) {
-            mcpLog("debug", "device", "hub_update_device name: error: ${e.message}")
-            errors << [property: "name", error: e.message]
-        }
-    }
-
-    // Device Network ID (official API)
-    if (args.deviceNetworkId != null) {
-        try {
-            def oldDni = device.deviceNetworkId
-            device.setDeviceNetworkId(args.deviceNetworkId)
-            changes << [property: "deviceNetworkId", oldValue: oldDni, newValue: args.deviceNetworkId]
-            mcpLog("debug", "device", "hub_update_device DNI: '${oldDni}' -> '${args.deviceNetworkId}'")
-        } catch (Exception e) {
-            mcpLog("debug", "device", "hub_update_device DNI: error: ${e.message}")
-            errors << [property: "deviceNetworkId", error: e.message]
-        }
-    }
-
-    // Data Values (official API)
-    if (args.dataValues) {
-        args.dataValues.each { key, value ->
-            try {
-                device.updateDataValue(key.toString(), value?.toString())
-                changes << [property: "dataValue.${key}", newValue: value?.toString()]
-                mcpLog("debug", "device", "hub_update_device dataValue: ${key}='${value}'")
-            } catch (Exception e) {
-                mcpLog("debug", "device", "hub_update_device dataValue ${key}: error: ${e.message}")
-                errors << [property: "dataValue.${key}", error: e.message]
-            }
-        }
-    }
-
-    if (args.preferences) {
-        _applyDevicePreferencePatch(deviceId, device, args.preferences, changes, errors)
-    }
-
-    // Room (internal API — write; Write master enforced centrally in executeTool)
-    if (args.room != null) {
-        if (settings.enableWrite == false) {
-            errors << [property: "room", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
-        } else {
-            try {
-                mcpLog("debug", "device", "hub_update_device room: starting room assignment for device ${deviceId}")
-
-                // Find room ID by name
-                def targetRoomId = null
-                // The MATCHED room's canonical name (the hub's casing). Recorded as the change's
-                // newValue so the listed path reports the same canonical casing the bypass path does,
-                // not the caller's raw casing.
-                def canonicalRoomName = null
-                if (args.room == "" || args.room == "none" || args.room == "null") {
-                    targetRoomId = "0"
-                    mcpLog("debug", "device", "hub_update_device room: unassigning device from room")
-                } else {
-                    def cachedRooms = null
-                    try {
-                        cachedRooms = getRooms()
-                        mcpLog("debug", "device", "hub_update_device room: getRooms() returned ${cachedRooms?.size() ?: 0} rooms")
-                        if (cachedRooms) {
-                            def targetRoom = cachedRooms.find { it.name?.toString()?.toLowerCase() == args.room?.toString()?.toLowerCase() }
-                            if (targetRoom) {
-                                targetRoomId = targetRoom.id?.toString()
-                                canonicalRoomName = targetRoom.name?.toString()
-                                mcpLog("debug", "device", "hub_update_device room: resolved '${args.room}' -> roomId=${targetRoomId}")
-                            }
-                        }
-                    } catch (Exception e) {
-                        mcpLog("debug", "device", "hub_update_device room: getRooms() failed: ${e.message}")
-                    }
-
-                    if (targetRoomId == null) {
-                        def allRoomNames = cachedRooms ? cachedRooms.collect { it.name } : []
-                        throw new RuntimeException("Room '${args.room}' not found.${allRoomNames ? ' Available rooms: ' + allRoomNames.join(', ') : ''}")
-                    }
-                }
-
-                // Room assignment via POST /room/save with JSON body.
-                // API uses "roomId" field (not "id"). Content-Type must be application/json.
-
-                def saveSuccess = false
-                def saveError = null
-                def deviceIdLong = deviceId as Long
-                def deviceIdInt = deviceId as Integer
-
-                // Helper: POST JSON to /room/save and check for errors
-                // Routed through hubInternalPostJson so room writes share the Hub Security
-                // cookie-refresh retry (a stale cookie no longer fails the save outright).
-                // It returns the parsed body (or null on empty/non-JSON); the
-                // verify-after-write step below is the real safety net for this path.
-                def roomSavePost = { Map bodyMap ->
-                    def jsonStr = groovy.json.JsonOutput.toJson(bodyMap)
-                    def parsed = hubInternalPostJson("/room/save", jsonStr, 30)
-                    if (parsed?.error) {
-                        throw new RuntimeException("Room API error: ${parsed.error}")
-                    }
-                    return parsed
-                }
-
-                // Helper: check if device is in a room's device list
-                def deviceInRoom = { room ->
-                    room?.deviceIds?.contains(deviceIdLong) || room?.deviceIds?.contains(deviceIdInt)
-                }
-
-                // Get current room data
-                def allRooms = getRooms()
-                mcpLog("debug", "device", "hub_update_device room: getRooms() returned ${allRooms?.size() ?: 0} rooms")
-
-                if (targetRoomId == "0") {
-                    // --- UNASSIGN: remove device from its current room ---
-                    def currentRoom = allRooms?.find { deviceInRoom(it) }
-                    if (!currentRoom) {
-                        saveSuccess = true
-                        mcpLog("debug", "device", "hub_update_device room: device not in any room, nothing to unassign")
-                    } else {
-                        mcpLog("debug", "device", "hub_update_device room: removing device ${deviceId} from room '${currentRoom.name}' (${currentRoom.id})")
-                        def updatedDeviceIds = currentRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
-                        def body = [roomId: currentRoom.id as Integer, name: currentRoom.name, deviceIds: updatedDeviceIds]
-                        mcpLog("debug", "device", "hub_update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(body)}")
-                        try {
-                            roomSavePost(body)
-                            saveSuccess = true
-                        } catch (Exception e) {
-                            mcpLog("debug", "device", "hub_update_device room: remove failed: ${e.message}")
-                            saveError = e.message
-                        }
-                    }
-                } else {
-                    // --- ASSIGN: add device to target room ---
-                    mcpLog("debug", "device", "hub_update_device room: assigning device ${deviceId} to room ${targetRoomId}")
-
-                    // Check if device is already in the target room
-                    def targetRoom = allRooms?.find { it.id?.toString() == targetRoomId }
-                    if (targetRoom && deviceInRoom(targetRoom)) {
-                        mcpLog("debug", "device", "hub_update_device room: device already in target room '${targetRoom.name}'")
-                        saveSuccess = true
-                    } else {
-                        // Safe Move pattern: add to new room FIRST, then remove from old room.
-                        // This prevents "device limbo" where a device ends up in no room if
-                        // the second API call fails after the first succeeds.
-                        // Worst case (remove fails): device appears in both rooms temporarily,
-                        // which is recoverable. The old pattern (remove first) could orphan the device.
-
-                        // Locate old room (if any) before mutations
-                        def oldRoom = allRooms?.find { room ->
-                            deviceInRoom(room) && room.id?.toString() != targetRoomId
-                        }
-
-                        // Step 1: Add device to target room
-                        def freshTarget = allRooms?.find { it.id?.toString() == targetRoomId }
-                        def targetDeviceIds = freshTarget?.deviceIds?.collect { it as Integer } ?: []
-                        def devIdInt = deviceId as Integer
-                        if (!targetDeviceIds.contains(devIdInt)) {
-                            targetDeviceIds << devIdInt
-                        }
-
-                        def roomData = [roomId: targetRoomId as Integer, name: freshTarget?.name ?: targetRoom?.name ?: "", deviceIds: targetDeviceIds]
-                        mcpLog("debug", "device", "hub_update_device room: POST /room/save (add) body: ${groovy.json.JsonOutput.toJson(roomData)}")
-                        try {
-                            roomSavePost(roomData)
-                            mcpLog("debug", "device", "hub_update_device room: added to target room '${freshTarget?.name ?: targetRoomId}'")
-                            saveSuccess = true
-                        } catch (Exception e) {
-                            // Add failed — device stays safely in its old room (no change made)
-                            mcpLog("debug", "device", "hub_update_device room: add to room failed: ${e.message}")
-                            saveError = e.message
-                        }
-
-                        // Step 2: Remove from old room (only if add succeeded)
-                        if (saveSuccess && oldRoom) {
-                            mcpLog("debug", "device", "hub_update_device room: removing from old room '${oldRoom.name}' (${oldRoom.id})")
-                            // Re-fetch rooms to get fresh data after the add mutation
-                            def freshRooms = getRooms()
-                            def freshOldRoom = freshRooms?.find { it.id?.toString() == oldRoom.id?.toString() }
-                            if (freshOldRoom) {
-                                def oldDeviceIds = freshOldRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
-                                def oldBody = [roomId: freshOldRoom.id as Integer, name: freshOldRoom.name, deviceIds: oldDeviceIds]
-                                mcpLog("debug", "device", "hub_update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(oldBody)}")
-                                try {
-                                    roomSavePost(oldBody)
-                                    mcpLog("debug", "device", "hub_update_device room: removed from old room '${oldRoom.name}'")
-                                } catch (Exception oldErr) {
-                                    // Device is in both rooms — not ideal but it IS in the target room.
-                                    // Log a warning so the user is aware.
-                                    mcpLog("warn", "device", "hub_update_device room: device added to new room but removal from old room '${oldRoom.name}' failed: ${oldErr.message}. Device may appear in both rooms.")
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Verify the room actually changed
-                if (saveSuccess) {
-                    def verified = false
-                    try {
-                        def verifyRooms = getRooms()
-                        if (targetRoomId == "0") {
-                            def stillInRoom = verifyRooms?.find { room -> deviceInRoom(room) }
-                            verified = (stillInRoom == null)
-                            if (!verified) {
-                                mcpLog("debug", "device", "hub_update_device room: VERIFICATION FAILED - device still in room '${stillInRoom?.name}'")
-                            }
-                        } else {
-                            def tRoom = verifyRooms?.find { it.id?.toString() == targetRoomId }
-                            verified = deviceInRoom(tRoom)
-                            if (!verified) {
-                                mcpLog("debug", "device", "hub_update_device room: VERIFICATION FAILED - device not in target room '${tRoom?.name}' deviceIds: ${tRoom?.deviceIds}")
-                            }
-                            // Also verify device is NOT still in the old room
-                            if (verified) {
-                                def dualRoom = verifyRooms?.find { room -> deviceInRoom(room) && room.id?.toString() != targetRoomId }
-                                if (dualRoom) {
-                                    mcpLog("warn", "device", "hub_update_device room: WARNING - device also still in room '${dualRoom.name}' (dual-room state)")
-                                }
-                            }
-                        }
-                    } catch (Exception verErr) {
-                        mcpLog("debug", "device", "hub_update_device room: verification error: ${verErr.message}")
-                    }
-
-                    if (verified) {
-                        def oldRoomName = device.roomName ?: "none"
-                        def newRoomName = (targetRoomId == "0") ? "none" : (canonicalRoomName ?: args.room)
-                        changes << [property: "room", oldValue: oldRoomName, newValue: newRoomName]
-                        mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoomName} -> ${newRoomName} (VERIFIED)")
-                    } else {
-                        throw new RuntimeException("Room assignment endpoint returned success but room did not actually change.")
-                    }
-                } else {
-                    throw new RuntimeException("Room assignment failed. Last error: ${saveError}")
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "device", "hub_update_device room: error: ${e.message}")
-                errors << [property: "room", error: e.message]
-            }
-        }
-    }
-
-    // Enable/Disable (internal API — write; Write master enforced centrally in executeTool)
-    // Vue posts application/json with numeric id and boolean disable; verify with a fresh read.
-    if (args.enabled != null) {
-        if (settings.enableWrite == false) {
-            errors << [property: "enabled", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
-        } else {
-            try {
-                def disableValue = !args.enabled
-                mcpLog("debug", "device", "hub_update_device enabled: POSTing to /device/disable with id=${deviceId}, disable=${disableValue}")
-                hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: disableValue]))
-                // Confirm the flip before recording success -- a 200 from /device/disable does not
-                // prove the state changed, and the request-scoped device handle's disabled flag is
-                // execution-cached (stale to a same-request POST), so confirm via a FRESH re-read.
-                def res = _confirmDisabledFlip(device.id.toString(), !args.enabled)
-                if (res.fetchFailed) {
-                    errors << [property: "enabled", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
-                } else if (res.ok) {
-                    changes << [property: "enabled", newValue: args.enabled]
-                    mcpLog("info", "device", "Device '${deviceLabel}' ${args.enabled ? 'enabled' : 'disabled'}")
-                } else {
-                    errors << [property: "enabled", error: "POST accepted but the device read back as ${res.actualDisabled ? 'disabled' : 'enabled'} (expected ${!args.enabled ? 'disabled' : 'enabled'})."]
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "device", "hub_update_device enabled: error: ${e.message}")
-                errors << [property: "enabled", error: e.message]
-            }
-        }
-    }
-
-    // Show-on-Home flag (internal API -- no SDK setter; Write master enforced centrally).
-    // Controls whether the device appears on the hub Home page and counts toward its quick
-    // status-bar summaries. Prefer the dedicated GET (clean, single-purpose) but fall back to
-    // /device/preference/save when it's absent: /device/setShowOnHome answers on some hubs and
-    // 404s on others (observed 404 on a 2.5.0.157 hub, 200 on 2.5.0.159 -- cause not established,
-    // and NOT attributable to any documented release-notes change), whereas /device/preference/save
-    // was present on both. That fallback re-posts every preference-pane control because omissions reset.
-    if (args.showOnHome != null) {
-        if (settings.enableWrite == false) {
-            errors << [property: "showOnHome", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
-        } else {
-            try {
-                def showVal = args.showOnHome ? "true" : "false"
-                try {
-                    hubInternalGet("/device/setShowOnHome", [deviceId: deviceId, show: showVal])
-                } catch (IllegalStateException guardErr) {
-                    throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
-                } catch (Exception primaryErr) {
-                    mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
-                    _saveDevicePreferencePaneControls(deviceId, [showOnHome: args.showOnHome])
-                }
-                // Confirm via a FRESH read-back: a 200 from either endpoint does not prove the flag
-                // flipped, and /device/preference/save returns {success} even on a no-op. fullJson
-                // carries device.showOnHome as a Boolean (robust to the JSON string "true").
-                def fjReadback = _fetchDeviceFullJson(deviceId)
-                if (fjReadback?.device == null) {
-                    errors << [property: "showOnHome", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
-                } else {
-                    def rawShow = fjReadback.device.showOnHome
-                    def gotShow = (rawShow == true || rawShow?.toString() == "true")
-                    if (gotShow == (args.showOnHome == true)) {
-                        changes << [property: "showOnHome", newValue: args.showOnHome]
-                        mcpLog("info", "device", "Device '${deviceLabel}' showOnHome -> ${args.showOnHome}")
-                    } else {
-                        errors << [property: "showOnHome", error: "POST accepted but showOnHome read back as ${gotShow} (expected ${args.showOnHome == true})."]
-                    }
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "device", "hub_update_device showOnHome: error: ${e.message}")
-                errors << [property: "showOnHome", error: e.message]
-            }
-        }
-    }
-
-    // Default Current State -- which Current-States attribute shows in the Status column on the
-    // Devices/Rooms pages ("" selects None). Same endpoint-availability split as showOnHome:
-    // prefer the dedicated GET (returns `true`), fall back to /device/preference/save where absent.
-    if (args.defaultCurrentState != null) {
-        if (settings.enableWrite == false) {
-            errors << [property: "defaultCurrentState", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
-        } else {
-            try {
-                def csVal = args.defaultCurrentState.toString()
-                def applied = false
-                try {
-                    // The dedicated endpoint returns the literal `true` on success. A 200 carrying
-                    // anything else (e.g. `false` for an unknown attribute name) is a real rejection
-                    // -- record an error, do NOT fall back (the endpoint exists, the value is bad).
-                    def result = hubInternalGet("/device/setDefaultCurrentState", [id: deviceId, currentState: csVal])
-                    if (result?.toString()?.trim()?.toLowerCase() == "true") {
-                        applied = true
-                    } else {
-                        errors << [property: "defaultCurrentState", error: "Hub did not accept defaultCurrentState='${csVal}' (returned '${result?.toString()?.take(120)}'). Use an attribute name from the device's current states."]
-                    }
-                } catch (IllegalStateException guardErr) {
-                    throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
-                } catch (Exception primaryErr) {
-                    // Dedicated endpoint absent on some hubs (404) -- fall back to the Preferences-pane save.
-                    mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
-                    _saveDevicePreferencePaneControls(deviceId, [defaultCurrentState: csVal])
-                    applied = true
-                }
-                if (applied) {
-                    // Confirm via a FRESH read-back before recording: the /device/preference/save
-                    // fallback returns {success} on a no-op. fullJson carries device.defaultCurrentState
-                    // as the attribute-name string, or null/"" for None (the empty-string request).
-                    def fjReadback = _fetchDeviceFullJson(deviceId)
-                    if (fjReadback?.device == null) {
-                        errors << [property: "defaultCurrentState", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
-                    } else {
-                        def got = fjReadback.device.defaultCurrentState
-                        def gotStr = (got == null) ? null : got.toString()
-                        def cleared = (csVal == "")
-                        def ok = cleared ? (gotStr == null || gotStr == "") : (gotStr == csVal)
-                        if (ok) {
-                            changes << [property: "defaultCurrentState", newValue: csVal]
-                            mcpLog("info", "device", "Device '${deviceLabel}' defaultCurrentState -> '${csVal}'")
-                        } else {
-                            errors << [property: "defaultCurrentState", error: "POST accepted but defaultCurrentState read back as '${gotStr}' (expected '${cleared ? '(none)' : csVal}')."]
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "device", "hub_update_device defaultCurrentState: error: ${e.message}")
-                errors << [property: "defaultCurrentState", error: e.message]
-            }
-        }
-    }
-
-    // Tags (internal API -- no SDK setter and no dedicated endpoint; the ONLY path is the
-    // wholesale /device/update form, which BLANKS any field it omits. So read the full
-    // device-edit model, change only tags, re-POST the COMPLETE form, then verify the tags
-    // landed and the identity fields survived (restoring label/name/DNI via the SDK if the
-    // hub dropped them).
-    if (args.tags != null) {
-        if (settings.enableWrite == false) {
-            errors << [property: "tags", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
-        } else {
-            try {
-                def tagsCsv = _normalizedDeviceTags(args.tags).join(",")
-                def fjText = hubInternalGet("/device/fullJson/${deviceId}")
-                def full = fjText ? new groovy.json.JsonSlurper().parseText(fjText) : null
-                def d = full?.device
-                if (!d) throw new RuntimeException("Could not read the device model from /device/fullJson to preserve fields")
-                def oldLabel = d.label; def oldName = d.name; def oldDni = d.deviceNetworkId
-                def body = _deviceConfigurationFormBody(deviceId, full, [tags: tagsCsv])
-                hubInternalPostFormRaw("/device/update", body)
-                // Verify: tags applied AND identity fields not blanked by the wholesale form
-                def vText = hubInternalGet("/device/fullJson/${deviceId}")
-                def vd = vText ? new groovy.json.JsonSlurper().parseText(vText)?.device : null
-                // Identity-restore runs FIRST, regardless of whether tags matched: the wholesale
-                // /device/update form blanks any field it omits, and that can happen on the
-                // tag-mismatch path too -- so restore label/name/DNI whenever the read-back shows
-                // them blanked, before branching on the tag result. A restore-setter failure is
-                // surfaced as an actionable error (not swallowed) so the user knows to re-set it.
-                if (oldLabel && !vd?.label) { try { device.setLabel(oldLabel) } catch (Exception re) { errors << [property: "label", error: "Tags processed but the device-edit form blanked the label and restoring it failed: ${re.message}. Verify and re-set the label."] } }
-                if (oldName && !vd?.name) { try { device.setName(oldName) } catch (Exception re) { errors << [property: "name", error: "Tags processed but the device-edit form blanked the name and restoring it failed: ${re.message}. Verify and re-set the name."] } }
-                if (oldDni && !vd?.deviceNetworkId) { try { device.setDeviceNetworkId(oldDni) } catch (Exception re) { errors << [property: "deviceNetworkId", error: "Tags processed but the device-edit form blanked the deviceNetworkId and restoring it failed: ${re.message}. Verify and re-set the deviceNetworkId."] } }
-                def gotTags = vd instanceof Map && vd.containsKey('tags') ? _normalizedDeviceTags(vd.tags) : null
-                if (gotTags != _normalizedDeviceTags(tagsCsv)) {
-                    errors << [property: "tags", error: "POST accepted but tags read back as '${gotTags}' (expected '${tagsCsv}'). Other fields were preserved."]
-                } else {
-                    changes << [property: "tags", oldValue: d.tags, newValue: tagsCsv]
-                    mcpLog("info", "device", "Device '${deviceLabel}' tags -> '${tagsCsv}'")
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "device", "hub_update_device tags: error: ${e.message}")
-                errors << [property: "tags", error: e.message]
-            }
-        }
-    }
-
-    if (!changes && !errors) {
-        return [
-            success: true,
-            device: deviceLabel,
-            deviceId: deviceId,
-            message: "No properties were provided to update. Specify at least one property: label, name, deviceNetworkId, room, enabled, dataValues, preferences, showOnHome, defaultCurrentState, or tags."
-        ]
-    }
-
-    mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
-    if (errors) {
-        mcpLog("debug", "device", "hub_update_device errors: ${errors.collect { "${it.property}: ${it.error}" }.join('; ')}")
-    }
-
-    return [
-        success: errors.isEmpty(),
-        device: deviceLabel,
-        deviceId: deviceId,
-        changes: changes,
-        errors: errors.isEmpty() ? null : errors,
-        message: errors.isEmpty()
-            ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}'."
-            : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}'."
-    ]
+    // Retained SDK implementation for deliberate rollback; native execution above is authoritative.
+    // def deviceId = args.deviceId
+    //     if (!deviceId) throw new IllegalArgumentException("deviceId is required")
+    //
+    //     def device = findDevice(deviceId)
+    //     if (!device) {
+    //         if (_bypassEnabled()) {
+    //             def fj = _fetchDeviceFullJson(deviceId)
+    //             if (fj?.device != null) {
+    //                 if (args.dataValues) throw new IllegalArgumentException("dataValues requires adding this device to the MCP device scope; no evidenced native bypass data writer is available")
+    //                 def prepared = _prepareDeviceUpdatePatch(args, deviceId, fj)
+    //                 return _toolUpdateDeviceBypass(prepared.args, deviceId, prepared.fullJson)
+    //             }
+    //         }
+    //         throw new IllegalArgumentException("Device not found: ${deviceId}. The device must be in your selected devices or be an MCP-managed virtual device.")
+    //     }
+    //
+    //     def prepared = _prepareDeviceUpdatePatch(args, deviceId)
+    //     args = prepared.args
+    //     def deviceLabel = device.label ?: device.name ?: "Device ${deviceId}"
+    //     def changes = []
+    //     def errors = []
+    //
+    //     _applyExtendedDeviceUpdate(args, deviceId, prepared.fullJson, false, changes, errors)
+    //
+    //     def requestedProps = []
+    //     if (args.label != null) requestedProps << "label"
+    //     if (args.name != null) requestedProps << "name"
+    //     if (args.deviceNetworkId != null) requestedProps << "deviceNetworkId"
+    //     if (args.dataValues) requestedProps << "dataValues(${args.dataValues.size()})"
+    //     if (args.preferences) requestedProps << "preferences(${args.preferences.size()})"
+    //     if (args.room != null) requestedProps << "room"
+    //     if (args.enabled != null) requestedProps << "enabled"
+    //     if (args.showOnHome != null) requestedProps << "showOnHome"
+    //     if (args.defaultCurrentState != null) requestedProps << "defaultCurrentState"
+    //     if (args.tags != null) requestedProps << "tags"
+    //     mcpLog("debug", "device", "hub_update_device called for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
+    //
+    //     // Label (official API)
+    //     if (args.label != null) {
+    //         try {
+    //             def oldLabel = deviceLabel
+    //             device.setLabel(args.label)
+    //             changes << [property: "label", oldValue: oldLabel, newValue: args.label]
+    //             deviceLabel = args.label
+    //             mcpLog("debug", "device", "hub_update_device label: '${oldLabel}' -> '${args.label}'")
+    //         } catch (Exception e) {
+    //             mcpLog("debug", "device", "hub_update_device label: error: ${e.message}")
+    //             errors << [property: "label", error: e.message]
+    //         }
+    //     }
+    //
+    //     // Name (official API)
+    //     if (args.name != null) {
+    //         try {
+    //             def oldName = device.name
+    //             device.setName(args.name)
+    //             changes << [property: "name", oldValue: oldName, newValue: args.name]
+    //             mcpLog("debug", "device", "hub_update_device name: '${oldName}' -> '${args.name}'")
+    //         } catch (Exception e) {
+    //             mcpLog("debug", "device", "hub_update_device name: error: ${e.message}")
+    //             errors << [property: "name", error: e.message]
+    //         }
+    //     }
+    //
+    //     // Device Network ID (official API)
+    //     if (args.deviceNetworkId != null) {
+    //         try {
+    //             def oldDni = device.deviceNetworkId
+    //             device.setDeviceNetworkId(args.deviceNetworkId)
+    //             changes << [property: "deviceNetworkId", oldValue: oldDni, newValue: args.deviceNetworkId]
+    //             mcpLog("debug", "device", "hub_update_device DNI: '${oldDni}' -> '${args.deviceNetworkId}'")
+    //         } catch (Exception e) {
+    //             mcpLog("debug", "device", "hub_update_device DNI: error: ${e.message}")
+    //             errors << [property: "deviceNetworkId", error: e.message]
+    //         }
+    //     }
+    //
+    //     // Data Values (official API)
+    //     if (args.dataValues) {
+    //         args.dataValues.each { key, value ->
+    //             try {
+    //                 device.updateDataValue(key.toString(), value?.toString())
+    //                 changes << [property: "dataValue.${key}", newValue: value?.toString()]
+    //                 mcpLog("debug", "device", "hub_update_device dataValue: ${key}='${value}'")
+    //             } catch (Exception e) {
+    //                 mcpLog("debug", "device", "hub_update_device dataValue ${key}: error: ${e.message}")
+    //                 errors << [property: "dataValue.${key}", error: e.message]
+    //             }
+    //         }
+    //     }
+    //
+    //     if (args.preferences) {
+    //         _applyDevicePreferencePatch(deviceId, device, args.preferences, changes, errors)
+    //     }
+    //
+    //     // Room (internal API — write; Write master enforced centrally in executeTool)
+    //     if (args.room != null) {
+    //         if (settings.enableWrite == false) {
+    //             errors << [property: "room", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
+    //         } else {
+    //             try {
+    //                 mcpLog("debug", "device", "hub_update_device room: starting room assignment for device ${deviceId}")
+    //
+    //                 // Find room ID by name
+    //                 def targetRoomId = null
+    //                 // The MATCHED room's canonical name (the hub's casing). Recorded as the change's
+    //                 // newValue so the listed path reports the same canonical casing the bypass path does,
+    //                 // not the caller's raw casing.
+    //                 def canonicalRoomName = null
+    //                 if (args.room == "" || args.room == "none" || args.room == "null") {
+    //                     targetRoomId = "0"
+    //                     mcpLog("debug", "device", "hub_update_device room: unassigning device from room")
+    //                 } else {
+    //                     def cachedRooms = null
+    //                     try {
+    //                         cachedRooms = getRooms()
+    //                         mcpLog("debug", "device", "hub_update_device room: getRooms() returned ${cachedRooms?.size() ?: 0} rooms")
+    //                         if (cachedRooms) {
+    //                             def targetRoom = cachedRooms.find { it.name?.toString()?.toLowerCase() == args.room?.toString()?.toLowerCase() }
+    //                             if (targetRoom) {
+    //                                 targetRoomId = targetRoom.id?.toString()
+    //                                 canonicalRoomName = targetRoom.name?.toString()
+    //                                 mcpLog("debug", "device", "hub_update_device room: resolved '${args.room}' -> roomId=${targetRoomId}")
+    //                             }
+    //                         }
+    //                     } catch (Exception e) {
+    //                         mcpLog("debug", "device", "hub_update_device room: getRooms() failed: ${e.message}")
+    //                     }
+    //
+    //                     if (targetRoomId == null) {
+    //                         def allRoomNames = cachedRooms ? cachedRooms.collect { it.name } : []
+    //                         throw new RuntimeException("Room '${args.room}' not found.${allRoomNames ? ' Available rooms: ' + allRoomNames.join(', ') : ''}")
+    //                     }
+    //                 }
+    //
+    //                 // Room assignment via POST /room/save with JSON body.
+    //                 // API uses "roomId" field (not "id"). Content-Type must be application/json.
+    //
+    //                 def saveSuccess = false
+    //                 def saveError = null
+    //                 def deviceIdLong = deviceId as Long
+    //                 def deviceIdInt = deviceId as Integer
+    //
+    //                 // Helper: POST JSON to /room/save and check for errors
+    //                 // Routed through hubInternalPostJson so room writes share the Hub Security
+    //                 // cookie-refresh retry (a stale cookie no longer fails the save outright).
+    //                 // It returns the parsed body (or null on empty/non-JSON); the
+    //                 // verify-after-write step below is the real safety net for this path.
+    //                 def roomSavePost = { Map bodyMap ->
+    //                     def jsonStr = groovy.json.JsonOutput.toJson(bodyMap)
+    //                     def parsed = hubInternalPostJson("/room/save", jsonStr, 30)
+    //                     if (parsed?.error) {
+    //                         throw new RuntimeException("Room API error: ${parsed.error}")
+    //                     }
+    //                     return parsed
+    //                 }
+    //
+    //                 // Helper: check if device is in a room's device list
+    //                 def deviceInRoom = { room ->
+    //                     room?.deviceIds?.contains(deviceIdLong) || room?.deviceIds?.contains(deviceIdInt)
+    //                 }
+    //
+    //                 // Get current room data
+    //                 def allRooms = getRooms()
+    //                 mcpLog("debug", "device", "hub_update_device room: getRooms() returned ${allRooms?.size() ?: 0} rooms")
+    //
+    //                 if (targetRoomId == "0") {
+    //                     // --- UNASSIGN: remove device from its current room ---
+    //                     def currentRoom = allRooms?.find { deviceInRoom(it) }
+    //                     if (!currentRoom) {
+    //                         saveSuccess = true
+    //                         mcpLog("debug", "device", "hub_update_device room: device not in any room, nothing to unassign")
+    //                     } else {
+    //                         mcpLog("debug", "device", "hub_update_device room: removing device ${deviceId} from room '${currentRoom.name}' (${currentRoom.id})")
+    //                         def updatedDeviceIds = currentRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
+    //                         def body = [roomId: currentRoom.id as Integer, name: currentRoom.name, deviceIds: updatedDeviceIds]
+    //                         mcpLog("debug", "device", "hub_update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(body)}")
+    //                         try {
+    //                             roomSavePost(body)
+    //                             saveSuccess = true
+    //                         } catch (Exception e) {
+    //                             mcpLog("debug", "device", "hub_update_device room: remove failed: ${e.message}")
+    //                             saveError = e.message
+    //                         }
+    //                     }
+    //                 } else {
+    //                     // --- ASSIGN: add device to target room ---
+    //                     mcpLog("debug", "device", "hub_update_device room: assigning device ${deviceId} to room ${targetRoomId}")
+    //
+    //                     // Check if device is already in the target room
+    //                     def targetRoom = allRooms?.find { it.id?.toString() == targetRoomId }
+    //                     if (targetRoom && deviceInRoom(targetRoom)) {
+    //                         mcpLog("debug", "device", "hub_update_device room: device already in target room '${targetRoom.name}'")
+    //                         saveSuccess = true
+    //                     } else {
+    //                         // Safe Move pattern: add to new room FIRST, then remove from old room.
+    //                         // This prevents "device limbo" where a device ends up in no room if
+    //                         // the second API call fails after the first succeeds.
+    //                         // Worst case (remove fails): device appears in both rooms temporarily,
+    //                         // which is recoverable. The old pattern (remove first) could orphan the device.
+    //
+    //                         // Locate old room (if any) before mutations
+    //                         def oldRoom = allRooms?.find { room ->
+    //                             deviceInRoom(room) && room.id?.toString() != targetRoomId
+    //                         }
+    //
+    //                         // Step 1: Add device to target room
+    //                         def freshTarget = allRooms?.find { it.id?.toString() == targetRoomId }
+    //                         def targetDeviceIds = freshTarget?.deviceIds?.collect { it as Integer } ?: []
+    //                         def devIdInt = deviceId as Integer
+    //                         if (!targetDeviceIds.contains(devIdInt)) {
+    //                             targetDeviceIds << devIdInt
+    //                         }
+    //
+    //                         def roomData = [roomId: targetRoomId as Integer, name: freshTarget?.name ?: targetRoom?.name ?: "", deviceIds: targetDeviceIds]
+    //                         mcpLog("debug", "device", "hub_update_device room: POST /room/save (add) body: ${groovy.json.JsonOutput.toJson(roomData)}")
+    //                         try {
+    //                             roomSavePost(roomData)
+    //                             mcpLog("debug", "device", "hub_update_device room: added to target room '${freshTarget?.name ?: targetRoomId}'")
+    //                             saveSuccess = true
+    //                         } catch (Exception e) {
+    //                             // Add failed — device stays safely in its old room (no change made)
+    //                             mcpLog("debug", "device", "hub_update_device room: add to room failed: ${e.message}")
+    //                             saveError = e.message
+    //                         }
+    //
+    //                         // Step 2: Remove from old room (only if add succeeded)
+    //                         if (saveSuccess && oldRoom) {
+    //                             mcpLog("debug", "device", "hub_update_device room: removing from old room '${oldRoom.name}' (${oldRoom.id})")
+    //                             // Re-fetch rooms to get fresh data after the add mutation
+    //                             def freshRooms = getRooms()
+    //                             def freshOldRoom = freshRooms?.find { it.id?.toString() == oldRoom.id?.toString() }
+    //                             if (freshOldRoom) {
+    //                                 def oldDeviceIds = freshOldRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
+    //                                 def oldBody = [roomId: freshOldRoom.id as Integer, name: freshOldRoom.name, deviceIds: oldDeviceIds]
+    //                                 mcpLog("debug", "device", "hub_update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(oldBody)}")
+    //                                 try {
+    //                                     roomSavePost(oldBody)
+    //                                     mcpLog("debug", "device", "hub_update_device room: removed from old room '${oldRoom.name}'")
+    //                                 } catch (Exception oldErr) {
+    //                                     // Device is in both rooms — not ideal but it IS in the target room.
+    //                                     // Log a warning so the user is aware.
+    //                                     mcpLog("warn", "device", "hub_update_device room: device added to new room but removal from old room '${oldRoom.name}' failed: ${oldErr.message}. Device may appear in both rooms.")
+    //                                 }
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //
+    //                 // Verify the room actually changed
+    //                 if (saveSuccess) {
+    //                     def verified = false
+    //                     try {
+    //                         def verifyRooms = getRooms()
+    //                         if (targetRoomId == "0") {
+    //                             def stillInRoom = verifyRooms?.find { room -> deviceInRoom(room) }
+    //                             verified = (stillInRoom == null)
+    //                             if (!verified) {
+    //                                 mcpLog("debug", "device", "hub_update_device room: VERIFICATION FAILED - device still in room '${stillInRoom?.name}'")
+    //                             }
+    //                         } else {
+    //                             def tRoom = verifyRooms?.find { it.id?.toString() == targetRoomId }
+    //                             verified = deviceInRoom(tRoom)
+    //                             if (!verified) {
+    //                                 mcpLog("debug", "device", "hub_update_device room: VERIFICATION FAILED - device not in target room '${tRoom?.name}' deviceIds: ${tRoom?.deviceIds}")
+    //                             }
+    //                             // Also verify device is NOT still in the old room
+    //                             if (verified) {
+    //                                 def dualRoom = verifyRooms?.find { room -> deviceInRoom(room) && room.id?.toString() != targetRoomId }
+    //                                 if (dualRoom) {
+    //                                     mcpLog("warn", "device", "hub_update_device room: WARNING - device also still in room '${dualRoom.name}' (dual-room state)")
+    //                                 }
+    //                             }
+    //                         }
+    //                     } catch (Exception verErr) {
+    //                         mcpLog("debug", "device", "hub_update_device room: verification error: ${verErr.message}")
+    //                     }
+    //
+    //                     if (verified) {
+    //                         def oldRoomName = device.roomName ?: "none"
+    //                         def newRoomName = (targetRoomId == "0") ? "none" : (canonicalRoomName ?: args.room)
+    //                         changes << [property: "room", oldValue: oldRoomName, newValue: newRoomName]
+    //                         mcpLog("info", "device", "Room changed for '${deviceLabel}': ${oldRoomName} -> ${newRoomName} (VERIFIED)")
+    //                     } else {
+    //                         throw new RuntimeException("Room assignment endpoint returned success but room did not actually change.")
+    //                     }
+    //                 } else {
+    //                     throw new RuntimeException("Room assignment failed. Last error: ${saveError}")
+    //                 }
+    //             } catch (Exception e) {
+    //                 mcpLog("debug", "device", "hub_update_device room: error: ${e.message}")
+    //                 errors << [property: "room", error: e.message]
+    //             }
+    //         }
+    //     }
+    //
+    //     // Enable/Disable (internal API — write; Write master enforced centrally in executeTool)
+    //     // Vue posts application/json with numeric id and boolean disable; verify with a fresh read.
+    //     if (args.enabled != null) {
+    //         if (settings.enableWrite == false) {
+    //             errors << [property: "enabled", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
+    //         } else {
+    //             try {
+    //                 def disableValue = !args.enabled
+    //                 mcpLog("debug", "device", "hub_update_device enabled: POSTing to /device/disable with id=${deviceId}, disable=${disableValue}")
+    //                 hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: disableValue]))
+    //                 // Confirm the flip before recording success -- a 200 from /device/disable does not
+    //                 // prove the state changed, and the request-scoped device handle's disabled flag is
+    //                 // execution-cached (stale to a same-request POST), so confirm via a FRESH re-read.
+    //                 def res = _confirmDisabledFlip(device.id.toString(), !args.enabled)
+    //                 if (res.fetchFailed) {
+    //                     errors << [property: "enabled", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
+    //                 } else if (res.ok) {
+    //                     changes << [property: "enabled", newValue: args.enabled]
+    //                     mcpLog("info", "device", "Device '${deviceLabel}' ${args.enabled ? 'enabled' : 'disabled'}")
+    //                 } else {
+    //                     errors << [property: "enabled", error: "POST accepted but the device read back as ${res.actualDisabled ? 'disabled' : 'enabled'} (expected ${!args.enabled ? 'disabled' : 'enabled'})."]
+    //                 }
+    //             } catch (Exception e) {
+    //                 mcpLog("debug", "device", "hub_update_device enabled: error: ${e.message}")
+    //                 errors << [property: "enabled", error: e.message]
+    //             }
+    //         }
+    //     }
+    //
+    //     // Show-on-Home flag (internal API -- no SDK setter; Write master enforced centrally).
+    //     // Controls whether the device appears on the hub Home page and counts toward its quick
+    //     // status-bar summaries. Prefer the dedicated GET (clean, single-purpose) but fall back to
+    //     // /device/preference/save when it's absent: /device/setShowOnHome answers on some hubs and
+    //     // 404s on others (observed 404 on a 2.5.0.157 hub, 200 on 2.5.0.159 -- cause not established,
+    //     // and NOT attributable to any documented release-notes change), whereas /device/preference/save
+    //     // was present on both. That fallback re-posts every preference-pane control because omissions reset.
+    //     if (args.showOnHome != null) {
+    //         if (settings.enableWrite == false) {
+    //             errors << [property: "showOnHome", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
+    //         } else {
+    //             try {
+    //                 def showVal = args.showOnHome ? "true" : "false"
+    //                 try {
+    //                     hubInternalGet("/device/setShowOnHome", [deviceId: deviceId, show: showVal])
+    //                 } catch (IllegalStateException guardErr) {
+    //                     throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
+    //                 } catch (Exception primaryErr) {
+    //                     mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
+    //                     _saveDevicePreferencePaneControls(deviceId, [showOnHome: args.showOnHome])
+    //                 }
+    //                 // Confirm via a FRESH read-back: a 200 from either endpoint does not prove the flag
+    //                 // flipped, and /device/preference/save returns {success} even on a no-op. fullJson
+    //                 // carries device.showOnHome as a Boolean (robust to the JSON string "true").
+    //                 def fjReadback = _fetchDeviceFullJson(deviceId)
+    //                 if (fjReadback?.device == null) {
+    //                     errors << [property: "showOnHome", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
+    //                 } else {
+    //                     def rawShow = fjReadback.device.showOnHome
+    //                     def gotShow = (rawShow == true || rawShow?.toString() == "true")
+    //                     if (gotShow == (args.showOnHome == true)) {
+    //                         changes << [property: "showOnHome", newValue: args.showOnHome]
+    //                         mcpLog("info", "device", "Device '${deviceLabel}' showOnHome -> ${args.showOnHome}")
+    //                     } else {
+    //                         errors << [property: "showOnHome", error: "POST accepted but showOnHome read back as ${gotShow} (expected ${args.showOnHome == true})."]
+    //                     }
+    //                 }
+    //             } catch (Exception e) {
+    //                 mcpLog("debug", "device", "hub_update_device showOnHome: error: ${e.message}")
+    //                 errors << [property: "showOnHome", error: e.message]
+    //             }
+    //         }
+    //     }
+    //
+    //     // Default Current State -- which Current-States attribute shows in the Status column on the
+    //     // Devices/Rooms pages ("" selects None). Same endpoint-availability split as showOnHome:
+    //     // prefer the dedicated GET (returns `true`), fall back to /device/preference/save where absent.
+    //     if (args.defaultCurrentState != null) {
+    //         if (settings.enableWrite == false) {
+    //             errors << [property: "defaultCurrentState", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
+    //         } else {
+    //             try {
+    //                 def csVal = args.defaultCurrentState.toString()
+    //                 def applied = false
+    //                 try {
+    //                     // The dedicated endpoint returns the literal `true` on success. A 200 carrying
+    //                     // anything else (e.g. `false` for an unknown attribute name) is a real rejection
+    //                     // -- record an error, do NOT fall back (the endpoint exists, the value is bad).
+    //                     def result = hubInternalGet("/device/setDefaultCurrentState", [id: deviceId, currentState: csVal])
+    //                     if (result?.toString()?.trim()?.toLowerCase() == "true") {
+    //                         applied = true
+    //                     } else {
+    //                         errors << [property: "defaultCurrentState", error: "Hub did not accept defaultCurrentState='${csVal}' (returned '${result?.toString()?.take(120)}'). Use an attribute name from the device's current states."]
+    //                     }
+    //                 } catch (IllegalStateException guardErr) {
+    //                     throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
+    //                 } catch (Exception primaryErr) {
+    //                     // Dedicated endpoint absent on some hubs (404) -- fall back to the Preferences-pane save.
+    //                     mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
+    //                     _saveDevicePreferencePaneControls(deviceId, [defaultCurrentState: csVal])
+    //                     applied = true
+    //                 }
+    //                 if (applied) {
+    //                     // Confirm via a FRESH read-back before recording: the /device/preference/save
+    //                     // fallback returns {success} on a no-op. fullJson carries device.defaultCurrentState
+    //                     // as the attribute-name string, or null/"" for None (the empty-string request).
+    //                     def fjReadback = _fetchDeviceFullJson(deviceId)
+    //                     if (fjReadback?.device == null) {
+    //                         errors << [property: "defaultCurrentState", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
+    //                     } else {
+    //                         def got = fjReadback.device.defaultCurrentState
+    //                         def gotStr = (got == null) ? null : got.toString()
+    //                         def cleared = (csVal == "")
+    //                         def ok = cleared ? (gotStr == null || gotStr == "") : (gotStr == csVal)
+    //                         if (ok) {
+    //                             changes << [property: "defaultCurrentState", newValue: csVal]
+    //                             mcpLog("info", "device", "Device '${deviceLabel}' defaultCurrentState -> '${csVal}'")
+    //                         } else {
+    //                             errors << [property: "defaultCurrentState", error: "POST accepted but defaultCurrentState read back as '${gotStr}' (expected '${cleared ? '(none)' : csVal}')."]
+    //                         }
+    //                     }
+    //                 }
+    //             } catch (Exception e) {
+    //                 mcpLog("debug", "device", "hub_update_device defaultCurrentState: error: ${e.message}")
+    //                 errors << [property: "defaultCurrentState", error: e.message]
+    //             }
+    //         }
+    //     }
+    //
+    //     // Tags (internal API -- no SDK setter and no dedicated endpoint; the ONLY path is the
+    //     // wholesale /device/update form, which BLANKS any field it omits. So read the full
+    //     // device-edit model, change only tags, re-POST the COMPLETE form, then verify the tags
+    //     // landed and the identity fields survived (restoring label/name/DNI via the SDK if the
+    //     // hub dropped them).
+    //     if (args.tags != null) {
+    //         if (settings.enableWrite == false) {
+    //             errors << [property: "tags", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
+    //         } else {
+    //             try {
+    //                 def tagsCsv = _normalizedDeviceTags(args.tags).join(",")
+    //                 def fjText = hubInternalGet("/device/fullJson/${deviceId}")
+    //                 def full = fjText ? new groovy.json.JsonSlurper().parseText(fjText) : null
+    //                 def d = full?.device
+    //                 if (!d) throw new RuntimeException("Could not read the device model from /device/fullJson to preserve fields")
+    //                 def oldLabel = d.label; def oldName = d.name; def oldDni = d.deviceNetworkId
+    //                 def body = _deviceConfigurationFormBody(deviceId, full, [tags: tagsCsv])
+    //                 hubInternalPostFormRaw("/device/update", body)
+    //                 // Verify: tags applied AND identity fields not blanked by the wholesale form
+    //                 def vText = hubInternalGet("/device/fullJson/${deviceId}")
+    //                 def vd = vText ? new groovy.json.JsonSlurper().parseText(vText)?.device : null
+    //                 // Identity-restore runs FIRST, regardless of whether tags matched: the wholesale
+    //                 // /device/update form blanks any field it omits, and that can happen on the
+    //                 // tag-mismatch path too -- so restore label/name/DNI whenever the read-back shows
+    //                 // them blanked, before branching on the tag result. A restore-setter failure is
+    //                 // surfaced as an actionable error (not swallowed) so the user knows to re-set it.
+    //                 if (oldLabel && !vd?.label) { try { device.setLabel(oldLabel) } catch (Exception re) { errors << [property: "label", error: "Tags processed but the device-edit form blanked the label and restoring it failed: ${re.message}. Verify and re-set the label."] } }
+    //                 if (oldName && !vd?.name) { try { device.setName(oldName) } catch (Exception re) { errors << [property: "name", error: "Tags processed but the device-edit form blanked the name and restoring it failed: ${re.message}. Verify and re-set the name."] } }
+    //                 if (oldDni && !vd?.deviceNetworkId) { try { device.setDeviceNetworkId(oldDni) } catch (Exception re) { errors << [property: "deviceNetworkId", error: "Tags processed but the device-edit form blanked the deviceNetworkId and restoring it failed: ${re.message}. Verify and re-set the deviceNetworkId."] } }
+    //                 def gotTags = vd instanceof Map && vd.containsKey('tags') ? _normalizedDeviceTags(vd.tags) : null
+    //                 if (gotTags != _normalizedDeviceTags(tagsCsv)) {
+    //                     errors << [property: "tags", error: "POST accepted but tags read back as '${gotTags}' (expected '${tagsCsv}'). Other fields were preserved."]
+    //                 } else {
+    //                     changes << [property: "tags", oldValue: d.tags, newValue: tagsCsv]
+    //                     mcpLog("info", "device", "Device '${deviceLabel}' tags -> '${tagsCsv}'")
+    //                 }
+    //             } catch (Exception e) {
+    //                 mcpLog("debug", "device", "hub_update_device tags: error: ${e.message}")
+    //                 errors << [property: "tags", error: e.message]
+    //             }
+    //         }
+    //     }
+    //
+    //     if (!changes && !errors) {
+    //         return [
+    //             success: true,
+    //             device: deviceLabel,
+    //             deviceId: deviceId,
+    //             message: "No properties were provided to update. Specify at least one property: label, name, deviceNetworkId, room, enabled, dataValues, preferences, showOnHome, defaultCurrentState, or tags."
+    //         ]
+    //     }
+    //
+    //     mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
+    //     if (errors) {
+    //         mcpLog("debug", "device", "hub_update_device errors: ${errors.collect { "${it.property}: ${it.error}" }.join('; ')}")
+    //     }
+    //
+    //     return [
+    //         success: errors.isEmpty(),
+    //         device: deviceLabel,
+    //         deviceId: deviceId,
+    //         changes: changes,
+    //         errors: errors.isEmpty() ? null : errors,
+    //         message: errors.isEmpty()
+    //             ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}'."
+    //             : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}'."
+    //     ]
 }
 
-// The bypass path uses native ID-keyed endpoints after the same patch prevalidation.
-private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
+// Access policy is checked before reaching these native, ID-keyed writes.
+private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
     def d = fj.device
     def deviceLabel = _bypassDeviceLabel(fj, deviceId)
     def changes = []
@@ -4671,26 +4802,52 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
     if (args.preferences) requestedProps << "preferences(${args.preferences.size()})"
     if (args.room != null) requestedProps << "room"
     if (args.enabled != null) requestedProps << "enabled"
-    mcpLog("warn", "device", "hub_update_device (allowlist bypass) for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
+    mcpLog("warn", "device", "hub_update_device (native) for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
 
-    // label / name / deviceNetworkId -> ONE wholesale /device/update form POST. The form blanks any
-    // omitted field, so all three ride a single faithful device-model re-POST rebuilt from a FRESH
-    // fullJson fetch inside _postBypassDeviceModel, then each is verified by read-back. label rides
-    // this portable form rather than the dedicated GET /device/updateLabel setter: updateLabel 404s
-    // on some firmwares (confirmed on 2.5.0.157) -- the same sometimes-absent dedicated-setter class
-    // as /device/setShowOnHome and /device/setDefaultCurrentState (resources/hub2-source/README.md),
-    // for which the wholesale /device/update form (which carries a `label` field) is the fallback.
+    // Prefer the narrow label setter; unavailable endpoints fall back to the complete native form.
+    if (args.label != null && args.name == null && args.deviceNetworkId == null) {
+        def wanted = args.remove("label").toString()
+        try {
+            def readback
+            boolean usedForm = false
+            boolean accepted = true
+            try {
+                def response = hubInternalGet("/device/updateLabel", [deviceId: deviceId, label: wanted])
+                accepted = response?.toString()?.trim()?.toLowerCase() == "true"
+            } catch (IllegalStateException guardError) {
+                throw guardError
+            } catch (Exception unavailable) {
+                readback = _postBypassDeviceModel(deviceId, [label: wanted], errors)
+                usedForm = true
+            }
+            if (!accepted) {
+                errors << [property: "label", error: "Hub did not accept the label update; inspect the native device details before retrying."]
+            } else {
+                if (!usedForm) readback = _fetchDeviceFullJson(deviceId)?.device
+                if (readback?.containsKey("label") && (readback.label == null ? "" : readback.label.toString()) == wanted) {
+                    changes << [property: "label", oldValue: d.label, newValue: wanted]
+                    deviceLabel = wanted ?: readback.name ?: "Device ${deviceId}"
+                } else {
+                    errors << [property: "label", error: "Update accepted but could not confirm label; native read-back did not match or was unavailable."]
+                }
+            }
+        } catch (Exception e) {
+            errors << [property: "label", error: e.message ?: e.toString()]
+        }
+    }
+
+    // Combined identity edits share one complete form rebuilt from fresh native metadata.
     if (args.label != null || args.name != null || args.deviceNetworkId != null) {
         try {
             def overrides = [:]
             if (args.label != null) overrides.label = args.label.toString()
             if (args.name != null) overrides.name = args.name.toString()
             if (args.deviceNetworkId != null) overrides.deviceNetworkId = args.deviceNetworkId.toString()
-            def vd = _postBypassDeviceModel(deviceId, overrides)
+            def vd = _postBypassDeviceModel(deviceId, overrides, errors)
             if (args.label != null) {
-                if (vd?.label?.toString() == overrides.label) {
+                if (vd?.containsKey("label") && (vd.label == null ? "" : vd.label.toString()) == overrides.label) {
                     changes << [property: "label", oldValue: d.label, newValue: overrides.label]
-                    deviceLabel = overrides.label
+                    deviceLabel = overrides.label ?: vd.name ?: "Device ${deviceId}"
                 } else {
                     errors << [property: "label", error: "POST accepted but label read back as '${vd?.label}' (expected '${overrides.label}')."]
                 }
@@ -4708,6 +4865,8 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
         }
     }
 
+    if (args.dataValues) _applyNativeDeviceDataValues(deviceId, args.dataValues, changes, errors)
+
     if (args.preferences) {
         _applyDevicePreferencePatch(deviceId, null, args.preferences, changes, errors)
     }
@@ -4721,7 +4880,7 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
     if (args.room != null) {
         try {
             if (args.room == "" || args.room == "none" || args.room == "null") {
-                def vd = _postBypassDeviceModel(deviceId, [roomId: 0])
+                def vd = _postBypassDeviceModel(deviceId, [roomId: 0], errors)
                 if (vd == null) {
                     errors << [property: "room", error: "POST accepted but the read-back to confirm the unassign failed (/device/fullJson)."]
                 } else if (!vd.roomName) {
@@ -4785,7 +4944,7 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
         ]
     }
 
-    mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}) via allowlist bypass: ${changes.size()} changes, ${errors.size()} errors")
+    mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}) via native endpoints: ${changes.size()} changes, ${errors.size()} errors")
     return [
         success: errors.isEmpty(),
         device: deviceLabel,
@@ -4793,8 +4952,8 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
         changes: changes,
         errors: errors.isEmpty() ? null : errors,
         message: errors.isEmpty()
-            ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}' (allowlist bypass)."
-            : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}' (allowlist bypass)."
+            ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}' (native)."
+            : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}' (native)."
     ]
 }
 
@@ -4822,8 +4981,8 @@ private Map _assertRoomExistsForBypass(room) {
 
 // Read the model afresh so a prior write in the same call is not reverted by the full form.
 // The shared encoder preserves nullable metadata according to the native field's semantics.
-private Map _postBypassDeviceModel(deviceId, Map fieldOverrides) {
-    return _postDeviceConfigurationForm(deviceId, fieldOverrides)?.device
+private Map _postBypassDeviceModel(deviceId, Map fieldOverrides, List errors = null) {
+    return _postDeviceConfigurationForm(deviceId, fieldOverrides, errors)?.device
 }
 
 private void _requireCompleteDeviceFormSource(Map full, deviceId) {
@@ -4884,14 +5043,45 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
     return model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
 }
 
-private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides) {
+private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List errors = null) {
+    def recoveryErrors = errors == null ? [] : errors
     def fj = _fetchDeviceFullJson(deviceId)
     if (fj?.device == null) {
         throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form")
     }
     def body = _deviceConfigurationFormBody(deviceId, fj, fieldOverrides)
     hubInternalPostFormRaw("/device/update", body)
-    return _fetchDeviceFullJson(deviceId)
+    def updated = _fetchDeviceFullJson(deviceId)
+    if (!(updated?.device instanceof Map)) return updated
+    def restore = [:]
+    ["label", "name", "deviceNetworkId"].each { property ->
+        def original = fj.device.get(property)
+        boolean intentionalClear = fieldOverrides.containsKey(property) && !fieldOverrides.get(property)
+        if (original && !intentionalClear && updated.device.containsKey(property) && !updated.device.get(property)) {
+            restore.put(property, original)
+        }
+    }
+    if (restore) {
+        // Restore known identity once while carrying changes already confirmed in the fresh model.
+        try {
+            def fresh = _fetchDeviceFullJson(deviceId)
+            def restoreBody = _deviceConfigurationFormBody(deviceId, fresh, restore)
+            hubInternalPostFormRaw("/device/update", restoreBody)
+        } catch (Exception ignored) {
+            // Read back even after a transport failure: the hub may have accepted the recovery.
+        }
+        def recovered = null
+        try { recovered = _fetchDeviceFullJson(deviceId) } catch (Exception ignored) { }
+        if (recovered?.device instanceof Map) updated = recovered
+        restore.each { property, original ->
+            if (!(recovered?.device instanceof Map) || recovered.device.get(property)?.toString() != original.toString()) {
+                recoveryErrors << [property: property, stage: 'restore',
+                    error: "Device-edit form blanked ${property}; native restoration could not be confirmed. Verify and re-set ${property} before retrying."]
+            }
+        }
+    }
+    if (errors == null && recoveryErrors) throw new RuntimeException(recoveryErrors.collect { it.error }.join(' '))
+    return updated
 }
 
 def toolCreateDevice(args) {
@@ -4975,7 +5165,9 @@ def toolCreateDevice(args) {
         try {
             def labelResult = hubInternalGet("/device/updateLabel", [deviceId: newId, label: wantLabel])
             if (labelResult?.toString()?.trim()?.toLowerCase() == "true") {
-                appliedLabel = wantLabel
+                def observed = _fetchDeviceFullJson(newId)?.device
+                if (observed?.label?.toString() == wantLabel) appliedLabel = wantLabel
+                else labelFailNote = 'native readback did not confirm the requested label'
             } else {
                 labelFailNote = "hub returned '${labelResult?.toString()?.take(120)}'"
             }
@@ -4994,7 +5186,9 @@ def toolCreateDevice(args) {
         // is emitted only if BOTH the dedicated GET and this wholesale fallback fail to apply the label.
         if (appliedLabel == null) {
             try {
-                def vd = _postBypassDeviceModel(newId, [label: wantLabel])
+                def recoveryErrors = []
+                def vd = _postBypassDeviceModel(newId, [label: wantLabel], recoveryErrors)
+                warnings.addAll(recoveryErrors.collect { it.error })
                 if (vd?.label?.toString() == wantLabel) {
                     appliedLabel = wantLabel
                 } else {

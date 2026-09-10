@@ -16,6 +16,9 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         sdk.metaClass.getCurrentStates = { throw new AssertionError('SDK states must not be read') }
         sdk.metaClass.events = { Map options -> throw new AssertionError('SDK events must not be read') }
         sdk.metaClass.eventsSince = { Date since, Map options -> throw new AssertionError('SDK history must not be read') }
+        sdk.metaClass.getSupportedAttributes = { throw new AssertionError('SDK declarations must not be read') }
+        sdk.metaClass.getSupportedCommands = { throw new AssertionError('SDK commands must not be read') }
+        sdk.metaClass.getCapabilities = { throw new AssertionError('SDK capabilities must not be read') }
         if (ownership == 'selected') settingsMap.selectedDevices = [sdk]
         if (ownership == 'child') childDevicesList << sdk
         nativeModel = [device: [id: 10, name: 'Native fixture', label: null, capabilities: ['Switch'],
@@ -95,5 +98,32 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         then:
         result.success == false
         result.readError == true
+    }
+
+    def 'native numeric values retain their numeric JSON type in summaries attributes and polling'() {
+        given:
+        fixture('selected')
+        nativeModel.device.currentStates = [temperature: [value: '74.29', numberValue: 74.29, dataType: 'NUMBER']]
+
+        expect:
+        script.toolGetDevice('10').attributes[0].value == 74.29
+        script.toolGetAttribute('10', 'temperature').value == 74.29
+        script.toolPollUntilAttribute([deviceId: '10', attribute: 'temperature', expectedValue: '74.29']).finalValue == 74.29
+    }
+
+    def 'unreported attribute discovery stays empty while an explicit read remains distinguishable from fetch failure'() {
+        given:
+        fixture('selected')
+        nativeModel.device.currentStates = [:]
+
+        when:
+        def summary = script.toolGetDevice('10')
+        def attribute = script.toolGetAttribute('10', 'learnedCode')
+
+        then:
+        summary.attributes == []
+        attribute.value == null
+        attribute.neverReported == true
+        !attribute.error
     }
 }
