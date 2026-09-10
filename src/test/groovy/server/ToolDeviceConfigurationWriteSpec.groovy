@@ -1466,6 +1466,8 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         if (ownership == 'selected') settingsMap.selectedDevices = [childDevicesList.remove(0)]
         def original = model.device.get(property)
         def restores = []
+        def audit = []
+        script.metaClass.mcpLog = { String level, String category, String message -> audit << message }
         def forms = []
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 30, boolean r = false ->
             assert path == '/device/update'
@@ -1497,6 +1499,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         result.changes.find { it.property == 'notes' }?.newValue == 'New note'
         result.errors.any { it.property == property }
         result.errors.any { it.property == property && it.stage == 'restore' } == (outcome != 'restored')
+        if (outcome == 'throws') assert audit.any { it.contains('Native restore failed') }
 
         where:
         [property, outcome, ownership] << [['label', 'name', 'deviceNetworkId'], ['restored', 'throws', 'no-op'], ['selected', 'child', 'unlisted']].combinations()

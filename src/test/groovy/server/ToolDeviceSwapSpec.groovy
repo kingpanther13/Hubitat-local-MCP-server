@@ -878,4 +878,23 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         [ownership, bypass] << [['selected', 'child', 'unlisted'], [false, true]].combinations()
     }
 
+    @spock.lang.Unroll
+    def 'replacement options expose only permitted candidate metadata with bypass=#bypass'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = bypass
+        childDevicesList.addAll([[id: '80'], [id: '23']])
+        hubGet.register('/device/getReplacementOptions/80') { '[{"id":23,"name":"Owned"},{"id":55,"name":"Unselected"}]' }
+
+        when:
+        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+
+        then:
+        result.options*.id == (bypass ? ['23', '55'] : ['23'])
+        result.optionCount == (bypass ? 2 : 1)
+        !JsonOutput.toJson(result).contains('Unselected') == !bypass
+
+        where:
+        bypass << [false, true]
+    }
+
 }

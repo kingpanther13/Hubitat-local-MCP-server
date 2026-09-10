@@ -335,4 +335,36 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         messages.count { it.contains('lastActivityTime') && it.contains('1') } == 1
     }
 
+    def 'context stops native state reads at its budget while keeping the full native room index'() {
+        given:
+        settingsMap.selectedDevices = (1..10).collect { sdkIdentity(it) }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..10).collect { [data: [id: it, name: "Device ${it}", roomName: 'Den']] }])
+        }
+        (1..10).each { id ->
+            hubGet.register("/device/fullJson/${id}") {
+                JsonOutput.toJson([device: [id: id, label: 'L' * 1000, roomName: 'Den', capabilities: ['Switch'], currentStates: [switch: [value: 'on']]], commands: []])
+            }
+        }
+        script.metaClass._contextResourceByteBudget = { -> 5000 }
+
+        when:
+        def result = script._buildContextJson()
+
+        then:
+        result.truncated == true
+        result.totalDevices == 10
+        result.rooms[0].deviceIds == (1..10).collect { it.toString() }
+        hubGet.calls.count { it.path.startsWith('/device/fullJson/') } < 10
+        result.deviceCount > 0
+
+        when:
+        hubGet.calls.clear()
+        def summary = script._buildContextSummaryText()
+
+        then:
+        summary.contains('truncated at')
+        hubGet.calls.count { it.path.startsWith('/device/fullJson/') } < 10
+    }
+
 }

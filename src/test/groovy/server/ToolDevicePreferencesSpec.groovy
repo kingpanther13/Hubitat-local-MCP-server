@@ -960,4 +960,23 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('selection')
     }
+    def 'details continuation survives a selection change while bypass still grants access'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 180000]
+        registerFixture(DEVICE_ID, full)
+        def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+        assert first.nextCursor
+        childDevicesList.clear()
+
+        when:
+        def page = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], first.nextCursor)
+
+        then:
+        page.content
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
+    }
+
 }
