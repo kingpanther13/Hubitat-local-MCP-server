@@ -48,8 +48,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
             factory.set(script, handler)
         } catch (NoSuchFieldException ignored) {
             // The Groovy 2.5 harness delegates lifecycle methods to AppExecutor.
-            appExecutor.deleteChildDevice(_) >> { callArgs -> handler.call('delete', null, callArgs[0]) }
-            appExecutor.addChildDevice(_, _, _, _, _) >> { callArgs -> handler.call(*callArgs) }
+            mockChildDeviceLifecycle = handler
         }
     }
 

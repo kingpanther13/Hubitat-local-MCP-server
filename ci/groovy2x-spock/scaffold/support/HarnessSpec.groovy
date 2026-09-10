@@ -111,6 +111,7 @@ abstract class HarnessSpec extends Specification {
     // return value. Read by the @Shared mock's addChildApp stub via
     // CURRENT_FEATURE at invocation time.
     protected def mockChildAppForCreate
+    protected Closure mockChildDeviceLifecycle
 
     def setupSpec() {
         appExecutor = buildAppExecutorMock()
@@ -148,6 +149,14 @@ abstract class HarnessSpec extends Specification {
             _ * now() >> { def ov = NOW_OVERRIDE.get(); ov != null ? (ov.call() as Long) : 1234567890000L }
             _ * getLog() >> SHARED_LOG
             _ * getSettings() >> SHARED_SETTINGS_MAP
+        }
+        // Lifecycle stubs must be permanent on the shared mock; each feature supplies its handler.
+        mock.addChildDevice(_, _, _, _, _) >> { args ->
+            CURRENT_FEATURE.get()?.mockChildDeviceLifecycle?.call(*args)
+        }
+        mock.deleteChildDevice(_) >> { args ->
+            CURRENT_FEATURE.get()?.mockChildDeviceLifecycle?.call('delete', null, args[0])
+            null
         }
         mock.render(_) >> { args -> SHARED_MCP_DRIVER.captureRender(args[0] as Map) }
         mock.render() >> {
