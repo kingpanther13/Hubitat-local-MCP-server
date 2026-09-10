@@ -2349,6 +2349,8 @@ class TestRunner:
             "maxResults": 500,
         })
         assert isinstance(result, dict), f"hub_search_tools returned non-dict: {type(result)}"
+        assert all("listed below" not in row.get("description", "") for row in result.get("results", [])), \
+            "a search result promises an operation list that is not part of the result"
         total = result.get("totalToolsSearched")
         names = [r.get("tool") for r in result.get("results", [])]
         assert isinstance(total, int) and total > 0, f"totalToolsSearched not a positive int: {total!r}"

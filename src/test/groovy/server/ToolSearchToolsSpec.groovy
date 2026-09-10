@@ -73,6 +73,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         device != null
         !device.description.contains('device commands and updates live')
         !device.description.contains('send commands')
+        !device.description.contains('listed below')
         device.description.endsWith('[' + listedGateway.description.split('\\n\\n')[0] + ']')
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.is(cachedCorpus)
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.is(cachedTokens)

@@ -333,7 +333,7 @@ private Map _parseHubLogLine(String line) {
 }
 
 // Scoped snapshots live only long enough for a continuation or terminal replay. Bound
-// simultaneous snapshots, never their content; a busy caller waits for an available slot.
+// simultaneous snapshots, never their content; reject excess work when every slot is pending.
 def _nativeLogSnapshot(Map query, Map args) {
     if (!_mrtrReadContinuationActive()) {
         return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
@@ -379,13 +379,13 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
             if (!(current instanceof Map) && deviceRead.fresh != true) {
                 throw new IllegalArgumentException("Device read snapshot expired or was lost; start a fresh call.")
             }
-            // Completed independent reads need no future cache hit; evict the oldest ready
-            // snapshot under pressure. A pending worker always retains its owned slot.
-            if (!(current instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
-                def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v -> v.pending != true }
-                if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
-                else throw new IllegalStateException("Background read capacity is full; finish pending reads before retrying.")
-            }
+        }
+        // Evict the oldest completed snapshot for either read family; pending workers
+        // retain their owned slots, and callers must not wait on an unscheduled fetch.
+        if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
+            def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v -> v.pending != true }
+            if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
+            else throw new IllegalStateException("Background read capacity is full; finish pending reads before retrying.")
         }
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
             String fetchId = java.util.UUID.randomUUID().toString()

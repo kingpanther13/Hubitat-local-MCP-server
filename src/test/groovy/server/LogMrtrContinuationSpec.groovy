@@ -109,6 +109,61 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         hubGet.calls.size() == 2
     }
 
+    def "native log reads evict the oldest completed snapshot without disturbing pending workers"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        (0..<6).each { index ->
+            snapshots.put("pending-${index}".toString(), [at: timestamp - 20000L, pending: true])
+        }
+        snapshots.put('old-ready', [at: timestamp - 10000L, pending: false, text: '[]'])
+        snapshots.put('new-ready', [at: timestamp - 1000L, pending: false, text: '[]'])
+        hubGet.register('/logs/past/json') { params -> '[]' }
+
+        when:
+        def first = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp - 10000L])
+
+        then:
+        first.state == 'pending'
+        runInMillisCalls.size() == 1
+        !snapshots.containsKey('old-ready')
+        snapshots.containsKey('new-ready')
+        (0..<6).every { index -> snapshots.get("pending-${index}".toString()).pending == true }
+        snapshots.size() == 8
+        hubGet.calls.empty
+
+        when:
+        script.runNativeLogFetch(runInMillisCalls[0][2].data as Map)
+        def ready = script._nativeLogSnapshot([type: 'app', id: '42'], [:])
+
+        then:
+        ready.state == 'ready'
+        ready.text == '[]'
+        hubGet.calls.size() == 1
+        runInMillisCalls.size() == 1
+    }
+
+    def "a full pool of pending reads rejects a native log call without empty continuation rounds"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        (0..<8).each { index ->
+            snapshots.put("pending-${index}".toString(), [at: timestamp, pending: true])
+        }
+
+        when:
+        def response = call('hub_read_diagnostics', [tool: 'hub_get_logs', args: [appId: '42']])
+
+        then:
+        response.error != null || response.result?.isError == true
+        JsonOutput.toJson(response).contains('Background read capacity is full')
+        response.result?.resultType != 'input_required'
+        runInMillisCalls.empty
+        hubGet.calls.empty
+        snapshots.size() == 8
+        script.now() == timestamp
+    }
+
     def "MCP log history uses requestState and clearing waits before rotating history"() {
         given:
         script.mcpLog('error', 'server', 'retained error')

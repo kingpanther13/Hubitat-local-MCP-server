@@ -4614,7 +4614,7 @@ private String _visibleGatewayIntro(String gatewayName, Map gatewayConfig, Set h
         }
     }
     if (narrowed) {
-        return "${displayMeta.get(gatewayName)?.title ?: gatewayName} gateway. Its currently available operations are listed below.".toString()
+        return "${displayMeta.get(gatewayName)?.title ?: gatewayName} gateway.".toString()
     }
     return description
 }
