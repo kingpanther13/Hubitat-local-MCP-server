@@ -7,6 +7,63 @@ import support.TestDevice
 import support.ToolSpecBase
 
 class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
+    @Unroll
+    def 'data value uses verified native writer for #ownership with bypass #bypass'() {
+        given:
+        def model = fixture()
+        model.device.data = [existing: 'unchanged']
+        model.device.dataJson = JsonOutput.toJson(model.device.data)
+        settingsMap.bypassDeviceAllowlist = bypass
+        def sdk = new TestDevice(id: 10, name: 'Fixture')
+        sdk.metaClass.updateDataValue = { String key, String value -> throw new AssertionError('SDK writer must not execute') }
+        if (ownership == 'selected') settingsMap.selectedDevices = [sdk]
+        if (ownership == 'child') childDevicesList << sdk
+        hubGet.register('/device/fullJson/10') { JsonOutput.toJson(model) }
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420, boolean retry = false ->
+            def payload = new JsonSlurper().parseText(body)
+            posts << [path: path, payload: payload]
+            if (path == '/device/runmethod' && payload.method == 'updateDataValue') {
+                model.device.data.put(payload.args[0].value, payload.args[1].value)
+                model.device.dataJson = JsonOutput.toJson(model.device.data)
+            }
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', dataValues: [probe: '0007']])
+
+        then:
+        result.success == true
+        result.changes.find { it.property == 'dataValue.probe' }?.newValue == '0007'
+        model.device.data == [existing: 'unchanged', probe: '0007']
+        posts == [[path: '/device/runmethod', payload: [id: 10, method: 'updateDataValue',
+                    args: [[type: 'STRING', value: 'probe'], [type: 'STRING', value: '0007']]]]]
+
+        where:
+        ownership  | bypass
+        'selected' | false
+        'selected' | true
+        'child'    | false
+        'child'    | true
+        'unlisted' | true
+    }
+
+    def 'native data write accepted without persisting is reported as failed'() {
+        given:
+        def model = fixture()
+        registerFixture(model, false)
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420, boolean retry = false -> [success: true] }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', dataValues: [probe: '0007']])
+
+        then:
+        result.success == false
+        !result.changes.any { it.property == 'dataValue.probe' }
+        result.errors.any { it.property == 'dataValue.probe' && it.stage == 'verify' }
+    }
+
     private static Map fixture() {
         [device: [id: 10, version: 0, name: 'Fixture', label: 'Fixture', deviceNetworkId: 'fixture-10',
                   deviceTypeId: 100, deviceTypeReadableType: 'User', controllerType: 'VIRTUAL',
