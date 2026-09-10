@@ -3096,6 +3096,20 @@ class TestRunner:
                 "tool": "hub_get_device", "args": {"deviceId": device_id, "mode": "configuration", **selection},
             })
 
+        def preserved_metadata():
+            result = self.client.call_tool("hub_read_devices", {
+                "tool": "hub_get_device", "args": {
+                    "deviceId": device_id, "mode": "details", "sections": ["identity"],
+                    "fields": ["groupId", "controllerType"],
+                },
+            })
+            identity = result.get("sections", {}).get("identity", {})
+            assert result.get("sectionRead", {}).get("identity", {}).get("status") == "complete", (
+                f"Native preservation metadata is unreadable: {result}"
+            )
+            assert {"groupId", "controllerType"} <= identity.keys(), f"Missing preservation metadata: {result}"
+            return {key: identity[key] for key in ("groupId", "controllerType")}
+
         def command(name, parameters=None):
             result = self._write_once(None, "hub_call_device_command", {
                 "deviceId": device_id, "command": name, "parameters": parameters or [], "includeState": False,
@@ -3164,6 +3178,7 @@ class TestRunner:
                     )
 
         native, baseline = capture()
+        metadata_baseline = preserved_metadata()
         cfg = configuration()
         assert_native_preferences(native, cfg, expected)
         assert cfg.get("preferenceRead", {}).get("status") == "complete", f"Preference discovery incomplete: {cfg}"
@@ -3338,6 +3353,7 @@ class TestRunner:
             native, changed = capture()
             current = configuration()
             assert_fields(changed, current, edits)
+            assert preserved_metadata() == metadata_baseline, "Grouped edit changed groupId or controllerType"
             assert_native_preferences(native, current, desired)
             assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == ["red", "blue"], (
                 f"Driver did not receive a List: {native}"
@@ -3439,6 +3455,7 @@ class TestRunner:
                 current = configuration()
                 assert_native_preferences(native, current, expected)
                 assert_fields(restored, current, restore)
+                assert preserved_metadata() == metadata_baseline, "Restoration changed groupId or controllerType"
                 for key in ("deviceTypeId", "deviceNetworkId", "retryEnabled", "parentAppId", "controllerType", "enabled", "dataValues"):
                     assert normalized(key, restored.get(key)) == normalized(key, baseline.get(key)), (
                         f"Restoration changed {key}: {restored}"

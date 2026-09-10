@@ -4794,14 +4794,8 @@ private Map _assertRoomExistsForBypass(room) {
     return match
 }
 
-// Rebuild the full device-edit model from a FRESH /device/fullJson fetch, apply fieldOverrides
-// (e.g. [name:...], [roomId:0]), and POST the wholesale /device/update form (which blanks any
-// field it omits, so the full model is reconstructed faithfully -- mirrors the listed-path tags
-// flow). The fetch is FRESH (not a stale passed-in fj) so a prior leg's write in the same call --
-// e.g. a label set via /device/updateLabel -- is reflected and NOT reverted by the re-POST. Throws
-// when the fresh fetch fails (caller records a per-field error). Returns the read-back device map
-// (or null on a read-back fetch failure) so the caller can verify the change landed. Live-verified:
-// name/deviceNetworkId preserve all other fields; roomId=0 clears the room assignment.
+// Read the model afresh so a prior write in the same call is not reverted by the full form.
+// The shared encoder preserves nullable metadata according to the native field's semantics.
 private Map _postBypassDeviceModel(deviceId, Map fieldOverrides) {
     return _postDeviceConfigurationForm(deviceId, fieldOverrides)?.device
 }
@@ -4851,6 +4845,10 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
     ]
     if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
     if (fieldOverrides) model.putAll(fieldOverrides)
+    // Submitting blanks changes a null groupId to zero and a null controllerType to an empty string.
+    ["groupId", "controllerType"].each { key ->
+        if (model.get(key) == null) model.remove(key)
+    }
     def enc = { v ->
         if (v == true) return "on"
         if (v == null) return ""
