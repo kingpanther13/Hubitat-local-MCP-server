@@ -159,14 +159,15 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         given:
         enableWrite()
         def backing = new FailingManifest()
-        backing.itemBackupManifest = [app_99: entry('99')]
-        backing.failAt = 3 // Initial fixture, pending marker, then failed unlink.
-        script.metaClass.getAtomicState = { -> backing }
+        backing.put('itemBackupManifest', [app_99: entry('99')])
+        backing.@writes = 0
+        backing.@failAt = 2 // Pending marker succeeds; unlink fails.
+        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
         List deleted = []
-        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        peer.metaClass.deleteHubFile = { String name -> deleted << name }
 
         when:
-        def result = script.toolDeleteFile([fileName: 'mcp-backup-app-99.groovy', confirm: true])
+        def result = peer.toolDeleteFile([fileName: 'mcp-backup-app-99.groovy', confirm: true])
 
         then:
         result.success && result.partial && result.fileDeleted
@@ -176,7 +177,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         result.note.contains('do not repeat the deletion')
         deleted == ['mcp-backup-app-99.groovy']
         backing.itemBackupManifest.app_99.deletePending
-        script._itemBackupManifest().app_99.deletePending
+        peer._itemBackupManifest().app_99.deletePending
     }
 
     def 'pending-deletion publication failure never deletes the rollback file'() {
