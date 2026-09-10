@@ -109,7 +109,7 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         hubGet.calls.size() == 2
     }
 
-    def "native log reads evict the oldest completed snapshot without disturbing pending workers"() {
+    def "native log reads preserve completed snapshots until expiry without disturbing pending workers"() {
         given:
         Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
         long timestamp = script.now()
@@ -121,7 +121,21 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         hubGet.register('/logs/past/json') { params -> '[]' }
 
         when:
-        def first = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp - 10000L])
+        script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp - 10000L])
+
+        then:
+        def failure = thrown(IllegalStateException)
+        failure.message.contains('Background read capacity is full')
+        runInMillisCalls.empty
+        snapshots.containsKey('old-ready')
+        snapshots.containsKey('new-ready')
+        (0..<6).every { index -> snapshots.get("pending-${index}".toString()).pending == true }
+        snapshots.size() == 8
+        hubGet.calls.empty
+
+        when:
+        NOW_OVERRIDE.set({ -> timestamp + 20000L })
+        def first = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
 
         then:
         first.state == 'pending'
@@ -130,7 +144,6 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         snapshots.containsKey('new-ready')
         (0..<6).every { index -> snapshots.get("pending-${index}".toString()).pending == true }
         snapshots.size() == 8
-        hubGet.calls.empty
 
         when:
         script.runNativeLogFetch(runInMillisCalls[0][2].data as Map)
@@ -141,6 +154,53 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         ready.text == '[]'
         hubGet.calls.size() == 1
         runInMillisCalls.size() == 1
+    }
+
+    def "terminal native log replay retains its original snapshot under capacity pressure until expiry"() {
+        given:
+        def rows = ['2026-09-06 12:00:00.000\tERROR\tapp|42|Example|original']
+        hubGet.register('/logs/past/json') { params -> JsonOutput.toJson(rows) }
+        def args = [tool: 'hub_get_logs', args: [appId: '42']]
+        def first = call('hub_read_diagnostics', args)
+        String stateId = first.result.requestState
+        script.runNativeLogFetch(runInMillisCalls[0][2].data as Map)
+        long fetchedAt = script.now()
+        def completed = call('hub_read_diagnostics', args, stateId)
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        (0..<7).each { index ->
+            snapshots.put("pending-${index}".toString(), [at: fetchedAt, pending: true])
+        }
+        rows = ['2026-09-06 12:00:01.000\tERROR\tapp|42|Example|newer']
+        NOW_OVERRIDE.set({ -> fetchedAt + 29000L })
+
+        when:
+        def rejected = call('hub_read_diagnostics', [tool: 'hub_get_logs', args: [appId: '99']])
+        def replay = call('hub_read_diagnostics', args, stateId)
+
+        then:
+        completed.result.resultType == 'complete'
+        rejected.error != null || rejected.result?.isError == true
+        JsonOutput.toJson(rejected).contains('Background read capacity is full')
+        replay.result.resultType == 'complete'
+        mcpDriver.parseInner(replay).logs == mcpDriver.parseInner(completed).logs
+        mcpDriver.parseInner(replay).logs[0].message == 'app|42|Example|original'
+        hubGet.calls.size() == 1
+        runInMillisCalls.size() == 1
+        snapshots.size() == 8
+        atomicStateMap.mrtrRequests[stateId].expiresAt == fetchedAt + 30000L
+
+        when:
+        NOW_OVERRIDE.set({ -> fetchedAt + 30000L })
+        def expired = call('hub_read_diagnostics', args, stateId)
+        def next = script._nativeLogSnapshot([type: 'app', id: '99'], [__reqT0: fetchedAt])
+
+        then:
+        expired.error != null
+        JsonOutput.toJson(expired).contains('Invalid or expired requestState')
+        next.state == 'pending'
+        runInMillisCalls.size() == 2
+        snapshots.size() == 8
+        hubGet.calls.size() == 1
     }
 
     def "a full pool of pending reads rejects a native log call without empty continuation rounds"() {

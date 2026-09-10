@@ -333,7 +333,7 @@ private Map _parseHubLogLine(String line) {
 }
 
 // Scoped snapshots live only long enough for a continuation or terminal replay. Bound
-// simultaneous snapshots, never their content; reject excess work when every slot is pending.
+// simultaneous snapshots, never their content; retain each slot until its replay window expires.
 def _nativeLogSnapshot(Map query, Map args) {
     if (!_mrtrReadContinuationActive()) {
         return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
@@ -380,12 +380,10 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
                 throw new IllegalArgumentException("Device read snapshot expired or was lost; start a fresh call.")
             }
         }
-        // Evict the oldest completed snapshot for either read family; pending workers
-        // retain their owned slots, and callers must not wait on an unscheduled fetch.
+        // Completed snapshots still belong to continuations and terminal replays.
+        // Only the TTL sweep may reclaim them; reject new work without scheduling it.
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
-            def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v -> v.pending != true }
-            if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
-            else throw new IllegalStateException("Background read capacity is full; finish pending reads before retrying.")
+            throw new IllegalStateException("Background read capacity is full; retry after existing snapshots expire.")
         }
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
             String fetchId = java.util.UUID.randomUUID().toString()
