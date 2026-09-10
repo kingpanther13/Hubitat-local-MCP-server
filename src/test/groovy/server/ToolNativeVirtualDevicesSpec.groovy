@@ -21,9 +21,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
     def setup() {
         stateMap.lastBackupTimestamp = 1234567890000L
         def self = this
-        def factory = HubitatAppScript.getDeclaredField('childDeviceFactory')
-        factory.accessible = true
-        factory.set(script, { Object... args ->
+        wireLifecycle({ Object... args ->
             if (args.length == 1 && args[0] == 'list') return self.childDevicesList
             if (args[0] == 'delete') {
                 self.deletions << args[2]
@@ -31,7 +29,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
                 return null
             }
             throw new IllegalStateException('Unexpected child lifecycle call')
-        } as Closure)
+        })
         script.metaClass.hubInternalPostJson = { String path, String body ->
             assert path == '/device/runmethod'
             def payload = new JsonSlurper().parseText(body)
@@ -40,6 +38,18 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
                 models[payload.id.toString()].device.data[payload.args[0].value] = payload.args[1].value
             }
             [success: acceptWrite]
+        }
+    }
+
+    private void wireLifecycle(Closure handler) {
+        try {
+            def factory = HubitatAppScript.getDeclaredField('childDeviceFactory')
+            factory.accessible = true
+            factory.set(script, handler)
+        } catch (NoSuchFieldException ignored) {
+            // The Groovy 2.5 harness delegates lifecycle methods to AppExecutor.
+            appExecutor.deleteChildDevice(_) >> { callArgs -> handler.call('delete', null, callArgs[0]) }
+            appExecutor.addChildDevice(_, _, _, _, _) >> { callArgs -> handler.call(*callArgs) }
         }
     }
 
@@ -83,14 +93,12 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
             updateDataValue(_, _) >> { throw new AssertionError('SDK data write') }
         }
         def self = this
-        def factory = HubitatAppScript.getDeclaredField('childDeviceFactory')
-        factory.accessible = true
-        factory.set(script, { Object... args ->
+        wireLifecycle({ Object... args ->
             if (args.length == 1 && args[0] == 'list') return self.childDevicesList
             self.creations++
             self.childDevicesList << child
             child
-        } as Closure)
+        })
     }
 
     @Unroll
