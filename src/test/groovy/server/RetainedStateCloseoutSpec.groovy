@@ -283,6 +283,28 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         !deleted.contains('mcp-backup-app-99.groovy')
     }
 
+    def 'pending recent source backups cannot authorize baseline reuse'() {
+        given:
+        String key = "${type}_99"
+        atomicStateMap.itemBackupManifest = [(key): entry('99', 1234567890000L) + [type: type, fileName: "mcp-backup-${type}-99.groovy".toString(), deletePending: true]]
+        hubGet.register('/app/ajax/code') { params -> '{"source":"fresh source","version":2}' }
+        hubGet.register('/library/list/single/data/99') { params -> '[{"source":"fresh source","version":2}]' }
+        List uploads = []
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads << name }
+        script.metaClass.deleteHubFile = { String name -> }
+
+        when:
+        def result = type == 'app' ? script.backupItemSource('app', '99') : script.backupLibrarySource('99')
+
+        then:
+        uploads.size() == 1
+        result.sourceLength == 'fresh source'.length()
+        !atomicStateMap.itemBackupManifest[key].deletePending
+
+        where:
+        type << ['app', 'library']
+    }
+
     def 'unreadable or incomplete app inventory never discards recovery intent'() {
         given:
         atomicStateMap.predClearPending = ['10': true]

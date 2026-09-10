@@ -1144,6 +1144,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         uploads.size() == 2
     }
 
+    def "pending native baseline is not reused even when its file remains readable"() {
+        given:
+        hubGet.register('/installedapp/configure/json/503') { params -> ruleConfigJson(503, "pending") }
+        hubGet.register('/installedapp/statusJson/503') { params -> statusJson(503) }
+        Map files = [:]
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> files[name] = bytes }
+        script.metaClass.downloadHubFile = { String name -> files[name] }
+        script.metaClass.deleteHubFile = { String name -> files.remove(name) }
+        def first = script._rmBackupBeforeEdit(503, "pre-addAction")
+        script._publishItemBackup(first.backupKey.toString(),
+            script._itemBackupManifest()[first.backupKey.toString()] + [deletePending: true])
+
+        when:
+        def next = script._rmBackupBeforeEdit(503, "pre-addAction")
+
+        then:
+        next.baselineReused == false
+        next.backupKey != first.backupKey
+        files[next.fileName] != null
+    }
+
     def "baseline reuse survives a worker execution reading a stale manifest snapshot"() {
         given:
         def clock = [1234567890000L]
