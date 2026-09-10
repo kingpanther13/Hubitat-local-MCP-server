@@ -28,7 +28,7 @@ import support.ToolSpecBase
  *  - Device not found -> throws
  *  - Attribute absent from currentStates (neverReported=true path) (I5)
  *  - Attribute value transitions from null to wrong -> neverReported absent or false (I5)
- *  - Attribute name typo (not in supportedAttributes) -> throws with helpful message listing available attributes
+ *  - Attribute name absent from native reported states -> times out with neverReported
  *  - Unknown arg (timeoutSeconds) -> throws with message naming the bad key and suggesting timeoutMs
  *  - Multiple unknown args -> all listed in the error plus gotcha hint
  *  - pauseExecution throws InterruptedException -> returns interrupted=true with context fields (I6)
@@ -522,10 +522,10 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------------------------
-    // 14. Attribute typo (not in supportedAttributes) -> throws with helpful message
+    // 14. Unknown attribute names cannot be rejected from reported-only metadata
     // ---------------------------------------------------------------------------
 
-    def "throws when attribute name is not in device supportedAttributes"() {
+    def "an attribute absent from native reported states times out with neverReported"() {
         given:
         def device = new TestDevice(
             id: 130,
@@ -536,16 +536,64 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        def result = script.toolPollUntilAttribute([
             deviceId      : '130',
-            attribute     : 'swich',   // typo -- not in supportedAttributes
-            expectedValue : 'on'
+            attribute     : 'swich',
+            expectedValue : 'on',
+            timeoutMs     : 100,
+            pollIntervalMs: 50
         ])
 
         then:
+        result.success == false
+        result.timedOut == true
+        result.neverReported == true
+        result.finalValue == null
+        result.polledCount >= 1
+        !result.containsKey('readError')
+    }
+
+    def "a previously unreported attribute can appear on a later native poll without SDK declarations"() {
+        given:
+        def reads = 0
+        def device = Spy(TestDevice)
+        device.id = 131
+        device.label = 'Reports Later'
+        device.getSupportedAttributes() >> { throw new AssertionError('SDK declaration reads are forbidden') }
+        device.getCurrentStates() >> {
+            reads++
+            reads == 1 ? [] : [[name: 'customValue', value: 'ready']]
+        }
+        nativePollDevice(device)
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId: '131', attribute: 'customValue', expectedValue: 'ready', timeoutMs: 500, pollIntervalMs: 50
+        ])
+
+        then:
+        result.success == true
+        result.finalValue == 'ready'
+        result.polledCount == 2
+        reads == 2
+        hubGet.calls.findAll { it.path == '/device/fullJson/131' }.size() == 2
+        !result.neverReported
+        !result.readError
+    }
+
+    def "an existing unselected device is denied before native polling when bypass is off"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = false
+        def device = new TestDevice(id: 132, label: 'Not Selected', attributeValues: [switch: 'on'])
+        NativePollFixture.register(hubGet, device)
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '132', attribute: 'switch', expectedValue: 'on', timeoutMs: 100])
+
+        then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('swich')
-        ex.message.contains('switch')   // 'switch' appears in the Available list
+        ex.message.contains('132')
+        hubGet.calls.empty
     }
 
     // ---------------------------------------------------------------------------

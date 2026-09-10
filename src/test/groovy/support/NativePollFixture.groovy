@@ -4,8 +4,8 @@ import groovy.json.JsonOutput
 
 class NativePollFixture {
     static void register(HubInternalGetMock hubGet, TestDevice device) {
-        // Read the scripted state only inside the HTTP responder so poll ticks retain
-        // their sequence. SDK declarations remain separate from reported native states.
+        // The first HTTP response also supplies preflight metadata and is consumed as
+        // the first value sample. No SDK declaration list is part of the native model.
         hubGet.register("/device/fullJson/${device.id}") { Map params ->
             def states = device.currentStates
             def nativeStates = states == null ? null : states.collectEntries { row ->

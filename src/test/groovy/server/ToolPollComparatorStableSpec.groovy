@@ -790,6 +790,31 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         r.waitFor.attribute == 'temperature'
     }
 
+    def "waitFor on an unreported name runs the native command then reports neverReported"() {
+        given:
+        def device = Spy(TestDevice)
+        device.id = 507
+        device.label = 'Reported States Only'
+        device.supportedCommands = [[name: 'on']]
+        device.attributeValues = [switch: 'on']
+        device.getSupportedAttributes() >> { throw new AssertionError('SDK declaration reads are forbidden') }
+        device.invokeCommand(_, _) >> { throw new AssertionError('SDK command execution is forbidden') }
+        nativePollDevice(device)
+
+        when:
+        def result = script.toolSendCommand('507', 'on', null,
+            [attribute: 'unreportedName', expectedValue: 'ready', timeoutMs: 100, pollIntervalMs: 50])
+
+        then:
+        nativeCommandCalls == ['on']
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.timedOut == true
+        result.waitFor.neverReported == true
+        result.waitFor.finalValue == null
+        !result.waitFor.readError
+    }
+
     def "waitFor numeric comparator with expectedValues -> IAE BEFORE the command fires"() {
         given:
         def fired = nativeCommandCalls
@@ -1090,7 +1115,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         ex.message.contains('Device not found: 999')
     }
 
-    def "attribute unsupported on one device in the list -> IAE naming that device"() {
+    def "an unreported attribute on one device times out with per-device neverReported"() {
         given: 'A has switch, B (the named one) does not'
         def a = new TestDevice(id: 732, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
         def b = new TestDevice(id: 733, label: 'No Switch B', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '70'])
@@ -1098,11 +1123,24 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         nativePollDevice(b)
 
         when:
-        script.toolPollUntilAttribute([deviceIds: ['732', '733'], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+        def result = script.toolPollUntilAttribute([
+            deviceIds: ['732', '733'], attribute: 'switch', expectedValue: 'on',
+            mode: 'all', timeoutMs: 100, pollIntervalMs: 50
+        ])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not found on device 'No Switch B'")
+        result.success == false
+        result.timedOut == true
+        result.convergedCount == 1
+        def reported = result.devices.find { it.deviceId == '732' }
+        def unreported = result.devices.find { it.deviceId == '733' }
+        reported.matched == true
+        reported.finalValue == 'on'
+        !reported.neverReported
+        unreported.matched == false
+        unreported.finalValue == null
+        unreported.neverReported == true
+        result.devices.every { !it.readError }
     }
 
     def "mode with a single deviceId -> IAE (mode applies only to deviceIds)"() {
