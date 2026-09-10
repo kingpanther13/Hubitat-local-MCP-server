@@ -1,6 +1,7 @@
 package server
 
 import spock.lang.Unroll
+import support.PermissiveLog
 import support.TestChildApp
 import support.ToolSpecBase
 
@@ -134,35 +135,43 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         given:
         long clock = 1000L
         def persisted = new FailingLegacyState()
+        def legacy = new CountingLegacyState()
         persisted.toolSearchCorpus = ['old']
-        def peer = newCompiledScriptInstance(app: new TestChildApp(id: 402L), state: [:], atomicState: persisted)
+        def nativeLog = new PermissiveLog()
+        def peer = newCompiledScriptInstance(app: new TestChildApp(id: 402L), state: legacy,
+            atomicState: persisted, log: nativeLog)
         NOW_OVERRIDE.set({ clock })
         def buffer = peer.initDebugLogs()
-        buffer.config.logLevel = 'warn'
-        def warnings = buffer.entries
+        def errors = buffer.entries
 
         when:
         peer._cleanupRetiredToolState()
 
         then:
         persisted.toolSearchCorpus == ['old']
-        warnings.size() == 1
-        warnings[0].entry.level == 'warn'
+        errors.size() == 1
+        peer.getConfiguredLogLevel() == 'error'
+        errors[0].entry.level == 'error'
+        nativeLog.messages.count { it.startsWith('error:') && it.contains('temporary storage failure') } == 1
 
-        when: 'requests during backoff neither retry nor repeat the warning'
+        when: 'requests during backoff neither retry nor repeat the error'
         10.times { peer._cleanupRetiredToolState() }
 
         then:
         persisted.@removals == 1
-        warnings.size() == 1
+        errors.size() == 1
 
         when: 'the next request after backoff retries only remaining keys'
         clock += 60000L
         peer._cleanupRetiredToolState()
         int removed = persisted.@removals
-        peer._cleanupRetiredToolState()
+        int atomicChecks = persisted.@checks
+        int stateChecks = legacy.@checks
+        10.times { peer._cleanupRetiredToolState() }
 
         then:
+        persisted.@checks == atomicChecks
+        legacy.@checks == stateChecks
         !persisted.containsKey('toolSearchCorpus')
         persisted.@removals == removed
 
@@ -215,6 +224,11 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
 
     private static class CountingLegacyState extends LinkedHashMap {
         int removals = 0
+        int checks = 0
+        boolean containsKey(Object key) {
+            checks++
+            return super.containsKey(key)
+        }
         Object remove(Object key) {
             removals++
             return super.remove(key)
@@ -223,6 +237,11 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
 
     private static class FailingLegacyState extends LinkedHashMap {
         int removals = 0
+        int checks = 0
+        boolean containsKey(Object key) {
+            checks++
+            return super.containsKey(key)
+        }
         Object remove(Object key) {
             removals++
             if (removals == 1) throw new IllegalStateException('temporary storage failure')

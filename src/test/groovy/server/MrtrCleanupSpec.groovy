@@ -1,5 +1,7 @@
 package server
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import spock.lang.Shared
 import spock.lang.Unroll
 import support.TestChildApp
@@ -162,11 +164,23 @@ class MrtrCleanupSpec extends ToolSpecBase {
         atomicStateMap.mrtrRequests.active == active
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).containsKey('live')
         paths.isEmpty()
-        jobs().last()[0] == 60
+        jobs().isEmpty()
+
+        when: 'read traffic does not restart a timer for a stranded owner'
+        NOW_OVERRIDE.set({ at + 3600000L })
+        20.times { script._mrtrEnsureCleanupScheduled() }
+
+        then:
+        jobs().isEmpty()
+
+        when: 'the owner release path rearms cleanup without further traffic'
+        script._mrtrReleaseExecutionLocked('live')
+
+        then:
+        jobs().last()[0] == 1
 
         when:
-        (scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).remove('live')
-        NOW_OVERRIDE.set({ at + 60000L })
+        NOW_OVERRIDE.set({ at + 3601000L })
         script.runMrtrCleanup()
 
         then:
@@ -175,33 +189,37 @@ class MrtrCleanupSpec extends ToolSpecBase {
         paths == ['/installedapp/forcedelete/77/quiet']
     }
 
-    def 'scheduler failure backs off and ordinary requests recover without failing publication'() {
+    def 'scheduler failure is visible at the default log level and backs off without failing publication'() {
         given:
         long at = script.now()
         int attempts = 0
-        def buffer = script.initDebugLogs()
-        buffer.config.logLevel = 'warn'
-        List warnings = buffer.entries
+        def nativeLog = new PermissiveLog()
+        def peer = newCompiledScriptInstance(app: cleanupApp, state: stateMap,
+            atomicState: atomicStateMap, log: nativeLog)
+        def buffer = peer.initDebugLogs()
+        List errors = buffer.entries
         RUN_IN_OVERRIDE.set({ List call ->
             attempts++
             throw new IllegalStateException('scheduler unavailable')
         })
 
         when:
-        script._mrtrPutLocked('saved', terminal(at + 600000L))
-        20.times { script._mrtrEnsureCleanupScheduled() }
+        peer._mrtrPutLocked('saved', terminal(at + 600000L))
+        20.times { peer._mrtrEnsureCleanupScheduled() }
 
         then:
+        peer.getConfiguredLogLevel() == 'error'
         attempts == 1
         atomicStateMap.mrtrRequests.containsKey('saved')
-        warnings.size() == 1
-        warnings.first().entry.level == 'warn'
-        warnings.first().entry.component == 'mrtr'
+        errors.size() == 1
+        errors.first().entry.level == 'error'
+        errors.first().entry.component == 'mrtr'
+        nativeLog.messages.count { it.startsWith('error:') && it.contains('scheduler unavailable') } == 1
 
         when:
         NOW_OVERRIDE.set({ at + 60000L })
         RUN_IN_OVERRIDE.set(null)
-        script._mrtrEnsureCleanupScheduled()
+        peer._mrtrEnsureCleanupScheduled()
 
         then:
         jobs().size() == 1
@@ -320,7 +338,7 @@ class MrtrCleanupSpec extends ToolSpecBase {
 
         then:
         noExceptionThrown()
-        nativeLog.messages.any { it.startsWith('warn:') && it.contains('storage unavailable') }
+        nativeLog.messages.any { it.startsWith('error:') && it.contains('storage unavailable') }
         if (operation == 'runMrtrCleanup') assert jobs().last()[0] == 60
 
         where:
@@ -329,6 +347,61 @@ class MrtrCleanupSpec extends ToolSpecBase {
         '_mrtrEnsureCleanupScheduled'    | []
         'runMrtrCleanup'                 | []
         '_mrtrCleanupRecord'             | [[checkpoint: [clonerAppId: 'invalid']]]
+    }
+
+    @Unroll
+    def 'warm cleanup check bypasses a busy write mutex with records=#hasRecords'() {
+        given:
+        if (hasRecords) script._mrtrPutLocked('saved', terminal(script.now() + 600000L))
+        script._mrtrEnsureCleanupScheduled()
+        def peer = newCompiledScriptInstance(app: cleanupApp, state: stateMap, atomicState: atomicStateMap)
+        def done = new CountDownLatch(1)
+        List failures = []
+        Thread reader
+        boolean completed
+
+        when:
+        synchronized (scriptStaticField('WRITE_RESERVATION_LOCK')) {
+            reader = Thread.start {
+                try { peer._mrtrEnsureCleanupScheduled() }
+                catch (Throwable failure) { failures << failure }
+                finally { done.countDown() }
+            }
+            completed = done.await(2, TimeUnit.SECONDS)
+        }
+        reader.join(5000)
+
+        then:
+        completed
+        failures.isEmpty()
+        !reader.alive
+
+        where:
+        hasRecords << [false, true]
+    }
+
+    def 'rescan failure after committed eviction reports rescheduling and still cleans helpers'() {
+        given:
+        atomicStateMap.mrtrRequests = [expired: [status: 'active', expiresAt: script.now() - 1L,
+            checkpoint: [clonerAppId: 77]]]
+        script._writeStateCacheInvalidate()
+        List paths = []
+        script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
+            paths << path
+            [status: 302, data: '']
+        }
+        script.metaClass._mrtrScheduleNextCleanupLocked = { -> throw new IllegalStateException('rescan unavailable') }
+        def errors = script.initDebugLogs().entries
+
+        when:
+        script.runMrtrCleanup()
+
+        then:
+        atomicStateMap.mrtrRequests.isEmpty()
+        paths == ['/installedapp/forcedelete/77/quiet']
+        jobs().last()[0] == 60
+        errors.any { it.entry.message.contains('rescheduling') && it.entry.message.contains('rescan unavailable') }
+        !errors.any { it.entry.message.contains('Expiry cleanup deferred') }
     }
 
     def 'background persistence failure requeues a bounded retry and later removes expired records'() {

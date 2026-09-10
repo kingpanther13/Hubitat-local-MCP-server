@@ -254,6 +254,24 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     // -- that no-ops initialize, irrelevant here; we drive uninstalled() direct.
     // -----------------------------------------------------------------------
 
+    def "uninstalled() removes only this app's cleanup and migration hints"() {
+        given:
+        def schedules = scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map
+        def cleaned = scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set
+        def retries = scriptStaticField('RETIRED_TOOL_STATE_RETRY_AT') as Map
+        schedules.putAll(['1': [checked: true], 'other': [checked: true]])
+        cleaned.addAll(['1', 'other'])
+        retries.putAll(['1': 123L, 'other': 456L])
+
+        when:
+        script.uninstalled()
+
+        then:
+        schedules.keySet() == ['other'] as Set
+        cleaned == ['other'] as Set
+        retries == [other: 456L]
+    }
+
     def "uninstalled() removes each tracked in-use var, clears the set, and unsubscribes"() {
         given: 'two tracked in-use registrations and a clean unsubscribe counter'
         UNSUBSCRIBE_CALL_COUNT.set(0)
