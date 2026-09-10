@@ -24,7 +24,7 @@ def toolListItemBackups(args = null) {
 }
 
 private _listSourceItemBackups(args) {
-    def manifest = atomicState.itemBackupManifest ?: [:]
+    def manifest = _itemBackupManifest()
 
     if (manifest.isEmpty()) {
         return [
@@ -82,7 +82,7 @@ private _listSourceItemBackups(args) {
 def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
 
-    def manifest = atomicState.itemBackupManifest ?: [:]
+    def manifest = _itemBackupManifest()
     def entry = manifest[args.backupKey]
 
     if (!entry) {
@@ -145,6 +145,10 @@ def toolGetItemBackup(args) {
 }
 
 def toolRestoreItemBackup(args) {
+    synchronized (ITEM_BACKUP_MANIFESTS) { return _toolRestoreItemBackupLocked(args) }
+}
+
+private Map _toolRestoreItemBackupLocked(args) {
     args = args ?: [:]
     // `scope` folds WHOLE-HUB database restore (issue #259 item #1) into this tool. hub_local/hub_cloud
     // REPLACE THE ENTIRE HUB DATABASE and REBOOT the hub -- far higher blast radius than a source
@@ -165,7 +169,7 @@ def toolRestoreItemBackup(args) {
 
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
 
-    def manifest = atomicState.itemBackupManifest ?: [:]
+    def manifest = _itemBackupManifest()
     def entry = manifest[args.backupKey]
 
     if (!entry) {
@@ -236,11 +240,12 @@ def toolRestoreItemBackup(args) {
 
     // Before restoring, back up the CURRENT source under a different filename so it's not overwritten
     // (the original backup file uses the same deterministic name, so backupItemSource would overwrite it)
-    def preRestoreFileName = "mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy"
+    def preRestoreFileName = _itemBackupFileName("mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy")
     def preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
     try {
         def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
         def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])
+        if (!responseText) throw new IllegalStateException("Current source could not be read")
         if (responseText) {
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
             if (parsed.source == source) {
@@ -251,18 +256,17 @@ def toolRestoreItemBackup(args) {
                 mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
             } else if (parsed.source) {
                 uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
-                // atomicState read-modify-write: read full map, mutate locally, write back.
-                def mfst = atomicState.itemBackupManifest ?: [:]
-                mfst[preRestoreBackupKey] = [
+                _publishItemBackup(preRestoreBackupKey.toString(), [
                     type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
                     version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
-                ]
-                atomicState.itemBackupManifest = mfst
+                ], args.backupKey.toString())
                 mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+            } else {
+                throw new IllegalStateException("Current source is missing from the hub response")
             }
         }
     } catch (Exception preBackupErr) {
-        mcpLog("warn", "hub-admin", "Could not create pre-restore backup: ${preBackupErr.message} -- proceeding with restore anyway")
+        return [success: false, error: "Could not create pre-restore backup: ${preBackupErr.message}. Nothing was restored."]
     }
 
     // Restoring the MCP server's OWN code drops the response exactly like a self-update

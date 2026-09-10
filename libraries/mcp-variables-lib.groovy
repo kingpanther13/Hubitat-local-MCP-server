@@ -95,18 +95,14 @@ private void _subscribeToAllHubVariables() {
 
 def renameVariable(String oldName, String newName) {
     mcpLog("info", "hub-vars", "renameVariable callback: '${oldName}' -> '${newName}'")
-    def history = atomicState.variableHistory ?: []
-    def rewrote = false
-    history = history.collect { entry ->
-        if (entry?.name == oldName) {
-            rewrote = true
-            // Groovy Map +: rightmost map's keys override; produces a new
-            // map with `name` updated and other fields preserved.
-            return entry + [name: newName]
+    synchronized (VARIABLE_HISTORY_LOCK) {
+        def history = _variableHistoryRows()
+        if (history.any { it[0] == oldName }) {
+            atomicState.variableHistory = history.collect { row ->
+                row[0] == oldName ? [newName, row[1], row[2], row[3]] : row
+            }
         }
-        return entry
     }
-    if (rewrote) atomicState.variableHistory = history
     // Re-subscribe to the new name. The old "variable:OLD" event will
     // never fire again since the variable is gone, but Hubitat's
     // unsubscribe semantics mean it's harmless to leave it in place.
@@ -130,49 +126,31 @@ def handleHubVariableEvent(evt) {
     }
     if (!varName) return
 
-    def entry = [
-        name: varName,
-        value: evt.value,
-        timestamp: now(),
-        descriptionText: evt.descriptionText?.toString()
-    ]
-    // Best-effort, non-transactional read-append-cap-write. atomicState gives
-    // per-write durability, not read-then-write atomicity, and the sandbox has
-    // no CAS primitive: concurrent variable: events may read the same snapshot
-    // and drop an append. Acceptable for a best-effort history buffer.
-    def history = atomicState.variableHistory ?: []
-    history << entry
-    // Cap the buffer. 200 entries is enough to survive an MCP-tool
-    // round-trip plus a few minutes of bursty change activity without
-    // blowing up state size on hubs with many vars.
-    def cap = 200
-    if (history.size() > cap) {
-        history = history[(history.size() - cap)..-1]
+    synchronized (VARIABLE_HISTORY_LOCK) {
+        def history = _variableHistoryRows()
+        history << [varName, evt.value, now(), evt.descriptionText?.toString()]
+        atomicState.variableHistory = history.drop(Math.max(0, history.size() - 200))
     }
-    atomicState.variableHistory = history
+}
+
+private List _variableHistoryRows() {
+    // Positional rows omit four repeated field names per event without truncating
+    // user values or adding File Manager I/O. Old map records remain readable.
+    return (atomicState.variableHistory ?: []).collect { row ->
+        row instanceof Map ? [row.name, row.value, row.timestamp, row.descriptionText] : new ArrayList(row)
+    }
 }
 
 def toolGetVariableHistory(args) {
-    def history = atomicState.variableHistory ?: []
+    def history = _variableHistoryRows()
     def filtered = history
-    if (args?.name) {
-        def n = args.name.toString()
-        filtered = filtered.findAll { it?.name == n }
+    if (args?.name) filtered = filtered.findAll { it[0] == args.name.toString() }
+    if (args?.sinceMs != null) filtered = filtered.findAll { (it[2] ?: 0L) >= (args.sinceMs as Long) }
+    int limit = args?.limit != null ? args.limit as Integer : 50
+    def recent = filtered.reverse().take(Math.max(1, limit)).collect { row ->
+        [name: row[0], value: row[1], timestamp: row[2], descriptionText: row[3]]
     }
-    if (args?.sinceMs != null) {
-        def since = args.sinceMs as Long
-        filtered = filtered.findAll { (it?.timestamp ?: 0L) >= since }
-    }
-    def limit = (args?.limit != null) ? (args.limit as Integer) : 50
-    if (limit < 1) limit = 1
-    // Most-recent first; cap at limit.
-    def recent = filtered.reverse().take(limit)
-    return [
-        entries: recent,
-        total: recent.size(),
-        bufferSize: history.size(),
-        bufferCap: 200
-    ]
+    return [entries: recent, total: recent.size(), bufferSize: history.size(), bufferCap: 200]
 }
 
 def toolListVariables(args = null) {
@@ -971,7 +949,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_list_variable_changes",
-            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable.[[/FLAT_TRIM]] The buffer holds at most the 200 most recent changes (oldest dropped) and is cleared on app restart, so it is not a complete history — an empty or partial result does NOT mean the variable never changed.[[FLAT_TRIM]] For the hub's authoritative, complete change log (survives restarts) call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]] Filter by variable name and/or timestamp.",
+            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable.[[/FLAT_TRIM]] The buffer holds at most the 200 most recent changes (oldest dropped) and survives app restart, but it is not a complete history — an empty or partial result does NOT mean the variable never changed.[[FLAT_TRIM]] For the hub's separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]] Filter by variable name and/or timestamp.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1015,6 +993,6 @@ def _toolDisplayMeta_partVariables() {
         hub_delete_variable: [title: "Delete Variable", summary: "Permanently delete a hub variable and any connector it has."],
         hub_create_connector: [title: "Create Variable Connector", summary: "Create a virtual-device connector for a hub variable."],
         hub_delete_connector: [title: "Delete Variable Connector", summary: "Remove a hub variable's connector device."],
-        hub_list_variable_changes: [title: "List Variable Changes", summary: "Recent hub-variable changes since the MCP app last started."]
+        hub_list_variable_changes: [title: "List Variable Changes", summary: "Recent hub-variable changes from the retained 200-entry history."]
     ]
 }

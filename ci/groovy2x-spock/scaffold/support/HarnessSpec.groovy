@@ -260,7 +260,8 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.
-        (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()
+        (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).clear()
+        (scriptStaticField('PRED_CLEAR_STORES') as Map).clear()
         // The corpus fingerprint memo is a scalar, so it needs a set rather than a clear.
         // A leftover value would make a later spec's search read a warm key for a catalog
         // that spec had already changed.

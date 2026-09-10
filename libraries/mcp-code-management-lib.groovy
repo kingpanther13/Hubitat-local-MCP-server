@@ -1945,7 +1945,7 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
         if (success) {
             mcpLog("info", "hub-admin", "${type.capitalize()} ID ${itemId} deleted successfully")
             // .toString() because the stored key is a String but Map.get(GString) does not coerce (hashCode mismatch → silent null).
-            def backupEntry = (atomicState.itemBackupManifest ?: [:])?.get("${type}_${itemId}".toString())
+            def backupEntry = (_itemBackupManifest())?.get("${type}_${itemId}".toString())
             def installTool = (type == "app") ? "hub_create_app" : "hub_create_driver"
             def result = [
                 success: true,
@@ -1972,12 +1972,17 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
 }
 
 private Map backupLibrarySource(String libraryId) {
-    def manifest = atomicState.itemBackupManifest ?: [:]
+    synchronized (ITEM_BACKUP_MANIFESTS) { return _backupLibrarySourceLocked(libraryId) }
+}
+
+private Map _backupLibrarySourceLocked(String libraryId) {
+    def manifest = _itemBackupManifest()
     def key = "library_${libraryId}"
     def existing = manifest[key]
 
     if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
         mcpLog("debug", "hub-admin", "Library backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
+        if (manifest.size() > 20) _publishItemBackup(key.toString(), existing as Map)
         return existing
     }
 
@@ -1999,7 +2004,7 @@ private Map backupLibrarySource(String libraryId) {
 
     def libData = parsed[0]
     def backupSource = libData.source ?: ""
-    def fileName = "mcp-backup-library-${libraryId}.groovy"
+    def fileName = _itemBackupFileName("mcp-backup-library-${libraryId}.groovy")
     try {
         uploadHubFile(fileName, backupSource.getBytes("UTF-8"))
     } catch (Exception e) {
@@ -2015,21 +2020,7 @@ private Map backupLibrarySource(String libraryId) {
         timestamp: now(),
         sourceLength: backupSource.length()
     ]
-    manifest[key] = entry
-
-    if (manifest.size() > 20) {
-        def sortedKeys = manifest.entrySet().sort { a, b -> a.value.timestamp <=> b.value.timestamp }*.key
-        def toRemove = sortedKeys.take(manifest.size() - 20)
-        toRemove.each { k ->
-            def e2 = manifest.get(k)
-            if (e2?.fileName) {
-                try { deleteHubFile(e2.fileName) } catch (Exception ex) { mcpLog("warn", "hub-admin", "Could not delete pruned library backup file '${e2.fileName}': ${ex.message}") }
-            }
-            manifest.remove(k)
-        }
-    }
-
-    atomicState.itemBackupManifest = manifest
+    _publishItemBackup(key.toString(), entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
     return entry
 }
@@ -2313,7 +2304,7 @@ def toolUpdateLibraryCode(args) {
     // Fail-closed: backup-fetch failure (when needed) aborts the update, matching
     // toolUpdateItemCodeInner which calls backupItemSource() without try/catch.
     def backupFileName = null
-    def existingEntry = (atomicState.itemBackupManifest ?: [:])["library_${libraryId}"]
+    def existingEntry = (_itemBackupManifest())["library_${libraryId}"]
     def skipBackup = (existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000)
 
     def versionFetchError = null
@@ -2447,7 +2438,7 @@ def toolDeleteLibrary(args) {
 
         if (success) {
             mcpLog("info", "hub-admin", "Library ID ${libraryId} deleted successfully")
-            def backupEntry = (atomicState.itemBackupManifest ?: [:])?.get("library_${libraryId}".toString())
+            def backupEntry = (_itemBackupManifest())?.get("library_${libraryId}".toString())
             def result = [
                 success: true,
                 message: backupSucceeded ? "Library deleted successfully. Source code backed up to File Manager." : "Library deleted successfully. WARNING: Pre-delete backup failed -- source code may not be recoverable.",
@@ -2483,6 +2474,7 @@ def toolListInstalledApps(args) {
     }
 
     try {
+        Map pendingBefore = _rmPendingPredClearSnapshot()
         def responseText = hubInternalGet("/hub2/appsList")
         if (!responseText) {
             return [success: false, error: "Empty response from /hub2/appsList", note: "Hub internal API may be transiently unavailable."]
@@ -2493,6 +2485,7 @@ def toolListInstalledApps(args) {
         } catch (Exception parseErr) {
             return [success: false, error: "Failed to parse /hub2/appsList response: ${parseErr.message}", note: "Hubitat firmware may have changed the endpoint format."]
         }
+        _rmReconcilePredClearPending(parsed, pendingBefore)
         def apps = parsed?.apps ?: []
 
         // Flatten tree to list with parentId.

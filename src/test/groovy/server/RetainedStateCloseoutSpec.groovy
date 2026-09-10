@@ -1,6 +1,9 @@
 package server
 
 import groovy.json.JsonOutput
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import support.TestChildApp
 import support.ToolSpecBase
 
@@ -89,7 +92,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         result.bufferSize == 200
         result.entries*.timestamp == [1234567890000L, 200]
         result.entries.every { it.value == fullValue && it.descriptionText == description && it.name == 'new' }
-        atomicStateMap.variableHistory.every { it instanceof List }
+        atomicStateMap.variableHistory.collect { it instanceof List }.unique() == [true]
         JsonOutput.toJson(atomicStateMap.variableHistory).length() < JsonOutput.toJson(old).length() - 8000
     }
 
@@ -106,6 +109,74 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         atomicStateMap.predClearPending.keySet() == ['10', '12'] as Set
+    }
+
+    def 'overlapping backups of one item serialize upload and reuse the same baseline'() {
+        given:
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def secondStarted = new CountDownLatch(1)
+        def workers = Executors.newFixedThreadPool(2)
+        List files = Collections.synchronizedList([])
+        hubGet.register('/app/ajax/code') { params -> '{"source":"original","version":2}' }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes ->
+            files << name
+            entered.countDown()
+            assert release.await(10, TimeUnit.SECONDS)
+        }
+
+        when:
+        def first = workers.submit({ -> script.backupItemSource('app', '99') } as java.util.concurrent.Callable)
+        assert entered.await(10, TimeUnit.SECONDS)
+        def second = workers.submit({ ->
+            secondStarted.countDown()
+            script.backupItemSource('app', '99')
+        } as java.util.concurrent.Callable)
+        assert secondStarted.await(10, TimeUnit.SECONDS)
+        release.countDown()
+        def firstResult = first.get(10, TimeUnit.SECONDS)
+        def secondResult = second.get(10, TimeUnit.SECONDS)
+
+        then:
+        firstResult == secondResult
+        files.size() == 1
+
+        cleanup:
+        release.countDown()
+        workers.shutdownNow()
+    }
+
+    def 'file deletion failure restores its manifest entry and reusable view'() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [app_99: entry('99')]
+        script.metaClass.deleteHubFile = { String name -> throw new IllegalStateException('delete unavailable') }
+
+        when:
+        def result = script.toolDeleteFile([fileName: 'mcp-backup-app-99.groovy', confirm: true])
+
+        then:
+        result.success == false
+        atomicStateMap.itemBackupManifest.app_99 == entry('99')
+        script._itemBackupManifest().app_99 == entry('99')
+    }
+
+    def 'manifest unlink failure never deletes the rollback file'() {
+        given:
+        def backing = new FailingManifest()
+        backing.put('itemBackupManifest', [app_99: entry('99')])
+        backing.@fail = true
+        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        List deleted = []
+        peer.metaClass.deleteHubFile = { String name -> deleted << name }
+
+        when:
+        peer._deleteItemBackupFile('mcp-backup-app-99.groovy')
+
+        then:
+        thrown(IllegalStateException)
+        deleted.isEmpty()
+        backing.itemBackupManifest.app_99 == entry('99')
     }
 
     def 'unreadable or incomplete app inventory never discards recovery intent'() {

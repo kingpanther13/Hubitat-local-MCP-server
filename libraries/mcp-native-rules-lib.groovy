@@ -9171,12 +9171,16 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // backups are enabled. Destructive delete and Required Expression restore callers
 // continue to call _rmBackupRuleSnapshot directly, so they always get a fresh image.
 Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
+    synchronized (ITEM_BACKUP_MANIFESTS) { return _rmBackupBeforeEditLocked(ruleId, reason) }
+}
+
+private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") {
         return _rmBackupRuleSnapshot(ruleId, reason)
     }
 
     long nowMs = now()
-    def mfst = atomicState.itemBackupManifest ?: [:]
+    def mfst = _itemBackupManifest()
     def recent = mfst.findAll { key, value ->
         if (!(value instanceof Map) || value.type?.toString() != "rm-rule") return false
         def savedRuleId = value.ruleId != null ? value.ruleId : value.id
@@ -9188,23 +9192,7 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
         return age >= 0L && age < 60L * 60L * 1000L
     }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
 
-    // The JVM mirror is authoritative when it is newer than the manifest scan: a
-    // worker execution can read an atomicState snapshot that predates the previous
-    // worker's manifest write, and that gap must not cost a redundant baseline.
-    synchronized (RM_BASELINE_HANDLES) {
-        def mirrored = RM_BASELINE_HANDLES[ruleId?.toString()]
-        if (mirrored instanceof Map && mirrored.entry instanceof Map) {
-            Long mirroredAt = null
-            try { mirroredAt = (mirrored.entry as Map).timestamp as Long } catch (Exception ignored) { }
-            long mirroredAge = mirroredAt == null ? -1L : nowMs - mirroredAt
-            boolean inWindow = mirroredAt != null && mirroredAge >= 0L && mirroredAge < 60L * 60L * 1000L
-            boolean newerThanScan = recent == null ||
-                mirroredAt > ((recent.value.timestamp as Long) ?: 0L)
-            if (inWindow && newerThanScan) {
-                recent = [key: mirrored.key?.toString(), value: new LinkedHashMap(mirrored.entry as Map)]
-            }
-        }
-    }
+    if (recent != null && mfst.size() > 20) _publishItemBackup(recent.key.toString(), recent.value as Map)
 
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
@@ -9250,6 +9238,10 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
 // (the existing tools) handle them too — no separate RM-only backup
 // tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>.
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
+    synchronized (ITEM_BACKUP_MANIFESTS) { return _rmBackupRuleSnapshotLocked(ruleId, reason) }
+}
+
+private Map _rmBackupRuleSnapshotLocked(Integer ruleId, String reason) {
     def config
     def status
     try {
@@ -9372,7 +9364,7 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     }
 
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
-    def fileName = "mcp-rm-backup-${ruleId}-${ts}.json"
+    def fileName = _itemBackupFileName("mcp-rm-backup-${ruleId}-${ts}.json")
 
     def jsonBytes
     try {
@@ -9386,9 +9378,8 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         throw new IllegalArgumentException("Cannot save backup file '${fileName}' for rule ${ruleId}: ${e.message}")
     }
 
-    // atomicState read-modify-write: read the full manifest, mutate locally, write back.
-    def mfst = atomicState.itemBackupManifest ?: [:]
-    def backupKey = "rm-rule_${ruleId}_${ts}"
+    def suffix = fileName.substring("mcp-rm-backup-${ruleId}-".length(), fileName.length() - 5)
+    def backupKey = "rm-rule_${ruleId}_${suffix}"
     def entry = [
         type: "rm-rule",
         id: ruleId,
@@ -9399,27 +9390,7 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         timestamp: snapshot.timestamp,
         sourceLength: jsonBytes.length  // reusing the existing field name for byte size
     ]
-    mfst[backupKey] = entry
-
-    // Reuse backupItemSource's prune budget (20 entries total across all
-    // backup types). Oldest pruned first -- same policy as app/driver.
-    if (mfst.size() > 20) {
-        def oldest = mfst.min { it.value.timestamp }
-        if (oldest) {
-            try { deleteHubFile(oldest.value.fileName) } catch (Exception e) {
-                mcpLog("warn", "rm-native", "Could not prune backup ${oldest.value.fileName}: ${e.message}")
-            }
-            mfst.remove(oldest.key)
-        }
-    }
-    atomicState.itemBackupManifest = mfst
-    // Mirror the newest per-rule handle in JVM statics: another worker execution
-    // scheduled seconds from now may read an atomicState snapshot that predates
-    // this write, and reuse must not depend on that visibility (see
-    // RM_BASELINE_HANDLES in the host app).
-    synchronized (RM_BASELINE_HANDLES) {
-        RM_BASELINE_HANDLES[ruleId.toString()] = [key: backupKey.toString(), entry: new LinkedHashMap(entry)]
-    }
+    _publishItemBackup(backupKey.toString(), entry)
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     // brokenBefore: the rule's pre-write broken state, derived from the config this snapshot
@@ -10781,7 +10752,7 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 // Best-effort + idempotent: a clean predCapabs re-clears harmlessly, and a failed clear degrades to
 // the pre-deferral worst case (a possible IF(Broken Condition) wrap, surfaced as a warn).
 private void _rmRunPendingPredCapabsClear(Integer appId) {
-    def pending = atomicState.predClearPending ?: [:]
+    def pending = _rmPendingPredClearSnapshot()
     if (!pending[appId.toString()]) return
     try {
         _rmClearPredCapabsViaGhostIfThen(appId, "addAction (deferred from addRequiredExpression)")
@@ -10795,9 +10766,68 @@ private void _rmRunPendingPredCapabsClear(Integer appId) {
 // predCapabs goes clean by other means (a rolled-back RE build restored from a clean backup, or the
 // rule deleted), so a stale flag can't trigger a wasted ghost clear on a later addAction or linger
 // in atomicState after the rule is gone.
+private Map _rmPendingPredClearSnapshot() {
+    synchronized (PRED_CLEAR_STORES) {
+        String owner = app?.id?.toString() ?: "unidentified"
+        if (!PRED_CLEAR_STORES.containsKey(owner)) {
+            PRED_CLEAR_STORES[owner] = new LinkedHashMap(atomicState.predClearPending ?: [:])
+        }
+        return new LinkedHashMap(PRED_CLEAR_STORES[owner] as Map)
+    }
+}
+
+private void _rmCommitPredClearPending(Map pending) {
+    String owner = app?.id?.toString() ?: "unidentified"
+    try {
+        atomicState.predClearPending = pending
+        PRED_CLEAR_STORES[owner] = new LinkedHashMap(pending)
+    } catch (Exception e) {
+        PRED_CLEAR_STORES.remove(owner)
+        throw e
+    }
+}
+
+void _rmMarkPredClearPending(Integer appId) {
+    synchronized (PRED_CLEAR_STORES) {
+        Map pending = _rmPendingPredClearSnapshot()
+        // An inventory fetched before this generation cannot discard this intent.
+        pending[appId.toString()] = UUID.randomUUID().toString()
+        _rmCommitPredClearPending(pending)
+    }
+}
+
 private void _rmDropPredClearPending(Integer appId) {
-    def m = atomicState.predClearPending ?: [:]
-    if (m.remove(appId.toString()) != null) atomicState.predClearPending = m
+    synchronized (PRED_CLEAR_STORES) {
+        Map pending = _rmPendingPredClearSnapshot()
+        if (pending.remove(appId.toString()) != null) _rmCommitPredClearPending(pending)
+    }
+}
+
+private void _rmReconcilePredClearPending(def inventory, Map observed) {
+    if (!observed || !(inventory instanceof Map) || !(inventory.apps instanceof List) || inventory.error ||
+            inventory.success == false || inventory.status == "error" || inventory.partial == true || inventory.hasMore == true) return
+    Set ids = [] as Set
+    boolean complete = true
+    def visit
+    visit = { node ->
+        if (!(node instanceof Map) || !(node.data instanceof Map) || !node.data.id?.toString()?.isInteger() ||
+                (node.children != null && !(node.children instanceof List))) {
+            complete = false
+            return
+        }
+        ids.add(node.data.id.toString())
+        (node.children ?: []).each { visit(it) }
+    }
+    inventory.apps.each { visit(it) }
+    if (!complete) return
+    synchronized (PRED_CLEAR_STORES) {
+        Map current = _rmPendingPredClearSnapshot()
+        def removed = current.keySet().findAll { !ids.contains(it.toString()) && observed[it] == current[it] }
+        if (!removed) return
+        removed.each { current.remove(it) }
+        try { _rmCommitPredClearPending(current) }
+        catch (Exception e) { mcpLog("error", "rm-native", "Could not reconcile deleted-app recovery records: ${e.message}") }
+    }
 }
 
 // Low-level reveal-step primitive for RM 5.1 progressive-disclosure wizard pages.
@@ -12575,9 +12605,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     //   required-FIELDS check (appUI.js:559-563 empty required device buttons / 700-701 errorCount),
     //   NOT a routing/editAct check -- so STPage opens cleanly without the ghost ifThen. (The helper's
     //   old "routing reset" comment only undid the ghost ifThen's OWN nav to doActPage.)
-    def _predPending = atomicState.predClearPending ?: [:]
-    _predPending[appId.toString()] = true
-    atomicState.predClearPending = _predPending
+    _rmMarkPredClearPending(appId)
 
     // Step 5. Post-commit validation. RM 5.1's STPage silently accepts
     // many invalid inputs at the field-write level (e.g. unknown device

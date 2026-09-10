@@ -2220,7 +2220,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                      it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
 
         and: "(deferral) the rule is flagged predClearPending so the next addAction runs the clear just-in-time"
-        atomicStateMap.predClearPending?.get("100") == true
+        atomicStateMap.predClearPending?.get("100")
 
         and: "no actionCancel / actionDone here -- the ghost slot is never opened during the RE build"
         !posts.any { it.path == "/installedapp/btn" && it.body?.name in ["actionCancel", "actionDone"] }

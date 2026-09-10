@@ -296,17 +296,8 @@ def toolDeleteFile(args) {
 
     // Delete the file
     try {
-        deleteHubFile(args.fileName)
+        _deleteItemBackupFile(args.fileName.toString())
         mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
-        try {
-            def unlinked = unlinkItemBackupManifestFile(args.fileName.toString())
-            if (unlinked) mcpLog("debug", "file-manager", "Unlinked deleted backup file '${args.fileName}' from manifest keys ${unlinked}")
-        } catch (Exception manifestErr) {
-            // The file is already gone. A later backup-reuse check validates the file and
-            // repairs a dangling manifest entry, so bookkeeping failure must not turn a
-            // successful File Manager deletion into a false failure.
-            mcpLog("warn", "file-manager", "Deleted '${args.fileName}' but could not unlink its backup manifest entry: ${manifestErr.message}")
-        }
 
         def result = [
             success: true,

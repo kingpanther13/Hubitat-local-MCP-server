@@ -51,13 +51,11 @@
 // Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 @groovy.transform.Field static final Map CAPTURE_STORES = new java.util.HashMap()
-// Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
-// time. The reuse decision consults this beside the atomicState manifest because a
-// freshly scheduled worker execution can read an atomicState snapshot that predates
-// another execution's manifest write -- without the mirror, a same-rule edit seconds
-// after the last one takes a redundant baseline and silently narrows rollbackScope.
-// Guarded by synchronized(RM_BASELINE_HANDLES); cleared by recompile like any static.
-@groovy.transform.Field static final Map RM_BASELINE_HANDLES = new java.util.HashMap()
+// Latest committed backup view bridges stale worker snapshots; all file/manifest
+// writers share this monitor. Per-app entries contain at most the retained manifest.
+@groovy.transform.Field static final Map ITEM_BACKUP_MANIFESTS = new java.util.HashMap()
+@groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
+@groovy.transform.Field static final Object VARIABLE_HISTORY_LOCK = new Object()
 // Snapshots of the two atomicState keys the reservation/MRTR machinery below reads:
 // every atomicState property access is a hub DB round trip, and one tool call reads
 // these keys many times over (the scheduled-worker observation re-reads mrtrRequests
@@ -639,6 +637,8 @@ def uninstalled() {
     log.info "MCP Rule Server uninstalled"
     _resetCaptureStore()
     String appKey = app?.id?.toString() ?: "unidentified"
+    synchronized (ITEM_BACKUP_MANIFESTS) { ITEM_BACKUP_MANIFESTS.remove(appKey) }
+    synchronized (PRED_CLEAR_STORES) { PRED_CLEAR_STORES.remove(appKey) }
     synchronized (WRITE_RESERVATION_LOCK) {
         MRTR_CLEANUP_SCHEDULES.remove(appKey)
         Map checks = [:] + MRTR_CLEANUP_CHECK_AT
@@ -3801,7 +3801,7 @@ def getGatewayConfig() {
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if rules reference it]",
                 hub_create_connector: "Create a virtual-device connector for an existing hub variable. For Number/Decimal vars, connectorType picks the device type (Dimmer|Variable|Volume|ColorTemp|Humidity|Illuminance, default Variable). Args: name, connectorType?, confirm=true",
                 hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true",
-                hub_list_variable_changes: "Recent hub-variable changes since the MCP app last started. Args: name (optional filter), sinceMs (optional), limit (optional)"
+                hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name (optional filter), sinceMs (optional), limit (optional)"
             ],
             searchHints: [
                 hub_list_variables: "show all global state connector",
@@ -4134,7 +4134,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
                 hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). Args: name",
-                hub_list_variable_changes: "Recent hub-variable changes since the MCP app last started. Args: name?, sinceMs?, limit?"
+                hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name?, sinceMs?, limit?"
             ],
             searchHints: [
                 hub_list_variables: "show all global state connector variables",
@@ -6518,9 +6518,11 @@ def _latestLocalHubBackupEpoch() {
  * Returns the manifest entry on success, or throws if the source cannot be retrieved.
  */
 def backupItemSource(String type, String id) {
-    // atomicState read-modify-write: read the full manifest map, mutate locally,
-    // write back atomically. Direct nested writes to state silently fail on Hubitat.
-    def manifest = atomicState.itemBackupManifest ?: [:]
+    synchronized (ITEM_BACKUP_MANIFESTS) { return _backupItemSourceLocked(type, id) }
+}
+
+private Map _backupItemSourceLocked(String type, String id) {
+    def manifest = _itemBackupManifest()
 
     def key = "${type}_${id}"
     def existing = manifest[key]
@@ -6528,6 +6530,7 @@ def backupItemSource(String type, String id) {
     // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
     if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
         mcpLog("debug", "hub-admin", "Item backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
+        if (manifest.size() > 20) _publishItemBackup(key.toString(), existing as Map)
         return existing
     }
 
@@ -6544,7 +6547,7 @@ def backupItemSource(String type, String id) {
     }
 
     // Save full source code to hub's local File Manager (no cloud, no size limit)
-    def fileName = "mcp-backup-${type}-${id}.groovy"
+    def fileName = _itemBackupFileName("mcp-backup-${type}-${id}.groovy")
     try {
         uploadHubFile(fileName, parsed.source.getBytes("UTF-8"))
     } catch (Exception e) {
@@ -6560,45 +6563,86 @@ def backupItemSource(String type, String id) {
         timestamp: now(),
         sourceLength: parsed.source.length()
     ]
-    manifest[key] = entry
-
-    // Prune old backups -- keep at most 20 entries, remove oldest if over limit
-    if (manifest.size() > 20) {
-        def oldest = manifest.min { it.value.timestamp }
-        if (oldest) {
-            mcpLog("debug", "hub-admin", "Pruning oldest backup: ${oldest.key} (${oldest.value.fileName}, from ${formatTimestamp(oldest.value.timestamp)})")
-            try { deleteHubFile(oldest.value.fileName) } catch (Exception e) {
-                mcpLog("warn", "hub-admin", "Could not delete pruned backup file '${oldest.value.fileName}': ${e.message}")
-            }
-            manifest.remove(oldest.key)
-        }
-    }
-
-    atomicState.itemBackupManifest = manifest
+    _publishItemBackup(key.toString(), entry)
     mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
     return entry
 }
 
-/** Remove manifest records that point at a File Manager file after that file is deleted. */
+// Return detached entries: consumers cannot mutate the shared committed view.
+Map _itemBackupManifest() {
+    synchronized (ITEM_BACKUP_MANIFESTS) {
+        String owner = app?.id?.toString() ?: "unidentified"
+        if (!ITEM_BACKUP_MANIFESTS.containsKey(owner)) {
+            ITEM_BACKUP_MANIFESTS[owner] = new LinkedHashMap(atomicState.itemBackupManifest ?: [:])
+        }
+        return (ITEM_BACKUP_MANIFESTS[owner] as Map).collectEntries { key, entry ->
+            [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
+        }
+    }
+}
+
+private void _commitItemBackupManifest(Map manifest) {
+    String owner = app?.id?.toString() ?: "unidentified"
+    try {
+        atomicState.itemBackupManifest = manifest
+        ITEM_BACKUP_MANIFESTS[owner] = new LinkedHashMap(manifest)
+    } catch (Exception e) {
+        ITEM_BACKUP_MANIFESTS.remove(owner)
+        throw e
+    }
+}
+
+private String _itemBackupFileName(String preferred) {
+    // Replacing a published file before committing its new entry destroys rollback
+    // material if publication fails. First-time backups keep the familiar filename.
+    if (!_itemBackupManifest().values().any { it?.fileName?.toString() == preferred }) return preferred
+    int dot = preferred.lastIndexOf('.')
+    return preferred.substring(0, dot) + "-${UUID.randomUUID()}" + preferred.substring(dot)
+}
+
+void _publishItemBackup(String key, Map entry, String protectedKey = null) {
+    synchronized (ITEM_BACKUP_MANIFESTS) {
+        Map previous = _itemBackupManifest()
+        Map manifest = new LinkedHashMap(previous)
+        manifest[key] = entry
+        def victims = manifest.keySet().findAll { it != key && it != protectedKey }
+            .sort { a, b -> (manifest[a]?.timestamp ?: 0L) <=> (manifest[b]?.timestamp ?: 0L) }
+            .take(Math.max(0, manifest.size() - 20))
+        victims.each { manifest.remove(it) }
+        _commitItemBackupManifest(manifest)
+        Set retainedFiles = manifest.values().collect { it?.fileName?.toString() } as Set
+        // Unlink durably first; an optional file-delete failure leaves an orphan,
+        // never a retained entry whose rollback file was deleted before publication.
+        previous.values().collect { it?.fileName?.toString() }.findAll { it && !retainedFiles.contains(it) }.unique().each { file ->
+            try { deleteHubFile(file) }
+            catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}") }
+        }
+    }
+}
+
 List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
-    if (!fileName) return []
-    def manifest = new LinkedHashMap(atomicState.itemBackupManifest ?: [:])
-    def removed = []
-    manifest.each { key, entry ->
-        if ((exactKey == null || key?.toString() == exactKey) &&
-                entry instanceof Map && entry.fileName?.toString() == fileName) {
-            removed << key
+    synchronized (ITEM_BACKUP_MANIFESTS) {
+        if (!fileName) return []
+        Map manifest = _itemBackupManifest()
+        List removed = manifest.findAll { key, entry ->
+            (exactKey == null || key?.toString() == exactKey) && entry?.fileName?.toString() == fileName
+        }.keySet().toList()
+        removed.each { manifest.remove(it) }
+        if (removed) _commitItemBackupManifest(manifest)
+        return removed.collect { it.toString() }
+    }
+}
+
+private void _deleteItemBackupFile(String fileName) {
+    synchronized (ITEM_BACKUP_MANIFESTS) {
+        Map previous = _itemBackupManifest()
+        List removed = unlinkItemBackupManifestFile(fileName)
+        try { deleteHubFile(fileName) }
+        catch (Exception e) {
+            if (removed) _commitItemBackupManifest(previous)
+            throw e
         }
     }
-    removed.each { manifest.remove(it) }
-    if (removed) atomicState.itemBackupManifest = manifest
-    synchronized (RM_BASELINE_HANDLES) {
-        RM_BASELINE_HANDLES.entrySet().removeAll { mirror ->
-            mirror.value instanceof Map &&
-                (mirror.value.entry as Map)?.fileName?.toString() == fileName
-        }
-    }
-    return removed.collect { it?.toString() }
 }
 
 // ==================== FILE MANAGER TOOLS ====================
@@ -9834,7 +9878,7 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 
 ### hub_list_variable_changes
 
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This buffer caps at 200 entries and clears on hub restart. For the hub's authoritative, complete, restart-surviving change log, call hub_list_device_events with no deviceId (location-event mode).
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
 
 ### hub_create_connector
 
