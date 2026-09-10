@@ -21,8 +21,7 @@ import support.ToolSpecBase
  *   - hubInternalPost      — script-defined helper, stubbed per-test on script.metaClass.
  *                            (reboot + shutdown don't go through a wrapper; they call
  *                            hubInternalPost directly.)
- *   - location.hub / findDevice / selectedDevice.events() branches in toolDeleteDevice
- *     are best-effort in try/catch blocks — tests don't drive them.
+ *   - Delete audit identity and activity/events use native HTTP fixtures; SDK lookup is trapped.
  */
 class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
@@ -660,7 +659,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
             // Non-radio DNI (not 2 hex digits) + no zigbeeId so isRadioDevice=false,
             // skipping the Z-Wave/Zigbee endpoint probes entirely.
             lookupCalls == 1
-                ? '{"id": 42, "label": "Old Switch", "name": "Generic Switch", "typeName": "Virtual Switch", "deviceNetworkId": "mcp-virtual-123"}'
+                ? '{"device":{"id":42,"label":"Old Switch","name":"Generic Switch","deviceTypeName":"Virtual Switch","deviceTypeNamespace":"hubitat","deviceNetworkId":"mcp-virtual-123"},"commands":[]}'
                 : null
         }
         hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
@@ -676,6 +675,10 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.message.contains('permanently deleted')
         result.auditInfo.deviceType == 'Virtual Switch'
         result.auditInfo.deviceNetworkId == 'mcp-virtual-123'
+        result.auditInfo.driverName == 'Virtual Switch'
+        result.auditInfo.deletedAt
+        result.auditInfo.lastHubBackup
+        result.warnings instanceof List
     }
 
     @spock.lang.Unroll
@@ -687,7 +690,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params ->
             lookupCalls++
             lookupCalls == 1
-                ? '{"id": 42, "label": "Old Switch", "name": "Generic Switch", "typeName": "Virtual Switch", "deviceNetworkId": "mcp-virtual-123"}'
+                ? '{"device":{"id":42,"label":"Old Switch","name":"Generic Switch","deviceTypeName":"Virtual Switch","deviceTypeNamespace":"hubitat","deviceNetworkId":"mcp-virtual-123"},"commands":[]}'
                 : null
         }
         hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
@@ -714,7 +717,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         given:
         enableWrite()
         hubGet.register('/device/fullJson/77') { params ->
-            '{"id": 77, "label": "Unlucky Device", "name": "Bulb", "typeName": "Virtual Bulb", "deviceNetworkId": "mcp-virtual-77"}'
+            '{"device":{"id":77,"label":"Unlucky Device","name":"Bulb","deviceTypeName":"Virtual Bulb","deviceTypeNamespace":"hubitat","deviceNetworkId":"mcp-virtual-77"},"commands":[]}'
         }
         hubGet.register('/device/forceDelete/77/yes') { params ->
             throw new RuntimeException('Hub API returned 500')
@@ -728,6 +731,88 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.error.contains('Force delete failed')
         result.deviceId == '77'
         result.deviceName == 'Unlucky Device'
+    }
+
+    @spock.lang.Unroll
+    def "hub_delete_device rejects malformed identity before force delete: #body"() {
+        given:
+        enableWrite()
+        hubGet.register('/device/fullJson/42') { params -> body }
+        hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
+
+        when:
+        script.toolDeleteDevice([deviceId: '42', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+        !hubGet.calls.any { it.path.startsWith('/device/forceDelete/') }
+
+        where:
+        body << ['[]', '"unexpected"', '{}', '{"device":null}', '{"device":[]}',
+                 '{"device":"unexpected"}', '{"device":{}}', '{"device":{"id":77}}',
+                 '{"id":42,"label":"Flat legacy shape"}']
+    }
+
+    def "hub_delete_device does not verify deletion when native device still exists"() {
+        given:
+        enableWrite()
+        hubGet.register('/device/fullJson/42') { params ->
+            '{"device":{"id":42,"name":"Remaining Device","deviceTypeName":"Virtual Switch","deviceNetworkId":"scratch-42"}}'
+        }
+        hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
+
+        when:
+        def result = script.toolDeleteDevice([deviceId: '42', confirm: true])
+
+        then:
+        !result.success
+        result.deviceName == 'Remaining Device'
+        result.message.contains('may still exist')
+        result.auditInfo.deviceType == 'Virtual Switch'
+    }
+
+    @spock.lang.Unroll
+    def "hub_delete_device audits native activity and #radio warnings without selected SDK access (bypass=#bypass)"() {
+        given:
+        enableWrite()
+        settingsMap.bypassDeviceAllowlist = bypass
+        settingsMap.selectedDevices = []
+        script.metaClass.findDevice = { Object id -> throw new AssertionError('Delete audit must not read SDK device state') }
+        def auditLogs = []
+        script.metaClass.mcpLog = { String level, String category, String message -> auditLogs << message }
+        def lookupCalls = 0
+        hubGet.register('/device/fullJson/42') { params ->
+            lookupCalls++
+            lookupCalls == 1 ? groovy.json.JsonOutput.toJson([
+                device: [id: 42, name: 'Native Name', label: null, deviceNetworkId: dni,
+                         deviceTypeName: 'Native Driver', deviceTypeNamespace: 'hubitat', zigbeeId: zigbeeId,
+                         lastActivityTime: '2009-02-13T22:31:30+0000'], commands: []]) : null
+        }
+        hubGet.register('/device/eventsJson/42') { params ->
+            '[{"name":"switch","value":"on","date":"2009-02-13T22:31:30+0000","descriptionText":"Native Name is on","isStateChange":true}]'
+        }
+        hubGet.register('/hub/zwaveDetails/json') { params -> '{"nodes":[]}' }
+        hubGet.register('/hub/zigbeeDetails/json') { params -> '{"devices":[]}' }
+        hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
+
+        when:
+        def result = script.toolDeleteDevice([deviceId: '42', confirm: true])
+
+        then:
+        result.success
+        result.deviceName == 'Native Name'
+        result.auditInfo.deviceType == 'Native Driver'
+        result.auditInfo.deviceNetworkId == dni
+        result.warnings.any { it.contains('ACTIVE DEVICE:') && it.contains('1.0 hours ago') }
+        result.warnings.any { it.contains('HAS RECENT EVENTS:') && it.contains('switch=on') && it.contains('2009-02-13T22:31:30') }
+        result.warnings.any { it.startsWith(radio + ' DEVICE:') }
+        auditLogs.any { it.contains('DELETE DEVICE AUDIT:') && it.contains("'Native Name'") && it.contains('Type: Native Driver') && it.contains('DNI: ' + dni) }
+        hubGet.calls.any { it.path == '/device/eventsJson/42' }
+
+        where:
+        bypass | radio    | dni            | zigbeeId
+        false  | 'Z-WAVE' | '2A'           | null
+        true   | 'ZIGBEE' | 'zigbee-node'  | '00124B0001234567'
     }
 
     @spock.lang.Unroll
