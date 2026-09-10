@@ -5193,14 +5193,14 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
         deviceTypeReadableType: d.deviceTypeReadableType, roomId: d.roomId,
         meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
         homeKitEnabled: fj.homeKitEnabled, locationId: d.locationId, hubId: d.hubId,
-        groupId: d.groupId, dashboardIds: dashIds, tags: (d.tags ?: ""),
+        groupId: d.groupId, dashboardIds: dashIds, tags: d.tags,
         defaultIcon: d.defaultIcon, notes: d.notes
     ]
     if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
     if (fieldOverrides) model.putAll(fieldOverrides)
-    // Native blanks coerce null groupId/roomId to zero and controllerType to an empty string.
-    // Overrides were applied above, so an explicit room clear still sends roomId=0.
-    ["groupId", "controllerType", "roomId"].each { key ->
+    // Native readback verifies omission preserves null for these fields; blanks change stored values.
+    // Apply overrides first so explicit empty-string clears and roomId=0 remain in the form.
+    ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"].each { key ->
         if (model.get(key) == null) model.remove(key)
     }
     def enc = { v ->
