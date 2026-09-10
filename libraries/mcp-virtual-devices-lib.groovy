@@ -275,7 +275,7 @@ def toolListVirtualDevices(args) {
         try {
             def fullJson = _fetchDeviceFullJson(deviceId)
             if (!(fullJson?.device instanceof Map) || !fullJson.device) {
-                return [id: deviceId, success: false,
+                return [id: deviceId, success: false, isError: true,
                     error: "Native device information unavailable from /device/fullJson/${deviceId}.",
                     note: "The device remains MCP-owned. Inspect this device in the Hubitat UI and retry the read."]
             }
@@ -297,7 +297,7 @@ def toolListVirtualDevices(args) {
             }
             return info
         } catch (Exception ignored) {
-            return [id: deviceId, success: false,
+            return [id: deviceId, success: false, isError: true,
                 error: "Native device information could not be interpreted from /device/fullJson/${deviceId}.",
                 note: "The device remains MCP-owned. Inspect this device in the Hubitat UI and retry the read."]
         }
@@ -310,6 +310,7 @@ def toolListVirtualDevices(args) {
     ]
     if (page.any { it.success == false }) {
         result.success = false
+        result.isError = true
         result.error = 'Native information could not be read for one or more MCP-managed virtual devices.'
         result.note = 'Device IDs and counts include unreadable devices. Inspect the failed entries and retry the read.'
     }
@@ -405,7 +406,7 @@ def toolDeleteVirtualDevice(args) {
     def deviceId = childDevice.id.toString()
     def fullJson = _fetchDeviceFullJson(deviceId)
     if (!(fullJson?.device instanceof Map) || !fullJson.device) {
-        return [success: false, deviceId: deviceId, deviceNetworkId: dni,
+        return [success: false, isError: true, deviceId: deviceId, deviceNetworkId: dni,
             error: "Native device identity unavailable from /device/fullJson/${deviceId}.",
             note: "No deletion was attempted. Inspect this device in the Hubitat UI and retry once native information is available."]
     }

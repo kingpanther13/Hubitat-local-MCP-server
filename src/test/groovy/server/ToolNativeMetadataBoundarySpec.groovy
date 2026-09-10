@@ -53,7 +53,13 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.error
+        if (operation == 'poll') {
+            assert result.readError == true
+            assert result.timedOut == true
+            assert result.finalValue == null
+        } else {
+            assert result.error
+        }
         writes.empty
         !hubGet.calls.any { it.path in ['/device/eventsJson/10', '/logs/past/json'] }
 
@@ -82,6 +88,12 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         'hub_get_device'            | [deviceId: '10']
         'hub_get_logs'              | [deviceId: '10']
         'hub_call_device_command'   | [deviceId: '10', command: 'on']
+        'hub_list_devices'          | [filter: 'virtual']
+        'hub_get_device_attribute'  | [deviceId: '10', attribute: 'switch']
+        'hub_list_device_events'    | [deviceId: '10']
+        'hub_list_device_events'    | [deviceId: '10', hoursBack: 1]
+        'hub_update_device'         | [deviceId: '10', label: 'Changed']
+        'hub_manage_virtual_device' | [action: 'delete', deviceNetworkId: 'mcp-10', confirm: true]
     }
 
     @Unroll
@@ -145,6 +157,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
 
     def 'created native device keeps its ID without accepting another devices readback'() {
         given:
+        hubGet.register('/device/drivers') { '{"drivers":[{"id":500,"type":"sys","name":"Fixture Driver"}]}' }
         hubGet.register('/device/sysDriverByIdJson/500') { '{"success":true,"deviceId":10}' }
         model.device.id = 11
 
@@ -210,6 +223,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         then:
         result.success == false
         result.outcomeUnknown == true
+        result.isError == true
         result.note.toString().contains('Inspect')
         result.note.toString().contains('state')
         result.note.toString().contains('event')
@@ -243,6 +257,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
 
         then:
         result.success == false
+        result.isError == true
         result.errors.any { it.property == 'room' && it.error }
         !result.changes.any { it.property == 'room' }
         writes.size() == 1

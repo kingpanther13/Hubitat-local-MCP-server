@@ -680,7 +680,7 @@ def toolGetHubLogs(args) {
         if (!deviceIdFilter.isInteger()) throw new IllegalArgumentException("deviceId must be numeric: ${deviceIdFilter}")
         _requireDeviceToolAccess(deviceIdFilter)
         if (!(_fetchDeviceFullJson(deviceIdFilter)?.device instanceof Map)) {
-            return [success: false, error: "Device metadata could not be read for ${deviceIdFilter}; no log history was fetched.",
+            return [success: false, isError: true, error: "Device metadata could not be read for ${deviceIdFilter}; no log history was fetched.",
                     note: "Verify the device exists in the native Devices page and retry."]
         }
         query = [type: "dev", id: deviceIdFilter]

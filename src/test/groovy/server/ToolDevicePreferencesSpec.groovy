@@ -445,6 +445,8 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.sections.identity.lastActivityTime == '2026-09-08T09:00:00.000-0400'
         result.sections.attributes.currentStates.temperature.unit == 'C'
         result.sections.attributes.declaredAttributes[0].name == 'temperature'
+        result.sections.attributes.declaredAttributes[0].dataType == 'NUMBER'
+        result.sections.attributes.declaredAttributes[0].value == 21.5
         result.sections.attributes.attributeCoverage.source == 'device.currentStates'
         result.sections.attributes.attributeCoverage.declarationsComplete == false
         result.sections.relationships.parentApp.id == 301
@@ -574,6 +576,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         childDevicesList << new TestDevice(id: 901, name: 'Fixture')
         def nativeModel = fixture()
         nativeModel.device.currentStates = [apiToken: [name: 'apiToken', value: 'private-attribute-value', dataType: 'STRING']]
+        nativeModel.remove('commands')
         registerFixture(DEVICE_ID, nativeModel)
 
         when:

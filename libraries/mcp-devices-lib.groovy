@@ -89,7 +89,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     try {
         allDevices = _mcpVisibleDevices(childDevs)
     } catch (IllegalStateException e) {
-        return [success: false, error: e.message, note: "Retry the native device inventory read."]
+        return [success: false, isError: true, error: e.message, note: "Retry the native device inventory read."]
     }
 
     if (!allDevices) {
@@ -148,7 +148,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             _hydrateNativeInventory(allDevices, (onlyOn == true ? ['currentStates'] : []) +
                 (capabilityFilter ? ['capabilities'] : []))
         } catch (IllegalStateException e) {
-            return [success: false, error: e.message, note: "Retry the native device inventory read."]
+            return [success: false, isError: true, error: e.message, note: "Retry the native device inventory read."]
         }
     }
 
@@ -300,7 +300,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         try {
             _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'])
         } catch (IllegalStateException e) {
-            return [success: false, error: e.message, note: "Retry the native context read."]
+            return [success: false, isError: true, error: e.message, note: "Retry the native context read."]
         }
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
@@ -372,7 +372,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             }
             _hydrateNativeInventory(pagedDevices, requiredCollections)
         } catch (IllegalStateException e) {
-            return [success: false, error: e.message, note: "Retry the native device inventory read."]
+            return [success: false, isError: true, error: e.message, note: "Retry the native device inventory read."]
         }
     }
 
@@ -999,14 +999,14 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     // Read missing capabilities natively only when the current device-access policy allows it.
     def inventory = _fetchAllHubDeviceRecords("device", "hub_list_devices scope='all'")
     if (inventory.failure == "fetch") {
-        return [success: false, error: "Failed to fetch the all-hub device list (${inventory.source}): ${inventory.fetchError}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
+        return [success: false, isError: true, error: "Failed to fetch the all-hub device list (${inventory.source}): ${inventory.fetchError}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
     }
     if (inventory.failure) {
-        return [success: false, error: "Unexpected ${inventory.source} response (expected {devices:[...]}).", note: "Hub firmware may have changed the endpoint contract."]
+        return [success: false, isError: true, error: "Unexpected ${inventory.source} response (expected {devices:[...]}).", note: "Hub firmware may have changed the endpoint contract."]
     }
     def raw = inventory.records
     if (!(raw instanceof List) || raw.any { !(it instanceof Map) || it.id == null }) {
-        return [success: false, error: "Native device inventory contained an invalid record.",
+        return [success: false, isError: true, error: "Native device inventory contained an invalid record.",
                 note: "Retry after checking hub firmware; an incomplete device list was not returned."]
     }
     def sourceEndpoint = inventory.source
@@ -1032,7 +1032,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
             if (did != null && authorizedIds.contains(did) && !(d.capabilities instanceof List)) {
                 def fj = _fetchDeviceFullJson(did)
                 if (!(fj?.device instanceof Map) || fj.device.id?.toString() != did || !(fj.device.capabilities instanceof List)) {
-                    return [success: false, error: "Native capabilities are unavailable for device ${did}.",
+                    return [success: false, isError: true, error: "Native capabilities are unavailable for device ${did}.",
                             note: "Retry the native inventory read; no SDK fallback was used."]
                 }
                 capsById.put(did, _capabilityNames(fj.device.capabilities))
@@ -1629,13 +1629,7 @@ private _readBypassAttrValue(deviceId, attribute) {
     return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
 }
 
-// Preserve the summary shape using reported native states and native command definitions.
-private Map _getDeviceFromFullJson(deviceId, Map fj) {
-    def unavailable = _unavailableNativeDeviceCollections(fj)
-    if (unavailable) {
-        throw new IllegalStateException("Native device collections are unavailable for device ${deviceId}: ${unavailable.join(', ')}.")
-    }
-    def d = fj.device
+private List _nativeReportedDeviceAttributes(Map d) {
     def attributes = []
     def cs = d?.currentStates
     if (cs instanceof Map) {
@@ -1647,6 +1641,16 @@ private Map _getDeviceFromFullJson(deviceId, Map fj) {
             }
         }
     }
+    return attributes
+}
+
+// Preserve the summary shape using reported native states and native command definitions.
+private Map _getDeviceFromFullJson(deviceId, Map fj) {
+    def unavailable = _unavailableNativeDeviceCollections(fj)
+    if (unavailable) {
+        throw new IllegalStateException("Native device collections are unavailable for device ${deviceId}: ${unavailable.join(', ')}.")
+    }
+    def d = fj.device
     def commands = []
     if (fj.commands instanceof List) {
         fj.commands.each { c ->
@@ -1660,7 +1664,7 @@ private Map _getDeviceFromFullJson(deviceId, Map fj) {
         label: d.label ?: d.name,
         room: d.roomName,
         capabilities: caps,
-        attributes: attributes,
+        attributes: _nativeReportedDeviceAttributes(d),
         commands: commands
     ]
 }
@@ -1817,7 +1821,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, boolean listed
                 // Keep the historical key while identifying its native, reported-state coverage.
                 value.attributeCoverage = [source: 'device.currentStates', declarationsComplete: false,
                     note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
-                if (identity.attributes instanceof List) value.declaredAttributes = identity.attributes.collect { row ->
+                if (d.currentStates instanceof Map) value.declaredAttributes = _nativeReportedDeviceAttributes(d).collect { row ->
                     def attribute = _deviceConfigurationPublicValue(row)
                     if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
                         attribute.value = '***redacted (password)***'
@@ -1970,14 +1974,14 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
     if (cursor) return _deviceReadContinuation(cursor, selection)
     def full = _fetchDeviceFullJson(deviceId)
     if (!(full?.device instanceof Map) && selectedMode == 'summary') {
-        return [success: false, error: "Device metadata fetch failed (/device/fullJson/${deviceId})",
+        return [success: false, isError: true, error: "Device metadata fetch failed (/device/fullJson/${deviceId})",
                 note: 'Check the native Devices page and retry.']
     }
     if (selectedMode == 'summary') {
         try {
             return _getDeviceFromFullJson(deviceId, full)
         } catch (IllegalStateException e) {
-            return [success: false, error: e.message, note: 'Check the native Devices page and retry.']
+            return [success: false, isError: true, error: e.message, note: 'Check the native Devices page and retry.']
         }
     }
     def identity = [name: full?.device?.name, label: _bypassDeviceLabel(full, deviceId)]
@@ -2141,7 +2145,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     _requireDeviceToolAccess(deviceId)
     def fullJson = _fetchDeviceFullJson(deviceId)
     if (!(fullJson?.device instanceof Map) || _unavailableNativeDeviceCollections(fullJson, ['commands'])) {
-        return [success: false, deviceId: deviceId,
+        return [success: false, isError: true, deviceId: deviceId,
                 error: "Device command metadata fetch failed (/device/fullJson/${deviceId})".toString(),
                 note: "The native device metadata could not be read; no command was sent. Verify the device exists and retry."]
     }
@@ -2629,7 +2633,7 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     def args = _buildRunMethodArgs(command, params, fullJson)
     def body = groovy.json.JsonOutput.toJson([id: _runMethodDeviceId(deviceId), method: command, args: args])
     def resp
-    def unknownOutcome = [success: false, outcomeUnknown: true,
+    def unknownOutcome = [success: false, isError: true, outcomeUnknown: true,
         note: "The command may already have executed. Inspect device state and events before deciding whether to repeat it; do not automatically replay non-idempotent commands."]
     try {
         resp = hubInternalPostJson("/device/runmethod", body)
@@ -2655,7 +2659,7 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
         if (!(resp instanceof Map) || resp.success != false) {
             return unknownOutcome + [error: "runmethod did not confirm success for '${command}': ${resp}"]
         }
-        return [success: false, error: "runmethod did not confirm success for '${command}': ${resp}",
+        return [success: false, isError: true, error: "runmethod did not confirm success for '${command}': ${resp}",
                 note: "The hub rejected or did not confirm the command. Verify the command and arguments against hub_get_device."]
     }
     return null
@@ -2820,10 +2824,10 @@ def toolGetDeviceEvents(deviceId, limit) {
     if (limit == null || limit < 1) limit = 10
     _requireDeviceToolAccess(deviceId)
     def full = _fetchDeviceFullJson(deviceId)
-    if (!(full?.device instanceof Map)) return [success: false, error: "Device metadata fetch failed (/device/fullJson/${deviceId})", note: 'Check native device details and retry.']
+    if (!(full?.device instanceof Map)) return [success: false, isError: true, error: "Device metadata fetch failed (/device/fullJson/${deviceId})", note: 'Check native device details and retry.']
     def label = _bypassDeviceLabel(full, deviceId)
     def rows = _fetchBypassDeviceEvents(deviceId)
-    if (rows == null) return [success: false, error: "Device event history fetch failed (/device/eventsJson/${deviceId})", device: label, note: 'Check the native device Events page and retry.']
+    if (rows == null) return [success: false, isError: true, error: "Device event history fetch failed (/device/eventsJson/${deviceId})", device: label, note: 'Check the native device Events page and retry.']
     def events = rows.take(limit as Integer).collect { _mapBypassEventRow(it) }
     return [device: label, events: events, count: events.size()]
     // Retained SDK implementation for deliberate rollback.
@@ -2876,7 +2880,7 @@ def toolGetAttribute(deviceId, attribute) {
     _requireDeviceToolAccess(deviceId)
     def full = _fetchDeviceFullJson(deviceId)
     if (!(full?.device?.currentStates instanceof Map)) {
-        return [success: false, deviceId: deviceId, attribute: attribute,
+        return [success: false, isError: true, deviceId: deviceId, attribute: attribute,
                 error: 'Native device current states could not be read.', note: 'Check the native Devices page and retry.']
     }
     def result = [device: _bypassDeviceLabel(full, deviceId), attribute: attribute,
@@ -3828,7 +3832,7 @@ def toolGetDeviceHistory(args) {
 
     _requireDeviceToolAccess(args.deviceId)
     def full = _fetchDeviceFullJson(args.deviceId)
-    if (!(full?.device instanceof Map)) return [success: false, error: "Device metadata fetch failed (/device/fullJson/${args.deviceId})", note: 'Check native device details and retry.']
+    if (!(full?.device instanceof Map)) return [success: false, isError: true, error: "Device metadata fetch failed (/device/fullJson/${args.deviceId})", note: 'Check native device details and retry.']
     return _deviceHistoryBypass(args, full, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit)
 
     // Retained SDK history implementation for deliberate rollback.
@@ -3900,7 +3904,7 @@ private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHo
     def deviceLabel = _bypassDeviceLabel(fj, args.deviceId)
     def rows = _fetchBypassDeviceEvents(args.deviceId)
     if (rows == null) {
-        return [success: false, error: "Device event history fetch failed (/device/eventsJson/${args.deviceId})", source: "device", device: deviceLabel, deviceId: args.deviceId,
+        return [success: false, isError: true, error: "Device event history fetch failed (/device/eventsJson/${args.deviceId})", source: "device", device: deviceLabel, deviceId: args.deviceId,
                 note: "The native device event store could not be read. Check the device Events page and retry."]
     }
     def results = []
@@ -4226,9 +4230,10 @@ private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, Li
 }
 
 private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List changes, List errors) {
-    def accepted = [:]
+    boolean saveAccepted = false
     def nativeSettings = new LinkedHashMap(preferences)
     // Retained SDK preference setter for deliberate rollback.
+    //     def accepted = [:]
     //     def nativeSettings = [:]
     //     preferences.each { name, setting ->
     //         if (device == null || setting.clear == true) {
@@ -4265,7 +4270,7 @@ private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List
                             'Native preference save was rejected; inspect the device configuration before retrying.']
                 }
             } else {
-                accepted.putAll(nativeSettings)
+                saveAccepted = true
             }
         } catch (Exception ignored) {
             nativeSettings.each { name, setting ->
@@ -4274,12 +4279,23 @@ private void _applyDevicePreferencePatch(deviceId, device, Map preferences, List
             }
         }
     }
-    if (accepted) {
-        def ordered = preferences.findAll { name, setting -> accepted.containsKey(name) }
+    // Retained SDK accepted-subset verification for deliberate rollback.
+    // if (accepted) {
+    //     def ordered = preferences.findAll { name, setting -> accepted.containsKey(name) }
+    //     try {
+    //         _verifyDevicePreferenceWrites(deviceId, ordered, changes, errors)
+    //     } catch (Exception ignored) {
+    //         ordered.each { name, setting ->
+    //             errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
+    //                 error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+    //         }
+    //     }
+    // }
+    if (saveAccepted) {
         try {
-            _verifyDevicePreferenceWrites(deviceId, ordered, changes, errors)
+            _verifyDevicePreferenceWrites(deviceId, nativeSettings, changes, errors)
         } catch (Exception ignored) {
-            ordered.each { name, setting ->
+            nativeSettings.each { name, setting ->
                 errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
                     error: 'Preference update or verification failed; inspect the device configuration before retrying.']
             }
@@ -4430,7 +4446,7 @@ def toolUpdateDevice(args) {
     _requireDeviceToolAccess(deviceId)
     def full = _fetchDeviceFullJson(deviceId)
     if (!(full?.device instanceof Map)) {
-        return [success: false, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
+        return [success: false, isError: true, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
                 note: "Read hub_get_device(mode='configuration') and retry when native device details are available."]
     }
     def prepared = _prepareDeviceUpdatePatch(args, deviceId, full)
@@ -5095,7 +5111,7 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
     }
 
     mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}) via native endpoints: ${changes.size()} changes, ${errors.size()} errors")
-    return [
+    def result = [
         success: errors.isEmpty(),
         device: deviceLabel,
         deviceId: deviceId,
@@ -5105,6 +5121,8 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
             ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}' (native)."
             : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}' (native)."
     ]
+    if (errors) result.isError = true
+    return result
 }
 
 // Validate that a room NAME exists before the bypass /device/updateRoom call, and RETURN the
@@ -5197,7 +5215,7 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List erro
     def recoveryErrors = errors == null ? [] : errors
     def fj = _fetchDeviceFullJson(deviceId)
     if (fj?.device == null) {
-        throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form")
+        throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form; native device id ${deviceId} was unavailable or could not be verified")
     }
     def body = _deviceConfigurationFormBody(deviceId, fj, fieldOverrides)
     hubInternalPostFormRaw("/device/update", body)
@@ -5255,17 +5273,17 @@ def toolCreateDevice(args) {
         def catalogText = hubInternalGet('/device/drivers')
         def catalog = catalogText ? new groovy.json.JsonSlurper().parseText(catalogText) : null
         if (!(catalog instanceof Map) || !(catalog.drivers instanceof List)) {
-            return [success: false, error: 'The native driver catalog is unavailable or invalid; no device create request sent.',
+            return [success: false, isError: true, error: 'The native driver catalog is unavailable or invalid; no device create request sent.',
                     note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
         }
         def matches = catalog.drivers.findAll { row -> row instanceof Map && row.id?.toString() == typeId }
         if (matches.size() != 1 || !(matches[0].type in ['sys', 'usr'])) {
-            return [success: false, error: "Could not resolve one supported native driver type for ${typeId}; no device create request sent.",
+            return [success: false, isError: true, error: "Could not resolve one supported native driver type for ${typeId}; no device create request sent.",
                     note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
         }
         driverType = matches[0].type.toString()
     } catch (Exception e) {
-        return [success: false, error: 'Hub call failed reading the driver catalog; no device create request sent.',
+        return [success: false, isError: true, error: 'Hub call failed reading the driver catalog; no device create request sent.',
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
     }
 
@@ -5279,13 +5297,13 @@ def toolCreateDevice(args) {
         // rather than escaping as an unstructured tool error.
         resp = respText ? new groovy.json.JsonSlurper().parseText(respText) : null
     } catch (Exception e) {
-        return [success: false, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
+        return [success: false, isError: true, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
     }
     // Vue's /device/createVirtual response identifies success by deviceId and omits success.
     if (resp?.deviceId != null && resp?.success == null) resp.put("success", true)
     if (resp?.success != true || resp?.deviceId == null) {
-        return [success: false, error: resp?.errorMessage ?: "Hub did not create a device for driver-type ${typeId}",
+        return [success: false, isError: true, error: resp?.errorMessage ?: "Hub did not create a device for driver-type ${typeId}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
     }
     def newId = resp.deviceId.toString()

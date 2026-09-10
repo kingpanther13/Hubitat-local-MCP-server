@@ -780,6 +780,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         result.success == false
         !result.changes.find { it.property == 'notes' }
         result.errors.find { it.property == 'notes' }?.error?.contains(field)
+        result.isError == true
 
         where:
         [bypass, row] << [[false, true], [
