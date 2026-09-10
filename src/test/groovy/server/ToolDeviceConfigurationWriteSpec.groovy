@@ -863,6 +863,53 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def 'unrelated form edit preserves #field=#original exactly in bypass=#bypass'() {
+        given:
+        def model = fixture()
+        model.device[field] = original
+        registerFixture(model, bypass)
+        def forms = []
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 30, boolean retry = false ->
+            def form = decodeForm(body)
+            forms << form
+            // Native omission preserves null; a posted blank stores an empty string.
+            model.device[field] = form.containsKey(field) ? form[field] : null
+            model.device.maxEvents = form.maxEvents.toInteger()
+            ''
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', maxEvents: 100])
+
+        then:
+        result.success == true
+        forms.size() == 1
+        model.device.maxEvents == 100
+        model.device[field] == original
+        original == null ? !forms[0].containsKey(field) : forms[0][field] == original
+
+        where:
+        [bypass, field, original] << [[false, true], ['notes', 'tags', 'zigbeeId', 'defaultIcon'], [null, '', 'native saved']].combinations()
+    }
+
+    @Unroll
+    def 'explicit blank override for #field remains in the form from original=#original'() {
+        given:
+        def model = fixture()
+        model.device[field] = original
+
+        when:
+        def form = decodeForm(script._deviceConfigurationFormBody('10', model, [(field): '']))
+
+        then:
+        form.containsKey(field)
+        form[field] == ''
+
+        where:
+        [field, original] << [['notes', 'tags', 'zigbeeId', 'defaultIcon'], [null, 'native saved']].combinations()
+    }
+
+    @Unroll
     def 'explicit room clear sends zero from original roomId=#roomId'() {
         given:
         def model = fixture()
@@ -900,6 +947,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         model.device.label = null
         model.device.defaultIcon = null
         model.device.notes = null
+        model.device.tags = null
         model.homeKitEnabled = false
         model.dashboards = []
         registerFixture(model, true)
@@ -915,11 +963,12 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        form.zigbeeId == ''
+        !form.containsKey('zigbeeId')
         !form.containsKey('roomId')
         form.label == ''
-        form.defaultIcon == ''
-        form.notes == ''
+        !form.containsKey('defaultIcon')
+        !form.containsKey('notes')
+        !form.containsKey('tags')
         form.dashboardIds == ''
         form.homeKitEnabled == 'false'
         form.meshEnabled == 'false'
