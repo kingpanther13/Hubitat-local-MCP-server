@@ -2313,7 +2313,7 @@ def toolUpdateLibraryCode(args) {
     // Fail-closed: backup-fetch failure (when needed) aborts the update, matching
     // toolUpdateItemCodeInner which calls backupItemSource() without try/catch.
     def backupFileName = null
-    def existingEntry = (atomicState.itemBackupManifest ?: [:])["library_${libraryId}"]
+    def existingEntry = (atomicState.itemBackupManifest ?: [:]).get("library_${libraryId}".toString())
     def skipBackup = (existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000)
 
     def versionFetchError = null

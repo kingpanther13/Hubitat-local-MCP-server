@@ -1189,13 +1189,15 @@ def helperMethod() { return "ok" }
                 sourceLength: SAMPLE_SOURCE.length()
             ]
         ]
-        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON.replace('"version":1', '"version":7') }
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content ->
             uploads << name
         }
+        def sentVersions = []
         script.metaClass.hubInternalPostJson = { String path, String body ->
-            [success: true, message: '', id: 42, version: 2]
+            sentVersions << new groovy.json.JsonSlurper().parseText(body).version
+            [success: true, message: '', id: 42, version: 8]
         }
 
         when:
@@ -1203,6 +1205,9 @@ def helperMethod() { return "ok" }
 
         then: 'no new backup upload occurred (dedup window held)'
         uploads == []
+        sentVersions == [7]
+        hubGet.calls.count { it.path == '/library/list/single/data/42' } == 1
+        atomicStateMap.itemBackupManifest.get('library_42').version == 1
 
         and: 'existing manifest entry was preserved (fileName + original timestamp unchanged)'
         atomicStateMap.itemBackupManifest['library_42'].fileName == 'mcp-backup-library-42.groovy'
@@ -1211,7 +1216,7 @@ def helperMethod() { return "ok" }
         and: 'update itself still succeeded'
         result.success == true
         result.libraryId == '42'
-        result.newVersion == 2
+        result.newVersion == 8
     }
 
     @spock.lang.Unroll
@@ -1228,11 +1233,13 @@ def helperMethod() { return "ok" }
                 sourceLength: SAMPLE_SOURCE.length()
             ]
         ]
-        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON.replace('"version":1', '"version":7') }
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        def sentVersions = []
         script.metaClass.hubInternalPostJson = { String path, String body ->
-            [success: true, message: '', id: 42, version: 2]
+            sentVersions << new groovy.json.JsonSlurper().parseText(body).version
+            [success: true, message: '', id: 42, version: 8]
         }
 
         when:
@@ -1240,6 +1247,9 @@ def helperMethod() { return "ok" }
 
         then:
         uploads == []
+        sentVersions == [7]
+        hubGet.calls.count { it.path == '/library/list/single/data/42' } == 1
+        atomicStateMap.itemBackupManifest.get('library_42').version == 1
         atomicStateMap.itemBackupManifest['library_42'].fileName == 'mcp-backup-library-42.groovy'
         atomicStateMap.itemBackupManifest['library_42'].timestamp == (1234567890000L - 60_000L)
         response.error == null
@@ -1247,7 +1257,7 @@ def helperMethod() { return "ok" }
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '42'
-        inner.newVersion == 2
+        inner.newVersion == 8
 
         where:
         useGateways << [true, false]
