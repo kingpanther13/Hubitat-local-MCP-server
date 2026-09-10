@@ -365,6 +365,7 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
     String key = deviceRead != null ? "${owner}:device:${deviceRead.id}".toString() :
         "${owner}:${query?.type ?: 'all'}:${query?.id ?: ''}".toString()
     Map job = null
+    String fetchId
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         NATIVE_LOG_SNAPSHOTS.entrySet().findAll { entry ->
             Map value = entry.value as Map
@@ -381,14 +382,16 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
             }
         }
         // Returning a continuation reserves its snapshot through terminal replay.
-        // Completed one-round reads can be evicted; their callers have no replay token.
+        // Completed one-round reads can be evicted after every active caller observes them.
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
-            def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v -> v.pending != true && v.replayProtected != true }
+            def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v ->
+                v.pending != true && v.replayProtected != true && ((v.readers ?: 0) as Integer) == 0
+            }
             if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
             else throw new IllegalStateException("Background read capacity is full; retry after existing snapshots expire.")
         }
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
-            String fetchId = java.util.UUID.randomUUID().toString()
+            fetchId = java.util.UUID.randomUUID().toString()
             NATIVE_LOG_SNAPSHOTS[key] = [at: now(), pending: true, fetchId: fetchId]
             if (deviceRead != null) {
                 NATIVE_LOG_SNAPSHOTS[key].work = deviceRead
@@ -396,7 +399,23 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
             }
             job = [key: key, owner: owner, fetchId: fetchId, query: query]
         }
+        def snapshot = NATIVE_LOG_SNAPSHOTS[key]
+        fetchId = snapshot.fetchId
+        snapshot.readers = ((snapshot.readers ?: 0) as Integer) + 1
     }
+    try {
+        return _observeHubReadSnapshot(key, fetchId, job, args)
+    } finally {
+        synchronized (NATIVE_LOG_SNAPSHOTS) {
+            def snapshot = NATIVE_LOG_SNAPSHOTS[key]
+            if (snapshot instanceof Map && snapshot.fetchId == fetchId) {
+                snapshot.readers = Math.max(0, ((snapshot.readers ?: 0) as Integer) - 1)
+            }
+        }
+    }
+}
+
+private Map _observeHubReadSnapshot(String key, String fetchId, Map job, Map args) {
     if (job != null) {
         try {
             runInMillis(200, "runNativeLogFetch", [overwrite: false, data: job])
@@ -414,7 +433,10 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
         long remaining
         synchronized (NATIVE_LOG_SNAPSHOTS) {
             def snapshot = NATIVE_LOG_SNAPSHOTS[key]
-            if (snapshot instanceof Map && snapshot.pending != true) {
+            if (!(snapshot instanceof Map) || snapshot.fetchId != fetchId) {
+                throw new IllegalStateException("Background read snapshot expired or was lost; start a fresh call.")
+            }
+            if (snapshot.pending != true) {
                 if (snapshot.error) {
                     NATIVE_LOG_SNAPSHOTS.remove(key)
                     if (snapshot.invalid == true) throw new IllegalArgumentException(snapshot.error.toString())
@@ -424,7 +446,7 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
             }
             remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
             if (remaining <= 0L) {
-                if (snapshot instanceof Map) snapshot.replayProtected = true
+                snapshot.replayProtected = true
                 return [state: "pending"]
             }
         }
@@ -467,7 +489,8 @@ def runNativeLogFetch(Map job = [:]) {
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         if (NATIVE_LOG_SNAPSHOTS[job.key]?.fetchId == job.fetchId) {
             NATIVE_LOG_SNAPSHOTS[job.key] = result + [at: now(), fetchId: job.fetchId, pending: false,
-                replayProtected: NATIVE_LOG_SNAPSHOTS[job.key].replayProtected == true]
+                replayProtected: NATIVE_LOG_SNAPSHOTS[job.key].replayProtected == true,
+                readers: NATIVE_LOG_SNAPSHOTS[job.key].readers ?: 0]
         }
     }
 }

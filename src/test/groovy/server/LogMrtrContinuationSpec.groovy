@@ -143,6 +143,75 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
     }
 
+    def "a worker result cannot be evicted before its foreground caller observes it"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        (0..<7).each { index ->
+            snapshots.put("pending-${index}".toString(), [at: timestamp, pending: true])
+        }
+        hubGet.register('/logs/past/json') { params -> '[]' }
+        Exception capacityFailure = null
+        Map sharedResult = null
+        RUN_IN_MILLIS_OVERRIDE.set({ List scheduled ->
+            runInMillisCalls << scheduled
+            if (scheduled[2].data.query.id == '42') {
+                script.runNativeLogFetch(scheduled[2].data as Map)
+                sharedResult = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
+                try {
+                    script._nativeLogSnapshot([type: 'app', id: '99'], [__reqT0: timestamp - 10000L])
+                } catch (IllegalStateException error) {
+                    capacityFailure = error
+                }
+            }
+        })
+
+        when:
+        def result = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
+
+        then:
+        capacityFailure?.message?.contains('Background read capacity is full')
+        sharedResult.state == 'ready'
+        result.state == 'ready'
+        result.text == '[]'
+        runInMillisCalls.size() == 1
+        hubGet.calls.size() == 1
+
+        when:
+        def next = script._nativeLogSnapshot([type: 'app', id: '99'], [__reqT0: timestamp - 10000L])
+
+        then:
+        next.state == 'pending'
+        runInMillisCalls.size() == 2
+        hubGet.calls.size() == 1
+        snapshots.size() == 8
+    }
+
+    def "a lost or replaced foreground snapshot fails without claiming replacement readers replacement=#replacement"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms ->
+            String key = runInMillisCalls[0][2].data.key
+            snapshots.remove(key)
+            if (replacement) snapshots.put(key, [at: timestamp, fetchId: 'replacement',
+                pending: false, text: 'newer data', readers: 2])
+        })
+
+        when:
+        script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
+
+        then:
+        def failure = thrown(IllegalStateException)
+        failure.message.contains('snapshot expired or was lost')
+        runInMillisCalls.size() == 1
+        hubGet.calls.empty
+        !replacement || snapshots.values().first().readers == 2
+
+        where:
+        replacement << [false, true]
+    }
+
     def "terminal native log replay retains its original snapshot under capacity pressure until expiry"() {
         given:
         def rows = ['2026-09-06 12:00:00.000\tERROR\tapp|42|Example|original']
