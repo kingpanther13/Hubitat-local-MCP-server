@@ -181,6 +181,39 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         creations == 1
     }
 
+    def 'virtual delete captures native label and preserves child lifecycle deletion'() {
+        given:
+        owned('77')
+
+        when:
+        def result = script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-77', confirm: true])
+
+        then:
+        1 * appExecutor.deleteChildDevice('mcp-77') >> { childDevicesList.clear() }
+        result.success == true
+        result.deviceId == '77'
+        result.deviceLabel == 'Native label'
+        hubGet.calls.any { it.path == '/device/fullJson/77' }
+        writes.empty
+    }
+
+    def 'virtual delete stops before lifecycle mutation when native identity is unavailable'() {
+        given:
+        owned('77')
+        readable = false
+
+        when:
+        def result = script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-77', confirm: true])
+
+        then:
+        0 * appExecutor.deleteChildDevice(_)
+        result.success == false
+        result.deviceId == '77'
+        result.error.contains('fullJson')
+        result.note
+        childDevicesList.size() == 1
+    }
+
     @Unroll
     def 'created device remains identifiable when #failure fails'() {
         given:
