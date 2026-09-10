@@ -163,7 +163,7 @@ class HealthMrtrSpec extends ToolSpecBase {
         assert token != null
 
         when:
-        def legs = (1..8).collect { call('hub_get_device_health', args, token) }
+        def legs = (1..8).collect { this.call('hub_get_device_health', args, token) }
         def result = mcpDriver.parseInner(legs.last())
 
         then:

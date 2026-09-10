@@ -2036,7 +2036,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         List getCurrentStates() { throw new RuntimeException('driver exploded') }
     }
 
-    def "a native state transport failure returns an explicit context error"() {
+    def "a native state transport failure marks partial context and retains healthy devices"() {
         given:
         def broken = new ThrowingStatesDevice(id: 5, label: 'Broken Driver', roomName: 'Den',
             capabilities: [[name: 'Switch']])
@@ -2046,9 +2046,10 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
 
         then:
-        result.success == false
-        result.error.toString().contains('5')
-        !result.containsKey('summary')
+        result.partial == true
+        result.count == 2
+        result.summary.contains('Device 5 (5, No room) (state unavailable) (capabilities unavailable)')
+        result.summary.contains('Fine (6, No room); switch=on')
     }
 
     @spock.lang.Unroll

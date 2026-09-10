@@ -185,34 +185,36 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.logs.size() == 1
     }
 
-    def "hub_get_logs rejects an unknown deviceId before hitting the hub"() {
-        given: 'no selected device with id 999'
+    def "hub_get_logs rejects a malformed deviceId before hitting the hub"() {
+        given:
         settingsMap.enableRead = true
         // If the tool ever called hubInternalGet, HubInternalGetMock would throw
         // (unstubbed), so the IllegalArgumentException below proves the pre-HTTP
         // validation fired.
 
         when:
-        script.toolGetHubLogs([deviceId: '999'])
+        script.toolGetHubLogs([deviceId: '../999'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Device not found')
+        ex.message.contains('deviceId')
+        hubGet.calls.empty
     }
 
     @spock.lang.Unroll
-    def "hub_get_logs via dispatch maps unknown-deviceId IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps malformed-deviceId IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
 
         when:
-        def response = mcpDriver.callTool('hub_get_logs', [deviceId: '999'])
+        def response = mcpDriver.callTool('hub_get_logs', [deviceId: '../999'])
 
         then:
         response.error != null
         response.error.code == -32602
-        response.error.message.contains('Device not found')
+        response.error.message.contains('deviceId')
+        hubGet.calls.empty
 
         where:
         useGateways << [true, false]

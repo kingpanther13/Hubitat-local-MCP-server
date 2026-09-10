@@ -12,6 +12,12 @@ class ToolNativeAccessSurfacesSpec extends ToolSpecBase {
         hubGet.register('/device/listWithCapabilities/json') {
             JsonOutput.toJson((1..3).collect { [id: it, label: "Native ${it}", capabilities: []] })
         }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..3).collect { id ->
+                [data: [id: id, name: "Native ${id}", lastActivity:
+                    id == 1 ? '2009-02-13T23:31:30.000Z' : (id == 2 ? '2009-02-11T23:31:30.000Z' : null)]]
+            }])
+        }
         (1..3).each { id ->
             hubGet.register("/device/fullJson/${id}") {
                 JsonOutput.toJson([device: [id: id, name: "Native ${id}", label: "Native ${id}",
@@ -38,7 +44,7 @@ class ToolNativeAccessSurfacesSpec extends ToolSpecBase {
         result.healthyDevices*.name == ['Native 1']
         result.staleDevices*.id == ['2']
         result.staleDevices[0].hoursAgo == 48.0d
-        !hubGet.calls.any { it.path == '/device/fullJson/3' } || bypass
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
 
         where:
         bypass << [false, true]
@@ -62,7 +68,7 @@ class ToolNativeAccessSurfacesSpec extends ToolSpecBase {
     def 'health inventory failure is explicit and preserves completed network diagnostics'() {
         given:
         nativeDevices()
-        hubGet.register('/device/fullJson/1') { throw new IOException('offline') }
+        hubGet.register('/hub2/devicesList') { throw new IOException('offline') }
         hubGet.register('/hub/networkTest/traceroute/1.1.1.1') { 'route output' }
         hubGet.register('/hub/networkTest/speedtest') { 'speed output' }
 

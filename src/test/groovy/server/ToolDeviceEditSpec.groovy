@@ -667,8 +667,10 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         then:
         result.success == true
         posted.contains('label=New+label')
-        posted.contains('defaultIcon=&')
-        posted.contains('notes=&') || posted.endsWith('notes=')
+        !decodeForm(posted).containsKey('defaultIcon')
+        !decodeForm(posted).containsKey('notes')
+        model.device.defaultIcon == null
+        model.device.notes == null
         !posted.contains('fallback-must-not-be-used')
     }
 

@@ -21,7 +21,7 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         then:
         response.error == null
         response.result.isError != true
-        mcpDriver.parseInner(response).logs[0].message == 'global diagnostic'
+        mcpDriver.parseInner(response).logs[0].message == 'dev|42|Unselected fixture|global diagnostic'
         !hubGet.calls.any { it.path.startsWith('/device/') }
 
         where:
@@ -43,7 +43,7 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         then:
         response.error == null
         response.result.isError != true
-        mcpDriver.parseInner(response).logs[0].message == 'scoped diagnostic'
+        mcpDriver.parseInner(response).logs[0].message == 'dev|42|Unselected fixture|scoped diagnostic'
         hubGet.calls*.path == ['/logs/past/json']
 
         where:

@@ -1624,13 +1624,21 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     // the thrown exception propagates out of the whole poll (mapped to a JSON-RPC error), so this
     // spec goes RED (the call throws instead of returning the per-device shape).
     def "multi-device: a device whose read throws degrades to readError while the other device still converges"() {
-        given: 'A throws on every read; B is at on -- any-mode must converge via B, A flagged readError'
+        given: 'both identities initially read off; A then fails while B turns on'
+        int aReads = 0
+        int bReads = 0
         def a = Spy(TestDevice)
         a.id = 780
         a.label = 'Faulting A'
         a.supportedAttributes = [[name: 'switch']]
-        a.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
-        def b = new TestDevice(id: 781, label: 'Healthy B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        a.getCurrentStates() >> {
+            if (++aReads == 1) return [[name: 'switch', value: 'off']]
+            throw new IllegalStateException("device removed mid-poll")
+        }
+        def b = Spy(TestDevice)
+        b.id = 781
+        b.label = 'Healthy B'
+        b.getCurrentStates() >> { [[name: 'switch', value: ++bReads == 1 ? 'off' : 'on']] }
         nativePollDevice(a)
         nativePollDevice(b)
 
@@ -1651,12 +1659,16 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     }
 
     def "multi-device timeout: a faulting device reports readError per-device; a healthy non-target is unaffected"() {
-        given: 'A throws every read; B is at off (a real non-target) -- all-mode times out'
+        given: 'A reads off at preflight then fails; B remains off -- all-mode times out'
+        int aReads = 0
         def a = Spy(TestDevice)
         a.id = 782
         a.label = 'Faulting A'
         a.supportedAttributes = [[name: 'switch']]
-        a.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
+        a.getCurrentStates() >> {
+            if (++aReads == 1) return [[name: 'switch', value: 'off']]
+            throw new IllegalStateException("device removed mid-poll")
+        }
         def b = new TestDevice(id: 783, label: 'NonTarget B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
         nativePollDevice(a)
         nativePollDevice(b)
@@ -1681,12 +1693,16 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     // timeout, not propagate the exception out of the whole poll. Without the try/catch the call
     // throws and this spec goes RED.
     def "single-device: a read that throws mid-poll times out with readError, does not propagate"() {
-        given: 'the device throws on every read'
+        given: 'the initial identity read succeeds, then state reads fail'
+        int reads = 0
         def device = Spy(TestDevice)
         device.id = 784
         device.label = 'Faulting Single'
         device.supportedAttributes = [[name: 'switch']]
-        device.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
+        device.getCurrentStates() >> {
+            if (++reads == 1) return [[name: 'switch', value: 'off']]
+            throw new IllegalStateException("device removed mid-poll")
+        }
         nativePollDevice(device)
 
         when:
@@ -1697,10 +1713,11 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         r.timedOut == true
         r.readError == true
         r.finalValue == null
+        reads > 1
     }
 
     def "single-device: a read that throws early then recovers still converges and flags readError"() {
-        given: 'read throws on poll 1, then reports on from poll 2 onward'
+        given: 'initial native identity reads off, poll 2 throws, then poll 3 recovers'
         def readCount = 0
         def device = Spy(TestDevice)
         device.id = 785
@@ -1708,7 +1725,8 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         device.supportedAttributes = [[name: 'switch']]
         device.getCurrentStates() >> {
             readCount++
-            if (readCount == 1) throw new IllegalStateException("transient read fault")
+            if (readCount == 1) return [[name: 'switch', value: 'off']]
+            if (readCount == 2) throw new IllegalStateException("transient read fault")
             return [[name: 'switch', value: 'on']]
         }
         nativePollDevice(device)

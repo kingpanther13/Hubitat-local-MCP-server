@@ -375,13 +375,12 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         def result = script.toolGetDevice(DEVICE_ID, 'configuration')
 
         then:
-        result.id == DEVICE_ID
-        result.name == null
-        result.label == "Device ${DEVICE_ID}"
-        result.preferenceRead.status == 'unavailable'
-        result.preferenceRead.reason
-        result.deviceInfoRead.status == 'unavailable'
-        result.editableFields.every { !it.writable }
+        result.success == false
+        result.isError == true
+        result.error.contains("/device/fullJson/${DEVICE_ID}")
+        result.note
+        !result.containsKey('editableFields')
+        !result.containsKey('preferences')
     }
 
     def "native unset storage does not promote the UI default into a saved #kind preference"() {
