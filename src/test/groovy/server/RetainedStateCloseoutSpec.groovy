@@ -161,7 +161,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def backing = new FailingManifest()
         backing.itemBackupManifest = [app_99: entry('99')]
         backing.failAt = 3 // Initial fixture, pending marker, then failed unlink.
-        script.binding.setVariable('atomicState', backing)
+        script.metaClass.getAtomicState = { -> backing }
         List deleted = []
         script.metaClass.deleteHubFile = { String name -> deleted << name }
 
