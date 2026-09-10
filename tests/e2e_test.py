@@ -3413,6 +3413,10 @@ class TestRunner:
             enabled = next(row for row in configuration()["editableFields"] if row["name"] == "enabled")
             assert enabled.get("value") is False, f"Configuration read lost the disabled value: {enabled}"
         finally:
+            primary_error = sys.exc_info()[1]
+            if primary_error is not None:
+                print(f"    CONFIGURATION_PRIMARY_FAILURE {profile['path']} "
+                      f"(failure op {self._last_op_str(primary_error)}): {primary_error}")
             errors = []
             if enabled_dirty:
                 try:
