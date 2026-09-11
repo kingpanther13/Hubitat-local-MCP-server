@@ -12635,6 +12635,9 @@ class TestRunner:
             return
 
         def same(key, observed, wanted):
+            # A field the hub reports as unset is at baseline when the baseline is the empty value.
+            if observed is None and wanted in (None, False, "", []):
+                return True
             if key == "tags":
                 observed = [t.strip() for t in (observed.split(",") if isinstance(observed, str) else observed or []) if t.strip()]
             if key in ("room", "notes", "defaultIcon", "zigbeeId", "deviceNetworkId", "name") and observed is None:

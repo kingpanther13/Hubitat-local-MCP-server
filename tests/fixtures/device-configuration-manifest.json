@@ -8,8 +8,8 @@
       "label": "BAT_E2E_KEEP_Configuration_Child",
       "authorized": true,
       "canonical": {
-        "name": null,
-        "deviceNetworkId": null,
+        "name": "E2E_PERM_Configuration",
+        "deviceNetworkId": "mcp-virtual-E2E-PERM-Configuration-Child",
         "zigbeeId": null
       }
     },
@@ -24,9 +24,9 @@
         }
       },
       "canonical": {
-        "name": null,
-        "deviceNetworkId": null,
-        "zigbeeId": null
+        "name": "E2E_PERM_Configuration",
+        "deviceNetworkId": "6e66190d-724f-4a21-8d77-bad638f216ad",
+        "zigbeeId": "0200000000006859"
       }
     },
     {
@@ -40,9 +40,9 @@
         }
       },
       "canonical": {
-        "name": null,
-        "deviceNetworkId": null,
-        "zigbeeId": null
+        "name": "E2E_PERM_Configuration",
+        "deviceNetworkId": "e2e-perm-configuration-standalone-bypass",
+        "zigbeeId": "0200000000006860"
       }
     }
   ],
