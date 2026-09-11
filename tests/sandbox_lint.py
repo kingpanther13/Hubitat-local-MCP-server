@@ -72,6 +72,17 @@ VERSION_SOURCES = {
 # Anti-pattern rules
 # ---------------------------------------------------------------------------
 
+# Every call shape that hands a path literal to the hub's local HTTP client, matched up to (not
+# including) the path literal's opening quote: the hubInternal* client entry points, the
+# _hubRequest core (path is its SECOND argument, after the method), and the path-forwarding
+# wrappers around them. Both path-sensitive rules anchor on it (SANDBOX-016's querystring check
+# and the device-tool access gate's endpoint match), and check_native_request_wrappers derives
+# the wrapper inventory from the source so a new wrapper cannot silently fall outside either.
+NATIVE_REQUEST_PATH_CALL = (
+    r"(?:(?:hubInternal\w*|_radioGet(?:Safe)?|_radioPost|_modePost)\(\s*"
+    r"|_hubRequest\(\s*['\"][A-Z]+['\"]\s*,\s*)"
+)
+
 RULES = [
     {
         # Match both `getClass()` invocations and bare property-access form
@@ -195,7 +206,7 @@ RULES = [
         # covered by the RUNTIME guard: '?' after an interpolation, a variable-built path, a
         # direct _hubRequest call.
         "id": "SANDBOX-016",
-        "pattern": r"""(?:hubInternal\w*|_radioGet(?:Safe)?|_radioPost|_modePost)\(\s*(?:"[^"$]*\?|'[^'$]*\?)""",
+        "pattern": NATIVE_REQUEST_PATH_CALL + r"""(?:"[^"$]*\?|'[^'$]*\?)""",
         "message": "Querystring embedded in a hub-request PATH. The platform client escapes the '?' into the literal path -- exact hub routes 404 and wildcard routes silently swallow it. Pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]), and do NOT pre-encode the values (the query map encodes them; pre-encoding double-encodes).",
         "severity": "error",
         "raw": True,
@@ -2898,10 +2909,11 @@ DEVICE_NATIVE_ACCESS_TOKENS = (
     "_loadContextResourcePopulation(",
 )
 # Endpoint paths live inside string literals, which the body scan blanks; they are matched on a
-# comments-blanked copy of the body instead, and only as the argument of a native call
-# (hubInternal*/_radioGet), so a path named in a comment or a log message never counts.
+# comments-blanked copy of the body instead, and only as the path argument of a native request
+# call (NATIVE_REQUEST_PATH_CALL: hubInternal*, _hubRequest and every path-forwarding wrapper),
+# so a path named in a comment or a log message never counts.
 DEVICE_NATIVE_ENDPOINT_PATHS = ("/device/", "updatePingDevice")
-_NATIVE_CALL_ARG = r"(?:hubInternal\w*|_radioGet)\(\s*['\"]"
+_NATIVE_CALL_ARG = NATIVE_REQUEST_PATH_CALL + r"['\"]"
 
 
 def _device_native_tokens(body_code: str, body_strings: str) -> list[str]:
@@ -3093,9 +3105,172 @@ DEVICE_GATE_SELF_TEST_CASES = [
         {"device-tool-access-gate-missing"},
     ),
     (
+        "endpoint name only in a message string, no native call -- must-not-catch (pins the call anchor)",
+        {"libraries/x.groovy": 'def toolPingNote(args) {\n    log.warn("updatePingDevice is gone; /device/ping too")\n    return [ok: true]\n}\n'},
+        set(),
+    ),
+    (
+        "radio endpoint reached through the non-throwing wrapper without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolPingDevice(args) {\n    return _radioGetSafe("/hub/zigbee/updatePingDevice/${args.id}/true")\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "device endpoint reached through the request core without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolPokeDevice(args) {\n    return _hubRequest(\'GET\', "/device/fullJson/${args.id}")\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
         "stale exemption (exempt tool present but reaches no native endpoint) -- must-catch",
         {"libraries/x.groovy": 'def toolListHubDrivers(args) {\n    return [drivers: []]\n}\n'},
         {"device-tool-access-gate-stale-exemption"},
+    ),
+]
+
+
+# Path-forwarding wrappers the anchor deliberately does NOT read: name -> why a caller-supplied
+# path literal can never reach the hub through them. Every entry is checked for staleness.
+NATIVE_WRAPPER_UNANCHORED = {
+    "_deleteItemViaEndpoint": "path is its third argument and toolDeleteItem fixes it to the app/driver code-editor delete endpoints; no caller-supplied literal reaches it",
+}
+
+_NATIVE_WRAPPER_DECL = re.compile(
+    r"^(?:(?:private|protected|public|static)\s+)*(?:def|\w+(?:<[^>]*>)?)\s+(\w+)\s*\(([^)]*)\)\s*\{", re.M
+)
+# The request core and its client entry points: the roots every wrapper is derived from.
+_NATIVE_REQUEST_ROOTS = r"hubInternal\w*|_hubRequest"
+
+
+def _native_wrapper_bodies(src: str) -> list[tuple[str, int, list[str], str]]:
+    """(name, 1-based line, parameter names, comments-blanked body) for every top-level function."""
+    out: list[tuple[str, int, list[str], str]] = []
+    code = _blank_noncode(src)
+    strings = _blank_comments(src)
+    for m in _NATIVE_WRAPPER_DECL.finditer(code):
+        params = [p.strip() for p in m.group(2).split(",") if p.strip()]
+        names = [re.split(r"\s*=", p)[0].split()[-1] for p in params]
+        i = m.end() - 1
+        depth = 0
+        j = i
+        while j < len(code):
+            if code[j] == "{":
+                depth += 1
+            elif code[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out.append((m.group(1), code.count("\n", 0, m.start()) + 1, names, strings[i:j]))
+    return out
+
+
+def check_native_request_wrappers(src_override: dict[str, str] | None = None) -> list[dict]:
+    """Derive the native-request wrapper inventory from the source and hold it against
+    NATIVE_REQUEST_PATH_CALL. A wrapper is any function that forwards one of its own parameters
+    as an argument of hubInternal*/_hubRequest or of an already-derived wrapper (to a fixed
+    point, so a wrapper of a wrapper counts). Each one must be recognised by the anchor with
+    the path in its real argument position -- probed by matching the anchor against
+    `name(<placeholder args>, <quote>` -- or carry a NATIVE_WRAPPER_UNANCHORED reason:
+      (A) unrecognised, no reason -> rule "native-wrapper-unanchored" (an endpoint reached
+          through it is invisible to SANDBOX-016 and to the device-tool access gate).
+      (B) a reason for a function that is not a wrapper (or no longer exists)
+          -> rule "native-wrapper-stale-exemption".
+    Ships with must-catch + must-not-catch fixtures (NATIVE_WRAPPER_SELF_TEST_CASES).
+    """
+    findings: list[dict] = []
+    if src_override is not None:
+        sources = src_override
+    else:
+        sources = {rel: (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+                   for rel in ["hubitat-mcp-server.groovy", *_device_gate_libraries()]}
+    functions: list[tuple[str, str, int, list[str], str]] = []
+    for rel, src in sources.items():
+        functions.extend((rel, *fn) for fn in _native_wrapper_bodies(src))
+    # callee name pattern -> the argument position its path occupies
+    known: list[tuple[str, int]] = [(r"hubInternal\w*", 0), (r"_hubRequest", 1)]
+    wrappers: dict[str, tuple[str, int, int]] = {}  # name -> (file, line, path param index)
+    grew = True
+    while grew:
+        grew = False
+        for rel, name, line, params, body in functions:
+            if name in wrappers or re.fullmatch(_NATIVE_REQUEST_ROOTS, name):
+                continue
+            for idx, param in enumerate(params):
+                # The parameter sits in the callee's PATH position, bare or opening an interpolated
+                # path. A path literal with the parameter appended stays visible to the rules
+                # (the literal is in this body), so it is not forwarding.
+                if any(re.search(r"\b" + callee + r"\(\s*" + r"(?:[^(),\n]*,\s*)" * pos
+                                 + r"(?:\"\$\{)?" + re.escape(param) + r"\b", body)
+                       for callee, pos in known):
+                    wrappers[name] = (rel, line, idx)
+                    known.append((re.escape(name), idx))
+                    grew = True
+                    break
+    for name, (rel, line, idx) in sorted(wrappers.items()):
+        if name in NATIVE_WRAPPER_UNANCHORED:
+            continue
+        probe = name + "(" + "'x', " * idx + '"'
+        if re.fullmatch(NATIVE_REQUEST_PATH_CALL + r"['\"]", probe):
+            continue
+        findings.append({
+            "file": rel, "line": line, "rule": "native-wrapper-unanchored",
+            "severity": "error", "source": "",
+            "message": (f"{name} forwards its argument {idx + 1} as a hub request path but "
+                        "NATIVE_REQUEST_PATH_CALL does not read it there; an endpoint reached through it "
+                        "is invisible to SANDBOX-016 and to the device-tool access gate. Add it to the "
+                        "anchor (path in that position) or to NATIVE_WRAPPER_UNANCHORED with the reason"),
+        })
+    present = {fn[1] for fn in functions}
+    for name in sorted(NATIVE_WRAPPER_UNANCHORED):
+        if src_override is not None and name not in present:
+            continue
+        if name not in wrappers:
+            findings.append({
+                "file": "tests/sandbox_lint.py", "line": 1, "rule": "native-wrapper-stale-exemption",
+                "severity": "error", "source": "",
+                "message": f"NATIVE_WRAPPER_UNANCHORED lists {name}, which forwards no hub request path (or no longer exists); remove the entry",
+            })
+    return findings
+
+
+NATIVE_WRAPPER_SELF_TEST_CASES = [
+    # (description, {file: groovy source}, expected_rule_codes)
+    (
+        "anchored wrappers, one forwarding through the other -- must-not-catch",
+        {"libraries/x.groovy": 'private _radioGetSafe(String path, Map query = null) {\n    return _radioGet(path, query)\n}\n'
+                               'private _radioGet(String path, Map query = null) {\n    return hubInternalGet(path, query)\n}\n'},
+        set(),
+    ),
+    (
+        "new wrapper the anchor does not know -- must-catch",
+        {"libraries/x.groovy": 'private _zigbeeGet(String path) {\n    return hubInternalGet(path)\n}\n'},
+        {"native-wrapper-unanchored"},
+    ),
+    (
+        "wrapper of a wrapper, forwarding an interpolated path -- must-catch (transitive)",
+        {"libraries/x.groovy": 'private _pingGet(String p) {\n    return _radioGetSafe("${p}/true")\n}\n'
+                               'private _radioGetSafe(String path) {\n    return _radioGet(path)\n}\n'
+                               'private _radioGet(String path) {\n    return hubInternalGet(path)\n}\n'},
+        {"native-wrapper-unanchored"},
+    ),
+    (
+        "anchored name whose path is not where the anchor reads it -- must-catch",
+        {"libraries/x.groovy": 'private _modePost(Map body, String path) {\n    return hubInternalPostJson(path, body.toString())\n}\n'},
+        {"native-wrapper-unanchored"},
+    ),
+    (
+        "core entry point forwarding to the request core with the path second -- must-not-catch",
+        {"hubitat-mcp-server.groovy": 'def hubInternalGet(String path, Map query = null) {\n    _hubRequest(\'GET\', path, [query: query])\n}\n'},
+        set(),
+    ),
+    (
+        "documented unanchored wrapper -- must-not-catch",
+        {"libraries/x.groovy": 'private Map _deleteItemViaEndpoint(String type, String idParam, String deletePath, args) {\n    return hubInternalGet("${deletePath}${args.id}")\n}\n'},
+        set(),
+    ),
+    (
+        "stale exemption (documented wrapper present but forwards no path) -- must-catch",
+        {"libraries/x.groovy": 'private Map _deleteItemViaEndpoint(String type, args) {\n    return [ok: true]\n}\n'},
+        {"native-wrapper-stale-exemption"},
     ),
 ]
 
@@ -3111,6 +3286,23 @@ def _run_device_gate_self_test() -> int:
             failures += 1
             print(
                 f"DEVICE-GATE-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}"
+            )
+    return failures
+
+
+def _run_native_wrapper_self_test() -> int:
+    failures = 0
+    for i, (desc, src, expected_codes) in enumerate(NATIVE_WRAPPER_SELF_TEST_CASES, start=1):
+        findings = check_native_request_wrappers(src_override=src)
+        actual_codes = {f["rule"] for f in findings}
+        if actual_codes != expected_codes:
+            failures += 1
+            for f in findings:
+                print(format_finding(f))
+            print(
+                f"NATIVE-WRAPPER-SELF-TEST FAIL [{i}] {desc}\n"
                 f"  expected codes: {sorted(expected_codes)}\n"
                 f"  actual codes:   {sorted(actual_codes)}"
             )
@@ -4244,6 +4436,8 @@ def run_self_test() -> int:
 
     # Device-tool access gate placement: must-catch / must-not-catch fixtures.
     failures += _run_device_gate_self_test()
+    # Native-request wrapper inventory: must-catch / must-not-catch fixtures.
+    failures += _run_native_wrapper_self_test()
 
     # BP20 library file-scope block-comment guard: must-catch / must-not-catch fixtures.
     failures += _run_tool_guide_library_pointer_self_test()
@@ -4264,6 +4458,7 @@ def run_self_test() -> int:
         + len(ENVELOPE_PARITY_SELF_TEST_CASES)
         + len(READ_WRITE_SPLIT_SELF_TEST_CASES)
         + len(DEVICE_GATE_SELF_TEST_CASES)
+        + len(NATIVE_WRAPPER_SELF_TEST_CASES)
         + LIBRARY_POINTER_FIXTURES
         + BLOCK_COMMENT_FIXTURES
         + SCHEMA_PROVENANCE_FIXTURES
@@ -4277,6 +4472,7 @@ def run_self_test() -> int:
         f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity, "
         f"{len(READ_WRITE_SPLIT_SELF_TEST_CASES)} read-write-split, "
         f"{len(DEVICE_GATE_SELF_TEST_CASES)} device-tool-access-gate, "
+        f"{len(NATIVE_WRAPPER_SELF_TEST_CASES)} native-request-wrapper, "
         f"{LIBRARY_POINTER_FIXTURES} tool-guide-library-pointer, "
         f"{BLOCK_COMMENT_FIXTURES} library-block-comment, "
         f"{SCHEMA_PROVENANCE_FIXTURES} mcp-schema-provenance)."
@@ -5201,6 +5397,10 @@ def main() -> int:
     # Authorization chokepoint: a device tool that reaches a native per-device endpoint
     # must gate at entry (or carry a documented exemption), so a new tool cannot forget it.
     all_findings.extend(check_device_tool_access_gate())
+
+    # The gate and SANDBOX-016 only see a path handed to a call they recognise: hold the anchor
+    # against the wrapper inventory derived from the source, so a new wrapper cannot hide one.
+    all_findings.extend(check_native_request_wrappers())
 
     # Issue #209/#250 lockstep: every #include'd library must have a libraries/ file + a
     # build-bundle.py LIBS entry, so a broken/undelivered library fails CI here instead of
