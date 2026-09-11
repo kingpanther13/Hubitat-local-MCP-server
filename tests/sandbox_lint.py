@@ -4822,14 +4822,44 @@ def check_sandbox_map_subscripts(
                 yield pos, token
             depth += (token in "([{") - (token in ")]}")
 
-    def assignment_expressions(body: str):
+    def assignment_records(body: str):
         # Keep multiline literals together and include their property/index/
         # method suffixes: the initializer result may differ from its prefix.
         for assignment in assignment_re.finditer(body):
             tail = body[assignment.end():]
             end = next((pos for pos, token in outer_expression_tokens(tail)
                         if token in "\n;,)]}"), len(tail))
-            yield assignment[1], tail[:end].strip()
+            yield assignment[1], tail[:end].strip(), assignment.start()
+
+    def assignment_expressions(body: str):
+        for dest, expression, _ in assignment_records(body):
+            yield dest, expression
+
+    def is_list_expression(expression: str) -> bool:
+        expression = expression.strip()
+        while expression.startswith("(") and close_delimiter(expression, 0, "(", ")") == len(expression) - 1:
+            expression = expression[1:-1].strip()
+        if expression.startswith("[") and close_delimiter(expression, 0, "[", "]") == len(expression) - 1:
+            return not is_map_literal(expression)
+        return bool(re.match(r"new\s+(?:ArrayList|LinkedList|CopyOnWriteArrayList)\b", expression)
+                    or re.search(r"\bas\s+List\b$", expression))
+
+    def list_at(records, body: str, receiver: str, pos: int) -> bool:
+        # A local can change between Map and List within one method, so the
+        # receiver's type at a subscript is the latest preceding assignment to
+        # it, not the method-wide inference. Only a provable List (literal,
+        # constructor, cast) at the same or an outer brace depth counts: a
+        # branch-local reassignment does not prove the type after the branch,
+        # and a non-literal reassignment keeps the Map classification.
+        depth = body.count("{", 0, pos) - body.count("}", 0, pos)
+        latest = None
+        for dest, expression, start in records:
+            if dest != receiver or start >= pos or (latest is not None and start < latest[1]):
+                continue
+            if body.count("{", 0, start) - body.count("}", 0, start) > depth:
+                continue
+            latest = (expression, start)
+        return latest is not None and is_list_expression(latest[0])
 
     def is_map_expression(expression: str, maps: set[str], returns: set[str]) -> bool:
         expression = expression.strip()
@@ -4993,6 +5023,7 @@ def check_sandbox_map_subscripts(
             maps = explicit_maps | inferred_maps(
                 params, body, map_returns[return_scope(path)]
             )
+            records = list(assignment_records(body))
             bounded = []
             # A literal list is a finite key set, but only if its actual values
             # exclude measured collisions. Never exempt a whole helper by name.
@@ -5033,7 +5064,7 @@ def check_sandbox_map_subscripts(
 
             for literal in literal_re.finditer(raw_body):
                 receiver, key = literal.group("receiver", "key")
-                if receiver not in maps:
+                if receiver not in maps or list_at(records, body, receiver, literal.start()):
                     continue
                 if not body[literal.start():].startswith(receiver):
                     continue
@@ -5050,7 +5081,7 @@ def check_sandbox_map_subscripts(
                 # must not turn map["prefix${id}"] into an apparent map[id].
                 if not subscript_re.fullmatch(raw_body[access.start():access.end()]):
                     continue
-                if receiver not in maps:
+                if receiver not in maps or list_at(records, body, receiver, access.start()):
                     continue
                 writing = writes_subscript(body, access.start(), access.end())
                 if receiver in explicit_maps and not writing:

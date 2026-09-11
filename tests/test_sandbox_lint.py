@@ -774,6 +774,33 @@ def test_list_initializer_and_alias_are_not_inferred_as_maps(expression):
     assert sandbox_map_findings(source) == []
 
 
+@pytest.mark.parametrize("map_first", [True, False])
+def test_map_guard_resolves_receiver_type_from_latest_preceding_assignment(map_first):
+    map_phase = " rows = [:]\n rows[key] = 1\n"
+    list_phase = " rows = []\n def first = rows[index]\n"
+    source = ("def read(String key, int index) {\n def rows\n"
+              + (map_phase + list_phase if map_first else list_phase + map_phase)
+              + " return rows\n}")
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [4 if map_first else 6]
+    assert "rows[key]" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("reassignment", [
+    "if (flag) { rows = [] }",
+    "rows = rows.findAll { true }",
+    "rows = flag ? [] : [:]",
+])
+def test_map_guard_keeps_map_classification_unless_a_list_is_proven(reassignment):
+    source = f"""def read(String key, boolean flag) {{
+ def rows = [:]
+ {reassignment}
+ return rows[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [4]
+
+
 @pytest.mark.parametrize("expression", [
     "[[id: 1]]", "[flag ? left : right]", "[entry?.label ?: fallback]",
 ])
