@@ -1660,6 +1660,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.3.0** - fix: expire retained request state reliably; fix: use native device operations while honoring the allowlist. PRs: [#417](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/417), [#420](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/420)
 - **v4.2.7** - fix: preserve sandbox Map keys across tool boundaries; feat: expose device preferences and repair device diagnostics. PRs: [#416](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/416), [#411](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/411)
 - **v4.2.6** - build(deps): bump httpx2 from 2.10.0 to 2.12.0 in /tests in the pip group across 1 directory ([#413](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/413), @app/dependabot); refactor: keep legacy device captures in memory; fix: reduce request metadata and terminal state overhead. PRs: [#413](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/413), [#414](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/414), [#412](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/412)
 - **v4.2.5** - fix: checkpoint MRTR batches and preserve continuation results. PRs: [#410](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/410)
