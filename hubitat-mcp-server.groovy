@@ -1451,14 +1451,14 @@ def _resourceCatalog() {
             uri: "hubitat://context-summary",
             name: "context-summary",
             title: "Live Context Summary",
-            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. Truncates on very large inventories (with an explicit marker); the paginated/filtered tool form is hub_list_devices format='context'.",
+            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. Served from one bulk hub read: attribute values are strings with NO unit suffix; devices the bulk read does not cover are read one by one up to a cap of 20 and the rest are marked '(state unavailable)'. Truncates on very large inventories (with an explicit marker). hub_list_devices format='context' is the paginated/filtered form and differs: it reads each page's devices natively and appends units to values.",
             mimeType: "text/plain"
         ]
         entries << [
             uri: "hubitat://context",
             name: "context",
             title: "Live Context (JSON)",
-            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Device records truncate on very large inventories (truncated: true + note); the paginated tool form is hub_list_devices format='context'.",
+            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Served from one bulk hub read: attribute values are strings (no units, no native number typing); devices the bulk read does not cover are read one by one up to a cap of 20 and the rest carry metadataUnavailable: true. Device records truncate on very large inventories (truncated: true + note). hub_list_devices format='context' is the paginated/filtered form and differs: per-page native reads with unit suffixes.",
             mimeType: "application/json"
         ]
     }
@@ -1835,7 +1835,7 @@ def _budgetAwareTools() {
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
-            "hub_get_device", "hub_list_devices"] as Set
+            "hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -1854,13 +1854,15 @@ def _mrtrWriteTools() {
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices"] as Set
+            "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
+            "hub_get_device_health"] as Set
 }
 
-private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices"] as Set }
+private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set }
 
 private def _executeWithDeviceReadContext(tool, Map args, Map context) {
     Map previous = deviceReadContext
+    if (context != null) context.outerTool = tool?.toString()
     deviceReadContext = context
     try { return executeTool(tool, args) }
     finally { deviceReadContext = previous }
@@ -2930,12 +2932,14 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         // This cap cannot guarantee completion within a client's retry limit.
         if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
             if (continuation.kind?.toString() == "slow_read") {
-                // Nothing was committed: the read only ever observed its background fetch,
-                // which keeps running and publishes to the cache when it lands.
+                // The observer cannot cancel its background work, including an optional
+                // health-check LED blink. A terminal timeout must not encourage duplicate probes.
                 def readCapped = [
                     success: false, isError: true, status: "slow_read_timeout", tool: leaf,
                     error: "The ${leaf} read did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
-                    note: _mrtrDeviceReadTools().contains(leaf) ?
+                    note: leaf == "hub_get_device_health" ?
+                        "The health check may still be running, including any requested identify LED blink. Do not automatically retry: that starts another health check. This requestState only replays this timeout. Wait for the hub's probes to settle before deciding whether to run fewer probes." :
+                        _mrtrDeviceReadTools().contains(leaf) ?
                         "No hub state was changed. The background device read may still be running. Start a fresh call with a smaller selection; if this repeats, inspect the device page and hub performance." :
                         "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
@@ -3165,8 +3169,10 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.expiresAt = rec.finishedAt + (readLeaf ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
             // The replay re-reads the cached snapshot, so the record must not outlive it:
             // clock the read TTL from when that snapshot was fetched, not from finishedAt.
-            def fetchedAt = (readLeaf && result instanceof Map && result.snapshot instanceof Map)
-                ? result.snapshot.fetchedAt : null
+            def fetchedAt = readLeaf ? originalRec.readSnapshotFetchedAt : null
+            if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map && result.snapshot instanceof Map) {
+                fetchedAt = result.snapshot.fetchedAt
+            }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
             }
@@ -3337,8 +3343,12 @@ private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     String leaf = rec.leafTool?.toString()
     if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
     if (leaf == "hub_import_native_app") return _mrtrImportNativeAppSlice(rec, executionArgs)
-    return _executeWithDeviceReadContext(rec.outerTool, executionArgs,
-        rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null)
+    Map context = rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null
+    def result = _executeWithDeviceReadContext(rec.outerTool, executionArgs, context)
+    // Execution-local provenance bounds terminal retention without adding response fields
+    // or copying the snapshot payload into persisted continuation records.
+    if (context?.fetchedAt instanceof Number) rec.readSnapshotFetchedAt = context.fetchedAt
+    return result
 }
 
 private Map _mrtrControl(String kind, Map checkpoint) {
@@ -3713,7 +3723,7 @@ private def _immutableToolMetadata(value) {
 private def _toolMetadataPut(String key, value) {
     def immutable = _immutableToolMetadata(value)
     synchronized (TOOL_METADATA_CACHE) {
-        if (!TOOL_METADATA_CACHE.containsKey(key)) TOOL_METADATA_CACHE[key] = immutable
+        if (!TOOL_METADATA_CACHE.containsKey(key)) TOOL_METADATA_CACHE.put(key, immutable)
         return TOOL_METADATA_CACHE[key]
     }
 }
@@ -4945,7 +4955,7 @@ private Map _toolCatalogIndexes() {
         String name = tool.name as String
         names << name
         def req = tool?.inputSchema?.required
-        if (req instanceof List && !req.isEmpty()) required[name] = req.collect { it as String }
+        if (req instanceof List && !req.isEmpty()) required.put(name, req.collect { it as String })
     }
     return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
 }
@@ -5964,6 +5974,76 @@ def hubBaseUri() { "http://127.0.0.1:8080" }
 // large app/driver/library save+compile) can legitimately take minutes.
 def hubReadTimeoutSec() { 30 }
 def hubWriteTimeoutSec() { 420 }
+
+// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
+// as {key, data:{id,name,...}, children:[...]}. Retain identity plus the per-node activity, room,
+// disabled and currentStates fields (present on 2.5.1.181+; each is copied only when the node
+// carries the key, so absence stays distinguishable from an explicit null). currentStates rows
+// are {key, value} -- string values, no units or types -- as the Devices page consumes them.
+// `name` there is the user-facing label (the driver name is `secondaryName`).
+private List _flattenHub2DeviceTree(nodes, List acc = null) {
+    // A non-List at the TOP level means the contract moved -- return null so the caller raises it,
+    // rather than an empty list that would read as "this hub has no devices". Nested `children`
+    // legitimately arrive absent, so those recurse into the accumulator.
+    if (!(nodes instanceof List)) return acc
+    if (acc == null) acc = []
+    // A node that is not a Map is contract drift. Skipping it would hand back a SHORTER inventory
+    // that reads as authoritative -- and since an empty inventory now means "this hub has no
+    // devices", devices:[null] would read as an empty hub. Fail the whole read instead; the caller
+    // reports "shape" and callers of THAT keep their existing behaviour for an unreadable source.
+    boolean malformed = false
+    nodes.each { node ->
+        if (!(node instanceof Map)) { malformed = true; return }
+        def data = node.data
+        // A node without a data.id is the same drift as a non-map node: skipping it would return
+        // a SHORTER list that still reads as authoritative (the live tree carries an id on every
+        // node, container or leaf).
+        if (!(data instanceof Map) || data.id == null) { malformed = true; return }
+        def record = [id: data.id, label: data.name]
+        ['lastActivity', 'roomId', 'roomName', 'disabled', 'currentStates'].each { key -> if (data.containsKey(key)) record.put(key, data.get(key)) }
+        acc << record
+        // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
+        // discarding that let a bad node nested under a valid parent produce a short list that
+        // still read as authoritative -- the exact failure the top-level check exists to stop.
+        // An absent `children` is not malformed: the recursion returns the accumulator unchanged.
+        if (_flattenHub2DeviceTree(node.children, acc) == null) malformed = true
+    }
+    if (malformed) {
+        mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a node that is not a map or has no data.id -- treating the inventory as unreadable rather than returning a short list")
+        return null
+    }
+    return acc
+}
+
+def _parseSinceArg(since) {
+    if (since instanceof Number) {
+        return new Date(since.toLong())
+    }
+    def s = since.toString().trim()
+    if (s.isEmpty()) return null
+    if (s.isLong()) return new Date(s.toLong())
+    // Z means UTC -- swap it for the equivalent numeric offset so the offset-bearing
+    // formats below interpret the wall-clock as UTC rather than hub-local.
+    if (s.endsWith("Z")) s = s.substring(0, s.length() - 1) + "+0000"
+    def formats = [
+        "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
+        "yyyy-MM-dd'T'HH:mm:ssZ",       // no millis, offset:    2026-06-23T10:00:00-0600
+        // Colon-bearing offsets (2026-06-23T10:00:00-06:00) -- the XXX form
+        // formatLastActivity emits, so a lastActivity value round-trips into
+        // changedSince on a non-UTC hub.
+        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+        "yyyy-MM-dd'T'HH:mm:ssXXX",
+    ]
+    // NOTE: Date.parse() is backed by a lenient SimpleDateFormat, so a structurally-valid
+    // but out-of-range field (e.g. month 13) parses to a rolled-over date rather than
+    // failing here -- a malformed bookmark shifts the window instead of erroring. Callers
+    // should round-trip the emitted 'date'/'sinceTimestamp' strings, which are always valid.
+    for (fmt in formats) {
+        // probe-parse: any exception means this format didn't match -- try the next
+        try { return Date.parse(fmt, s) } catch (Exception ignored) {}
+    }
+    return null
+}
 
 def getHubSecurityCookie() {
     if (!settings.hubSecurityEnabled) return null
@@ -8708,7 +8788,9 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_call_device_command
 
-**Response `state` snapshot (single-device form only -- the `commands` form returns none).** Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute. The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence. On the device-allowlist bypass (an UNLISTED device reached with bypassDeviceAllowlist ON) hub_call_device_command can return `success: false` (a structured hub-rejection) rather than the listed path's fire-and-forget.
+**Uncertain command outcome:** `outcomeUnknown: true` means the native command request failed without proving whether the device acted. Read the device state or event history before deciding whether to retry; blindly repeating a non-idempotent command can apply it twice.
+
+**Response `state` snapshot (single-device form only -- the `commands` form returns none).** Returns a native `state` snapshot with per-attribute values and freshness timestamps after dispatch. It may still show the previous state if the driver has not reported the effect. To confirm the resulting state, pass `waitFor` and check convergence, or read hub_get_device_attribute separately. With `waitFor`, the snapshot follows polling and the `waitFor` result reports whether the expected value converged. Native command rejection returns success: false for both selected and bypass-accessible devices.
 
 **`parameters` arg.** Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. `["{\"hue\":0,\"saturation\":100,\"level\":50}"]`) and coerced hub-side.
 
@@ -8868,7 +8950,7 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
-`bypassDeviceAllowlist` (bool, default OFF) removes a security boundary: when ON, the per-device tools (hub_get_device, hub_get_device_attribute incl. poll mode, hub_call_device_command incl. waitFor, hub_update_device config writes, hub_list_device_events, hub_list_device_events history) IGNORE the device allowlist (selectedDevices) and reach ANY device on the hub by id, via the hub's id-keyed admin endpoints, at full read+write parity. Other device tools (hub_list_devices, device swap/replace/delete, device-health) are NOT bypassed. Its effect is independent of Developer Mode -- once ON it works in normal operation. Leave OFF unless you intentionally want the MCP server to control every hub device (e.g. automated whole-hub testing).
+`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. Native device operations require the MCP app's Hub Security credentials when Hub Security is enabled; without them, native reads and writes cannot authenticate. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; only a device the bulk read does not cover costs a per-device read (capped at 20 for the resources, with the rest reported as state unavailable). One unreadable device no longer fails `hub_list_devices`: it is listed with `metadataUnavailable: true`, excluded from any active filter, named in `metadataUnavailableIds`, and the response carries `partial: true`; a bypass inventory whose id set could not be vouched for is returned with `idsComplete: false` instead of an error. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
 
 **selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
 
@@ -8909,6 +8991,8 @@ MCP-managed virtual devices:
 - Use hub_manage_virtual_device(action="delete") to remove (not hub_delete_device)
 
 ### hub_manage_virtual_device
+
+**Partial virtual results:** `success: true, partialSuccess: true` means a created device or some inventory entries are usable, but native metadata or namespace verification is incomplete. Inspect the warnings and unreadable device IDs. A created ID/DNI already exists: repair or re-read it rather than creating another device. An entirely unreadable inventory returns `success: false, isError: true`; a partial inventory must not be treated as complete.
 
 **action="create" — `deviceType` vs `customDriver`:** Supplying both is an error, including a blank/whitespace `deviceType` supplied alongside `customDriver`.
 
@@ -9159,6 +9243,7 @@ Use mode='hub' (default) for native app/device logs, mode='mcp' for structured M
 
 The following filter pipeline applies to hub mode. Current three-column native timestamps use the hub's timezone; timezone-free since/until arguments still mean UTC.
 
+- Device scope: `deviceId` filters hub-wide history regardless of device selection or bypass (logs are hub diagnostics, including history for deleted devices). The hub answers an empty list for an unknown id and a quiet device alike, so a device-filtered read carries `deviceIdResolved` (true when an entry or a native identity read proves the id; false means the id names no device on the hub).
 - Filter pipeline order: scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.
 - `pattern` / `patterns`: the regex matches the log message field ONLY (use `source` for app/device-name substring matching); it is compiled once and throws on invalid regex syntax. A pathological regex like `(.*)*` may hang the matcher -- prefer simple alternation (`error|fail`) or anchored prefixes.
 - `pattern` and `patterns` are compatible: when both are supplied, both apply simultaneously.
@@ -9180,11 +9265,13 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - include_firmware: shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions.
 
 ### hub_get_device_health (device-staleness check + LAN/WAN network probes)
-- Stale check covers only devices authorized for MCP access (the app's selected device list). MCP-managed virtual/child devices (from hub_manage_virtual_device) are a SEPARATE population NOT included here -- list those via hub_list_devices(filter='virtual').
+- Stale checks cover selected devices plus MCP-owned children with bypass OFF, and all native hub devices with bypass ON. Use hub_list_devices(filter='virtual') for an ownership-scoped child inventory.
+- Health reads activity from one native device-tree request. An explicit null activity is reported as never; missing or invalid activity metadata is reported as unavailable with metadataUnavailable: true, and counted as unknown.
 - pingHosts/tracerouteHost/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
 - pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
 - tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
 - speedtest: fixed 10 MB Hubitat S3 blob, no caller input; a few seconds on a fast link, up to ~90s on slow ones.
+- Budgeted modern calls run the complete health check in a background read; continuations and terminal replay reuse its result without repeating probes or the LED blink. Traceroute keeps its 30s timeout and speedtest its 90s timeout. Long probes or combinations may exceed the eight-slice continuation window or the client's retry limit; `slow_read_timeout` is an explicit failure and does not cancel the worker. Do not automatically start another health check after a timeout.
 - **Cursor pagination (staleDevices):** page size 100. Omit the cursor to get all stale devices in one response (subject to the response-size guard). unknownDevices and healthyDevices are always returned in full alongside the page.
 
 ### hub_get_metrics (hub metrics + the hub's own health alerts)
@@ -9223,9 +9310,9 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 
 ### hub_list_devices
 
-**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands`. `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
+**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes` (the device's REPORTED current states -- a declared-but-never-set attribute is absent, not unsupported), and `commands`. Attribute values keep the driver-declared type: `dataType: NUMBER` attributes are JSON numbers, everything else is a string, stable per attribute. `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
 
-**format='context' (the house-snapshot primitive).** One call answers "what's in this house and what state is it in": the `summary` field is a self-contained plain-text block -- a header (`Mode:`, `HSM:` when available, `Devices: N of M`) plus one line per device (`- Label (id, room) - Cap1, Cap2; attr=value, ...`). Attribute values carry the reported unit directly appended with no separator (`temperature=72.5°F`, `battery=87%`) -- parse on `=` accordingly -- and come from one currentStates read per device: the SAME per-device hub read summary mode pays (the saving vs ~21 per-attribute currentValue() calls is hub-side; the "cheap" part is the compact output). A device whose state read fails is marked `(state unavailable)` on its line rather than silently rendered attribute-less. The default attribute set: switch/level/motion/contact/presence/lock/temperature/humidity/illuminance/battery/power/energy/thermostat fields/speed/position/valve/water/smoke. Page size defaults to 50 (set `limit` to change); `nextCursor` is always emitted when more devices remain, and the header repeats it. Structured fields (`mode`, `hsmStatus`, `count`, `total`, filter echoes) ride alongside the text. Combine with the filters below for scoped snapshots ("what's on in the Kitchen" = `roomFilter` + `onlyOn`). Ignores `fields`/`detailed`; not available with `scope='all'`.
+**format='context' (the house-snapshot primitive).** One call answers "what's in this house and what state is it in": the `summary` field is a self-contained plain-text block -- a header (`Mode:`, `HSM:` when available, `Devices: N of M`) plus one line per device (`- Label (id, room) - Cap1, Cap2; attr=value, ...`). Attribute values carry the reported unit directly appended with no separator (`temperature=72.5°F`, `battery=87%`) -- parse on `=` accordingly -- and come from native fullJson state for each returned device. Filters that depend on device metadata or state read all candidates before pagination from ONE bulk hub read (never one native read per device). A device whose native metadata cannot be read is still listed with `metadataUnavailable: true`, is excluded from any active filter, is named in `metadataUnavailableIds`, and the response carries `partial: true` -- so one broken device never hides the rest. The default attribute set: switch/level/motion/contact/presence/lock/temperature/humidity/illuminance/battery/power/energy/thermostat fields/speed/position/valve/water/smoke. Page size defaults to 50 (set `limit` to change); `nextCursor` is always emitted when more devices remain, and the header repeats it. Structured fields (`mode`, `hsmStatus`, `count`, `total`, filter echoes) ride alongside the text. Combine with the filters below for scoped snapshots ("what's on in the Kitchen" = `roomFilter` + `onlyOn`). Ignores `fields`/`detailed`; not available with `scope='all'`.
 
 - **attributeNames** -- format='context' only (rejected on every other format rather than silently ignored): replaces the default per-line attribute set with the named attributes, in caller order. An EMPTY array means the default set, not "no attributes" (same convention as `fields`). When an explicit projection matches no attribute on any returned line, the response carries `attributeNamesMatchedNoAttributes: true` -- the typo-vs-absence diagnostic (attribute names are camelCase, e.g. `temperature`, not `temp`).
 
@@ -9240,11 +9327,11 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 - **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
 - **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
 - **cursor** -- `nextCursor` is returned alongside `nextOffset`.
-- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized=false` means it must be added to this app's device list in the hub UI. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply. Two honesty flags ride both shapes: `capabilitiesPartial` + `capabilitiesNote` when capabilities could not be established for every record (an empty list may mean unknown), and `idsComplete: false` (present only then) when the record SET itself could not be vouched for -- the hub's device tree could not be read, answered empty, or disagreed with the picker feed -- so branch on that field, not on the note's wording.
+- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized` reflects current effective access: selection plus MCP-owned children when bypass is off, every device when bypass is on. With bypass off, `mcpAuthorized=false` means selection is required before ordinary device access. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply. Three honesty flags ride both shapes: `capabilitiesPartial` + `capabilitiesNote` when capabilities could not be established for every record (an empty list may mean unknown); `capabilitiesUnavailableIds` (plus `capabilitiesUnavailable: true` on the summary record) naming authorized devices whose native capability read failed; and `idsComplete: false` (present only then) when the record SET itself could not be vouched for -- the hub's device tree could not be read, answered empty, or disagreed with the picker feed -- so branch on that field, not on the note's wording.
 
 ### hub_get_device
 
-Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
+Use when you need a single device's complete profile — e.g. to discover which commands it supports and which attributes it has reported before calling hub_call_device_command or hub_get_device_attribute. Attributes are reported current states only (details mode says so via `attributeCoverage`): an attribute the driver declares but has never set is absent, not unsupported. For a multi-device listing use hub_list_devices instead.
 
 Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.
 
@@ -9268,7 +9355,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 - **expectedValues**: For eq/ne it is the value set (OR semantics -- match any member); for between it is exactly two numeric bounds [low, high]. Provide exactly ONE of expectedValue or expectedValues, not both.
 - **comparator** (default eq, value in the expected set): ne = NOT in the set. gt/gte/lt/lte = numeric compare against expectedValue. between = numeric inclusive low<=value<=high from expectedValues (exactly 2). Numeric comparators never match a null/non-numeric value (keep polling).
 - **stableForMs** (debounce, default 0 = first match): Must be < timeoutMs. A value that flaps out of the condition restarts the window.
-- **pollIntervalMs** (poll mode re-check interval, default 200): (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)
+- **pollIntervalMs** (poll mode re-check interval, default 200): the TARGET cadence. Every tick costs one native read per device, and that latency is subtracted from the sleep so fast reads keep the requested spacing; the sleep never drops below half the interval, so slow reads (or many devices) space ticks by the reads plus that floor rather than saturating the hub. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)
 
 ### hub_list_device_events
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
@@ -9987,7 +10074,7 @@ Clients negotiated below MCP 2026-07-28 do not understand requestState. They ret
 
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
 
-`hub_get_device` (every mode) and `hub_list_devices` (including virtual devices) use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot require a fresh call. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous.
+`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous. Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 

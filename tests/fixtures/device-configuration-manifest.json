@@ -3,20 +3,131 @@
   "driver": "E2E_PERM_Configuration",
   "replacementDriver": "E2E_PERM_Configuration_Alternate",
   "profiles": [
-    {"path": "child-sdk", "label": "BAT_E2E_KEEP_Configuration_Child", "authorized": true},
-    {"path": "standalone-sdk", "label": "BAT_E2E_KEEP_Configuration_StandaloneSDK", "authorized": true,
-      "nativeFields": {"zigbeeId": {"expectation": "positive", "target": "0200000000016859"}}},
-    {"path": "standalone-bypass", "label": "BAT_E2E_KEEP_Configuration_StandaloneBypass", "authorized": false,
-      "nativeFields": {"zigbeeId": {"expectation": "positive", "target": "0200000000016860"}}}
+    {
+      "path": "child-sdk",
+      "label": "BAT_E2E_KEEP_Configuration_Child",
+      "authorized": true,
+      "canonical": {
+        "name": "E2E_PERM_Configuration",
+        "deviceNetworkId": "mcp-virtual-E2E-PERM-Configuration-Child",
+        "zigbeeId": null
+      }
+    },
+    {
+      "path": "standalone-sdk",
+      "label": "BAT_E2E_KEEP_Configuration_StandaloneSDK",
+      "authorized": true,
+      "nativeFields": {
+        "zigbeeId": {
+          "expectation": "positive",
+          "target": "0200000000016859"
+        }
+      },
+      "canonical": {
+        "name": "E2E_PERM_Configuration",
+        "deviceNetworkId": "6e66190d-724f-4a21-8d77-bad638f216ad",
+        "zigbeeId": "0200000000006859"
+      }
+    },
+    {
+      "path": "standalone-bypass",
+      "label": "BAT_E2E_KEEP_Configuration_StandaloneBypass",
+      "authorized": false,
+      "nativeFields": {
+        "zigbeeId": {
+          "expectation": "positive",
+          "target": "0200000000016860"
+        }
+      },
+      "canonical": {
+        "name": "E2E_PERM_Configuration",
+        "deviceNetworkId": "e2e-perm-configuration-standalone-bypass",
+        "zigbeeId": "0200000000006860"
+      }
+    }
   ],
   "nativeFields": {
-    "zigbeeId": {"expectation": "unavailable", "target": "0200000000016858"},
-    "dashboardIds": {"expectation": "positive", "target": [36461]},
-    "meshEnabled": {"expectation": "positive", "target": true},
-    "meshFullSync": {"expectation": "unavailable", "target": false},
-    "homeKitEnabled": {"expectation": "positive", "target": true},
-    "amazonAlexaEnabled": {"expectation": "unavailable", "target": true},
-    "googleHomeEnabled": {"expectation": "unavailable", "target": true},
-    "retryEnabled": {"expectation": "unavailable", "target": true}
+    "zigbeeId": {
+      "expectation": "unavailable",
+      "target": "0200000000016858"
+    },
+    "dashboardIds": {
+      "expectation": "positive",
+      "target": [
+        36461
+      ]
+    },
+    "meshEnabled": {
+      "expectation": "positive",
+      "target": true
+    },
+    "meshFullSync": {
+      "expectation": "unavailable",
+      "target": false
+    },
+    "homeKitEnabled": {
+      "expectation": "positive",
+      "target": true
+    },
+    "amazonAlexaEnabled": {
+      "expectation": "unavailable",
+      "target": true
+    },
+    "googleHomeEnabled": {
+      "expectation": "unavailable",
+      "target": true
+    },
+    "retryEnabled": {
+      "expectation": "unavailable",
+      "target": true
+    }
+  },
+  "canonical": {
+    "preferences": {
+      "probeBool": {
+        "type": "bool",
+        "value": false
+      },
+      "probeNumber": {
+        "type": "number",
+        "value": 3
+      },
+      "probeText": {
+        "type": "text",
+        "value": "original saved text"
+      },
+      "probeEnum": {
+        "type": "enum",
+        "value": "eco"
+      },
+      "probeMultiple": {
+        "type": "enum",
+        "value": [
+          "red"
+        ],
+        "multiple": true
+      }
+    },
+    "fields": {
+      "maxEvents": 40,
+      "maxStates": 30,
+      "spammyThreshold": 300,
+      "notes": "",
+      "tags": [],
+      "defaultIcon": "",
+      "room": null,
+      "enabled": true,
+      "meshEnabled": false,
+      "homeKitEnabled": false,
+      "dashboardIds": []
+    },
+    "identity": [
+      "name",
+      "deviceNetworkId",
+      "zigbeeId"
+    ],
+    "dataValues": {
+      "configurationProbe": "original"
+    }
   }
 }

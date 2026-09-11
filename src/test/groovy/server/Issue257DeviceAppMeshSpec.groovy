@@ -1,5 +1,6 @@
 package server
 
+import support.NativeInventoryFixture
 import support.TestDevice
 import support.TestLocation
 import support.ToolSpecBase
@@ -23,9 +24,19 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         appExecutor.getLocation() >> sharedLocation
     }
 
+    def setup() {
+        [77, 80].each { id ->
+            NativeInventoryFixture.register(hubGet, id.toString()) {
+                ((settingsMap.selectedDevices ?: []) + childDevicesList).find { it.id == id }
+            }
+        }
+    }
+
     private TestDevice dev(Map p) {
-        new TestDevice(id: p.id, name: "D${p.id}", label: p.label ?: "Device ${p.id}", roomName: null,
+        def device = new TestDevice(id: p.id, name: "D${p.id}", label: p.label ?: "Device ${p.id}", roomName: null,
             capabilities: p.capabilities ?: [], supportedAttributes: [], supportedCommands: [], attributeValues: [:])
+        NativeInventoryFixture.register(hubGet, device.id.toString()) { device }
+        return device
     }
 
     // ---- Item 1: hub_list_devices scope='all' ----------------------------
