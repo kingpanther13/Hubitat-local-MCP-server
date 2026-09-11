@@ -149,3 +149,55 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         original[key] = original[key] or ""
         info[key] = info[key] or ""
     assert info == original
+
+
+@pytest.mark.parametrize("drift", ["none", "preferences", "fields", "both"])
+def test_canonical_reconcile_patches_only_what_drifted(drift):
+    """The pre-run/cleanup sweep brings a permanent fixture back to the manifest's canonical
+    baseline without a recipe: one configuration read, a write only for what drifted, identity
+    fields the manifest leaves null reported rather than guessed."""
+    canonical = {
+        "preferences": {"probeBool": {"type": "bool", "value": False}, "probeText": {"type": "text", "value": "original saved text"}},
+        "fields": {"maxEvents": 40, "notes": "", "tags": [], "room": None, "enabled": True, "dashboardIds": []},
+        "identity": ["name", "deviceNetworkId", "zigbeeId"],
+    }
+    profile = {"path": "standalone-bypass", "label": "Fixture", "authorized": False,
+               "canonical": {"name": None, "deviceNetworkId": "fixture-dni", "zigbeeId": None}}
+    prefs = {"probeBool": True if drift in ("preferences", "both") else False, "probeText": "original saved text"}
+    fields = {"maxEvents": 47 if drift in ("fields", "both") else 40, "notes": "", "tags": "", "room": None,
+              "enabled": True, "dashboardIds": [], "name": "Fixture_name", "deviceNetworkId": "fixture-dni", "zigbeeId": "0200"}
+    writes, bypass = [], []
+
+    def call_tool(name, args=None):
+        args = args or {}
+        if "tool" in args:
+            name, args = args["tool"], args.get("args", {})
+        if name == "hub_update_mcp_settings":
+            bypass.append(args["settings"])
+            return {"success": True, "updated": args["settings"]}
+        if name == "hub_get_device":
+            assert args == {"deviceId": "10", "mode": "configuration"}
+            return {"preferences": [{"name": k, "value": v, "valuePresent": True} for k, v in prefs.items()],
+                    "editableFields": [{"name": k, "value": v, "writable": True} for k, v in fields.items()]}
+        assert name == "hub_update_device", name
+        writes.append({k: v for k, v in args.items() if k != "deviceId"})
+        return {"success": True}
+
+    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))
+    runner._reconcile_canonical_configuration("pre-run", profile, "10", canonical)
+
+    assert not runner._fixture_reset_failures
+    if drift == "none":
+        assert writes == [] and bypass == []
+        return
+    assert bypass == [{"bypassDeviceAllowlist": True}]
+    patched_prefs = [w["preferences"] for w in writes if "preferences" in w]
+    patched_fields = {k for w in writes for k in w if k not in ("preferences", "confirm")}
+    if drift in ("preferences", "both"):
+        assert patched_prefs == [{"probeBool": {"type": "bool", "value": False}}]
+    else:
+        assert patched_prefs == []
+    assert patched_fields == ({"maxEvents"} if drift in ("fields", "both") else set())
+    # Identity: the supplied DNI already matches (no write); name/zigbeeId are null in the manifest
+    # and must never be written.
+    assert not any(k in w for w in writes for k in ("name", "zigbeeId", "deviceNetworkId"))

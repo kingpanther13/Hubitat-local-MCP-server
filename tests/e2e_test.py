@@ -12584,8 +12584,9 @@ class TestRunner:
                 self._fixture_reset_failures.append(failure)
         # Canonical-label check: a fixture left under its temporary "<label>_Changed" identity (a
         # kill between the rename and the recipe write, or a recipe that could not be applied) is
-        # renamed back so the lookups find it; anything else still off-baseline fails loudly in the
-        # matrix's own provisioning asserts with the field named.
+        # renamed back so the lookups find it, then every profile is reconciled against the
+        # documented canonical baseline (manifest "canonical"); identity fields the manifest leaves
+        # null are reported, never guessed.
         try:
             inventory = self.client.call_tool("hub_list_devices", {
                 "scope": "all", "labelFilter": f"{SCAFFOLD_PREFIX}Configuration"})
@@ -12610,11 +12611,87 @@ class TestRunner:
                     result = self.client.call_tool("hub_manage_devices", {
                         "tool": "hub_update_device", "args": {"deviceId": dev_id, "label": label}})
                     assert result.get("success") is True and not result.get("errors"), result
-                    print(f"    renamed '{candidates[0].get('label')}' (ID: {dev_id}) back to '{label}'; "
-                          "name/DNI/native fields were NOT restored (no baseline recipe) -- the matrix's "
-                          "provisioning asserts will name anything still off-baseline")
+                    print(f"    renamed '{candidates[0].get('label')}' (ID: {dev_id}) back to '{label}'")
+                    candidates[0]["label"] = label
                 except Exception as exc:
                     print(f"  [ERROR] {stage}: could not rename '{candidates[0].get('label')}' back to '{label}': {exc}")
+            for profile in manifest["profiles"]:
+                rows = [d for d in devices if d.get("label") == profile["label"]]
+                if len(rows) == 1 and manifest.get("canonical"):
+                    self._reconcile_canonical_configuration(stage, profile, str(rows[0]["id"]), manifest["canonical"])
+
+    def _reconcile_canonical_configuration(self, stage: str, profile: dict, device_id: str, canonical: dict) -> None:
+        """Bring one permanent configuration fixture back to the documented canonical baseline
+        (manifest "canonical" + the profile's identity block) when a run died without leaving a
+        recipe: read its configuration, patch only the preferences/fields that differ, and report
+        any identity field the manifest leaves null instead of guessing it. Idempotent: a fixture
+        already at baseline costs one read and no write."""
+        try:
+            cfg = self.client.call_tool("hub_get_device", {"deviceId": device_id, "mode": "configuration"})
+            prefs = {row.get("name"): row for row in cfg.get("preferences", []) if isinstance(row, dict)}
+            fields = {row.get("name"): row for row in cfg.get("editableFields", []) if isinstance(row, dict)}
+        except Exception as exc:
+            print(f"  [WARN] {stage}: configuration read failed for '{profile['label']}' ({device_id}); canonical check skipped: {exc}")
+            return
+
+        def same(key, observed, wanted):
+            if key == "tags":
+                observed = [t.strip() for t in (observed.split(",") if isinstance(observed, str) else observed or []) if t.strip()]
+            if key in ("room", "notes", "defaultIcon", "zigbeeId", "deviceNetworkId", "name") and observed is None:
+                observed = ""
+            if wanted is None:
+                wanted = ""
+            if isinstance(wanted, bool) or isinstance(observed, bool):
+                return str(observed).lower() == str(wanted).lower()
+            if isinstance(wanted, list) or isinstance(observed, list):
+                return [str(x) for x in (observed or [])] == [str(x) for x in (wanted or [])]
+            return str(observed) == str(wanted)
+
+        pref_patch = {}
+        for name, spec in (canonical.get("preferences") or {}).items():
+            row = prefs.get(name)
+            if row is None:
+                continue
+            if row.get("valuePresent") is False or not same(name, row.get("value"), spec.get("value")):
+                pref_patch[name] = dict(spec)
+        field_patch = {}
+        wanted_fields = {**(canonical.get("fields") or {}), **{k: v for k, v in (profile.get("canonical") or {}).items() if v is not None}}
+        unknown_identity = [k for k in (canonical.get("identity") or []) if (profile.get("canonical") or {}).get(k) is None]
+        for key, wanted in wanted_fields.items():
+            row = fields.get(key)
+            if row is None or row.get("writable") is not True:
+                continue
+            if not same(key, row.get("value"), wanted):
+                field_patch[key] = wanted
+        if not pref_patch and not field_patch:
+            return
+        try:
+            self._set_device_bypass(True)
+            metadata = {k: v for k, v in field_patch.items() if k not in ("room", "enabled")}
+            steps = []
+            if "enabled" in field_patch:
+                steps.append({"enabled": field_patch["enabled"]})
+            if metadata:
+                steps.append({**metadata, "confirm": True})
+            if pref_patch or "room" in field_patch:
+                step = {"preferences": pref_patch, "confirm": True}
+                if "room" in field_patch:
+                    step["room"] = field_patch["room"]
+                steps.append(step)
+            for patch in steps:
+                result = self.client.call_tool("hub_manage_devices", {
+                    "tool": "hub_update_device", "args": {"deviceId": device_id, **patch}})
+                if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
+                    raise AssertionError(f"canonical patch {sorted(patch)} rejected: {result}")
+            print(f"    reconciled '{profile['label']}' (ID: {device_id}) to the canonical baseline: "
+                  f"preferences={sorted(pref_patch)} fields={sorted(field_patch)}")
+        except Exception as exc:
+            failure = f"{profile['label']}: canonical reconcile failed: {exc}"
+            print(f"  [ERROR] {stage}: {failure}")
+            self._fixture_reset_failures.append(failure)
+        if unknown_identity:
+            print(f"    [WARN] '{profile['label']}': identity fields {unknown_identity} have no canonical value in the "
+                  "manifest (profile.canonical) and were left as found; fill them in once to make the sweep complete")
 
     def _device_allowlist_inventory(self, **filters) -> dict:
         """Measure selected/child membership, then restore the suite's effective-access baseline."""
