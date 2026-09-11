@@ -65,9 +65,10 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         when:
         def result = script.toolGetHubLogs([deviceId: '42'])
 
-        then:
+        then: 'an entry proves the id; no identity read is spent'
         result.count == 1
         result.logs[0].message.contains('native diagnostic')
+        result.deviceIdResolved == true
         hubGet.calls*.path == ['/logs/past/json']
 
         where:
@@ -91,9 +92,11 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         when:
         def result = script.toolGetHubLogs([deviceId: '42'])
 
-        then:
+        then: 'the scoped read plus its identity probe; no gate stands in the way'
         result.count == 0
-        hubGet.calls.size() == priorCalls + 1
+        result.deviceIdResolved == false
+        hubGet.calls.size() == priorCalls + 2
+        hubGet.calls*.path.takeRight(2) == ['/logs/past/json', '/device/fullJson/42']
     }
 
     def 'historical device logs do not require current device metadata'() {
@@ -105,10 +108,11 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         when:
         def result = script.toolGetHubLogs([deviceId: '42'])
 
-        then:
+        then: 'an unreadable identity only reports deviceIdResolved=false; the log read still answers'
         result.success != false
         result.count == 0
-        hubGet.calls*.path == ['/logs/past/json']
+        result.deviceIdResolved == false
+        hubGet.calls*.path == ['/logs/past/json', '/device/fullJson/42']
     }
 
     @Unroll
@@ -123,4 +127,28 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         where:
         deviceId << ['-1', '0x1234', '../42', '42?type=app', 'name']
     }
+
+    @Unroll
+    def 'an empty device-scoped read resolves the id natively: #label'() {
+        given: 'the hub answers 200 [] for an unknown id and a quiet device alike'
+        hubGet.register('/logs/past/json') { params -> '[]' }
+        hubGet.register('/device/fullJson/42') {
+            if (exists) return '{"device":{"id":42,"label":"Quiet fixture"}}'
+            throw new IOException('not found')
+        }
+
+        when:
+        def result = script.toolGetHubLogs([deviceId: '42'])
+
+        then:
+        result.count == 0
+        result.deviceIdResolved == exists
+        hubGet.calls*.path == ['/logs/past/json', '/device/fullJson/42']
+
+        where:
+        label            | exists
+        'quiet device'   | true
+        'unknown id'     | false
+    }
+
 }

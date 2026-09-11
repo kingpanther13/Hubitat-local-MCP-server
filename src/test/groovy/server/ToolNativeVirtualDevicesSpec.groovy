@@ -94,6 +94,13 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         def self = this
         wireLifecycle({ Object... args ->
             if (args.length == 1 && args[0] == 'list') return self.childDevicesList
+            // A delete reaching this slot (create-then-roll-back) must be recorded as one, or a
+            // deletions.isEmpty() assertion passes vacuously.
+            if (args[0] == 'delete') {
+                self.deletions << args[2]
+                self.childDevicesList.removeAll { it.deviceNetworkId == args[2] }
+                return null
+            }
             self.creations++
             self.childDevicesList << child
             child

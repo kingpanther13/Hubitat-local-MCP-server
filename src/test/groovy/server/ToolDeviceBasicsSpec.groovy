@@ -218,6 +218,10 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         // Reuse the existing behavioral state fixtures as the simulated native HTTP server.
         // SDK command invocations remain forbidden; ToolNativeCommandRoutingSpec separately traps
         // all SDK state access so this transport adapter cannot hide a production SDK fallback.
+        // The nativeWrites gate below is load-bearing: toolSendCommand reads fullJson BEFORE the
+        // command (command resolution) and again AFTER it (the snapshot); the gate keeps the
+        // pre-command read clean so only the snapshot read observes a throwing or partial
+        // currentStates fixture. Without it those fixtures fail during command resolution.
         hubGet.register("/device/fullJson/${device.id}") {
             def states = [:]
             // Keep command metadata readable before dispatch; only the later snapshot
@@ -352,6 +356,9 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'the null attribute retains its key without discarding the other state'
         result.success == true
         result.state.switch.value == null
+        // This fixture declares no dataType, so the value stays the native String; the typed
+        // fixtures (dataType NUMBER) elsewhere in this spec read back as Numbers. One rule,
+        // driver-declared: NUMBER attributes are numbers, everything else is a string.
         result.state.level.value == '50'
         !result.containsKey('stateError')
     }

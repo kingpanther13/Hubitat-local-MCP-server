@@ -52,6 +52,20 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         NativePollFixture.register(hubGet, device)
     }
 
+    def "a malformed argument is rejected before any per-device native fetch"() {
+        given:
+        def device = new TestDevice(id: 10, name: 'TestSwitch', label: 'Test Switch',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        nativePollDevice(device)
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on', comparator: 'bogus'])
+
+        then:
+        thrown(IllegalArgumentException)
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+    }
+
     // ---------------------------------------------------------------------------
     // 1. Match on first poll
     // ---------------------------------------------------------------------------

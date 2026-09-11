@@ -686,9 +686,6 @@ def toolGetHubLogs(args) {
     def query = null
     if (deviceIdFilter) {
         _validateNativeDeviceId(deviceIdFilter)
-        // Retained SDK log lookup for deliberate rollback.
-        // def device = findDevice(deviceIdFilter)
-        // if (!device) throw new IllegalArgumentException("Device not found: ${deviceIdFilter}")
         query = [type: "dev", id: deviceIdFilter]
     } else if (appIdFilter) {
         if (!appIdFilter.isInteger()) {
@@ -862,6 +859,13 @@ def toolGetHubLogs(args) {
     // user-specified ceiling. Default limit is 100; max 500. Pair with limit=500
     // for the largest practical full-buffer page.
     def result = [logs: paged.page, count: paged.page.size(), totalParsed: totalParsed, appliedLimit: limit]
+    if (deviceIdFilter) {
+        // The hub answers 200 [] for an unknown id and for a quiet device alike. An entry proves
+        // the id; an empty scoped read is checked with one native identity read so a typo does
+        // not read as "this device is silent". The log scope itself stays hub-wide.
+        result.deviceIdResolved = fullLogs ? true :
+            (_fetchDeviceFullJson(deviceIdFilter)?.device?.id?.toString() == deviceIdFilter)
+    }
     if (fetchedAt != null) result.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
     if (cursor != null) {
         result.total = fullLogs.size()
@@ -1642,7 +1646,6 @@ def toolDeviceHealthCheck(args) {
         return failedResult
     }
     def devices = inventory.devices
-    // SDK inventory retained for rollback: if (!settings.selectedDevices) {
     if (!devices) {
         def emptyResult = [
             message: inventory.message ?: "No devices available for MCP access",
@@ -1661,7 +1664,6 @@ def toolDeviceHealthCheck(args) {
     def stale = []
     def unknown = []
 
-    // SDK inventory retained for rollback: settings.selectedDevices.each { device ->
     devices.each { device ->
         try {
             def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
@@ -1677,14 +1679,6 @@ def toolDeviceHealthCheck(args) {
                 return
             }
 
-            // SDK activity read retained for rollback:
-            // def lastActivity = null
-            // try {
-            //     lastActivity = device.lastActivity
-            // } catch (MissingPropertyException ignored) {
-            // } catch (Exception e) {
-            //     mcpLog("debug", "monitoring", "hub_get_device_health could not read lastActivity for device ${device.id}: ${e.class.simpleName}: ${e.message}")
-            // }
             def lastActivity = device.lastActivity != null ? _parseSinceArg(device.lastActivity) : null
             if (device.lastActivity != null && lastActivity == null) {
                 mcpLog("error", "monitoring", "hub_get_device_health could not parse native lastActivity for device ${device.id}")
@@ -1735,7 +1729,6 @@ def toolDeviceHealthCheck(args) {
 
     def result = [
         summary: [
-            // SDK count retained for rollback: totalDevices: settings.selectedDevices.size(),
             totalDevices: devices.size(),
             healthyCount: healthy.size(),
             staleCount: stale.size(),

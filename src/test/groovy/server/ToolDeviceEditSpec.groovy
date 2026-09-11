@@ -161,6 +161,26 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "toolUpdateDevice audit line names showOnHome even though the extended leg consumes the key"() {
+        given:
+        def device = new TestDevice(id: 10, label: 'Porch Light')
+        childDevicesList << device
+        hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> '' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Porch Light","showOnHome":true}}' }
+        def audit = []
+        script.metaClass.mcpLog = { String level, String category, String message ->
+            if (level == 'warn' && message.contains('hub_update_device (native)')) audit << message
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', showOnHome: true])
+
+        then:
+        result.success == true
+        audit.size() == 1
+        audit[0].contains('properties: showOnHome')
+    }
+
     def "toolUpdateDevice showOnHome rejects the call when the Write master is off"() {
         given: 'the direct entrypoint enforces the Write master before native reads or writes'
         settingsMap.enableWrite = false

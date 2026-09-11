@@ -151,8 +151,16 @@ abstract class HarnessSpec extends Specification {
             _ * getSettings() >> SHARED_SETTINGS_MAP
         }
         // Lifecycle stubs must be permanent on the shared mock; each feature supplies its handler.
+        // Null is a meaningful production outcome ("addChildDevice returned null"), so an
+        // unwired fixture must not be able to produce it: throw, like addChildApp below.
         mock.addChildDevice(_, _, _, _, _) >> { args ->
-            CURRENT_FEATURE?.mockChildDeviceLifecycle?.call(*args)
+            def cf = CURRENT_FEATURE
+            if (cf?.mockChildDeviceLifecycle == null) {
+                throw new IllegalStateException(
+                    "Spec invoked addChildDevice(${args}) but mockChildDeviceLifecycle was " +
+                    "not assigned. Wire it in given: so a null return is a deliberate fixture.")
+            }
+            cf.mockChildDeviceLifecycle.call(*args)
         }
         mock.deleteChildDevice(_) >> { args ->
             CURRENT_FEATURE?.mockChildDeviceLifecycle?.call('delete', null, args[0])

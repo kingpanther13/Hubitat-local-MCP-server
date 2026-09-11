@@ -861,6 +861,9 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         if (ownership == 'selected') settingsMap.selectedDevices = [[id: '80'], [id: '23']]
         if (ownership == 'child') childDevicesList.addAll([[id: '80'], [id: '23']])
         hubGet.register('/device/replace?oldId=80&newId=23') { '{"success":true}' }
+        // A bypass-only id is verified against native metadata before the replace fires.
+        hubGet.register('/device/fullJson/80') { '{"device":{"id":80,"label":"Old"}}' }
+        hubGet.register('/device/fullJson/23') { '{"device":{"id":23,"label":"New"}}' }
 
         when:
         def response = mcpDriver.callTool('hub_call_device_replace', [old_device_id: '80', new_device_id: '23', confirm: true])
@@ -872,10 +875,53 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         } else {
             assert mcpDriver.parseInner(response).success == true
             assert hubGet.calls.count { it.path == '/device/replace' } == 1
+            assert hubGet.calls.count { it.path.startsWith('/device/fullJson/') } == (ownership == 'unlisted' ? 2 : 0)
         }
 
         where:
         [ownership, bypass] << [['selected', 'child', 'unlisted'], [false, true]].combinations()
+    }
+
+    @spock.lang.Unroll
+    def 'replace refuses a bypass-only id whose native metadata is #failure before any native write (options=#options)'() {
+        given:
+        enableWriteWithBackup()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/fullJson/80') {
+            if (failure == 'mismatched') return '{"device":{"id":99,"label":"Other"}}'
+            throw new IOException('offline')
+        }
+        hubGet.register('/device/fullJson/23') { '{"device":{"id":23}}' }
+        hubGet.register('/device/replace?oldId=80&newId=23') { throw new AssertionError('replace reached the hub') }
+        hubGet.register('/device/getReplacementOptions/80') { throw new AssertionError('options read reached the hub') }
+
+        when:
+        def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', list_options: options, confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('could not be verified for 80')
+        result.note.contains('Nothing was replaced')
+        !hubGet.calls.any { it.path == '/device/replace' || it.path.startsWith('/device/getReplacementOptions/') }
+
+        where:
+        [failure, options] << [['mismatched', 'unreadable'], [false, true]].combinations()
+    }
+
+    def 'swap refuses a bypass-only id whose native metadata is mismatched before opening the swap tool'() {
+        given:
+        enableWriteWithBackup()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/fullJson/80') { '{"device":{"id":99,"label":"Other"}}' }
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '80', to_device_id: '23', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('could not be verified for 80')
+        result.note.contains('Nothing was swapped')
+        hubGet.calls*.path == ['/device/fullJson/80']
     }
 
     @spock.lang.Unroll

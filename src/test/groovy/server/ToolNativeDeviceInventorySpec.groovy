@@ -95,7 +95,7 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
     }
 
-    def 'native fullJson outage is an explicit inventory error'() {
+    def 'native fullJson outage lists that device as metadata unavailable and keeps the rest'() {
         given:
         nativeFixture()
         hubGet.register('/device/fullJson/1') { throw new IOException('offline') }
@@ -103,10 +103,12 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         when:
         def result = script.toolListDevices(false, 0, 10)
 
-        then:
-        result.success == false
-        result.error.toString().contains('1')
-        !result.containsKey('devices')
+        then: 'the unreadable device is still enumerable, and the caller is told'
+        result.devices*.id == ['1', '2']
+        result.devices[0].metadataUnavailable == true
+        result.devices[1].metadataUnavailable != true
+        result.devices[1].currentStates.switch == 'off'
+        result.partial == true
     }
 
     def 'both context resources read the native selected and child population'() {
@@ -183,7 +185,7 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         hubGet.calls.any { it.path == '/device/fullJson/1' }
     }
 
-    def 'a bypass inventory with an unconfirmed id set cannot look complete'() {
+    def 'a bypass inventory with an unconfirmed id set is returned flagged, not failed'() {
         given:
         nativeFixture()
         settingsMap.bypassDeviceAllowlist = true
@@ -193,15 +195,21 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
 
         when:
         def result = script.toolListDevices(false, 0, 10, null, null, null, 'ids')
+        def structured = script._buildContextJson()
+        def summary = script._buildContextSummaryText()
 
-        then:
-        result.success == false
-        result.error.toString().toLowerCase().contains('inventory')
-        !result.containsKey('deviceIds')
+        then: 'the same in-band flag scope=all reports; the usable feed-alone list is not thrown away'
+        result.deviceIds == [3]
+        result.idsComplete == false
+        result.partial == true
+        result.partialNote.toString().contains('/hub2/devicesList')
+        structured.idsComplete == false
+        structured.partial == true
+        summary.contains('Inventory incomplete:')
     }
 
     @Unroll
-    def 'inventory #fields rejects unavailable required #field metadata'() {
+    def 'inventory #fields marks a device missing required #field metadata unavailable'() {
         given:
         nativeFixture()
         def source = field == 'commands' ? models['1'] : models['1'].device
@@ -211,9 +219,10 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         def result = script.toolListDevices(false, 0, 10, null, null, null, 'summary', fields)
 
         then:
-        result.success == false
-        result.error.toString().contains(field)
-        !result.containsKey('devices')
+        result.devices*.id == ['1', '2']
+        result.devices[0].metadataUnavailable == true
+        result.devices[1].metadataUnavailable != true
+        result.partial == true
 
         where:
         field           | fields
@@ -379,17 +388,16 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         byteBudget << [5000, 120]
     }
 
-    def 'context stops native state reads at its budget while keeping the full native room index'() {
+    def 'context resources are served from one bulk read with no per-device native fetch'() {
         given:
         settingsMap.selectedDevices = (1..10).collect { sdkIdentity(it) }
         hubGet.register('/hub2/devicesList') {
-            JsonOutput.toJson([devices: (1..10).collect { [data: [id: it, name: "Device ${it}", roomName: 'Den']] }])
+            JsonOutput.toJson([devices: (1..10).collect { [data: [id: it, name: 'L' * 1000, roomName: 'Den',
+                lastActivity: '2026-09-10T10:00:00+0000', disabled: false,
+                currentStates: [[key: 'switch', value: 'on'], [key: 'level', value: '42']]]] }])
         }
-        (1..10).each { id ->
-            hubGet.register("/device/fullJson/${id}") {
-                JsonOutput.toJson([device: [id: id, label: 'L' * 1000, roomName: 'Den', capabilities: ['Switch'], currentStates: [switch: [value: 'on']]], commands: []])
-            }
-        }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson((1..10).collect { [id: it, label: 'L' * 1000, capabilities: ['Switch']] }) }
+        (1..10).each { id -> hubGet.register("/device/fullJson/${id}") { throw new AssertionError('per-device fetch on a resource path') } }
         script.metaClass._contextResourceByteBudget = { -> 5000 }
 
         when:
@@ -399,8 +407,12 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         result.truncated == true
         result.totalDevices == 10
         result.rooms[0].deviceIds == (1..10).collect { it.toString() }
-        hubGet.calls.count { it.path.startsWith('/device/fullJson/') } < 10
         result.deviceCount > 0
+        result.devices[0].attributes == [switch: 'on', level: '42']
+        result.devices[0].capabilities == ['Switch']
+        result.devices[0].room == 'Den'
+        result.partial != true
+        hubGet.calls.count { it.path.startsWith('/device/fullJson/') } == 0
 
         when:
         hubGet.calls.clear()
@@ -408,7 +420,124 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
 
         then:
         summary.contains('truncated at')
-        hubGet.calls.count { it.path.startsWith('/device/fullJson/') } < 10
+        summary.contains('(1, Den) - Switch; switch=on, level=42')
+        hubGet.calls.count { it.path.startsWith('/device/fullJson/') } == 0
+    }
+
+    def 'context resources cap the per-device fallback when the bulk read covers nothing'() {
+        given:
+        settingsMap.selectedDevices = (1..25).collect { sdkIdentity(it) }
+        hubGet.register('/hub2/devicesList') { throw new IOException('offline') }
+        (1..25).each { id ->
+            hubGet.register("/device/fullJson/${id}") {
+                JsonOutput.toJson([device: [id: id, label: "Device ${id}", roomName: 'Den', capabilities: ['Switch'], currentStates: [switch: [value: 'on']]], commands: []])
+            }
+        }
+
+        when:
+        def summary = script._buildContextSummaryText()
+        int fetched = hubGet.calls.count { it.path.startsWith('/device/fullJson/') }
+        hubGet.calls.clear()
+        def structured = script._buildContextJson()
+
+        then: 'twenty devices are read one by one; the remaining five are reported, not fetched'
+        fetched == script._contextResourcePerDeviceFetchCap()
+        summary.count('state unavailable') == 5
+        summary.contains('Device 1 (1, Den) - Switch; switch=on')
+        hubGet.calls.count { it.path.startsWith('/device/fullJson/') } == script._contextResourcePerDeviceFetchCap()
+        structured.devices.count { it.metadataUnavailable == true } == 5
+        structured.partial == true
+    }
+
+    def 'context json names one room for a device in both the index and its record'() {
+        given: 'the tree knows the room; fullJson (the fallback read) omits the key'
+        settingsMap.selectedDevices = [sdkIdentity(1)]
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [[data: [id: 1, name: 'Fridge', roomName: 'Kitchen']]]]) }
+        hubGet.register('/device/fullJson/1') { JsonOutput.toJson([device: [id: 1, label: 'Fridge', capabilities: ['Switch'], currentStates: [switch: [value: 'on']]], commands: []]) }
+
+        when:
+        def structured = script._buildContextJson()
+
+        then:
+        structured.rooms.find { it.name == 'Kitchen' }.deviceIds == ['1']
+        structured.devices[0].room == 'Kitchen'
+        structured.roomUnavailableCount == null
+    }
+
+    def 'filters are served from one bulk read and only the returned page is hydrated'() {
+        given:
+        settingsMap.selectedDevices = (1..3).collect { sdkIdentity(it) }
+        hubGet.register('/device/listWithCapabilities/json') { throw new IOException('removed') }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..3).collect { id -> [data: [id: id, name: "Native ${id}", roomName: id == 3 ? 'Loft' : 'Den',
+                lastActivity: id == 2 ? '2020-01-01T00:00:00+0000' : '2026-09-10T10:00:00+0000', disabled: false,
+                currentStates: [[key: 'switch', value: 'on']]]] }])
+        }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson((1..3).collect { [id: it, label: "Native ${it}", capabilities: ['Switch']] }) }
+        (1..3).each { id ->
+            hubGet.register("/device/fullJson/${id}") {
+                JsonOutput.toJson([device: [id: id, name: "Native ${id}", label: "Native ${id}", roomName: id == 3 ? 'Loft' : 'Den',
+                    capabilities: ['Switch'], currentStates: [switch: [value: 'on', dataType: 'ENUM']]], commands: [[name: 'on']]])
+            }
+        }
+
+        when: 'room + capability + onlyOn + changedSince narrow the population before pagination'
+        def result = script.toolListDevices(false, 0, 1, null, null, 'Switch', 'summary', null, null, null, 'Den', true, '2026-01-01T00:00:00Z')
+
+        then:
+        result.total == 1
+        result.devices*.id == ['1']
+        result.devices[0].currentStates.switch == 'on'
+        hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path == ['/device/fullJson/1']
+    }
+
+    def 'a device whose filter inputs cannot be read is excluded from the filtered list and named'() {
+        given:
+        nativeFixture()
+        hubGet.register('/device/fullJson/1') { throw new IOException('offline') }
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, null, null, null, 'summary', null, null, null, 'Den')
+
+        then:
+        result.devices*.id == ['2']
+        result.metadataUnavailableIds == ['1']
+        result.partial == true
+        result.total == 1
+    }
+
+    @Unroll
+    def 'an unparseable activity value is excluded from #label and named, never treated as never-reported'() {
+        given:
+        nativeFixture()
+        models['1'].device.lastActivityTime = 'not a timestamp'
+
+        when:
+        def result = script.toolListDevices(false, 0, 10, filter, null, null, 'summary', null, null, null, null, null, changedSince)
+
+        then:
+        !result.devices*.id.contains('1')
+        result.metadataUnavailableIds == ['1']
+        result.partial == true
+
+        where:
+        label          | filter    | changedSince
+        'stale'        | 'stale:1' | null
+        'changedSince' | null      | '2020-01-01T00:00:00Z'
+    }
+
+    def 'an unparseable activity value reads as unavailable on the listed record'() {
+        given:
+        nativeFixture()
+        models['1'].device.lastActivityTime = 'not a timestamp'
+
+        when:
+        def result = script.toolListDevices(false, 0, 10)
+
+        then:
+        result.devices[0].lastActivity == 'unavailable'
+        result.devices[0].metadataUnavailable == true
+        result.partial == true
     }
 
 }

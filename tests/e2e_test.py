@@ -2927,9 +2927,25 @@ class TestRunner:
         # This endpoint takes a decimal Hubitat device ID, not a Zigbee short address.
         # ID 0 has no device: exercise native identity refusal without changing a real
         # device's keep-alive setting. Positive endpoint routing is covered in Spock.
-        assert self._resilient_radio_write(
-            "hub_set_zigbee", {"ping_device": {"device_id": "0", "enabled": False}},
-            "hub_set_zigbee(ping_device)")
+        # The refusal itself is asserted (not just that the dispatch fired): with bypass ON the
+        # gate passes and the native identity read must refuse; with bypass OFF the gate refuses.
+        args = {"ping_device": {"device_id": "0", "enabled": False}}
+        try:
+            result = self.client.call_tool("hub_set_zigbee", args)
+        except McpToolError as exc:
+            assert "0" in str(exc) and ("identity is unavailable" in str(exc) or "Device not found" in str(exc)), \
+                f"hub_set_zigbee(ping_device) failed for a reason other than the missing device: {exc}"
+        except McpError as exc:
+            error = exc.rpc_error or {}
+            assert error.get("code") == -32602 and "Device not found: 0" in error.get("message", ""), \
+                f"hub_set_zigbee(ping_device) failed for a reason other than the missing device: {exc}"
+        except requests.HTTPError as exc:
+            if not any(code in str(exc) for code in ("502", "503", "504")):
+                raise
+            print("    hub_set_zigbee(ping_device): response lost to relay 5xx (acceptable; dispatch reached the hub)")
+        else:
+            assert isinstance(result, dict) and result.get("success") is False and "0" in str(result.get("error")), \
+                f"hub_set_zigbee(ping_device) must refuse device 0, got: {result}"
 
     @test("diagnostics")
     def test_call_destructive_ops_requires_confirm(self) -> None:
@@ -3955,11 +3971,12 @@ class TestRunner:
             # Native snapshots contain reported attributes only; convergence is verified separately.
             assert isinstance(cmd, dict) and isinstance(cmd.get("state"), dict), \
                 f"'{value}' command response missing post-command state snapshot: {cmd}"
+            # The switch was just commanded, so it HAS reported `switch`: a missing snapshot entry
+            # here is a regression of the post-command state read, never an unreported attribute.
             snap = cmd["state"].get("switch")
-            if with_wait or snap is not None:
-                assert isinstance(snap, dict) and "value" in snap and "timestamp" in snap, \
-                    f"'{value}' snapshot missing reported switch value/timestamp: {cmd['state']}"
-            ts = (snap or {}).get("timestamp")
+            assert isinstance(snap, dict) and "value" in snap and "timestamp" in snap, \
+                f"'{value}' snapshot missing reported switch value/timestamp: {cmd['state']}"
+            ts = snap.get("timestamp")
             if ts is not None:
                 assert isinstance(ts, str) and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", ts), \
                     f"'{value}' snapshot switch timestamp not formatted yyyy-MM-dd HH:mm:ss: {snap!r}"
@@ -12725,7 +12742,10 @@ class TestRunner:
                 observed = self.client.call_tool("hub_get_device", {
                     "deviceId": unauth, "mode": "configuration", "fields": ["label"],
                 })
-                assert next(row["value"] for row in observed["editableFields"] if row["name"] == "label") == orig_label
+                restored_label = next((row.get("value") for row in observed.get("editableFields", [])
+                                       if row.get("name") == "label"), None)
+                assert restored_label == orig_label, f"bypass label restore read back {restored_label!r}, expected {orig_label!r}"
+
 
             # (b) a non-destructive command via /device/runmethod (only if the device exposes refresh).
             if "refresh" in cmd_names:
@@ -12775,7 +12795,9 @@ class TestRunner:
                     f"Undeclared preference must be rejected before native writes: {exc}"
         finally:
             if flipped:
-                _set_bypass(False)
+                off = _set_bypass(False)
+                if not isinstance(off, dict) or off.get("success") is not True:
+                    print(f"    [WARN] restoring bypass OFF did not succeed: {off}")
 
         # Boundary restored: the device is unreachable again.
         try:

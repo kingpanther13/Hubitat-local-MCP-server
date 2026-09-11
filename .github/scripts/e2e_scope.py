@@ -57,8 +57,12 @@ FILE_GROUP_MAP = {
     # guard (test_call_rule_multi_id_aggregates_per_rule) is registered in that group. Without
     # it, a PR editing the aggregation but no test file selects a lane that never runs it.
     # best_practice_gating: getToolGuideSections() / getToolGuideSubSections() live in this file.
+    # devices + diagnostics: _flattenHub2DeviceTree (bulk inventory, health) and _parseSinceArg
+    # (changedSince / lastActivity parsing) live here; a change to either is only observable
+    # through those groups.
     "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
-                                                 "native_apps", "best_practice_gating"],
+                                                 "native_apps", "best_practice_gating",
+                                                 "devices", "diagnostics"],
 }
 
 

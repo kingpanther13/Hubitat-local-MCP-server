@@ -2577,10 +2577,6 @@ def toolListInstalledApps(args) {
 def toolGetDeviceInUseBy(args) {
     if (!args?.deviceId) throw new IllegalArgumentException("deviceId is required")
     def deviceId = args.deviceId.toString().trim()
-    // SDK registry-only gate retained for rollback:
-    // if (!findDevice(deviceId)) {
-    //     throw new IllegalArgumentException("Device not found: ${deviceId}")
-    // }
     boolean listed = _requireDeviceToolAccess(deviceId)
 
     try {
