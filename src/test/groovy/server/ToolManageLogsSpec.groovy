@@ -21,7 +21,7 @@ import support.ToolSpecBase
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet     -> HarnessSpec's hubGet.register(path) closures
- *   - eventsSince(...)   -> per-test metaClass stub on the TestDevice instance
+ *   - device events     -> native fullJson/eventsJson HTTP fixtures with SDK traps
  *   - app.updateSetting  -> the @Shared appExecutor Mock has getApp() stubbed
  *                           once in setupSpec to return sharedAppStub (a
  *                           TestChildApp). HubitatAppScript's @Delegate to
@@ -36,6 +36,20 @@ import support.ToolSpecBase
  */
 class ToolManageLogsSpec extends ToolSpecBase {
 
+    private void nativeDeviceEvents(TestDevice device, Closure rows) {
+        hubGet.register("/device/fullJson/${device.id}") {
+            JsonOutput.toJson([device: [id: device.id, name: device.name, label: device.label, currentStates: [:]]])
+        }
+        hubGet.register("/device/eventsJson/${device.id}") { Map params ->
+            assert params == [:]
+            JsonOutput.toJson(rows().collect { row ->
+                row + [date: row.date instanceof Date ? row.date.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : row.date]
+            })
+        }
+        device.metaClass.eventsSince = { Date since, Map opts -> throw new AssertionError('SDK event history is forbidden') }
+        device.metaClass.events = { Map opts -> throw new AssertionError('SDK recent events are forbidden') }
+    }
+
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
     @Shared private TestLocation sharedLocation = new TestLocation()
 
@@ -46,8 +60,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         // call a non-null target. Same additive-stub pattern that
         // ToolRoomsSpec uses for appExecutor.httpPost(_, _).
         appExecutor.getApp() >> sharedAppStub
-        // toolGetDeviceHistory's location-scope branch reads location.eventsSince(...);
-        // wire it through appExecutor so the server's `location` reference resolves.
+        // Keep location context available to the non-device monitoring tools.
         appExecutor.getLocation() >> sharedLocation
     }
 
@@ -153,10 +166,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     def "hub_get_logs scopes to a selected device and passes type=dev&id=X in query"() {
-        given: 'a selected device so findDevice succeeds'
+        given: 'selected ownership and matching native identity'
         settingsMap.enableRead = true
         def device = new TestDevice(id: 42, name: 'K', label: 'K')
         settingsMap.selectedDevices = [device]
+        hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 42, name: 'K']]) }
         def capturedParams = null
         hubGet.register('/logs/past/json') { params ->
             capturedParams = params
@@ -171,34 +185,36 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.logs.size() == 1
     }
 
-    def "hub_get_logs rejects an unknown deviceId before hitting the hub"() {
-        given: 'no selected device with id 999'
+    def "hub_get_logs rejects a malformed deviceId before hitting the hub"() {
+        given:
         settingsMap.enableRead = true
         // If the tool ever called hubInternalGet, HubInternalGetMock would throw
         // (unstubbed), so the IllegalArgumentException below proves the pre-HTTP
         // validation fired.
 
         when:
-        script.toolGetHubLogs([deviceId: '999'])
+        script.toolGetHubLogs([deviceId: '../999'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Device not found')
+        ex.message.contains('deviceId')
+        hubGet.calls.empty
     }
 
     @spock.lang.Unroll
-    def "hub_get_logs via dispatch maps unknown-deviceId IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps malformed-deviceId IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
 
         when:
-        def response = mcpDriver.callTool('hub_get_logs', [deviceId: '999'])
+        def response = mcpDriver.callTool('hub_get_logs', [deviceId: '../999'])
 
         then:
         response.error != null
         response.error.code == -32602
-        response.error.message.contains('Device not found')
+        response.error.message.contains('deviceId')
+        hubGet.calls.empty
 
         where:
         useGateways << [true, false]
@@ -501,14 +517,10 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     def "hub_list_device_events returns events for a selected device"() {
-        given: 'a selected device whose eventsSince returns 2 events'
+        given: 'a selected device whose native event endpoint returns 2 events'
         def fixedDate = new Date(1234567880000L)
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        def capturedSince = null
-        def capturedOpts = null
-        device.metaClass.eventsSince = { Date since, Map opts ->
-            capturedSince = since
-            capturedOpts = opts
+        nativeDeviceEvents(device) { ->
             [
                 [name: 'switch', value: 'on', unit: null, descriptionText: 'turned on', date: fixedDate, isStateChange: true],
                 [name: 'level', value: '75', unit: '%', descriptionText: 'dimmed', date: fixedDate, isStateChange: true]
@@ -519,10 +531,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         when:
         def result = script.toolGetDeviceHistory([deviceId: '42', hoursBack: 12, limit: 50])
 
-        then: 'eventsSince receives the hoursBack-derived sinceDate and the limit via opts.max'
-        capturedSince != null
-        capturedSince.time == 1234567890000L - (12 * 3600000L)
-        capturedOpts == [max: 50]
+        then: 'the native endpoint is read and the response uses the hoursBack-derived window'
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234567890000L - (12 * 3600000L)
+        hubGet.calls.findAll { it.path == '/device/eventsJson/42' }.size() == 1
 
         and:
         result.deviceId == '42'
@@ -544,7 +555,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         def fixedDate = new Date(1234567880000L)
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        device.metaClass.eventsSince = { Date since, Map opts ->
+        nativeDeviceEvents(device) { ->
             [
                 [name: 'switch', value: 'on', unit: null, descriptionText: 'turned on', date: fixedDate, isStateChange: true],
                 [name: 'level', value: '75', unit: '%', descriptionText: 'dimmed', date: fixedDate, isStateChange: true]
@@ -570,13 +581,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "hub_list_device_events via dispatch returns recent-N events when no window/filter is given (useGateways=#useGateways)"() {
-        given: 'no hoursBack and no attribute -> executeTool routes deviceId to toolGetDeviceEvents (device.events(max:))'
+        given: 'no hoursBack and no attribute -> executeTool routes deviceId to toolGetDeviceEvents (native recent-N history)'
         settingsMap.useGateways = useGateways
         def fixedDate = new Date(1234567880000L)
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        // toolGetDeviceEvents reads device.events(max: limit); TestDevice exposes
-        // events only as a List field, so stub the Map-arg call per-instance.
-        device.metaClass.events = { Map opts ->
+        nativeDeviceEvents(device) { ->
             [
                 [name: 'switch', value: 'on',  unit: null, descriptionText: 'turned on', date: fixedDate, isStateChange: true],
                 [name: 'level',  value: '75',  unit: '%',  descriptionText: 'dimmed',    date: fixedDate, isStateChange: true]
@@ -610,7 +619,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         given:
         def fixedDate = new Date(1234567880000L)
         def device = new TestDevice(id: 42, name: 'Multi', label: 'Multi')
-        device.metaClass.eventsSince = { Date since, Map opts ->
+        nativeDeviceEvents(device) { ->
             [
                 [name: 'switch', value: 'on',  date: fixedDate, isStateChange: true],
                 [name: 'level',  value: '50',  date: fixedDate, isStateChange: true],
@@ -628,20 +637,48 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.attributeFilter == 'switch'
     }
 
-    def "hub_list_device_events returns an error map when eventsSince throws"() {
+    def "hub_list_device_events applies the limit after native time and attribute filtering"() {
+        given:
+        def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
+        nativeDeviceEvents(device) { ->
+            [
+                [name: 'level', value: '50', date: new Date(1234562500000L)],
+                [name: 'switch', value: 'on', date: new Date(1234562490000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562480000L)],
+                [name: 'switch', value: 'on', date: new Date(1234562470000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562300000L)]
+            ]
+        }
+        settingsMap.selectedDevices = [device]
+
+        when:
+        def result = script.toolGetDeviceHistory([deviceId: '42', since: 1234562400000L, attribute: 'switch', limit: 2])
+
+        then:
+        result.count == 2
+        result.events*.name == ['switch', 'switch']
+        result.events*.value == ['on', 'off']
+        result.events*.date == [1234562490000L, 1234562480000L].collect {
+            new Date(it).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+        }
+    }
+
+    def "hub_list_device_events returns an error map when the native event endpoint throws"() {
         given:
         def device = new TestDevice(id: 42, name: 'Broken', label: 'Broken')
-        device.metaClass.eventsSince = { Date since, Map opts ->
-            throw new RuntimeException('event store unavailable')
+        nativeDeviceEvents(device) { ->
+            throw new RuntimeException('event store unavailable; access_token=TRANSPORT_SECRET')
         }
         settingsMap.selectedDevices = [device]
 
         when:
         def result = script.toolGetDeviceHistory([deviceId: '42'])
 
-        then: 'the thrown message is preserved in the "failed" half so a caller can debug'
-        result.error.contains('failed')
-        result.error.contains('event store unavailable')
+        then: 'the native read failure is explicit, recoverable, and redacts transport details'
+        result.success == false
+        result.error.contains('Device event history fetch failed')
+        result.note
+        !JsonOutput.toJson(result).contains('TRANSPORT_SECRET')
         result.deviceId == '42'
     }
 
@@ -651,11 +688,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
     // either side of it to prove the filter.
 
     def "hub_list_device_events device mode: since drives the window, sinceMode=explicit, hoursBack omitted"() {
-        given: 'a selected device; capture the sinceDate eventsSince receives'
+        given: 'a selected device; verify the native history window'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        def capturedSince = null
-        device.metaClass.eventsSince = { Date since, Map opts ->
-            capturedSince = since
+        nativeDeviceEvents(device) { ->
             [[name: 'switch', value: 'on', date: new Date(1234567880000L), isStateChange: true]]
         }
         settingsMap.selectedDevices = [device]
@@ -663,9 +698,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
         when:
         def result = script.toolGetDeviceHistory([deviceId: '42', since: '2009-02-13T22:00:00.000+0000'])
 
-        then: 'eventsSince receives the explicit since, not a hoursBack-derived date'
-        capturedSince != null
-        capturedSince.time == Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", '2009-02-13T22:00:00.000+0000').time
+        then: 'the history window starts at the explicit since'
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", '2009-02-13T22:00:00.000+0000').time
 
         and: 'the response echoes the caller string verbatim and omits hoursBack'
         result.sinceMode == 'explicit'
@@ -680,10 +714,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_list_device_events: since takes precedence over hoursBack when both are given"() {
         given:
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        def capturedSince = null
-        device.metaClass.eventsSince = { Date since, Map opts ->
-            capturedSince = since
-            []
+        nativeDeviceEvents(device) { ->
+            [
+                [name: 'switch', value: 'on', date: new Date(1234562460000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562340000L)]
+            ]
         }
         settingsMap.selectedDevices = [device]
 
@@ -691,8 +726,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def result = script.toolGetDeviceHistory([deviceId: '42', since: '2009-02-13T22:00:00.000+0000', hoursBack: 6])
 
         then: 'the absolute since wins -- the window start is the since, not now()-6h'
-        capturedSince.time == Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", '2009-02-13T22:00:00.000+0000').time
-        capturedSince.time != 1234567890000L - (6 * 3600000L)
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", '2009-02-13T22:00:00.000+0000').time
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time != 1234567890000L - (6 * 3600000L)
+        result.events*.value == ['on']
         result.sinceMode == 'explicit'
         !result.containsKey('hoursBack')
     }
@@ -761,17 +797,22 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     def "hub_list_device_events: a future since yields an empty list, not an error"() {
-        given: 'a device whose native eventsSince returns nothing for a future window'
+        given: 'native events include an existing row before the future window'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        def capturedSince = null
-        device.metaClass.eventsSince = { Date since, Map opts -> capturedSince = since; [] }
+        nativeDeviceEvents(device) { ->
+            [
+                [name: 'switch', value: 'on', date: new Date(1234562460000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562400000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562340000L)]
+            ]
+        }
         settingsMap.selectedDevices = [device]
 
         when: '2030 is well past the pinned now() of 2009'
         def result = script.toolGetDeviceHistory([deviceId: '42', since: '2030-01-01T00:00:00.000+0000'])
 
         then: 'a valid empty result, not a thrown error'
-        capturedSince.time > 1234567890000L
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time > 1234567890000L
         result.count == 0
         result.events == []
         result.sinceMode == 'explicit'
@@ -780,15 +821,21 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_list_device_events: since as epoch milliseconds parses"() {
         given:
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        def capturedSince = null
-        device.metaClass.eventsSince = { Date since, Map opts -> capturedSince = since; [] }
+        nativeDeviceEvents(device) { ->
+            [
+                [name: 'switch', value: 'on', date: new Date(1234562460000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562400000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562340000L)]
+            ]
+        }
         settingsMap.selectedDevices = [device]
 
         when: 'since is an epoch-ms integer (2009-02-13T22:00:00Z)'
         def result = script.toolGetDeviceHistory([deviceId: '42', since: 1234562400000L])
 
         then: 'it parses to the same instant and drives an explicit window'
-        capturedSince.time == 1234562400000L
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234562400000L
+        result.events*.value == ['on']
         result.sinceMode == 'explicit'
         result.since == new Date(1234562400000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
     }
@@ -797,37 +844,42 @@ class ToolManageLogsSpec extends ToolSpecBase {
         given: 'capture an emitted date, then feed it straight back as since'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
         def emittedDate = new Date(1234567880000L)
-        device.metaClass.eventsSince = { Date since, Map opts ->
+        nativeDeviceEvents(device) { ->
             [[name: 'switch', value: 'on', date: emittedDate, isStateChange: true]]
         }
         settingsMap.selectedDevices = [device]
         def first = script.toolGetDeviceHistory([deviceId: '42', hoursBack: 1])
         def bookmark = first.events[0].date
 
-        def capturedSince = null
-        device.metaClass.eventsSince = { Date since, Map opts -> capturedSince = since; [] }
-
         when: 'the emitted ISO date is passed back verbatim as since'
         def result = script.toolGetDeviceHistory([deviceId: '42', since: bookmark])
 
         then: 'it parses cleanly (no exception) to the original instant'
         bookmark == emittedDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
-        capturedSince.time == emittedDate.time
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == emittedDate.time
         result.sinceMode == 'explicit'
+        result.count == 0
+        result.events == []
     }
 
     def "hub_list_device_events: a trailing-Z since is parsed as UTC, not hub-local"() {
         given: 'capture the sinceDate; Z means Zulu/UTC regardless of the JVM default zone'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        def capturedSince = null
-        device.metaClass.eventsSince = { Date since, Map opts -> capturedSince = since; [] }
+        nativeDeviceEvents(device) { ->
+            [
+                [name: 'switch', value: 'on', date: new Date(1234562460000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562400000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562340000L)]
+            ]
+        }
         settingsMap.selectedDevices = [device]
 
         when: 'a Zulu bookmark (literal Z) is supplied'
         def result = script.toolGetDeviceHistory([deviceId: '42', since: '2009-02-13T22:00:00.000Z'])
 
         then: 'it resolves to the UTC instant (22:00Z == epoch 1234562400000), not 22:00 hub-local'
-        capturedSince.time == 1234562400000L
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234562400000L
+        result.events*.value == ['on']
         result.sinceMode == 'explicit'
         // echoed verbatim (a real ISO string, not epoch digits)
         result.since == '2009-02-13T22:00:00.000Z'
@@ -836,15 +888,21 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_list_device_events: a millis-less ISO since (no .SSS) parses via the fallback format"() {
         given: 'exercises the second probe format -- yyyy-MM-dd\'T\'HH:mm:ssZ -- which has no other spec'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        def capturedSince = null
-        device.metaClass.eventsSince = { Date since, Map opts -> capturedSince = since; [] }
+        nativeDeviceEvents(device) { ->
+            [
+                [name: 'switch', value: 'on', date: new Date(1234562460000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562400000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562340000L)]
+            ]
+        }
         settingsMap.selectedDevices = [device]
 
         when: 'since omits the milliseconds'
         def result = script.toolGetDeviceHistory([deviceId: '42', since: '2009-02-13T22:00:00+0000'])
 
         then: 'it resolves to the same instant as the with-millis form (22:00:00Z == epoch 1234562400000)'
-        capturedSince.time == 1234562400000L
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234562400000L
+        result.events*.value == ['on']
         result.sinceMode == 'explicit'
         result.since == '2009-02-13T22:00:00+0000'
     }
@@ -852,15 +910,21 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_list_device_events: an epoch since passed as a digit STRING echoes canonical ISO (parity with the Number form)"() {
         given:
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        def capturedSince = null
-        device.metaClass.eventsSince = { Date since, Map opts -> capturedSince = since; [] }
+        nativeDeviceEvents(device) { ->
+            [
+                [name: 'switch', value: 'on', date: new Date(1234562460000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562400000L)],
+                [name: 'switch', value: 'off', date: new Date(1234562340000L)]
+            ]
+        }
         settingsMap.selectedDevices = [device]
 
         when: 'since is the epoch-ms as a String'
         def result = script.toolGetDeviceHistory([deviceId: '42', since: '1234562400000'])
 
         then: 'it parses to the same instant and the echo is canonical ISO, not the raw digits'
-        capturedSince.time == 1234562400000L
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234562400000L
+        result.events*.value == ['on']
         result.sinceMode == 'explicit'
         result.since == new Date(1234562400000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         result.since != '1234562400000'
@@ -902,9 +966,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     def "hub_list_device_events device mode: the bookmarked instant is EXCLUDED (strictly after)"() {
-        given: 'eventsSince (inclusivity undocumented) returns a row AT the bookmark and one after it; the post-filter must drop the at-bookmark row'
+        given: 'the native endpoint returns a row AT the bookmark and one after it; the filter must drop the at-bookmark row'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        device.metaClass.eventsSince = { Date since, Map opts ->
+        nativeDeviceEvents(device) { ->
             [
                 [name: 'switch', value: 'on',  unit: null, descriptionText: 'after bookmark', date: new Date(1234562460000L), isStateChange: true],
                 [name: 'switch', value: 'off', unit: null, descriptionText: 'at the bookmark', date: new Date(1234562400000L), isStateChange: true]
@@ -915,7 +979,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         when: 'since == the at-bookmark row instant (1234562400000)'
         def result = script.toolGetDeviceHistory([deviceId: '42', since: 1234562400000L])
 
-        then: 'only the strictly-after row survives, regardless of eventsSince boundary behavior'
+        then: 'only the strictly-after row survives the native history filter'
         result.count == 1
         result.events*.description == ['after bookmark']
     }
@@ -945,11 +1009,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         given: 'since alone (no hoursBack/attribute) must NOT take the recent-N path'
         settingsMap.useGateways = useGateways
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
-        device.metaClass.eventsSince = { Date since, Map opts ->
+        nativeDeviceEvents(device) { ->
             [[name: 'switch', value: 'on', date: new Date(1234567880000L), isStateChange: true]]
         }
-        // events(max:) would be the recent-N path; make it loud if reached
-        device.metaClass.events = { Map opts -> throw new RuntimeException('recent-N path wrongly taken for since') }
         settingsMap.selectedDevices = [device]
 
         when:

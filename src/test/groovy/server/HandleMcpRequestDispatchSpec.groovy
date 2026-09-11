@@ -509,7 +509,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // stray args.tool='hub_export_native_app' on hub_list_devices would get an hub_export_native_app
         // suggestion ("use saveAs=..."), nonsensical for hub_list_devices.
         given:
-        // Force hub_list_devices to blow the cap by stubbing a giant selected-device list.
+        // Force hub_list_devices to blow the cap with a giant native device inventory.
         def padding = 'x' * 80
         def bigDevices = (0..<2000).collect { i ->
             def d = new TestDevice(id: i, name: "D${i}", label: "Device-${i}-${padding}")
@@ -517,6 +517,9 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             d
         }
         settingsMap.selectedDevices = bigDevices
+        bigDevices.each { device ->
+            support.NativeInventoryFixture.register(hubGet, device.id.toString()) { device }
+        }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 201, method: 'tools/call',
             params: [name: 'hub_list_devices', arguments: [tool: 'hub_export_native_app']]

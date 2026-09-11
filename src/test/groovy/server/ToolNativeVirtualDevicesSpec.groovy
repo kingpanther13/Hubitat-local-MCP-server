@@ -1,0 +1,503 @@
+package server
+
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import me.biocomp.hubitat_ci.api.common_api.ChildDeviceWrapper
+import me.biocomp.hubitat_ci.app.HubitatAppScript
+import spock.lang.Unroll
+import support.TestDevice
+import support.ToolSpecBase
+
+class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
+    Map models = [:]
+    List writes = []
+    List deletions = []
+    int creations = 0
+    boolean acceptWrite = true
+    boolean persistWrite = true
+    boolean readable = true
+    boolean failInfoAfterData = false
+
+    def setup() {
+        stateMap.lastBackupTimestamp = 1234567890000L
+        def self = this
+        wireLifecycle({ Object... args ->
+            if (args.length == 1 && args[0] == 'list') return self.childDevicesList
+            if (args[0] == 'delete') {
+                self.deletions << args[2]
+                self.childDevicesList.removeAll { it.deviceNetworkId == args[2] }
+                return null
+            }
+            throw new IllegalStateException('Unexpected child lifecycle call')
+        })
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            assert path == '/device/runmethod'
+            def payload = new JsonSlurper().parseText(body)
+            writes << payload
+            if (acceptWrite && persistWrite) {
+                models[payload.id.toString()].device.data[payload.args[0].value] = payload.args[1].value
+            }
+            [success: acceptWrite]
+        }
+    }
+
+    private void wireLifecycle(Closure handler) {
+        try {
+            def factory = HubitatAppScript.getDeclaredField('childDeviceFactory')
+            factory.accessible = true
+            factory.set(script, handler)
+        } catch (NoSuchFieldException ignored) {
+            // The Groovy 2.5 harness delegates lifecycle methods to AppExecutor.
+            mockChildDeviceLifecycle = handler
+        }
+    }
+
+    private void model(String id, String namespace = 'native-ns') {
+        models[id] = [device: [id: id.toInteger(), name: 'Native name', label: 'Native label',
+            deviceNetworkId: "mcp-${id}", deviceTypeName: 'Native Driver', deviceTypeNamespace: namespace,
+            data: [mcpDriverNamespace: 'persisted-ns'], capabilities: ['Switch', 'TemperatureMeasurement'],
+            currentStates: [switch: [value: 'on', dataType: 'ENUM'],
+                temperature: [value: '21.50', numberValue: 21.50, dataType: 'NUMBER']]],
+            commands: [[name: 'on', parameters: []]], settings: [], inputValues: [:]]
+        int reads = 0
+        hubGet.register("/device/fullJson/${id}") {
+            reads++
+            readable && !(failInfoAfterData && reads > 1) ? JsonOutput.toJson(models[id]) : null
+        }
+    }
+
+    private void owned(String id) {
+        def sdk = new TestDevice(id: id.toInteger(), name: 'Stale SDK name', deviceNetworkId: "mcp-${id}")
+        sdk.metaClass.getCapabilities = { throw new AssertionError('SDK capabilities read') }
+        sdk.metaClass.getSupportedAttributes = { throw new AssertionError('SDK attributes read') }
+        sdk.metaClass.getSupportedCommands = { throw new AssertionError('SDK commands read') }
+        sdk.metaClass.currentValue = { String attr -> throw new AssertionError('SDK state read') }
+        sdk.metaClass.getDataValue = { String key -> throw new AssertionError('SDK data read') }
+        sdk.metaClass.getDriverType = { throw new AssertionError('SDK driver read') }
+        childDevicesList << sdk
+        model(id)
+    }
+
+    private void creator() {
+        model('77')
+        models['77'].device.data = [:]
+        def child = Mock(ChildDeviceWrapper) {
+            getId() >> '77'
+            getIdAsLong() >> 77L
+            getDeviceNetworkId() >> 'mcp-77'
+            getCapabilities() >> { throw new AssertionError('SDK capabilities read') }
+            getSupportedAttributes() >> { throw new AssertionError('SDK attributes read') }
+            getSupportedCommands() >> { throw new AssertionError('SDK commands read') }
+            currentValue(_) >> { throw new AssertionError('SDK state read') }
+            updateDataValue(_, _) >> { throw new AssertionError('SDK data write') }
+        }
+        def self = this
+        wireLifecycle({ Object... args ->
+            if (args.length == 1 && args[0] == 'list') return self.childDevicesList
+            // A delete reaching this slot (create-then-roll-back) must be recorded as one, or a
+            // deletions.isEmpty() assertion passes vacuously.
+            if (args[0] == 'delete') {
+                self.deletions << args[2]
+                self.childDevicesList.removeAll { it.deviceNetworkId == args[2] }
+                return null
+            }
+            self.creations++
+            self.childDevicesList << child
+            child
+        })
+    }
+
+    @Unroll
+    def 'virtual inventory uses native detail and keeps ownership pagination with bypass #bypass'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = bypass
+        owned('77')
+        owned('78')
+        settingsMap.selectedDevices = [new TestDevice(id: 99, name: 'Not MCP owned')]
+
+        when:
+        def result = script.toolListVirtualDevices([cursor: '', limit: 1])
+
+        then:
+        result.total == 2
+        result.count == 1
+        result.nextCursor == '1'
+        result.devices*.id == ['77']
+        result.devices[0].name == 'Native name'
+        result.devices[0].driverNamespace == 'persisted-ns'
+        result.devices[0].driverType == 'Native Driver'
+        result.devices[0].typeName == 'Native Driver'
+        result.devices[0].capabilities == ['Switch', 'TemperatureMeasurement']
+        result.devices[0].commands == ['on']
+        result.devices[0].currentStates == [switch: 'on', temperature: 21.50]
+        !hubGet.calls.any { it.path == '/device/fullJson/99' }
+        !hubGet.calls.any { it.path == '/device/fullJson/78' }
+
+        where:
+        bypass << [false, true]
+    }
+
+    def 'virtual inventory derives missing namespace from native driver metadata'() {
+        given:
+        owned('77')
+        models['77'].device.data = [:]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        mcpDriver.parseInner(response).devices[0].driverNamespace == 'native-ns'
+    }
+
+    @Unroll
+    def 'virtual native filters intersect before pagination through #surface with bypass #bypass'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = bypass
+        ['77', '78', '79', '80', '81'].each { owned(it) }
+        models['77'].device.label = 'Unrelated first'
+        models['78'].device.label = 'BAT Native First'
+        models['79'].device.label = 'BAT Native Wrong Capability'
+        models['79'].device.capabilities = ['TemperatureMeasurement']
+        models['80'].device.label = null
+        models['80'].device.name = 'BAT Native Fallback'
+        models['81'].device.label = 'BAT Native Last'
+        settingsMap.selectedDevices = [new TestDevice(id: 99, name: 'BAT Native not owned')]
+        childDevicesList.each { sdk ->
+            sdk.metaClass.getLabel = { throw new AssertionError('SDK label read') }
+            sdk.metaClass.getName = { throw new AssertionError('SDK name read') }
+        }
+        def args = [filter: 'virtual', labelFilter: 'bat NATIVE', capabilityFilter: 'sWITCH', cursor: '1', limit: 1]
+
+        when:
+        def result = surface == 'direct' ? script.toolListVirtualDevices(args) :
+            mcpDriver.parseInner(mcpDriver.callTool('hub_list_devices', args))
+
+        then:
+        result.devices*.id == ['80']
+        result.devices[0].label == 'BAT Native Fallback'
+        result.total == 3
+        result.unfilteredTotal == 5
+        result.count == 1
+        result.offset == 1
+        result.hasMore == true
+        result.nextCursor == '2'
+        !hubGet.calls.any { it.path == '/device/fullJson/99' }
+        writes.empty
+
+        where:
+        [surface, bypass] << ['direct', 'dispatch'].collectMany { surface -> [false, true].collect { [surface, it] } }
+    }
+
+    def 'virtual filter no matches is an empty filtered population'() {
+        given:
+        owned('77')
+
+        when:
+        def result = script.toolListVirtualDevices([labelFilter: 'Absent', cursor: '', limit: 1])
+
+        then:
+        result.devices == []
+        result.total == 0
+        result.count == 0
+        result.unfilteredTotal == 1
+        result.hasMore == false
+        !result.containsKey('nextCursor')
+        result.message.toLowerCase().contains('match')
+        !result.message.contains('create one')
+    }
+
+    def 'virtual cursor bounds use filtered total'() {
+        given:
+        ['77', '78', '79'].each { owned(it) }
+        models['77'].device.label = 'Only match'
+
+        when:
+        script.toolListVirtualDevices([labelFilter: 'Only', cursor: '2', limit: 1])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('out of range')
+    }
+
+    def 'virtual empty inventory still rejects an out of range cursor'() {
+        when:
+        script.toolListVirtualDevices([labelFilter: 'Absent', cursor: '1'])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('out of range')
+        hubGet.calls.empty
+    }
+
+    @Unroll
+    def 'virtual #field filter rejects non-string #value even with no children'() {
+        when:
+        script.toolListVirtualDevices([(field): value])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains(field)
+        hubGet.calls.empty
+
+        where:
+        [field, value] << ['labelFilter', 'capabilityFilter'].collectMany { field -> [7, false, [], [:]].collect { [field, it] } }
+    }
+
+    def 'empty virtual filters preserve page-only native hydration'() {
+        given:
+        owned('77')
+        owned('78')
+
+        when:
+        def result = script.toolListVirtualDevices([labelFilter: '', capabilityFilter: '', limit: 1])
+
+        then:
+        result.devices*.id == ['77']
+        result.total == 2
+        !hubGet.calls.any { it.path == '/device/fullJson/78' }
+    }
+
+    @Unroll
+    def 'virtual filters retain unreadable owned identities and mark partial results at cursor #cursor'() {
+        given:
+        ['77', '78', '79'].each { owned(it) }
+        models['77'].device.label = 'Unrelated'
+        models['78'].device.label = 'Match'
+        hubGet.register('/device/fullJson/79') { null }
+
+        when:
+        def result = script.toolListVirtualDevices([labelFilter: 'Match', cursor: cursor, limit: 1])
+
+        then:
+        result.total == 2
+        result.unfilteredTotal == 3
+        result.success == true
+        result.isError != true
+        result.partialSuccess == true
+        result.unreadableDeviceIds == ['79']
+        result.devices*.id == [expectedId]
+        if (expectedId == '79') assert result.devices[0].success == false
+
+        where:
+        cursor | expectedId
+        ''     | '78'
+        '1'    | '79'
+    }
+
+    def 'virtual inventory preserves failed device id and counts instead of claiming empty native metadata'() {
+        given:
+        owned('77')
+        readable = false
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.partialSuccess != true
+        result.count == 1
+        result.total == 1
+        result.devices[0].id == '77'
+        result.devices[0].success == false
+        result.devices[0].error.contains('fullJson')
+        !result.devices[0].containsKey('capabilities')
+    }
+
+    def 'virtual inventory does not invent hubitat namespace when native namespace metadata is missing'() {
+        given:
+        owned('77')
+        models['77'].device.data = [:]
+        models['77'].device.remove('deviceTypeNamespace')
+
+        when:
+        def result = script.toolListVirtualDevices([:])
+
+        then:
+        result.partialSuccess == true
+        result.devices[0].driverNamespace == null
+        result.devices[0].warnings
+        result.devices[0].driverType == 'Native Driver'
+    }
+
+    def 'create persists namespace through fixed native writer with readback and returns native reported attributes'() {
+        given:
+        creator()
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [action: 'create',
+            customDriver: [namespace: 'custom-ns', name: 'Native Driver'], deviceLabel: 'Native label',
+            deviceNetworkId: 'mcp-77', confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def result = mcpDriver.parseInner(response)
+        result.success == true
+        result.device.id == '77'
+        result.device.name == 'Native name'
+        result.device.driverNamespace == 'custom-ns'
+        result.device.attributes == [[name: 'switch', value: 'on'], [name: 'temperature', value: 21.50]]
+        writes == [[id: 77, method: 'updateDataValue', args: [[type: 'STRING', value: 'mcpDriverNamespace'],
+            [type: 'STRING', value: 'custom-ns']]]]
+        hubGet.calls.count { it.path == '/device/fullJson/77' } >= 2
+        creations == 1
+    }
+
+    def 'virtual creation retains owned identity when native readback identifies another device'() {
+        given:
+        creator()
+        models['77'].device.id = 78
+
+        when:
+        def result = script.toolCreateVirtualDevice([customDriver: [namespace: 'custom-ns', name: 'Custom Driver'],
+            deviceLabel: 'Created child', deviceNetworkId: 'mcp-77', confirm: true])
+
+        then:
+        result.success == true
+        result.partialSuccess == true
+        result.device.id == '77'
+        !result.device.containsKey('name')
+        result.note.contains('Do not recreate')
+        creations == 1
+    }
+
+    def 'virtual delete captures native label and preserves child lifecycle deletion'() {
+        given:
+        owned('77')
+
+        when:
+        def result = script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-77', confirm: true])
+
+        then:
+        deletions == ['mcp-77']
+        result.success == true
+        result.deviceId == '77'
+        result.deviceLabel == 'Native label'
+        hubGet.calls.any { it.path == '/device/fullJson/77' }
+        writes.empty
+    }
+
+    @Unroll
+    def 'virtual delete uses owned identity when native metadata is #failure with bypass #bypass'() {
+        given:
+        owned('77')
+        settingsMap.bypassDeviceAllowlist = bypass
+        childDevicesList[0].metaClass.getLabel = { throw new AssertionError('SDK label read') }
+        childDevicesList[0].metaClass.getName = { throw new AssertionError('SDK name read') }
+        hubGet.register('/device/fullJson/77') {
+            if (failure == 'transport failure') throw new IOException('offline')
+            if (failure == 'wrong identity') return '{"device":{"id":78,"label":"Wrong device"}}'
+            null
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_virtual_device',
+            [action: 'delete', deviceNetworkId: 'mcp-77', confirm: true])
+
+        then:
+        response.error == null
+        response.result.isError != true
+        def result = mcpDriver.parseInner(response)
+        deletions == ['mcp-77']
+        result.success == true
+        result.deviceId == '77'
+        result.deviceLabel == 'MCP-managed virtual device'
+        childDevicesList.empty
+
+        where:
+        [failure, bypass] << ['unavailable', 'transport failure', 'wrong identity'].collectMany { failure ->
+            [false, true].collect { [failure, it] }
+        }
+    }
+
+    @Unroll
+    def 'duplicate DNI preserves validation error when native label read fails through #surface'() {
+        given:
+        owned('77')
+        childDevicesList[0].metaClass.getLabel = { throw new AssertionError('SDK label read') }
+        childDevicesList[0].metaClass.getName = { throw new AssertionError('SDK name read') }
+        hubGet.register('/device/fullJson/77') { throw new IOException('offline') }
+        def args = [action: 'create', deviceType: 'Virtual Switch', deviceLabel: 'Duplicate',
+            deviceNetworkId: 'mcp-77', confirm: true]
+
+        when:
+        String message
+        if (surface == 'direct') {
+            try {
+                script.toolManageVirtualDevice(args)
+                assert false: 'Duplicate DNI must fail validation'
+            } catch (IllegalArgumentException expected) {
+                message = expected.message
+            }
+        } else {
+            def response = mcpDriver.callTool('hub_manage_virtual_device', args)
+            assert response.error.code == -32602
+            message = response.error.message
+        }
+
+        then:
+        message.contains("network ID 'mcp-77' already exists")
+        message.contains('MCP-managed virtual device')
+        message.contains('ID: 77')
+        writes.empty
+        deletions.empty
+        creations == 0
+
+        where:
+        surface << ['direct', 'dispatch']
+    }
+
+    @Unroll
+    def 'virtual inventory partial failures preserve usable results through dispatch with readable #usable'() {
+        given:
+        owned('77')
+        owned('78')
+        if (!usable) hubGet.register('/device/fullJson/77') { null }
+        hubGet.register('/device/fullJson/78') { null }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
+
+        then:
+        response.error == null
+        (response.result.isError == true) == !usable
+        def result = mcpDriver.parseInner(response)
+        result.success == usable
+        (result.partialSuccess == true) == usable
+        result.devices*.id == ['77', '78']
+        result.devices[1].success == false
+        result.count == 2
+
+        where:
+        usable << [false, true]
+    }
+
+    @Unroll
+    def 'created device remains identifiable when #failure fails'() {
+        given:
+        creator()
+        acceptWrite = failure != 'write'
+        persistWrite = failure != 'data verification'
+        readable = failure != 'all reads'
+        failInfoAfterData = failure == 'info read'
+
+        when:
+        def result = script.toolCreateVirtualDevice([deviceType: 'Virtual Switch',
+            deviceLabel: 'Native label', deviceNetworkId: 'mcp-77', confirm: true])
+
+        then:
+        result.success == true
+        result.partialSuccess == true
+        result.device.id == '77'
+        result.device.deviceNetworkId == 'mcp-77'
+        result.warnings
+        result.note.toLowerCase().contains('recreat')
+        creations == 1
+
+        where:
+        failure << ['write', 'data verification', 'all reads', 'info read']
+    }
+}

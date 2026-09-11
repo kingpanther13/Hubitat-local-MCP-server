@@ -1,5 +1,7 @@
 package server
 
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import support.TestDevice
 import support.ToolSpecBase
 
@@ -91,6 +93,18 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     // no dispatch counterparts for findDevice: helper, not a tool
 
+    private void registerNativeSummaryDevice(TestDevice device) {
+        def states = device.attributeValues.collectEntries { name, value ->
+            [(name): [value: value, dataType: device.supportedAttributes.find { it.name == name }?.dataType]]
+        }
+        def model = [device: [id: device.id, name: device.name, label: device.label,
+            roomName: device.roomName, capabilities: device.capabilities, currentStates: states],
+            commands: device.supportedCommands]
+        hubGet.register("/device/fullJson/${device.id}") { JsonOutput.toJson(model) }
+        device.metaClass.currentValue = { String attribute -> throw new AssertionError('SDK value read is forbidden') }
+        device.metaClass.getSupportedAttributes = { -> throw new AssertionError('SDK declaration read is forbidden') }
+    }
+
     // ---- toolGetDevice response shape ---------------------------------------
 
     def "toolGetDevice returns device summary shape for an existing device"() {
@@ -106,11 +120,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             attributeValues: [switch: 'off']
         )
         childDevicesList << device
+        registerNativeSummaryDevice(device)
 
         when:
         def result = script.toolGetDevice('10')
 
         then:
+        hubGet.calls.count { it.path == '/device/fullJson/10' } == 1
         result.id == '10'
         result.label == 'Test Switch'
         result.room == 'Living Room'
@@ -135,6 +151,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             attributeValues: [switch: 'off']
         )
         childDevicesList << device
+        registerNativeSummaryDevice(device)
 
         when:
         def response = mcpDriver.callTool('hub_get_device', [deviceId: '10'])
@@ -143,6 +160,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
+        hubGet.calls.count { it.path == '/device/fullJson/10' } == 1
         inner.id == '10'
         inner.label == 'Test Switch'
         inner.room == 'Living Room'
@@ -186,13 +204,46 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    private List nativeWrites = []
+
+    def setup() {
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420, boolean retry = false ->
+            assert path == '/device/runmethod'
+            nativeWrites << new JsonSlurper().parseText(body)
+            [success: true]
+        }
+    }
+
+    private void registerNativeCommandDevice(device) {
+        // Reuse the existing behavioral state fixtures as the simulated native HTTP server.
+        // SDK command invocations remain forbidden; ToolNativeCommandRoutingSpec separately traps
+        // all SDK state access so this transport adapter cannot hide a production SDK fallback.
+        // The nativeWrites gate below is load-bearing: toolSendCommand reads fullJson BEFORE the
+        // command (command resolution) and again AFTER it (the snapshot); the gate keeps the
+        // pre-command read clean so only the snapshot read observes a throwing or partial
+        // currentStates fixture. Without it those fixtures fail during command resolution.
+        hubGet.register("/device/fullJson/${device.id}") {
+            def states = [:]
+            // Keep command metadata readable before dispatch; only the later snapshot
+            // should observe the throwing or partial currentStates fixtures.
+            if (nativeWrites.any { it.id == device.id }) {
+                (device.currentStates ?: []).each { st ->
+                    states.put(st.name, [value: st.value,
+                        date: st.date instanceof Date ? st.date.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : st.date])
+                }
+            }
+            JsonOutput.toJson([
+                device: [id: device.id, name: device.name, label: device.label, currentStates: states],
+                commands: device.supportedCommands ?: []
+            ])
+        }
+    }
+
     // ---- toolSendCommand dispatch -------------------------------------------
 
     def "toolSendCommand dispatches command to device and returns success"() {
         given: 'a TestDevice that supports on/off and reports its switch state'
-        // Live hubs hand back java.util.Date in State.date -- mock the LIVE type so this
-        // exercises the production direct Date.format(String) path (a String mock would
-        // not, and could mask a Date-handling regression).
+        // The fixture adapter serializes this timestamp to the native ISO representation.
         def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
         def device = Spy(TestDevice) {
             getId() >> 10
@@ -202,12 +253,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the device method was invoked exactly once'
-        1 * device.on()
+        then: 'the native command was posted exactly once'
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
 
         and: 'the result shape reflects success'
         result.success == true
@@ -220,7 +273,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     def "toolSendCommand returns a post-command state snapshot from currentStates (value + timestamp)"() {
-        given: 'a device whose currentStates expose name/value/date as a real Date (the live type)'
+        given: 'native state fixtures with a timestamp, null timestamps, and unusual attribute names'
         def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
         def device = Spy(TestDevice) {
             getId() >> 10
@@ -235,11 +288,12 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             ]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'a Date is formatted as yyyy-MM-dd HH:mm:ss (guards against the formatTimestamp-on-Date toString mangle)'
+        then: 'the native ISO timestamp is normalized to yyyy-MM-dd HH:mm:ss'
         result.state.switch.value == 'on'
         result.state.switch.timestamp == '2025-01-15 10:30:00'
         result.state.switch.timestamp ==~ /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/
@@ -254,7 +308,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "toolSendCommand snapshot falls back to supportedAttributes + currentValue when currentStates is falsy (#emptyStates)"() {
+    def "toolSendCommand native snapshot stays empty when no values have reported (#emptyStates)"() {
         given: 'a device with no currentStates (null OR empty list both falsy) but declared attributes'
         def device = Spy(TestDevice) {
             getId() >> 10
@@ -268,40 +322,43 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             currentValue('getClass') >> 42
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the fallback path reports the current value with a null timestamp'
-        result.state.switch.value == 'on'
-        result.state.switch.timestamp == null
-        result.state.get('fields') == [value: 'driver fields', timestamp: null]
-        result.state.get('getClass') == [value: 42, timestamp: null]
+        then: 'unreported attributes do not trigger SDK value fallback'
+        result.success == true
+        result.state == [:]
+        !result.containsKey('stateError')
+        0 * device.currentValue(_)
 
         where: 'both falsy shapes -- guards a future "if (states != null)" refactor from skipping the empty-list case'
         emptyStates << [null, []]
     }
 
-    def "toolSendCommand snapshot fallback degrades only the throwing attribute, keeping the others"() {
-        given: 'a no-currentStates device whose currentValue throws for one attribute but returns for the other'
+    def "toolSendCommand native snapshot preserves explicit null alongside reported values"() {
+        given: 'native states include both an explicit null and a reported level'
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
-            getCurrentStates() >> []
+            getCurrentStates() >> [[name: 'switch', value: null], [name: 'level', value: '50']]
             getSupportedAttributes() >> [[name: 'switch'], [name: 'level']]
-            currentValue('switch') >> { String a -> throw new RuntimeException('read exploded') }
-            currentValue('level') >> '50'
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the throwing attribute degrades to value:null but the other attribute survives -- NOT a whole-snapshot discard'
+        then: 'the null attribute retains its key without discarding the other state'
         result.success == true
         result.state.switch.value == null
+        // This fixture declares no dataType, so the value stays the native String; the typed
+        // fixtures (dataType NUMBER) elsewhere in this spec read back as Numbers. One rule,
+        // driver-declared: NUMBER attributes are numbers, everything else is a string.
         result.state.level.value == '50'
         !result.containsKey('stateError')
     }
@@ -317,6 +374,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> []
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
@@ -337,17 +395,18 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> { throw new RuntimeException('boom') }
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the command still succeeds; state clears to empty but stateError signals the failed read (with class + message)'
-        1 * device.on()
+        then: 'the command still succeeds and stateError identifies the failed native confirmation read'
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.state == [:]
         result.stateError?.contains('device-state read-back failed')
-        result.stateError?.contains('RuntimeException')
-        result.stateError?.contains('boom')
+        result.stateError?.contains('fullJson currentStates unavailable')
 
         and: 'a degraded confirmation step flags partial=true'
         result.partial == true
@@ -369,23 +428,23 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on', date: goodDate], throwingState]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
         then: 'the partial snapshot (the switch entry built before the throw) is discarded, not leaked, and stateError marks the failed read'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.state == [:]
         result.stateError?.contains('device-state read-back failed')
     }
 
-    def "toolSendCommand snapshot keeps an attribute with timestamp null when only its date format throws (other attrs intact)"() {
-        given: 'a state whose date is truthy but throws on format, alongside a clean state'
+    def "toolSendCommand native snapshot preserves an unparseable timestamp without dropping other attributes"() {
+        given: 'a native state has an unparseable timestamp alongside a clean ISO timestamp'
         def goodDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
-        def explodingDate = new Object() {
-            String format(String pattern) { throw new RuntimeException('bad date') }
-        }
+        def explodingDate = 'unparseable native date'
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
@@ -397,15 +456,17 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             ]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the date-only failure degrades that attribute to timestamp null, keeping its value'
-        1 * device.on()
+        then: 'the unparseable date passes through while keeping its attribute value'
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.state.switch.value == 'on'
-        result.state.switch.timestamp == null
+        result.state.switch.timestamp == 'unparseable native date'
 
         and: 'the other attribute and its formatted timestamp survive (snapshot not discarded)'
         result.state.level.value == 75
@@ -432,12 +493,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> { [[name: 'switch', value: ((++reads >= 2) ? 'on' : 'off'), date: stateDate]] }
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 50])
 
         then: 'the command fired and the waitFor block reports convergence'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.attribute == 'switch'
         result.waitFor.expected == 'on'
@@ -477,12 +540,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
 
-        then: 'the poll converges on the fresh currentStates value (would time out if it read stale currentValue or currentState)'
-        1 * device.on()
+        then: 'the poll converges on the fresh native value'
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.converged == true
         result.waitFor.finalValue == 'on'
@@ -500,12 +565,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'off']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'a short timeout keeps the test fast'
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 50])
 
         then: 'the command still fired and waitFor reports non-convergence with the last value read, flagged timedOut'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.converged == false
         result.waitFor.finalValue == 'off'
@@ -530,6 +597,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             }
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'setLevel', [99], [attribute: 'level', expectedValue: '99', timeoutMs: 200, pollIntervalMs: 50])
@@ -554,12 +622,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> []
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'a short timeout keeps the test fast'
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 50])
 
         then: 'non-convergence is flagged neverReported (distinct from a wrong-value timeout)'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.converged == false
         result.waitFor.neverReported == true
@@ -576,12 +646,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'gt 5 on the non-numeric switch attribute, short timeout'
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', comparator: 'gt', expectedValue: '5', timeoutMs: 100, pollIntervalMs: 50])
 
         then: 'both the boolean flag AND the actionable note reach the waitFor caller; neverReported absent'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.converged == false
         result.waitFor.nonNumericAttribute == true
@@ -601,13 +673,15 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'off', date: stateDate]]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
         script.metaClass.pauseExecution = { long ms -> throw new InterruptedException('hub reloading') }
 
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 250])
 
         then: 'the command fired and the waitFor block carries the interrupt flag (not a plain timeout)'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.converged == false
         result.waitFor.interrupted == true
@@ -624,6 +698,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValues: ['on', 'dim']])
@@ -648,6 +723,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'level', value: '50.0']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'setLevel', [50], [attribute: 'level', expectedValue: '50'])
@@ -669,6 +745,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'off', date: stateDate]]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [])
@@ -688,6 +765,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand('10', 'on', [], [expectedValue: 'on'])
@@ -695,6 +773,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'rejected on validation, and the command never fired (no side effect)'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('waitFor.attribute')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -708,6 +787,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', expectedValues: ['on']])
@@ -715,6 +795,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'the BOTH-provided path is distinguished by its own substring'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('not both')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -728,6 +809,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand('10', 'on', [], [attribute: 'switch'])
@@ -735,6 +817,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'the NEITHER-provided path is distinguished by its own substring'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('exactly one of expectedValue or expectedValues is required')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -748,6 +831,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'timeoutMs above the command-flow cap (30000) -- stricter than the standalone engine because a waitFor poll pins a hub thread for the full timeout'
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 30001])
@@ -756,6 +840,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('timeoutMs')
         ex.message.contains('30000')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -769,6 +854,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'pollIntervalMs above the engine ceiling (5000)'
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', pollIntervalMs: 5001])
@@ -776,6 +862,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('pollIntervalMs')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -790,13 +877,15 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'timeoutMs exactly at the accepting edge -- locks the boundary against a > -> >= drift'
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 30000])
 
         then: 'not rejected pre-fire; the command fired and the poll converged'
         notThrown(IllegalArgumentException)
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.waitFor.converged == true
     }
 
@@ -810,6 +899,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'timeoutMs just below the 100 floor -- locks the lower bound against a < -> <= drift'
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 99])
@@ -817,6 +907,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'rejected pre-fire so the device is never actuated'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('timeoutMs')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -830,6 +921,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'pollIntervalMs just below the 50 floor -- locks the lower bound against a < -> <= drift'
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', pollIntervalMs: 49])
@@ -837,6 +929,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'rejected pre-fire so the device is never actuated'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('pollIntervalMs')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -850,6 +943,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValues: []])
@@ -857,6 +951,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('expectedValues')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -870,6 +965,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'a numeric element 42 in the list -- rejected before the command fires'
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValues: [42]])
@@ -878,6 +974,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('expectedValues')
         ex.message.contains('42 (number)')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -891,6 +988,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'a whitespace-only expectedValue -- .trim() rejects it for parity with attribute'
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: '   '])
@@ -899,6 +997,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('waitFor.expectedValue')
         ex.message.contains('"   "')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -911,6 +1010,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand('10', 'on', [], 'on')
@@ -918,6 +1018,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('waitFor must be an object')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -930,6 +1031,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', bogus: 1])
@@ -937,26 +1039,34 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('unknown key')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
-    def "toolSendCommand waitFor with an unsupported attribute throws before firing the command"() {
-        given: 'the device does not support the requested waitFor attribute'
+    def "toolSendCommand waitFor with an unreported attribute actuates then times out"() {
+        given: 'reported native states cannot prove whether an absent attribute is supported'
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
-            getSupportedAttributes() >> [[name: 'switch']]
+            getSupportedAttributes() >> { throw new AssertionError('SDK declaration read is forbidden') }
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
-        script.toolSendCommand('10', 'on', [], [attribute: 'level', expectedValue: '50'])
+        def result = script.toolSendCommand('10', 'on', [],
+            [attribute: 'level', expectedValue: '50', timeoutMs: 100, pollIntervalMs: 50])
 
-        then: 'rejected pre-fire so the device is never actuated'
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("waitFor.attribute 'level' not found")
+        then: 'the command is native and waitFor reports the absent attribute honestly'
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.timedOut == true
+        result.waitFor.neverReported == true
+        result.waitFor.finalValue == null
+        !result.waitFor.readError
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
         0 * device.on()
     }
 
@@ -969,6 +1079,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand('10', 'on', [], [attribute: '   ', expectedValue: 'on'])
@@ -976,6 +1087,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('waitFor.attribute is required')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -990,6 +1102,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: badValue])
@@ -997,6 +1110,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'rejected pre-fire -- a non-String or empty scalar never reaches the device'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('waitFor.expectedValue')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
 
         where: 'integer, boolean, null, and empty-string all rejected'
@@ -1013,6 +1127,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'a fractional value above the command-flow cap (30000)'
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 30000.5])
@@ -1020,6 +1135,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'rejected out-of-range before the device is actuated'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('timeoutMs')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -1034,12 +1150,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'an in-range Long / BigDecimal that the engine accepts via instanceof Number'
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: t, pollIntervalMs: p])
 
         then: 'the spec is accepted (not rejected pre-fire) and the command fires'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.converged == true
 
@@ -1050,10 +1168,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     def "toolSendCommand waitFor poll-loop read Exception degrades to readError and still converges + snapshot"() {
-        given: 'the first poll read throws an Exception, then a valid read converges'
-        // The poll AND the snapshot both read currentStates. Throw an Exception on the poll's
-        // first read; the engine's per-read catch(Exception) degrades that tick to an unread
-        // (null) value and latches readError, then read 2 converges on the real value.
+        given: 'native identity initially reads off, a later poll read throws, then a valid read converges'
+        // Fault after preflight so this exercises mid-poll recovery, not missing identity rejection.
         def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
         def reads = 0
         def device = Spy(TestDevice) {
@@ -1063,17 +1179,20 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
             getCurrentStates() >> {
-                if (++reads == 1) throw new RuntimeException('read exploded')
+                if (++reads == 1) return [[name: 'switch', value: 'off', date: stateDate]]
+                if (reads == 2) throw new RuntimeException('read exploded')
                 return [[name: 'switch', value: 'on', date: stateDate]]
             }
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on'])
 
         then: 'the command succeeded; the transient read Exception is flagged but the poll recovered and converged'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.converged == true
         result.waitFor.readError == true
@@ -1103,12 +1222,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             }
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on'])
 
         then: 'a non-Exception Throwable does NOT escape: command still succeeds, state present, waitFor.error carries the class'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         result.success == true
         result.waitFor.converged == false
         result.waitFor.error?.contains('waitFor poll failed')
@@ -1129,12 +1250,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '10', command: 'on', parameters: []])
 
-        then: 'the device method was invoked exactly once'
-        1 * device.on()
+        then: 'the native command was posted exactly once'
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
 
         and: 'the dispatch envelope carries the success result plus the post-command state snapshot'
         response.error == null
@@ -1161,6 +1284,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getCurrentStates() >> [[name: 'switch', value: 'on']]
         }
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def response = mcpDriver.callTool('hub_call_device_command', [
@@ -1169,7 +1293,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         ])
 
         then: 'the waitFor result block survives the dispatch envelope'
-        1 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -1231,6 +1356,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def a = switchDevice(10, 'Lamp A')
         def b = switchDevice(11, 'Lamp B')
         childDevicesList << a << b
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = sendBatch([
@@ -1239,8 +1365,10 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         ])
 
         then: 'each device saw exactly its own command'
-        1 * a.on()
-        1 * b.off()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * a.on()
+        nativeWrites.count { it.id == b.id && it.method == 'off' && it.args*.value == [] } == 1
+        0 * b.off()
 
         and: 'failedCount is reported even at zero, so a caller never has to infer it from absence'
         result.success == true
@@ -1265,12 +1393,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given:
         def device = switchDevice(10, 'Dimmer')
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = sendBatch([[deviceId: '10', command: 'setLevel', parameters: ['75']]])
 
         then: 'normalized to a number, as on the single-device path'
-        1 * device.setLevel(75)
+        nativeWrites.count { it.id == device.id && it.method == 'setLevel' && it.args*.value == [75] } == 1
+        0 * device.setLevel(75)
         result.results[0].parameters == [75]
     }
 
@@ -1279,6 +1409,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def a = switchDevice(10, 'Lamp A')
         def c = switchDevice(12, 'Lamp C')
         childDevicesList << a << c
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = sendBatch([
@@ -1288,8 +1419,10 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         ])
 
         then: 'the entry AFTER the failure still fired -- one bad device does not abandon the batch'
-        1 * a.on()
-        1 * c.on()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * a.on()
+        nativeWrites.count { it.id == c.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * c.on()
 
         and:
         result.success == false
@@ -1313,6 +1446,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given:
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = sendBatch([
@@ -1321,7 +1455,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         ])
 
         then:
-        1 * a.on()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * a.on()
         result.sentCount == 1
         result.failedCount == 1
         result.results[1].error.contains('does not support command: lock')
@@ -1332,6 +1467,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given: 'a valid first entry, so a fire-then-validate implementation would actuate it'
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         sendBatch(commands)
@@ -1339,6 +1475,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'rejected on validation, with nothing sent'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains(expected)
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
 
         where: 'a String parameters value is NOT here -- it is accepted and repaired by normalizeCommandParams'
@@ -1358,6 +1495,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given: 'a device that would answer, so only the message shape is under test'
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         sendBatch([entry])
@@ -1365,6 +1503,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'the caller is shown what they actually passed, not only which key was wrong'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains(expected)
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
 
         where:
@@ -1380,13 +1519,16 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def a = switchDevice(10, 'Lamp A')
         def b = switchDevice(11, 'Lamp B')
         childDevicesList << a << b
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'a clean two-entry batch'
         def batch = sendBatch([[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on']])
 
         then: 'entries skip the read-back -- no state, stateError, or partial anywhere'
-        1 * a.on()
-        1 * b.on()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * a.on()
+        nativeWrites.count { it.id == b.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * b.on()
         batch.success == true
         batch.results.every { !it.containsKey('state') && !it.containsKey('stateError') && !it.containsKey('partial') }
 
@@ -1394,7 +1536,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def single = script.toolSendCommand('10', 'off', null)
 
         then: 'the single-device contract still returns its snapshot key'
-        1 * a.off()
+        nativeWrites.count { it.id == a.id && it.method == 'off' && it.args*.value == [] } == 1
+        0 * a.off()
         single.success == true
         single.containsKey('state')
     }
@@ -1403,6 +1546,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given:
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         sendBatch((1..21).collect { [deviceId: '10', command: 'on'] })
@@ -1410,6 +1554,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('at most 20 entries (got 21)')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -1417,12 +1562,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given:
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = sendBatch((1..20).collect { [deviceId: '10', command: 'on'] })
 
         then:
-        20 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 20
+        0 * device.on()
         result.success == true
         result.sentCount == 20
         result.failedCount == 0
@@ -1482,6 +1629,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given:
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = sendBatch([
@@ -1490,7 +1638,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         ])
 
         then:
-        1 * a.on()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * a.on()
 
         and: 'isError would tell the caller the call did nothing, while Lamp A is already on'
         result.success == false
@@ -1505,13 +1654,15 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given: 'one device, addressed as a JSON number in the batch and as a string on its own'
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def batched = sendBatch([[deviceId: 10, command: 'on']])
         def single = script.toolSendCommand('10', 'on', [])
 
         then: 'both forms actuated the same device'
-        2 * a.on()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 2
+        0 * a.on()
 
         and: 'the entry agrees with the single-device call, and reports the id coerced to a string'
         batched.results[0].success == true
@@ -1525,13 +1676,15 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def mangled = '["{"hue":120,"saturation":50,"level":75}"]'
         def bulb = switchDevice(10, 'Colour Bulb', ['setColor'])
         childDevicesList << bulb
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def batched = sendBatch([[deviceId: '10', command: 'setColor', parameters: mangled]])
         def single = script.toolSendCommand('10', 'setColor', mangled)
 
         then: 'both routes handed the device the same repaired Map argument'
-        2 * bulb.setColor({ it.hue == 120 && it.saturation == 50 && it.level == 75 })
+        nativeWrites.count { it.id == bulb.id && it.method == 'setColor' && it.args == [[type: 'JSON_OBJECT', value: [hue: 120, saturation: 50, level: 75]]] } == 2
+        0 * bulb.setColor(_)
 
         and: 'both report the same normalized parameters back'
         batched.results[0].parameters == single.parameters
@@ -1547,6 +1700,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         script.metaClass._isCloudRequest = { -> true }
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
+        childDevicesList.each { registerNativeCommandDevice(it) }
         def tail = [[deviceId: '10', command: 'off'], [deviceId: '10', command: 'on']]
 
         when: 'the request clock reads 200ms ago against a 100ms budget'
@@ -1554,7 +1708,9 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             [[deviceId: '10', command: 'on']] + tail, FIXED_NOW - 200L)
 
         then: 'the first entry always goes; the rest never fired'
-        1 * a.on()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * a.on()
+        nativeWrites.count { it.id == a.id && it.method == 'off' && it.args*.value == [] } == 0
         0 * a.off()
 
         and: 'the tail comes back verbatim, so the caller re-sends exactly what was not sent'
@@ -1573,6 +1729,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         script.metaClass._isCloudRequest = { -> true }
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def result = sendBatch([
@@ -1582,8 +1739,10 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         ])
 
         then: 'every entry went -- the fallback clock is this loop, not an epoch the budget is always past'
-        2 * a.on()
-        1 * a.off()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 2
+        0 * a.on()
+        nativeWrites.count { it.id == a.id && it.method == 'off' && it.args*.value == [] } == 1
+        0 * a.off()
 
         and:
         result.success == true
@@ -1623,6 +1782,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given: 'a device that would answer either form, so only the validation can stop it'
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand(deviceId, command, parameters, null, [[deviceId: '10', command: 'on']])
@@ -1631,6 +1791,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('mutually exclusive')
         ex.message.contains(named)
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
 
         where:
@@ -1645,14 +1806,17 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given:
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'a batch entry and a single-device call, both padded'
         def batch = sendBatch([[deviceId: ' 10 ', command: 'on']])
         def single = script.toolSendCommand('  10', 'off', null)
 
         then: 'both resolve device 10, and the batch reports the canonical id'
-        1 * device.on()
-        1 * device.off()
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * device.on()
+        nativeWrites.count { it.id == device.id && it.method == 'off' && it.args*.value == [] } == 1
+        0 * device.off()
         batch.success == true
         batch.results[0].deviceId == '10'
         single.success == true
@@ -1662,6 +1826,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         given: 'a caller asking to confirm a batch the way they would confirm one device'
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         script.toolSendCommand(null, null, null, [attribute: 'switch', expectedValue: 'on'],
@@ -1671,6 +1836,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('waitFor is not supported with commands')
         ex.message.contains('hub_get_device_attribute')
+        nativeWrites.count { it.id == device.id && it.method == 'on' && it.args*.value == [] } == 0
         0 * device.on()
     }
 
@@ -1697,6 +1863,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def a = switchDevice(10, 'Lamp A')
         def b = switchDevice(11, 'Lamp B')
         childDevicesList << a << b
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
         def response = mcpDriver.callTool('hub_call_device_command', [commands: [
@@ -1705,8 +1872,10 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         ]])
 
         then:
-        1 * a.on()
-        1 * b.on()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * a.on()
+        nativeWrites.count { it.id == b.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * b.on()
 
         and:
         def inner = mcpDriver.parseInner(response)
@@ -1755,6 +1924,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
+        childDevicesList.each { registerNativeCommandDevice(it) }
 
         when: 'one entry lands and one does not'
         def partialResponse = mcpDriver.callTool('hub_call_device_command', [commands: [
@@ -1763,7 +1933,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         ]])
 
         then: 'Lamp A is already on, so an isError envelope would misreport the call as a no-op'
-        1 * a.on()
+        nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
+        0 * a.on()
         partialResponse.error == null
         partialResponse.result.isError != true
         mcpDriver.parseInner(partialResponse).partial == true
