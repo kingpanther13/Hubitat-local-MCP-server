@@ -2887,15 +2887,20 @@ def _run_read_write_split_self_test() -> int:
 # it deliberately does not authorize, so the gate is what a new tool has to remember.
 DEVICE_NATIVE_ACCESS_TOKENS = (
     "_fetchDeviceFullJson(",
-    'hubInternalGet("/device/',
-    "hubInternalGet('/device/",
-    'hubInternalPostJson("/device/',
-    "hubInternalPostJson('/device/",
     "_fetchBypassDeviceEvents(",
     "_postBypassDeviceModel(",
     "_fireBypassCommand(",
-    "updatePingDevice",
 )
+# Endpoint paths live inside string literals, which body scanning blanks; they are matched on
+# the ORIGINAL text of the body span instead (see _device_native_tokens).
+DEVICE_NATIVE_ENDPOINT_PATHS = ("/device/", "updatePingDevice")
+
+
+def _device_native_tokens(body_code: str, body_raw: str) -> list[str]:
+    hits = [t for t in DEVICE_NATIVE_ACCESS_TOKENS if t in body_code]
+    hits += [p for p in DEVICE_NATIVE_ENDPOINT_PATHS
+             if re.search(r"hubInternal\w*\(\s*['\"]" + re.escape(p) if p.startswith("/") else re.escape(p), body_raw)]
+    return hits
 
 DEVICE_GATE_LIBRARIES = (
     "libraries/mcp-devices-lib.groovy",
@@ -2917,18 +2922,40 @@ DEVICE_GATE_EXEMPT = {
 }
 
 
-def _device_tool_bodies(src: str) -> list[tuple[str, int, str]]:
-    """(tool name, 1-based line, body) for every top-level `def tool<Name>(` in src."""
-    out: list[tuple[str, int, str]] = []
-    for m in re.finditer(r"^def (tool\w+)\(", src, re.M):
+# Public tool declarations: `def toolX(`, or a typed form such as `Map toolX(`. Private/protected
+# helpers are deliberately excluded -- they are reached only through a public tool, which is
+# where the gate belongs.
+_DEVICE_TOOL_DECL = re.compile(r"^(?:def|Map|List|String|Object|boolean|void)\s+(tool\w+)\s*\(", re.M)
+
+
+def _blank_noncode(src: str) -> str:
+    """Replace the CONTENT of comments and string literals with spaces (same length, newlines
+    kept) so brace matching and token scanning never see a `{` inside a string or comment.
+    Triple-quoted strings, single/double-quoted strings (with escapes), // and /* */ comments."""
+    pattern = re.compile(
+        r'"""(?:\\.|[^\\])*?"""|\'\'\'(?:\\.|[^\\])*?\'\'\''
+        r'|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\''
+        r'|//[^\n]*|/\*.*?\*/',
+        re.S,
+    )
+    return pattern.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), src)
+
+
+def _device_tool_bodies(src: str) -> list[tuple[str, int, str, str]]:
+    """(tool name, 1-based line, body) for every top-level public `tool<Name>(` declaration in
+    src. Bodies are scanned with comments and string contents blanked, so a brace or a gate
+    token inside a string or comment neither shifts the boundary nor counts as code."""
+    out: list[tuple[str, int, str, str]] = []
+    code = _blank_noncode(src)
+    for m in _DEVICE_TOOL_DECL.finditer(code):
         name = m.group(1)
-        i = src.find("{", m.end())
+        i = code.find("{", m.end())
         if i < 0:
             continue
         depth = 0
         j = i
-        while j < len(src):
-            c = src[j]
+        while j < len(code):
+            c = code[j]
             if c == "{":
                 depth += 1
             elif c == "}":
@@ -2936,7 +2963,7 @@ def _device_tool_bodies(src: str) -> list[tuple[str, int, str]]:
                 if depth == 0:
                     break
             j += 1
-        out.append((name, src.count("\n", 0, m.start()) + 1, src[i:j]))
+        out.append((name, code.count("\n", 0, m.start()) + 1, code[i:j], src[i:j]))
     return out
 
 
@@ -2963,8 +2990,8 @@ def check_device_tool_access_gate(src_override: dict[str, str] | None = None) ->
                 sources[rel] = path.read_text(encoding="utf-8", errors="replace")
     seen_native: set[str] = set()
     for rel, src in sources.items():
-        for name, line, body in _device_tool_bodies(src):
-            native = [t for t in DEVICE_NATIVE_ACCESS_TOKENS if t in body]
+        for name, line, body, raw in _device_tool_bodies(src):
+            native = _device_native_tokens(body, raw)
             if not native:
                 continue
             seen_native.add(name)
@@ -2978,7 +3005,7 @@ def check_device_tool_access_gate(src_override: dict[str, str] | None = None) ->
                             "entry with the scope reason"),
             })
     for name in sorted(DEVICE_GATE_EXEMPT):
-        if src_override is not None and name not in {n for src in sources.values() for n, _, _ in _device_tool_bodies(src)}:
+        if src_override is not None and name not in {b[0] for src in sources.values() for b in _device_tool_bodies(src)}:
             continue
         if name not in seen_native:
             findings.append({
@@ -3014,6 +3041,23 @@ DEVICE_GATE_SELF_TEST_CASES = [
     (
         "no native access at all -- must-not-catch",
         {"libraries/x.groovy": 'def toolHello(args) {\n    return [hi: findDevice(args.id)?.label]\n}\n'},
+        set(),
+    ),
+    (
+        "typed public declaration without the gate -- must-catch",
+        {"libraries/x.groovy": 'Map toolPingDevice(args) {\n    return [ok: _fetchDeviceFullJson(args.deviceId) != null]\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "gate named only in a string and a comment, braces inside strings -- must-catch (not fooled)",
+        {"libraries/x.groovy": 'def toolPingDevice(args) {\n    // _requireDeviceToolAccess(args.deviceId) is documented here only\n'
+                               '    def note = "call _requireDeviceToolAccess( first { not here }"\n'
+                               '    def fj = _fetchDeviceFullJson(args.deviceId)\n    return [ok: fj != null, note: note]\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "private typed helper is not a tool surface -- must-not-catch",
+        {"libraries/x.groovy": 'private Map toolInstallItem(String type, args) {\n    return _fetchDeviceFullJson(args.id)\n}\n'},
         set(),
     ),
     (
