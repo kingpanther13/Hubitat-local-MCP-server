@@ -12497,10 +12497,15 @@ class TestRunner:
         """Write the fixture's restore patch to File Manager BEFORE the first mutating edit, so a
         run killed mid-matrix (cancelled, crashed, relay-dead) leaves a restore recipe behind for
         _restore_permanent_configuration_fixtures -- the in-test finally cannot run in that case."""
-        self.client.call_tool("hub_manage_files", {
+        result = self.client.call_tool("hub_manage_files", {
             "tool": "hub_write_file",
             "args": {"fileName": self._configuration_baseline_file(path), "content": json.dumps(record), "confirm": True},
         })
+        # A write that fails without raising would leave the fixture without a recovery recipe;
+        # refuse to mutate it in that case.
+        assert isinstance(result, dict) and result.get("success") is True, (
+            f"configuration baseline for {path} was not persisted; fixture left untouched: {result}"
+        )
 
     def _discard_configuration_baseline(self, path: str) -> None:
         """The in-test restoration verified the fixture; the recipe is no longer needed."""
@@ -12526,9 +12531,17 @@ class TestRunner:
         except Exception as exc:
             print(f"  [WARN] {stage}: configuration manifest unreadable; fixture restore skipped: {exc}")
             return
-        names, _ = self._list_all_file_names(self.CONFIGURATION_BASELINE_PREFIX)
+        names, authoritative = self._list_all_file_names(self.CONFIGURATION_BASELINE_PREFIX)
         recipes = [n for n in names if isinstance(n, str) and n.startswith(self.CONFIGURATION_BASELINE_PREFIX)
                    and n.endswith(".json") and "_backup_" not in n]
+        if not authoritative:
+            # A degraded listing can hide a recipe on a later page; a partial replay would restore
+            # one fixture and leave another stranded without saying so. Leave every recipe for the
+            # next pass and make the gap visible.
+            failure = f"{stage}: configuration baseline listing was not authoritative; recipe restore deferred to the next pass"
+            print(f"  [ERROR] {failure}")
+            self._fixture_reset_failures.append(failure)
+            recipes = []
         if recipes:
             print(f"  {stage}: {len(recipes)} configuration fixture baseline recipe(s) found; restoring")
             # The bypass profile is unselected: its restore needs bypass ON (the suite pins it ON,
