@@ -125,6 +125,9 @@
       "name",
       "deviceNetworkId",
       "zigbeeId"
-    ]
+    ],
+    "dataValues": {
+      "configurationProbe": "original"
+    }
   }
 }

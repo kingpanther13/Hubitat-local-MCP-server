@@ -12663,11 +12663,19 @@ class TestRunner:
                 continue
             if not same(key, row.get("value"), wanted):
                 field_patch[key] = wanted
-        if not pref_patch and not field_patch:
+        data_patch = None
+        data_row = fields.get("dataValues")
+        if canonical.get("dataValues") and isinstance(data_row, dict) and data_row.get("writable") is True:
+            observed_data = data_row.get("value") if isinstance(data_row.get("value"), dict) else {}
+            if any(not same(k, observed_data.get(k), v) for k, v in canonical["dataValues"].items()):
+                data_patch = {**observed_data, **canonical["dataValues"]}
+        if not pref_patch and not field_patch and data_patch is None:
             return
         try:
             self._set_device_bypass(True)
             metadata = {k: ("" if v is None else v) for k, v in field_patch.items() if k not in ("room", "enabled")}
+            if data_patch is not None:
+                metadata["dataValues"] = data_patch
             steps = []
             if "enabled" in field_patch:
                 steps.append({"enabled": field_patch["enabled"]})
@@ -12687,7 +12695,8 @@ class TestRunner:
                 if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
                     raise AssertionError(f"canonical patch {sorted(patch)} rejected: {result}")
             print(f"    reconciled '{profile['label']}' (ID: {device_id}) to the canonical baseline: "
-                  f"preferences={sorted(pref_patch)} fields={sorted(field_patch)}")
+                  f"preferences={sorted(pref_patch)} fields={sorted(field_patch)}"
+                  f"{' dataValues=' + str(sorted(canonical['dataValues'])) if data_patch is not None else ''}")
         except Exception as exc:
             failure = f"{profile['label']}: canonical reconcile failed: {exc}"
             print(f"  [ERROR] {stage}: {failure}")
