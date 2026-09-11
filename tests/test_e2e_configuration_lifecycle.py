@@ -92,6 +92,9 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         if name == "hub_call_device_command":
             assert args["command"] == "captureConfiguration"
             if failure in ("after-edit", "restore-confirmation") and info["dataValues"]["configurationProbe"] == "changed":
+                # restore-confirmation deliberately shares this in-flight failure: the mode proves
+                # that a restoration-confirmation failure is RECORDED while the initiating
+                # exception keeps propagating (it is never replaced by the finally).
                 raise RuntimeError("injected observation failure after grouped edit")
             nonce = args["parameters"][0]
             snapshot.update(nativeDeviceInfo={**deepcopy(info), "nonce": nonce}, nativeConfiguration={
@@ -126,7 +129,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
     runner._write_once = write_once
     message = {"body": "injected matrix failure", "setup-error": "injected setup failure",
                "setup-noop": "Native showOnHome", "after-edit": "injected observation failure",
-               "restore-confirmation": "Native data write was not confirmed"}[failure]
+               "restore-confirmation": "injected observation failure"}[failure]
     with pytest.raises((RuntimeError, AssertionError), match=message):
         runner._device_configuration_profile(
             {"path": path, "label": "Fixture", "authorized": authorized}, "10", "11",
@@ -134,6 +137,11 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
             {"Primary": 100, "Alternate": 101}, expected, "Fixture room",
         )
     assert bool(runner._fixture_reset_failures) is (failure == "restore-confirmation")
+    if failure == "restore-confirmation":
+        # The initiating failure propagated (matched above); the confirmation failure was recorded
+        # so the run fails on it, instead of replacing the exception that explains the run.
+        assert any("Native data write was not confirmed" in entry for entry in runner._fixture_reset_failures), \
+            runner._fixture_reset_failures
     # The recipe is written BEFORE the first mutating write and discarded only after a verified
     # in-test restoration; a failed restoration leaves it for the cleanup layer.
     assert files and files[0] == ("hub_write_file", 0), files

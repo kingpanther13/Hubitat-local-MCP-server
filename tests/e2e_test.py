@@ -3515,8 +3515,14 @@ class TestRunner:
             if errors:
                 failure = f"{profile['label']}: " + "; ".join(errors)
                 self._fixture_reset_failures.append(failure)
-                raise AssertionError(f"Persistent configuration fixture restoration failed: {failure}")
-            self._discard_configuration_baseline(profile["path"])
+                # Raising here while a body assertion is already propagating would REPLACE that
+                # initiating failure; it is recorded above (which fails the run) and printed, and
+                # the initiating exception keeps propagating.
+                if sys.exc_info()[1] is None:
+                    raise AssertionError(f"Persistent configuration fixture restoration failed: {failure}")
+                print(f"    [ERROR] restoration after the failure above also failed: {failure}")
+            else:
+                self._discard_configuration_baseline(profile["path"])
         print(f"    DEVICE_CONFIGURATION {profile['path']}: grouped edits and independent restoration verified; "
               "unavailable prerequisite rows are negative coverage only.")
 
@@ -13029,7 +13035,11 @@ class TestRunner:
             if flipped:
                 off = _set_bypass(False)
                 if not isinstance(off, dict) or off.get("success") is not True:
-                    print(f"    [WARN] restoring bypass OFF did not succeed: {off}")
+                    # Recorded, not just printed: bypass left ON silently invalidates every
+                    # boundary assertion that follows, so the run must fail on it.
+                    failure = f"bypass OFF restore did not succeed: {off}"
+                    print(f"    [WARN] restoring {failure}")
+                    self._fixture_reset_failures.append(failure)
 
         # Boundary restored: the device is unreachable again.
         try:

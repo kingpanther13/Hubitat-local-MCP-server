@@ -52,6 +52,21 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         NativePollFixture.register(hubGet, device)
     }
 
+    @spock.lang.Unroll
+    def "_pollSleepMs keeps the cadence for fast reads and floors at half the interval for slow ones (#label)"() {
+        expect:
+        script._pollSleepMs(interval, remaining, tickElapsed) == sleep
+
+        where:
+        label                      | interval | remaining | tickElapsed | sleep
+        'no read latency'          | 200      | 5000      | 0           | 200
+        'latency subtracted'       | 200      | 5000      | 50          | 150
+        'reads slower than interval' | 200    | 5000      | 300         | 100
+        'reads equal the interval' | 200      | 5000      | 200         | 100
+        'window nearly over'       | 200      | 30        | 50          | 30
+        'window expired'           | 200      | 0         | 0           | 200
+    }
+
     def "a malformed argument is rejected before any per-device native fetch"() {
         given:
         def device = new TestDevice(id: 10, name: 'TestSwitch', label: 'Test Switch',

@@ -464,6 +464,32 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         structured.roomUnavailableCount == null
     }
 
+    def 'a fallback-read device carries the bulk encoding in both resources: string value, no unit'() {
+        given: 'one device the tree lists without states (fallback to fullJson) and one it covers'
+        settingsMap.selectedDevices = [sdkIdentity(1), sdkIdentity(2)]
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: [[data: [id: 1, name: 'Sensor', roomName: 'Den']],
+                                         [data: [id: 2, name: 'Other', roomName: 'Den', currentStates: [[key: 'temperature', value: '70']]]]]])
+        }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson([[id: 1, label: 'Sensor', capabilities: ['TemperatureMeasurement']], [id: 2, label: 'Other', capabilities: ['TemperatureMeasurement']]]) }
+        hubGet.register('/device/fullJson/1') {
+            JsonOutput.toJson([device: [id: 1, label: 'Sensor', capabilities: ['TemperatureMeasurement'],
+                currentStates: [temperature: [value: '72.5', dataType: 'NUMBER', numberValue: 72.5, unit: '°F']]], commands: []])
+        }
+
+        when:
+        def structured = script._buildContextJson()
+        def summary = script._buildContextSummaryText()
+
+        then:
+        structured.devices.find { it.id == '1' }.attributes.temperature == '72.5'
+        structured.devices.find { it.id == '2' }.attributes.temperature == '70'
+        summary.contains('Sensor (1, Den) - TemperatureMeasurement; temperature=72.5\n')
+        !summary.contains('°F')
+        // One fallback read per resource for device 1; the bulk-covered device 2 is never fetched.
+        hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path == ['/device/fullJson/1', '/device/fullJson/1']
+    }
+
     def 'filters are served from one bulk read and only the returned page is hydrated'() {
         given:
         settingsMap.selectedDevices = (1..3).collect { sdkIdentity(it) }

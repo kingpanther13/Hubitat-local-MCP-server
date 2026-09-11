@@ -2886,32 +2886,43 @@ def _run_read_write_split_self_test() -> int:
 # below with the reason. _fetchDeviceFullJson validates the id FORMAT for every caller;
 # it deliberately does not authorize, so the gate is what a new tool has to remember.
 DEVICE_NATIVE_ACCESS_TOKENS = (
+    # per-device helpers
     "_fetchDeviceFullJson(",
     "_fetchBypassDeviceEvents(",
     "_postBypassDeviceModel(",
     "_fireBypassCommand(",
+    # whole-population (bulk) helpers: the path the device tools now read through
+    "_mcpVisibleDevices(",
+    "_fetchAllHubDeviceRecords(",
+    "_seedNativeInventoryFromTree(",
+    "_loadContextResourcePopulation(",
 )
-# Endpoint paths live inside string literals, which body scanning blanks; they are matched on
-# the ORIGINAL text of the body span instead (see _device_native_tokens).
+# Endpoint paths live inside string literals, which the body scan blanks; they are matched on a
+# comments-blanked copy of the body instead, and only as the argument of a native call
+# (hubInternal*/_radioGet), so a path named in a comment or a log message never counts.
 DEVICE_NATIVE_ENDPOINT_PATHS = ("/device/", "updatePingDevice")
+_NATIVE_CALL_ARG = r"(?:hubInternal\w*|_radioGet)\(\s*['\"]"
 
 
-def _device_native_tokens(body_code: str, body_raw: str) -> list[str]:
+def _device_native_tokens(body_code: str, body_strings: str) -> list[str]:
     hits = [t for t in DEVICE_NATIVE_ACCESS_TOKENS if t in body_code]
-    hits += [p for p in DEVICE_NATIVE_ENDPOINT_PATHS
-             if re.search(r"hubInternal\w*\(\s*['\"]" + re.escape(p) if p.startswith("/") else re.escape(p), body_raw)]
+    for p in DEVICE_NATIVE_ENDPOINT_PATHS:
+        # A slash path must START the call's literal; a bare endpoint name may sit anywhere in it.
+        pattern = _NATIVE_CALL_ARG + (re.escape(p) if p.startswith("/") else r"[^'\"\n]*" + re.escape(p))
+        if re.search(pattern, body_strings):
+            hits.append(p)
     return hits
 
-DEVICE_GATE_LIBRARIES = (
-    "libraries/mcp-devices-lib.groovy",
-    "libraries/mcp-diagnostics-lib.groovy",
-    "libraries/mcp-virtual-devices-lib.groovy",
-    "libraries/mcp-code-management-lib.groovy",
-)
+
+def _device_gate_libraries() -> list[str]:
+    """Every #include library is scanned -- no hand-kept list to fall out of date."""
+    lib_dir = REPO_ROOT / "libraries"
+    return sorted(f"libraries/{p.name}" for p in lib_dir.glob("*.groovy")) if lib_dir.is_dir() else []
 
 # tool method -> why it reaches native device endpoints without the per-device gate.
 # Every entry is a documented scope decision, not a convenience.
 DEVICE_GATE_EXEMPT = {
+    "toolListDevices": "population is _mcpVisibleDevices (selection + MCP children, or the bypass inventory); no caller-supplied device id",
     "toolDeleteDevice": "administrative force-delete keeps its documented broader scope behind confirm + backup",
     "toolCreateDevice": "creates the device it then reads; there is no pre-existing device to authorize",
     "toolCreateVirtualDevice": "MCP-child ownership scoped (reads only the child it created)",
@@ -2926,6 +2937,13 @@ DEVICE_GATE_EXEMPT = {
 # helpers are deliberately excluded -- they are reached only through a public tool, which is
 # where the gate belongs.
 _DEVICE_TOOL_DECL = re.compile(r"^(?:def|Map|List|String|Object|boolean|void)\s+(tool\w+)\s*\(", re.M)
+
+
+def _blank_comments(src: str) -> str:
+    """Replace comment CONTENT with spaces (same length, newlines kept); string literals stay."""
+    pattern = re.compile(r'"""(?:\\.|[^\\])*?"""|\'\'\'(?:\\.|[^\\])*?\'\'\''
+                         r'|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
+    return pattern.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else re.sub(r"[^\n]", " ", m.group(0)), src)
 
 
 def _blank_noncode(src: str) -> str:
@@ -2947,6 +2965,7 @@ def _device_tool_bodies(src: str) -> list[tuple[str, int, str, str]]:
     token inside a string or comment neither shifts the boundary nor counts as code."""
     out: list[tuple[str, int, str, str]] = []
     code = _blank_noncode(src)
+    strings = _blank_comments(src)
     for m in _DEVICE_TOOL_DECL.finditer(code):
         name = m.group(1)
         i = code.find("{", m.end())
@@ -2963,7 +2982,7 @@ def _device_tool_bodies(src: str) -> list[tuple[str, int, str, str]]:
                 if depth == 0:
                     break
             j += 1
-        out.append((name, code.count("\n", 0, m.start()) + 1, code[i:j], src[i:j]))
+        out.append((name, code.count("\n", 0, m.start()) + 1, code[i:j], strings[i:j]))
     return out
 
 
@@ -2984,10 +3003,8 @@ def check_device_tool_access_gate(src_override: dict[str, str] | None = None) ->
         sources = src_override
     else:
         sources = {}
-        for rel in DEVICE_GATE_LIBRARIES:
-            path = REPO_ROOT / rel
-            if path.exists():
-                sources[rel] = path.read_text(encoding="utf-8", errors="replace")
+        for rel in _device_gate_libraries():
+            sources[rel] = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
     seen_native: set[str] = set()
     for rel, src in sources.items():
         for name, line, body, raw in _device_tool_bodies(src):
@@ -3059,6 +3076,21 @@ DEVICE_GATE_SELF_TEST_CASES = [
         "private typed helper is not a tool surface -- must-not-catch",
         {"libraries/x.groovy": 'private Map toolInstallItem(String type, args) {\n    return _fetchDeviceFullJson(args.id)\n}\n'},
         set(),
+    ),
+    (
+        "bulk-population read without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolCountDevices(args) {\n    return [count: _mcpVisibleDevices().size()]\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "endpoint name only in a comment, no native call -- must-not-catch",
+        {"libraries/x.groovy": 'def toolPingNote(args) {\n    // legacy: updatePingDevice was removed here; /device/ping too\n    return [ok: true]\n}\n'},
+        set(),
+    ),
+    (
+        "radio endpoint carrying a device id without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolPingDevice(args) {\n    return _radioGet("/hub/zigbee/updatePingDevice/${args.id}/true")\n}\n'},
+        {"device-tool-access-gate-missing"},
     ),
     (
         "stale exemption (exempt tool present but reaches no native endpoint) -- must-catch",

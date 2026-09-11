@@ -752,6 +752,14 @@ private int _loadContextResourcePopulation(List records) {
         if (fetched < _contextResourcePerDeviceFetchCap()) {
             fetched++
             _hydrateNativeInventory([record], [], true)
+            // The resources carry ONE encoding on every record -- the bulk tree's string values
+            // with no units -- so a fallback read never puts a typed value or a unit suffix next
+            // to a bulk-covered one.
+            if (record.currentStates instanceof List) {
+                record.currentStates = record.currentStates.collect { st ->
+                    [name: st.name, value: st.value == null ? null : st.value.toString(), unit: null]
+                }
+            }
         } else {
             unread++
             record.putAll([_nativeReadError: true, _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
@@ -2552,7 +2560,6 @@ private BigDecimal _parseBigDecimalOrNull(v) {
 // hub commits a command's effect AFTER that request returns, so without waitFor the value
 // here is the PRE-effect state even for virtual/local devices. The timestamp is the freshness
 // signal; waitFor (block-poll) is what makes this snapshot reflect the converged state.
-// private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
 
 // Fire an access-permitted device command via the hub's id-keyed native endpoint.
 // POST /device/runmethod with
@@ -2845,7 +2852,8 @@ def toolPollUntilAttribute(args) {
     // Per-device count cap: every tick costs one native /device/fullJson round trip PER DEVICE
     // (tens of ms each, sequential, from one app thread), so per-tick work scales with the
     // device count -- bound it to keep a blocking poll cheap. The tick sleep subtracts the
-    // reads' latency (_pollSleepMs), so the cap bounds hub load, not the sampling cadence.
+    // reads' latency down to a floor of half the interval (_pollSleepMs): fast reads keep the
+    // requested cadence, slow reads space ticks by the reads plus that floor.
     def MAX_POLL_DEVICES = 20
     def deviceIdList
     if (multiDevice) {
@@ -3239,8 +3247,13 @@ def toolPollUntilAttribute(args) {
 // native read(s) already took, never past the poll's remaining window. Every tick costs one
 // /device/fullJson round trip per device, so without this subtraction a 200 ms poll of a
 // 100 ms device samples every 300 ms and polledCount silently drops for the same wall window.
+// FLOOR: reads slower than the interval must not turn the poll into back-to-back native reads
+// (a slow hub would then be sampled HARDER than a fast one), so the sleep never drops below half
+// the requested interval -- ticks are then spaced by the reads plus that half-interval.
 private Integer _pollSleepMs(pollIntervalMs, remainingMs, tickElapsedMs) {
-    long interval = Math.max(0L, (pollIntervalMs as Long) - (tickElapsedMs as Long))
+    long requested = pollIntervalMs as Long
+    long floor = (long) Math.ceil(requested / 2.0d)
+    long interval = Math.max(requested - (tickElapsedMs as Long), floor)
     long remaining = remainingMs > 0 ? (remainingMs as Long) : interval
     return Math.min(interval, remaining) as Integer
 }
@@ -5208,7 +5221,7 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
                     comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
                     stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger. Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
                 ],
                 required: ["attribute"]
             ]
@@ -5252,7 +5265,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator, as on hub_get_device_attribute. Default eq.", default: "eq"],
                         stableForMs: [type: "integer", description: "Debounce ms; match must hold this long before converging. Default 0, < timeoutMs.", default: 0, minimum: 0],
                         timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. BLOCKS a hub thread for the full timeout, so keep it tight.", default: 5000, minimum: 100, maximum: 30000],
-                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
+                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger. Target cadence: read latency is subtracted from the sleep down to a floor of half the interval.", default: 250, minimum: 50, maximum: 5000]
                     ], required: ["attribute"]]
                 ]
 

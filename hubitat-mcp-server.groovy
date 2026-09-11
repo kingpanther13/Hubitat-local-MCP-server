@@ -1451,14 +1451,14 @@ def _resourceCatalog() {
             uri: "hubitat://context-summary",
             name: "context-summary",
             title: "Live Context Summary",
-            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. Truncates on very large inventories (with an explicit marker); the paginated/filtered tool form is hub_list_devices format='context'.",
+            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. Served from one bulk hub read: attribute values are strings with NO unit suffix; devices the bulk read does not cover are read one by one up to a cap of 20 and the rest are marked '(state unavailable)'. Truncates on very large inventories (with an explicit marker). hub_list_devices format='context' is the paginated/filtered form and differs: it reads each page's devices natively and appends units to values.",
             mimeType: "text/plain"
         ]
         entries << [
             uri: "hubitat://context",
             name: "context",
             title: "Live Context (JSON)",
-            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Device records truncate on very large inventories (truncated: true + note); the paginated tool form is hub_list_devices format='context'.",
+            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Served from one bulk hub read: attribute values are strings (no units, no native number typing); devices the bulk read does not cover are read one by one up to a cap of 20 and the rest carry metadataUnavailable: true. Device records truncate on very large inventories (truncated: true + note). hub_list_devices format='context' is the paginated/filtered form and differs: per-page native reads with unit suffixes.",
             mimeType: "application/json"
         ]
     }
@@ -9355,7 +9355,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 - **expectedValues**: For eq/ne it is the value set (OR semantics -- match any member); for between it is exactly two numeric bounds [low, high]. Provide exactly ONE of expectedValue or expectedValues, not both.
 - **comparator** (default eq, value in the expected set): ne = NOT in the set. gt/gte/lt/lte = numeric compare against expectedValue. between = numeric inclusive low<=value<=high from expectedValues (exactly 2). Numeric comparators never match a null/non-numeric value (keep polling).
 - **stableForMs** (debounce, default 0 = first match): Must be < timeoutMs. A value that flaps out of the condition restarts the window.
-- **pollIntervalMs** (poll mode re-check interval, default 200): (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)
+- **pollIntervalMs** (poll mode re-check interval, default 200): the TARGET cadence. Every tick costs one native read per device, and that latency is subtracted from the sleep so fast reads keep the requested spacing; the sleep never drops below half the interval, so slow reads (or many devices) space ticks by the reads plus that floor rather than saturating the hub. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)
 
 ### hub_list_device_events
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
