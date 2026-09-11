@@ -29,7 +29,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         "retryEnabled": False, "controllerType": "", "groupId": None, "roomId": None, "zigbeeId": None,
     }
     original = deepcopy(info)
-    writes, body_starts = [], []
+    writes, body_starts, files = [], [], []
     snapshot = {}
 
     def configuration():
@@ -47,6 +47,16 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         args = args or {}
         if "tool" in args:
             name, args = args["tool"], args.get("args", {})
+        if name in ("hub_write_file", "hub_delete_file"):
+            # The restore recipe the cleanup layer replays when the in-test finally never runs.
+            assert args.get("confirm") is True and args.get("fileName") == f"e2e-configuration-baseline-{path}.json"
+            if name == "hub_write_file":
+                record = json.loads(args["content"])
+                assert record["deviceId"] == "10" and record["label"] == "Fixture" and record["deviceTypeId"] == 100
+                assert record["restore"]["label"] == "Fixture" and record["restore"]["room"] in (None, "")
+                assert set(record["preferences"]) == set(expected)
+            files.append((name, len(writes)))
+            return {"success": True}
         assert name == "hub_get_device", name
         if args.get("mode") == "configuration":
             return configuration()
@@ -124,6 +134,10 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
             {"Primary": 100, "Alternate": 101}, expected, "Fixture room",
         )
     assert bool(runner._fixture_reset_failures) is (failure == "restore-confirmation")
+    # The recipe is written BEFORE the first mutating write and discarded only after a verified
+    # in-test restoration; a failed restoration leaves it for the cleanup layer.
+    assert files and files[0] == ("hub_write_file", 0), files
+    assert (("hub_delete_file" in [f[0] for f in files]) is (not runner._fixture_reset_failures)), files
     reached_edit = failure in ("body", "after-edit", "restore-confirmation")
     assert body_starts == ([(True, "switch")] if reached_edit else [])
     assert len(writes) == (2 if (show, status) == (True, "switch") else 3 if reached_edit else 2)

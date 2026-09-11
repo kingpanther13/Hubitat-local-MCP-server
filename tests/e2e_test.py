@@ -3324,6 +3324,17 @@ class TestRunner:
         restore = {key: normalized(key, baseline["roomName" if key == "room" else key]) for key in edits}
         dirty = large_dirty = driver_dirty = enabled_dirty = False
         grouped_edit_completed = False
+        # The restore recipe goes to File Manager BEFORE anything is edited: a run killed from here
+        # on is repaired by _restore_permanent_configuration_fixtures (pre-run sweep / cleanup),
+        # not by the finally below, which a kill never reaches.
+        self._persist_configuration_baseline(profile["path"], {
+            "profile": profile["path"], "label": profile["label"], "deviceId": device_id,
+            "restore": restore, "deviceTypeId": int(baseline["deviceTypeId"]), "enabled": True,
+            "preferences": {
+                name: {"type": kind, "value": value, **({"multiple": True} if isinstance(value, list) else {})}
+                for name, (kind, value) in expected.items()
+            },
+        })
         try:
             dirty = True
             # Persistent fixtures may have been edited between runs. Preserve the
@@ -3505,6 +3516,7 @@ class TestRunner:
                 failure = f"{profile['label']}: " + "; ".join(errors)
                 self._fixture_reset_failures.append(failure)
                 raise AssertionError(f"Persistent configuration fixture restoration failed: {failure}")
+            self._discard_configuration_baseline(profile["path"])
         print(f"    DEVICE_CONFIGURATION {profile['path']}: grouped edits and independent restoration verified; "
               "unavailable prerequisite rows are negative coverage only.")
 
@@ -12476,6 +12488,121 @@ class TestRunner:
         assert result.get("updated") == {"bypassDeviceAllowlist": value}, f"Bypass setting not confirmed: {result}"
         return result
 
+    CONFIGURATION_BASELINE_PREFIX = "e2e-configuration-baseline-"
+
+    def _configuration_baseline_file(self, path: str) -> str:
+        return f"{self.CONFIGURATION_BASELINE_PREFIX}{path}.json"
+
+    def _persist_configuration_baseline(self, path: str, record: dict) -> None:
+        """Write the fixture's restore patch to File Manager BEFORE the first mutating edit, so a
+        run killed mid-matrix (cancelled, crashed, relay-dead) leaves a restore recipe behind for
+        _restore_permanent_configuration_fixtures -- the in-test finally cannot run in that case."""
+        self.client.call_tool("hub_manage_files", {
+            "tool": "hub_write_file",
+            "args": {"fileName": self._configuration_baseline_file(path), "content": json.dumps(record), "confirm": True},
+        })
+
+    def _discard_configuration_baseline(self, path: str) -> None:
+        """The in-test restoration verified the fixture; the recipe is no longer needed."""
+        try:
+            self.client.call_tool("hub_manage_files", {
+                "tool": "hub_delete_file", "args": {"fileName": self._configuration_baseline_file(path), "confirm": True},
+            })
+        except Exception as exc:
+            print(f"    [WARN] could not discard the configuration baseline for {path}: {exc}")
+
+    def _restore_permanent_configuration_fixtures(self, stage: str) -> None:
+        """Restore the permanent configuration fixtures from any baseline recipe a previous run left
+        behind, then make sure every manifest profile sits at its canonical label.
+
+        Runs at suite start and inside cleanup() (post-run and --cleanup-only), so a run that dies
+        mid-matrix is repaired by the NEXT run's pre-sweep or by the post-restore cleanup step --
+        never by the test's own finally (which a kill skips) and never by hand. Best-effort like the
+        other cleanup layers; every failure is printed loudly and, when a baseline recipe could not
+        be applied, recorded in _fixture_reset_failures so a full run fails instead of hiding it."""
+        try:
+            manifest = json.loads((Path(__file__).resolve().parent / "fixtures" /
+                                   "device-configuration-manifest.json").read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"  [WARN] {stage}: configuration manifest unreadable; fixture restore skipped: {exc}")
+            return
+        names, _ = self._list_all_file_names(self.CONFIGURATION_BASELINE_PREFIX)
+        recipes = [n for n in names if isinstance(n, str) and n.startswith(self.CONFIGURATION_BASELINE_PREFIX)
+                   and n.endswith(".json") and "_backup_" not in n]
+        if recipes:
+            print(f"  {stage}: {len(recipes)} configuration fixture baseline recipe(s) found; restoring")
+            # The bypass profile is unselected: its restore needs bypass ON (the suite pins it ON,
+            # but a run killed inside the boundary test may have left it OFF).
+            try:
+                self._set_device_bypass(True)
+            except Exception as exc:
+                print(f"  [WARN] {stage}: could not pin bypass ON before fixture restore: {exc}")
+        for name in recipes:
+            try:
+                raw = self.client.call_tool("hub_manage_files", {"tool": "hub_read_file", "args": {"fileName": name}})
+                record = json.loads(raw.get("content") or "{}") if isinstance(raw, dict) else {}
+                device_id = str(record["deviceId"])
+                steps = []
+                if record.get("enabled") is True:
+                    steps.append({"enabled": True})
+                if record.get("deviceTypeId") is not None:
+                    steps.append({"deviceTypeId": int(record["deviceTypeId"]), "confirm": True})
+                restore = dict(record.get("restore") or {})
+                # Two grouped requests (metadata, then preferences/pane/room) keep the bypass
+                # profile's native calls inside the relay budget, as the matrix itself does.
+                pane_and_room = {k: restore.pop(k) for k in ("room", "showOnHome", "defaultCurrentState") if k in restore}
+                if restore:
+                    steps.append({**restore, "confirm": True})
+                if pane_and_room or record.get("preferences"):
+                    steps.append({**pane_and_room, "preferences": record.get("preferences") or {}, "confirm": True})
+                for patch in steps:
+                    result = self.client.call_tool("hub_manage_devices", {
+                        "tool": "hub_update_device", "args": {"deviceId": device_id, **patch}})
+                    if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
+                        raise AssertionError(f"restore patch {sorted(patch)} rejected: {result}")
+                readback = self.client.call_tool("hub_get_device", {"deviceId": device_id})
+                if readback.get("label") != record.get("label"):
+                    raise AssertionError(f"label read back as {readback.get('label')!r}, expected {record.get('label')!r}")
+                print(f"    restored configuration fixture '{record.get('label')}' (ID: {device_id}) from {name}")
+                self._discard_configuration_baseline(record.get("profile") or name[len(self.CONFIGURATION_BASELINE_PREFIX):-5])
+            except Exception as exc:
+                failure = f"{name}: baseline restore failed: {exc}"
+                print(f"  [ERROR] {stage}: {failure}")
+                self._fixture_reset_failures.append(failure)
+        # Canonical-label check: a fixture left under its temporary "<label>_Changed" identity (a
+        # kill between the rename and the recipe write, or a recipe that could not be applied) is
+        # renamed back so the lookups find it; anything else still off-baseline fails loudly in the
+        # matrix's own provisioning asserts with the field named.
+        try:
+            inventory = self.client.call_tool("hub_list_devices", {
+                "scope": "all", "labelFilter": f"{SCAFFOLD_PREFIX}Configuration"})
+            devices = inventory.get("devices") if isinstance(inventory, dict) else None
+        except Exception as exc:
+            devices = None
+            print(f"  [WARN] {stage}: configuration fixture inventory unavailable: {exc}")
+        if isinstance(devices, list):
+            for profile in manifest["profiles"]:
+                label = profile["label"]
+                if len([d for d in devices if d.get("label") == label]) == 1:
+                    continue
+                candidates = [d for d in devices if str(d.get("label") or "").startswith(f"{label}_")]
+                if len(candidates) != 1:
+                    print(f"  [ERROR] {stage}: permanent fixture '{label}' is missing and no single renamed "
+                          f"candidate exists (found {[d.get('label') for d in candidates]}); provision it per "
+                          "tests/fixtures/device-configuration-provisioning.md")
+                    continue
+                dev_id = str(candidates[0]["id"])
+                try:
+                    self._set_device_bypass(True)
+                    result = self.client.call_tool("hub_manage_devices", {
+                        "tool": "hub_update_device", "args": {"deviceId": dev_id, "label": label}})
+                    assert result.get("success") is True and not result.get("errors"), result
+                    print(f"    renamed '{candidates[0].get('label')}' (ID: {dev_id}) back to '{label}'; "
+                          "name/DNI/native fields were NOT restored (no baseline recipe) -- the matrix's "
+                          "provisioning asserts will name anything still off-baseline")
+                except Exception as exc:
+                    print(f"  [ERROR] {stage}: could not rename '{candidates[0].get('label')}' back to '{label}': {exc}")
+
     def _device_allowlist_inventory(self, **filters) -> dict:
         """Measure selected/child membership, then restore the suite's effective-access baseline."""
         try:
@@ -13971,6 +14098,11 @@ class TestRunner:
         refuse_unless_leased_test_hub(self.client, refuse_when_unreadable=False)
         print("\n--- Cleanup ---")
 
+        # Layer 0: permanent configuration fixtures back to baseline (from the recipe the matrix
+        # wrote before editing). Runs here so the post-restore --cleanup-only step repairs a run
+        # that was killed mid-matrix, instead of the next run failing on a renamed fixture.
+        self._restore_permanent_configuration_fixtures("cleanup")
+
         # Layer 1: tracked artifacts
         for rule_id in list(self.created_rule_ids):
             try:
@@ -14462,6 +14594,10 @@ class TestRunner:
                 return False
             print("No tests matched the filter criteria.")
             return True
+
+        # A previous run killed mid-matrix leaves the permanent configuration fixtures off
+        # baseline; repair them before any test looks them up.
+        self._restore_permanent_configuration_fixtures("pre-run")
 
         # Group for display
         current_group = None
