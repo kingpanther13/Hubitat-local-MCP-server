@@ -48,11 +48,12 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         script.runNativeLogFetch(runInMillisCalls[0][2].data as Map)
         def completed = call('hub_read_diagnostics', args, first.result.requestState)
 
-        then:
+        then: 'the scoped read plus its identity probe (empty result); revoking bypass gates neither'
         completed.result.resultType == 'complete'
         completed.result.isError != true
         mcpDriver.parseInner(completed).count == 0
-        hubGet.calls*.path == ['/logs/past/json']
+        mcpDriver.parseInner(completed).deviceIdResolved == false
+        hubGet.calls*.path == ['/logs/past/json', '/device/fullJson/42']
     }
 
     def "native log reads continue without foreground HTTP and preserve scoped full messages"() {

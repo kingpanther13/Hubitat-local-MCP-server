@@ -37,8 +37,20 @@ class McpResourcesSpec extends ToolSpecBase {
 
     private Map dispatch(Map body, Map headers = null) {
         if (body.method == 'resources/read' && body.params?.uri instanceof String && body.params.uri.startsWith('hubitat://context')) {
-            ((settingsMap.selectedDevices ?: []) + childDevicesList).each { device ->
+            def devices = (settingsMap.selectedDevices ?: []) + childDevicesList
+            devices.each { device ->
                 NativeInventoryFixture.register(hubGet, device.id.toString()) { device }
+            }
+            // The resources are served from the bulk tree + capability feed (one read each); the
+            // per-device fullJson registrations above stay as the capped fallback.
+            hubGet.register('/hub2/devicesList') {
+                groovy.json.JsonOutput.toJson([devices: devices.collect { d ->
+                    [data: [id: d.id, name: d.label ?: d.name, roomName: d.roomName,
+                            currentStates: (d.currentStates ?: []).collect { [key: it.name, value: it.value?.toString()] }]]
+                }])
+            }
+            hubGet.register('/hub2/vrb/devices') {
+                groovy.json.JsonOutput.toJson(devices.collect { d -> [id: d.id, label: d.label ?: d.name, capabilities: d.capabilities?.collect { it.name } ?: []] })
             }
         }
         if (headers != null) mcpDriver.pushHeaders(headers)
