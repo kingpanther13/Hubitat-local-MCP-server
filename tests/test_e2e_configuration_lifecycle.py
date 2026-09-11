@@ -151,7 +151,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
     assert info == original
 
 
-@pytest.mark.parametrize("drift", ["none", "preferences", "fields", "both"])
+@pytest.mark.parametrize("drift", ["none", "preferences", "fields", "both", "room"])
 def test_canonical_reconcile_patches_only_what_drifted(drift):
     """The pre-run/cleanup sweep brings a permanent fixture back to the manifest's canonical
     baseline without a recipe: one configuration read, a write only for what drifted, identity
@@ -164,7 +164,8 @@ def test_canonical_reconcile_patches_only_what_drifted(drift):
     profile = {"path": "standalone-bypass", "label": "Fixture", "authorized": False,
                "canonical": {"name": None, "deviceNetworkId": "fixture-dni", "zigbeeId": None}}
     prefs = {"probeBool": True if drift in ("preferences", "both") else False, "probeText": "original saved text"}
-    fields = {"maxEvents": 47 if drift in ("fields", "both") else 40, "notes": "", "tags": "", "room": None,
+    fields = {"maxEvents": 47 if drift in ("fields", "both") else 40, "notes": "", "tags": "",
+              "room": "BAT_E2E_KEEP_Room" if drift == "room" else None,
               "enabled": True, "dashboardIds": [], "name": "Fixture_name", "deviceNetworkId": "fixture-dni", "zigbeeId": "0200"}
     writes, bypass = [], []
 
@@ -191,6 +192,10 @@ def test_canonical_reconcile_patches_only_what_drifted(drift):
         assert writes == [] and bypass == []
         return
     assert bypass == [{"bypassDeviceAllowlist": True}]
+    if drift == "room":
+        # A room clear is sent as the empty string (the tool rejects null); no empty preferences map.
+        assert writes == [{"confirm": True, "room": ""}]
+        return
     patched_prefs = [w["preferences"] for w in writes if "preferences" in w]
     patched_fields = {k for w in writes for k in w if k not in ("preferences", "confirm")}
     if drift in ("preferences", "both"):

@@ -12667,16 +12667,19 @@ class TestRunner:
             return
         try:
             self._set_device_bypass(True)
-            metadata = {k: v for k, v in field_patch.items() if k not in ("room", "enabled")}
+            metadata = {k: ("" if v is None else v) for k, v in field_patch.items() if k not in ("room", "enabled")}
             steps = []
             if "enabled" in field_patch:
                 steps.append({"enabled": field_patch["enabled"]})
             if metadata:
                 steps.append({**metadata, "confirm": True})
             if pref_patch or "room" in field_patch:
-                step = {"preferences": pref_patch, "confirm": True}
+                step = {"confirm": True}
+                if pref_patch:
+                    step["preferences"] = pref_patch
                 if "room" in field_patch:
-                    step["room"] = field_patch["room"]
+                    # hub_update_device takes a string; an empty string is the documented room clear.
+                    step["room"] = field_patch["room"] if field_patch["room"] is not None else ""
                 steps.append(step)
             for patch in steps:
                 result = self.client.call_tool("hub_manage_devices", {
