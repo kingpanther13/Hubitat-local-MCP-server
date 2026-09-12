@@ -1290,7 +1290,7 @@ def handleNotification(msg) {
 // body, while the hub keeps running the write. Shipped in server instructions and, in
 // gateway mode, on every continuation-eligible write surface so the model reads it first.
 def _mrtrClientErrorHint() {
-    return "If a write returns a client-side error with no result body, the hub may still be running it or may have finished it: read the target before repeating the call. An identical repeat within a few minutes joins the running write instead of starting a second one."
+    return "If a write returns a client-side error with no result body, the hub may still be running it or may already have finished it. Read the target before repeating the call: a repeat is only safe when the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops')."
 }
 
 def serverInstructions() {
@@ -1547,7 +1547,7 @@ def handleResourcesRead(msg) {
 
 // MCP 2026-07-28 request-to-request continuation wrapper. Only modern, explicitly
 // eligible slow operations (the write set and, when the transport carries a time
-// budget, the Logs-page reads) enter this path; every other call keeps the established
+// budget, the slow reads in _mrtrReadTools()) enter this path; every other call keeps the established
 // dispatcher below. The first round reserves state and starts the work in the same
 // request, so a client that never echoes requestState still completes a fast write;
 // requestState comes back only for work still running at the budget, and an identical
@@ -1581,6 +1581,7 @@ def handleToolsCall(msg) {
     String readSnapshotId = null
     String stateId = requestState?.toString()
     boolean rejoined = false
+    def sliceResult = null
     long reqT0 = now()
     try {
         def binding = _mrtrBinding(toolName, reactiveToolName, args)
@@ -1605,9 +1606,9 @@ def handleToolsCall(msg) {
             }
             boolean readLeaf = _mrtrReadTools().contains(leafName)
             if (readLeaf) {
-                // A read has no mutation to protect, so round zero runs it: a cached or
-                // quickly landed snapshot answers in one round trip, and only a fetch that is
-                // still pending reserves a requestState for the client to continue.
+                // Reads run before reserving: a cached or quickly landed snapshot answers in
+                // one round trip, and only a fetch that is still pending reserves a
+                // requestState for the client to continue.
                 Map readArgs = _mrtrCopyMap(args as Map)
                 readArgs.__reqT0 = reqT0
                 if (_mrtrDeviceReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
@@ -1624,20 +1625,21 @@ def handleToolsCall(msg) {
                     reservation.refusal, true)
             }
             stateId = reservation.stateId?.toString()
-            // rejoined tells the caller its byte-identical call coalesced onto an
-            // already-reserved request: a retry sees expected behavior, and an
-            // INTENTIONAL identical repeat learns it must vary its arguments (or
-            // wait out the record TTL) to execute again.
+            // rejoined marks a byte-identical call that coalesced onto an already-reserved
+            // record. Every response to that call carries the marker: a state-only reply,
+            // or the retained result when the original has already finished. A duplicate
+            // that finds the record active but unclaimed becomes the owner of its next
+            // slice, which is still the one logical operation, never a second write.
             rejoined = reservation.rejoined == true
             if (readLeaf) {
                 // The read is already running in the background; hand back its state.
-                return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
+                return jsonRpcResult(msg.id, _mrtrPendingResult(stateId, rejoined))
             }
         }
         // A write claims its record in the same request that reserved it and runs the
-        // first slice now. The spec lets a client decline to echo requestState, so a
-        // write that finishes within this request's budget must not depend on a retry.
-        // A rejoined replay observes the running owner here instead of executing twice.
+        // first slice now. The spec forbids a server from assuming the client will retry
+        // at all, so a write that finishes within this request's budget must not depend
+        // on one. A rejoined replay observes the running owner here instead of executing twice.
         claim = _mrtrClaimWithWait(stateId, toolName, reactiveToolName,
             binding, reqT0, reactiveToolName?.toString())
         rec = claim.record as Map
@@ -1656,15 +1658,13 @@ def handleToolsCall(msg) {
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args, replayed, false)
             }
             return _renderToolResult(msg.id, toolName, reactiveToolName, args,
-                rec.terminalResult, rec.terminalIsError == true)
+                _mrtrMarkRejoined(rec.terminalResult, rejoined), rec.terminalIsError == true)
         }
         if (claim.outcome == "in_progress") {
             // Runtime contention is still the same logical request, not a
             // malformed JSON-RPC call. Keep an automatic modern client in
             // its continuation loop without advancing or restarting work.
-            def pending = [resultType: "input_required", requestState: stateId]
-            if (rejoined) pending.rejoined = true
-            return jsonRpcResult(msg.id, pending)
+            return jsonRpcResult(msg.id, _mrtrPendingResult(stateId, rejoined))
         }
 
         Map executionArgs = (rec.nextArguments instanceof Map)
@@ -1689,21 +1689,20 @@ def handleToolsCall(msg) {
                 if (observed.outcome == "terminal") {
                     Map terminalRec = observed.record as Map
                     return _renderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
-                        terminalRec.terminalResult, terminalRec.terminalIsError == true)
+                        _mrtrMarkRejoined(terminalRec.terminalResult, rejoined), terminalRec.terminalIsError == true)
                 }
-                return jsonRpcResult(msg.id,
-                    [resultType: "input_required", requestState: stateId])
+                return jsonRpcResult(msg.id, _mrtrPendingResult(stateId, rejoined))
             }
             return _renderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
                 scheduled.failure, true)
         }
-        def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
-        Map completion = _mrtrCommitSlice(stateId, rec, claim, executionArgs, result)
+        sliceResult = _mrtrExecuteSlice(stateId, rec, executionArgs)
+        Map completion = _mrtrCommitSlice(stateId, rec, claim, executionArgs, sliceResult)
         if (completion.outcome == "continued") {
-            return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
+            return jsonRpcResult(msg.id, _mrtrPendingResult(stateId, rejoined))
         }
         return _renderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
-            completion.result, completion.isError == true)
+            _mrtrMarkRejoined(completion.result, rejoined), completion.isError == true)
     } catch (IllegalArgumentException e) {
         if (rec instanceof Map && claim?.outcome == "claimed") {
             _mrtrAbandon(stateId, rec, claim, "validation_error")
@@ -1717,13 +1716,47 @@ def handleToolsCall(msg) {
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
                        error: e.message],
              stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")])
-        def failure = [success: false, isError: true, error: "Tool error: ${e.message}", tool: reactiveToolName]
+        if (e instanceof IllegalStateException && sliceResult instanceof Map) {
+            // The slice ran; only its record bookkeeping was lost. Hand back the real
+            // outcome rather than reporting a completed write as a failure.
+            def orphaned = [:] + (sliceResult as Map)
+            orphaned.note = "The operation ran, but its continuation record was lost before the result " +
+                "could be stored, so this requestState cannot replay it. Inspect the target before any follow-up."
+            return _renderToolResult(msg.id, toolName, reactiveToolName, args, orphaned,
+                orphaned.isError == true)
+        }
+        def failure = _mrtrFailureWithLedger(rec, reactiveToolName, "Tool error: ${e.message}".toString())
         if (rec instanceof Map && claim?.outcome == "claimed") {
             _mrtrCleanupRecord(rec)
             _mrtrStoreTerminal(stateId, rec, claim, failure, true)
         }
         return _renderToolResult(msg.id, toolName, reactiveToolName, args, failure, true)
     }
+}
+
+private Map _mrtrPendingResult(String stateId, boolean rejoined = false) {
+    Map pending = [resultType: "input_required", requestState: stateId]
+    if (rejoined) pending.rejoined = true
+    return pending
+}
+
+private def _mrtrMarkRejoined(result, boolean rejoined) {
+    if (!rejoined || !(result instanceof Map)) return result
+    return ([:] + (result as Map)) + [rejoined: true]
+}
+
+// A failed slice may sit on top of committed earlier slices: hand back that ledger and
+// say the failing slice may also have changed the hub, so the caller inspects instead
+// of repeating the whole operation.
+private Map _mrtrFailureWithLedger(Map rec, leafTool, String error) {
+    def failure = [success: false, isError: true, tool: leafTool, error: error]
+    if (rec instanceof Map && rec.aggregate instanceof Map && !rec.aggregate.isEmpty()) {
+        failure.aggregate = _mrtrCopyMap(rec.aggregate as Map)
+        failure.note = "aggregate records earlier checkpointed slices. The failing slice may " +
+            "also have changed the hub before the error; inspect the target and deferred " +
+            "finalization before deciding on a follow-up. Do not repeat the whole operation."
+    }
+    return failure
 }
 
 def handleToolsCallLegacy(msg) {
@@ -2671,10 +2704,10 @@ def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null)
         // Device state can change outside MCP; independent reads must never join an older snapshot.
         def duplicate = readSnapshotId ? null : _mrtrFindActiveLocked(leafTool, binding)
         if (duplicate != null) {
-            // A relay can drop the mutation-free preflight after this state was
-            // reserved but before the client learned requestState. Coalesce an exact
-            // binding replay onto that record; capacity and worker ownership remain
-            // unchanged, so this cannot schedule or execute the write twice.
+            // A relay can drop the first request's response after this state was
+            // reserved and the write started. Coalesce an exact binding replay onto that
+            // record; capacity and worker ownership remain unchanged, so this cannot
+            // schedule or execute the write twice.
             outcome = [accepted: true, stateId: duplicate.stateId, rejoined: true]
         } else {
             boolean readLeaf = _mrtrReadTools().contains(leafTool?.toString())
@@ -2946,7 +2979,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
     }
     def continuation = _mrtrContinuation(leaf, executionArgs, result, rec)
     if (continuation instanceof Map) {
-        // Bound committed owner slices, not client retries: preflight and worker
+        // Bound committed owner slices, not client retries: contention and worker
         // coordination also return input_required without incrementing rec.rounds.
         // This cap cannot guarantee completion within a client's retry limit.
         if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
@@ -3301,14 +3334,7 @@ def runMrtrSlice(Map job = [:]) {
             return
         }
         mcpLog("error", "mrtr", "Detached write worker failed for ${rec.leafTool}: ${workerErr.message}")
-        def failure = [success: false, isError: true, tool: rec.leafTool,
-                       error: "Tool error: ${workerErr.message}"]
-        if (rec.aggregate instanceof Map && !rec.aggregate.isEmpty()) {
-            failure.aggregate = _mrtrCopyMap(rec.aggregate as Map)
-            failure.note = "aggregate records earlier checkpointed slices. The failing slice may " +
-                "also have changed the hub before the error; inspect the target and deferred " +
-                "finalization before deciding on a follow-up. Do not repeat the whole operation."
-        }
+        def failure = _mrtrFailureWithLedger(rec, rec.leafTool, "Tool error: ${workerErr.message}".toString())
         _mrtrCleanupRecord(rec)
         _mrtrStoreTerminal(stateId, rec, claim, failure, true)
     } finally {
@@ -4952,10 +4978,12 @@ def getToolDefinitions() {
     Set writeLeaves = _mrtrWriteTools()
     return transformed.collect { tool ->
         String name = tool.name as String
+        // The enum is visibleSubTools (hideByName already applied), not config.tools:
+        // a gateway whose write leaves are all toggled off advertises no write surface.
         boolean hinted = writeLeaves.contains(name) ||
             (gatewayConfig.containsKey(name) &&
-                (tool.inputSchema?.properties?.tool?.enum ?: []).any { writeLeaves.contains(it?.toString()) })
-        def withHint = _withMrtrClientErrorHint(tool, hinted)
+                (tool.inputSchema?.properties?.tool?.enum ?: []).any { writeLeaves.contains(it) })
+        def withHint = hinted ? _withMrtrClientErrorHint(tool) : tool
         // Gateways already carry complete annotations from above. Check readOnlyHint,
         // not just the map: a leaf with only a title still needs its canonical hints.
         if (withHint.annotations?.containsKey('readOnlyHint')) return withHint
@@ -4963,8 +4991,7 @@ def getToolDefinitions() {
     }
 }
 
-private Map _withMrtrClientErrorHint(Map tool, boolean applies) {
-    if (!applies) return tool
+private Map _withMrtrClientErrorHint(Map tool) {
     return tool + [description: "${tool.description}\n\n${_mrtrClientErrorHint()}".toString()]
 }
 
@@ -10090,7 +10117,7 @@ If eight owner slices leave work unfinished, the terminal `continuation_limit` r
 
 ### Client retry limits and resume
 
-The official Python SDK pinned by this project (2.0.0) defaults to ten automatic continuation retries. Preflight and coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
+The official Python SDK pinned by this project (2.0.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
 
 For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
 

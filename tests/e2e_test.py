@@ -3874,6 +3874,11 @@ class TestRunner:
         assert result.get("success") or result.get("id") or result.get("deviceId") or dni, \
             f"create virtual device failed: {result}"
         assert result.get("mrtr", {}).get("continued") is True, f"Virtual-device creation bypassed MRTR: {result}"
+        # The first request reserves, claims and runs the write; a fast one completes there,
+        # so a client that never echoes requestState still gets the result.
+        assert self.client._last_continuation_rounds == 0, (
+            "a fast virtual-device create should complete in its first request, saw "
+            f"{self.client._last_continuation_rounds} continuation round(s)")
 
     def _native_device_command(self, args: dict) -> dict:
         result = self.client.call_tool("hub_call_device_command", args)

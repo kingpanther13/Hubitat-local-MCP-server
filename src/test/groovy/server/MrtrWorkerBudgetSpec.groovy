@@ -349,7 +349,9 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         when:
         def complete = modernCall('hub_set_rule', args)
         def terminal = mcpDriver.parseInner(complete)
-        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
+        Map records = atomicStateMap.mrtrRequests as Map
+        assert records.size() == 1
+        String stateId = records.keySet().first()
         def replay = modernCall('hub_set_rule', args, stateId)
 
         then: 'the failed first replacement still owns the one-replacement fence for this batch'

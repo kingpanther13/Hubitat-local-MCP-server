@@ -76,6 +76,22 @@ class MrtrContinuationSpec extends ToolSpecBase {
         return mcpDriver.decodeToolCallResponse(response)
     }
 
+    /** First slice succeeds on rule one and pauses with the rest as remainder. */
+    private Closure pausingMultiRuleWrite(Closure onCall = null) {
+        return { Map a ->
+            onCall?.call(a)
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
+    }
+
+    /** The single retained record's state id, for calls that returned terminal with no wire state. */
+    private String onlyStateId() {
+        Map records = atomicStateMap.mrtrRequests as Map
+        assert records.size() == 1
+        return records.keySet().first()
+    }
+
     def "argument canonicalization preserves collision-named data and value types"() {
         given:
         def input = [z: null, fields: ['id', 'label'], nested: [fields: false, class: 0, getClass: []]]
@@ -285,7 +301,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         'backup freshness' | true     | false        | null           | true    | null            || 'BACKUP REQUIRED'
     }
 
-    def "valid #leaf native write schedules its worker after pure preflight"() {
+    def "valid #leaf native write schedules its worker after pure validation"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
@@ -584,7 +600,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         def complete = modernCall('hub_set_rule', args)
-        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
+        String stateId = onlyStateId()
         def replay = modernCall('hub_set_rule', args, stateId)
 
         then:
@@ -649,7 +665,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         def failed = modernCall('hub_set_rule', args)
-        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
+        String stateId = onlyStateId()
         def replay = modernCall('hub_set_rule', args, stateId)
 
         then:
@@ -694,7 +710,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         when:
         assert entered.await(5, TimeUnit.SECONDS)
         def duplicate = directCall(script, 2102, 'hub_call_rule', original)
-        String activeState = (atomicStateMap.mrtrRequests as Map).keySet().first()
+        String activeState = onlyStateId()
         release.countDown()
         first.join(5000)
 
@@ -719,10 +735,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given: 'a first write whose slice pauses with a remainder, holding its record active'
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
-        script.metaClass.toolRunRmRule = { Map a ->
-            [success: false, partial: true, ruleIds: a.ruleId,
-             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
-        }
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
 
         when:
         def first = modernCall('hub_call_rule', [ruleId: [21, 22], action: 'stop'])
@@ -962,7 +975,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         assert entered.await(5, TimeUnit.SECONDS)
-        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
+        String stateId = onlyStateId()
         virtualNow.addAndGet((script._mrtrActiveTtlMs() as Long) + 1L)
         def sameState = directCall(peer, 1902, 'hub_call_rule', args, stateId)
         def competingFresh = directCall(peer, 1903, 'hub_call_rule',
@@ -1039,7 +1052,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when: 'three complete continuation legs wait while the original leaf remains blocked'
         assert entered.await(5, TimeUnit.SECONDS)
-        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
+        String stateId = onlyStateId()
         def contention = (0..<3).collect { int index ->
             directCall(peer, 1952 + index, 'hub_call_rule', args, stateId)
         }
@@ -1176,12 +1189,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def gatewayArgs = [tool: leaf, args: leafArgs]
 
         when:
-        def preflight = modernCall('hub_manage_code', gatewayArgs)
+        def first = modernCall('hub_manage_code', gatewayArgs)
 
         then: 'round zero schedules the detached worker; nothing mutates Hubitat code inline'
-        preflight.error == null
-        preflight.result.resultType == 'input_required'
-        preflight.result.requestState instanceof String
+        first.error == null
+        first.result.resultType == 'input_required'
+        first.result.requestState instanceof String
         dispatched.isEmpty()
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
@@ -1657,7 +1670,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         when:
         def failed = modernCall('hub_set_rule', args)
         def failedInner = mcpDriver.parseInner(failed)
-        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
+        String stateId = onlyStateId()
         def replay = modernCall('hub_set_rule', args, stateId)
         def replayInner = mcpDriver.parseInner(replay)
 
@@ -1677,10 +1690,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given: 'each first slice pauses with a remainder, so both records stay active'
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 0
-        script.metaClass.toolRunRmRule = { Map a ->
-            [success: false, partial: true, ruleIds: a.ruleId,
-             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
-        }
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
 
         expect:
         modernCall('hub_call_rule', [ruleId: [41, 42], action: 'stop']).result.resultType == 'input_required'
@@ -1977,11 +1987,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         def ran = 0
-        script.metaClass.toolRunRmRule = { Map a ->
-            ran++
-            [success: false, partial: true, ruleIds: a.ruleId,
-             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
-        }
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite { ran++ }
         def first = modernCall('hub_call_rule', [ruleId: [31, 32], action: 'stop'])
         String requestState = first.result.requestState
 
@@ -2005,10 +2011,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
     def "requestState binding includes a changed best-practice acknowledgment"() {
         given:
         settingsMap.enableWrite = true
-        script.metaClass.toolRunRmRule = { Map a ->
-            [success: false, partial: true, ruleIds: a.ruleId,
-             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
-        }
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
         def original = [ruleId: [81, 82], action: 'stop', bestPracticeKey: 'original-key']
         def first = modernCall('hub_call_rule', original)
 
@@ -2072,11 +2075,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         def ran = 0
-        script.metaClass.toolRunRmRule = { Map a ->
-            ran++
-            [success: false, partial: true, ruleIds: a.ruleId,
-             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
-        }
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite { ran++ }
         def original = [ruleId: [41, 42], action: 'stop']
 
         when:
@@ -2316,11 +2315,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
 
         when: 'the first request runs the initialize slice'
-        def preflight = modernCall(tool, args)
-        String requestState = preflight.result.requestState
+        def first = modernCall(tool, args)
+        String requestState = first.result.requestState
 
         then:
-        preflight.result.resultType == 'input_required'
+        first.result.resultType == 'input_required'
         disabled.isEmpty()
 
         when: 'ordinary continuations commit and stage one target per slice'
@@ -2988,22 +2987,134 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions() as List
         def byName = tools.collectEntries { [(it.name): it] }
 
-        then: 'the instructions always carry the hint; gateway surfaces carry it inline, the size-capped flat catalog does not'
-        hint.contains('read the target before repeating')
-        (script.serverInstructions() as String).contains(hint)
-        hinted.every { byName[it] != null && (byName[it].description as String).endsWith(hint) }
+        Set writeLeaves = script._mrtrWriteTools() as Set
+        Map gatewayConfig = script.getGatewayConfig() as Map
+        // Every advertised surface that IS a continuation write, or a gateway that exposes one.
+        List expectedHinted = gateways
+            ? tools*.name.findAll { String n ->
+                writeLeaves.contains(n) || (gatewayConfig[n]?.tools ?: []).any { writeLeaves.contains(it) } }
+            : []
+
+        then: 'the instructions always carry the hint; gateway surfaces carry it exactly once, the size-capped flat catalog does not'
+        hint.contains('Read the target before repeating')
+        !hint.contains('joins')
+        (script.serverInstructions() as String).count(hint) == 1
+        !expectedHinted.isEmpty() == gateways
+        expectedHinted.every { (byName[it].description as String).count(hint) == 1 &&
+            (byName[it].description as String).endsWith(hint) }
+        (tools*.name - expectedHinted).every { !(byName[it].description as String).contains(hint) }
         unhinted.every { byName[it] != null && !(byName[it].description as String).contains(hint) }
         tools.findAll { (it.description as String).contains(hint) }.every {
             it.annotations?.readOnlyHint != true
         }
 
         where:
-        mode      | gateways | hinted                                                                        | unhinted
-        'gateway' | true     | ['hub_manage_virtual_device', 'hub_manage_devices', 'hub_manage_rule_machine',
-                               'hub_manage_native_rules_and_apps', 'hub_manage_code']                        | ['hub_read_devices', 'hub_read_rules', 'hub_get_info', 'hub_manage_mode']
-        'flat'    | false    | []                                                                            | ['hub_manage_virtual_device', 'hub_update_device', 'hub_set_rule',
-                                                                                                                'hub_get_info', 'hub_list_devices', 'hub_call_device_command']
+        mode      | gateways | unhinted
+        'gateway' | true     | ['hub_read_devices', 'hub_read_rules', 'hub_get_info', 'hub_manage_mode']
+        'flat'    | false    | ['hub_manage_virtual_device', 'hub_update_device', 'hub_set_rule',
+                               'hub_get_info', 'hub_list_devices', 'hub_call_device_command']
     }
+
+    def "an identical call after the write completed is a new operation, not a replay"() {
+        given:
+        settingsMap.enableWrite = true
+        def ran = new AtomicInteger(0)
+        script.metaClass.toolRunRmRule = { Map a ->
+            ran.incrementAndGet()
+            [success: true, ruleIds: a.ruleId, results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+        def args = [ruleId: [61, 62], action: 'stop']
+
+        when:
+        def first = modernCall('hub_call_rule', args)
+        def repeat = modernCall('hub_call_rule', args)
+
+        then: 'the terminal record is not a coalescing target; the client-error hint tells models to read first'
+        first.result.resultType == 'complete'
+        repeat.result.resultType == 'complete'
+        !repeat.result.containsKey('rejoined')
+        ran.get() == 2
+        (atomicStateMap.mrtrRequests as Map).size() == 2
+    }
+
+    def "a coalescing slow read carries the rejoined marker on its state-only reply"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 2)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def args = [cursor: '']
+
+        when: 'the fetch is queued but not landed, and an identical read arrives'
+        def first = modernCall('hub_get_jobs', args)
+        def duplicate = modernCall('hub_get_jobs', args)
+
+        then:
+        first.result.resultType == 'input_required'
+        !first.result.containsKey('rejoined')
+        duplicate.result.resultType == 'input_required'
+        duplicate.result.requestState == first.result.requestState
+        duplicate.result.rejoined == true
+        runInMillisCalls.size() == 1
+    }
+
+    def "a rejoined call that observes the original finishing gets its result marked rejoined"() {
+        given:
+        settingsMap.enableWrite = true
+        mcpDriver.pushHeaders([
+            'MCP-Protocol-Version': '2026-07-28',
+            'Mcp-Method': 'tools/call',
+            'Mcp-Name': 'hub_call_rule'
+        ])
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def ran = new AtomicInteger(0)
+        script.metaClass.toolRunRmRule = { Map a ->
+            ran.incrementAndGet()
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            [success: true, ruleIds: a.ruleId, results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+        // The duplicate's contention wait releases the owner on its first pause and waits
+        // for it to finish, so the next claim observes the retained terminal result.
+        def ownerDone = new CountDownLatch(1)
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms ->
+            release.countDown()
+            ownerDone.await(5, TimeUnit.SECONDS)
+        })
+        def args = [ruleId: [71, 72], action: 'stop']
+        def winner = new AtomicReference()
+        def failure = new AtomicReference()
+        Thread first = Thread.start {
+            try { winner.set(directCall(script, 2201, 'hub_call_rule', args)) }
+            catch (Throwable t) { failure.set(t) }
+            finally { ownerDone.countDown() }
+        }
+
+        when:
+        assert entered.await(5, TimeUnit.SECONDS)
+        def duplicate = directCall(script, 2202, 'hub_call_rule', args)
+        first.join(5000)
+        def duplicateInner = mcpDriver.parseInner(duplicate)
+
+        then: 'one execution; the duplicate receives the retained outcome and knows it did not run'
+        !first.alive
+        failure.get() == null
+        ran.get() == 1
+        winner.get().result.resultType == 'complete'
+        duplicate.result.resultType == 'complete'
+        duplicateInner.rejoined == true
+        duplicateInner.success == true
+
+        cleanup:
+        release.countDown()
+        first?.join(5000)
+    }
+
 
     def "every continuation-eligible read is a canonical read-only tool"() {
         expect:
