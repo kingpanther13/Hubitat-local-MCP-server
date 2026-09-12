@@ -1722,15 +1722,16 @@ def handleToolsCall(msg) {
             def orphaned = [:] + (sliceResult as Map)
             orphaned.note = "The operation ran, but its continuation record was lost before the result " +
                 "could be stored, so this requestState cannot replay it. Inspect the target before any follow-up."
-            return _renderToolResult(msg.id, toolName, reactiveToolName, args, orphaned,
-                orphaned.isError == true)
+            return _renderToolResult(msg.id, toolName, reactiveToolName, args,
+                _mrtrMarkRejoined(orphaned, rejoined), orphaned.isError == true)
         }
         def failure = _mrtrFailureWithLedger(rec, reactiveToolName, "Tool error: ${e.message}".toString())
         if (rec instanceof Map && claim?.outcome == "claimed") {
             _mrtrCleanupRecord(rec)
             _mrtrStoreTerminal(stateId, rec, claim, failure, true)
         }
-        return _renderToolResult(msg.id, toolName, reactiveToolName, args, failure, true)
+        return _renderToolResult(msg.id, toolName, reactiveToolName, args,
+            _mrtrMarkRejoined(failure, rejoined), true)
     }
 }
 
@@ -10105,7 +10106,7 @@ The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop
 
 The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
-The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and observes the running owner; it cannot reserve or run a second write. This lets a client safely replay a first request whose HTTP response was lost while the work is still running. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation. A write that completed within its first request has no state the client could echo, so a lost response there is the same exposure as any single-request write: read the target before repeating it. A client that cannot render `input_required` shows a generic client-side error with no result body while the hub keeps running the write; the same rule applies -- read the target, and know that an identical repeat within the active window joins the running write rather than starting a second one.
+The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and observes the running owner; every response to that replay is marked `rejoined: true`, and it cannot reserve or run a second write. This lets a client safely replay a first request whose HTTP response was lost while the work is still running. To INTENTIONALLY run the same write twice while the first record is still live, vary the arguments or wait out the record TTL -- a byte-identical repeat always coalesces. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation. A write that completed within its first request has no state the client could echo, so a lost response there is the same exposure as any single-request write: read the target before repeating it. A client that cannot render `input_required` shows a generic client-side error with no result body while the hub keeps running the write; the same rule applies -- read the target, and know that an identical repeat within the active window joins the running write rather than starting a second one.
 
 ### Worker checkpoints and limits
 

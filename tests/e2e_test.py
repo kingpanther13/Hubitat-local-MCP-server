@@ -3859,6 +3859,8 @@ class TestRunner:
                   f"verified by labelFilter (DNI {cw['evidence']})")
             return
         result = cw["response"]
+        # Captured before the labelFilter lookup below, which is itself a tool call.
+        create_rounds = self.client._last_continuation_rounds
         # Response may be {success: true, message: "..."} without device IDs at top level
         # Track DNI if available, otherwise look it up via hub_list_devices (labelFilter)
         dni = result.get("deviceNetworkId", result.get("dni", ""))
@@ -3876,9 +3878,9 @@ class TestRunner:
         assert result.get("mrtr", {}).get("continued") is True, f"Virtual-device creation bypassed MRTR: {result}"
         # The first request reserves, claims and runs the write; a fast one completes there,
         # so a client that never echoes requestState still gets the result.
-        assert self.client._last_continuation_rounds == 0, (
+        assert create_rounds == 0, (
             "a fast virtual-device create should complete in its first request, saw "
-            f"{self.client._last_continuation_rounds} continuation round(s)")
+            f"{create_rounds} continuation round(s)")
 
     def _native_device_command(self, args: dict) -> dict:
         result = self.client.call_tool("hub_call_device_command", args)
