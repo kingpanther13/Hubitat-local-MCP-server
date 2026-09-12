@@ -1113,7 +1113,7 @@ private Map toolInstallItem(String type, args) {
                 if (item.source != null) singleArgs.source = item.source
                 if (item.importUrl != null) singleArgs.importUrl = item.importUrl
                 def r = toolInstallItemSingle(type, singleArgs)
-                def entry = [(idField): r[idField], success: r.success == true]
+                def entry = [(idField): r.get(idField), success: r.success == true]
                 if (r.success) {
                     if (r.sourceMode) entry.sourceMode = r.sourceMode
                     if (r.sourceLength != null) entry.sourceLength = r.sourceLength
@@ -1973,8 +1973,8 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
 
 private Map backupLibrarySource(String libraryId) {
     def manifest = atomicState.itemBackupManifest ?: [:]
-    def key = "library_${libraryId}"
-    def existing = manifest[key]
+    String key = "library_${libraryId}".toString()
+    def existing = manifest.get(key)
 
     if (existing?.timestamp && (now() - existing.timestamp) < 3600000) {
         mcpLog("debug", "hub-admin", "Library backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
@@ -2015,7 +2015,7 @@ private Map backupLibrarySource(String libraryId) {
         timestamp: now(),
         sourceLength: backupSource.length()
     ]
-    manifest[key] = entry
+    manifest.put(key, entry)
 
     if (manifest.size() > 20) {
         def sortedKeys = manifest.entrySet().sort { a, b -> a.value.timestamp <=> b.value.timestamp }*.key
@@ -2313,7 +2313,7 @@ def toolUpdateLibraryCode(args) {
     // Fail-closed: backup-fetch failure (when needed) aborts the update, matching
     // toolUpdateItemCodeInner which calls backupItemSource() without try/catch.
     def backupFileName = null
-    def existingEntry = (atomicState.itemBackupManifest ?: [:])["library_${libraryId}"]
+    def existingEntry = (atomicState.itemBackupManifest ?: [:]).get("library_${libraryId}".toString())
     def skipBackup = (existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000)
 
     def versionFetchError = null

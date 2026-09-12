@@ -264,7 +264,7 @@ private Map _dashboardConfigFromApp(String id) {
         def out = [id: id, name: parsed?.app?.label, type: "easy"]
         ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
          "showNavigation", "showTutorial"].each { k ->
-            if (s.containsKey(k)) out[k] = (s[k]?.toString() == "true")
+            if (s.containsKey(k)) out.put(k, s.get(k)?.toString() == "true")
         }
         if (s.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(s.navigationSelection)
         if (s.devicesPicked instanceof Map) out.deviceIds = s.devicesPicked.keySet().collect { it.toString() }
@@ -473,7 +473,7 @@ def toolUpdateDashboard(args) {
     if (probe.legacy == true) {
         return _updateLegacyDashboard(updateId, probe, args)
     }
-    def legacyOnlyArgs = ["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args[it] != null }
+    def legacyOnlyArgs = ["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
     if (legacyOnlyArgs) {
         throw new IllegalArgumentException("${legacyOnlyArgs.join(', ')} appl${legacyOnlyArgs.size() == 1 ? 'ies' : 'y'} only to legacy Hubitat® Dashboards; dashboard ${updateId} is an Easy Dashboard. Easy updates replace the config wholesale: pass name, deviceIds, and options (read hub_get_dashboard first).")
     }
@@ -523,7 +523,7 @@ def toolUpdateDashboard(args) {
 // layout -- either `layout` (wholesale replace) or the granular ops (removeTileIds -> updateTiles ->
 // addTiles -> setOptions, applied in that order in ONE save). At least one of those args is required.
 private Map _updateLegacyDashboard(String id, Map probe, Map args) {
-    def granular = ["setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args[it] != null }
+    def granular = ["setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
     def hasWholesale = args.layout != null
     def hasName = args.name?.toString()?.trim()
     def hasDevices = args.deviceIds != null
@@ -656,14 +656,14 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         int nextId = (existingIds.isEmpty() ? -1 : existingIds.max()) + 1
         args.addTiles.each { spec ->
             if (!(spec instanceof Map)) throw new IllegalArgumentException("Each addTiles entry must be a tile object.")
-            def missing = ["template", "col", "row"].findAll { spec[it] == null }
+            def missing = ["template", "col", "row"].findAll { spec.get(it) == null }
             if (missing) {
                 throw new IllegalArgumentException("addTiles: each tile needs template, col, and row (missing ${missing.join(', ')} in ${spec}).")
             }
             // Skip an add identical to an existing tile so a retried call can't stack duplicates
             // (keeps hub_update_dashboard honest about its idempotent annotation).
             def dup = tiles.find { t ->
-                ["template", "device", "col", "row", "templateExtra"].every { k -> t[k]?.toString() == spec[k]?.toString() } &&
+                ["template", "device", "col", "row", "templateExtra"].every { k -> t.get(k)?.toString() == spec.get(k)?.toString() } &&
                     (t.colSpan ?: 1).toString() == (spec.colSpan ?: 1).toString() &&
                     (t.rowSpan ?: 1).toString() == (spec.rowSpan ?: 1).toString()
             }
@@ -801,7 +801,7 @@ def toolCloneDashboard(args) {
     def opts = [:]
     ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit", "showNavigation",
      "showTutorial", "theme", "navigationSelection", "dashboardPin", "hsmPin"].each { k ->
-        if (src.containsKey(k)) opts[k] = src[k]
+        if (src.containsKey(k)) opts.put(k, src.get(k))
     }
     def created = toolCreateDashboard([name: "${src.name ?: 'Dashboard'} (copy)", deviceIds: (src.deviceIds ?: []), options: opts])
     if (created instanceof Map && created.success == true) {
@@ -869,7 +869,7 @@ private Map _summarizeDashboard(raw) {
     // Pass through config fields (when present) so a read can round-trip back through hub_update_dashboard.
     ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
      "showNavigation", "showTutorial", "theme"].each { k ->
-        if (raw.containsKey(k)) out[k] = raw[k]
+        if (raw.containsKey(k)) out.put(k, raw.get(k))
     }
     if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
     // /dashboard/all gives deviceIds as a JSON-array string ("[8,1,9]"); normalize to a list of id strings.
@@ -932,7 +932,7 @@ private List _normalizeDeviceIdList(raw) {
 private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     def boolStr = { v -> (v == true || v?.toString()?.toLowerCase() == "true") ? "true" : "false" }
     def opts = (args.options instanceof Map) ? args.options : [:]
-    def opt = { String k -> opts.containsKey(k) ? opts[k] : args[k] }
+    def opt = { String k -> opts.containsKey(k) ? opts.get(k) : args.get(k) }
     return [
         name: args.name.toString(),
         deviceIds: deviceCsv,

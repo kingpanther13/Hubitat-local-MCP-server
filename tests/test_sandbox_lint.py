@@ -321,7 +321,7 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {{
     findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
     assert len(findings) == 1
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
     assert findings[0]["source"] == f"snapshot[{key}] = [value: st.value, timestamp: null]"
 
 
@@ -345,7 +345,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
     findings = sandbox_map_findings(source, "libraries/mcp-devices-lib.groovy")
     assert len(findings) == 1
     assert findings[0]["rule"] == "sandbox-map-key-subscript"
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
     assert findings[0]["source"] == "snapshot[name] = [value: val, timestamp: _formatBypassStateDate(rawDate)]"
 
 
@@ -364,7 +364,7 @@ private {function_name}(value, key = '') {{
 """
     findings = sandbox_map_findings(source)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 def test_sandbox_map_guard_catches_map_parameter_without_copy_name():
@@ -374,7 +374,7 @@ private def storeDriverValue(Map destination, String key, value) {
 }
 """)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 @pytest.mark.parametrize("function_name", ["copyRows", "_publicToolResultValue", "transformDriverValue"])
@@ -495,7 +495,7 @@ def test_map_guard_recognizes_native_name_and_entry_key_expressions(key):
     source = f"private def collectNames() {{\n def schema = [:]\n schema[{key}] = false\n}}"
     findings = sandbox_map_findings(source)
     assert len(findings) == 1
-    assert findings[0]["severity"] == "warning"
+    assert findings[0]["severity"] == "error"
 
 
 def test_map_guard_does_not_scan_control_blocks_as_duplicate_methods():
@@ -625,6 +625,416 @@ def test_interpolated_bounded_key_is_not_misread_as_its_embedded_identifier():
  ids.each { id -> result["switch${id}.@N"] = false }
 }'''
     assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("access", ["result[key] = false", "return result[key]"])
+def test_dynamic_map_regressions_are_blocking(access):
+    source = f"def copy(String key) {{\n def result = [:]\n {access}\n}}"
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("helper", ["obtainSchema", "renamedSchema"])
+@pytest.mark.parametrize("body", [
+    "return [:]", "[:]", "def result = [:]\n return result",
+    "def result = [:]\n def renamed = result\n renamed",
+])
+def test_map_return_inference_follows_source_not_helper_name(helper, body):
+    source = f"""def {helper}() {{
+ {body}
+}}
+def consume(String key) {{
+ def result = {helper}()
+ result[key] = false
+ return result[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 2
+    assert all(f["severity"] == "error" for f in findings)
+
+
+def test_map_return_inference_follows_transitive_helpers():
+    source = """def wrapper() { return leaf() }
+def leaf() { return [:] }
+def consume(String key) {
+ def result = wrapper()
+ result[key] = 0
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_dynamic_key_from_settings_is_not_silently_exempt():
+    source = """def copy() {
+ def result = [:]
+ def selected = settings.attribute
+ result[selected] = false
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_list_return_does_not_inherit_same_named_map_return_from_other_file():
+    sources = {
+        "hubitat-mcp-server.groovy": "def values() { return [:] }",
+        "hubitat-mcp-rule.groovy": """def values() { return [] }
+def update(String key) {
+ def result = values()
+ result[key] = 0
+}""",
+    }
+    assert sl.check_sandbox_map_subscripts(sources) == []
+
+
+def test_non_map_typed_local_shadows_map_script_field():
+    source = """@groovy.transform.Field Map CACHE = [:]
+def read(int index) {
+ List CACHE = []
+ return CACHE[index]
+}"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_map_property_is_not_an_alias_of_the_containing_map():
+    source = """def update(int index) {
+ def envelope = [ids: [1, 2]]
+ List<Integer> ids = envelope.ids
+ return ids[index]
+}"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_call_before_control_block_does_not_become_a_method():
+    source = """def update(Map input, String key) {
+ requireConfirm(true)
+ if (input) {
+  def result = [:]
+  result[key] = false
+ }
+}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "in update;" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("default", ["([] as Set)", "chooseDefaults()", "wrap(chooseDefaults())"])
+def test_map_guard_scans_methods_with_parenthesized_defaults(default):
+    source = f"""private def update(Map input, Set ignored = {default}) {{
+ def result = [:]
+ result[input.name] = false
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "in update;" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("expression", [
+    "container.ids", "container?.ids", "container['ids']", "container[key]",
+    "container == null", "container ? [] : []", "[ids: []]['ids']",
+    "leaf()['ids']", "new HashMap().values()",
+])
+def test_return_expression_does_not_inherit_its_map_prefix(expression):
+    source = f"""def leaf() {{ return [:] }}
+def values(Map container, String key) {{
+ return {expression}
+}}
+def consume(int index) {{
+ def result = values()
+ return result[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("expression", [
+    "container['ids']", "container == null", "leaf()['ids']",
+    "[ids: [1, 2]].ids", "[ids: [1, 2]]['ids']", "[ids: [1, 2]].values()",
+    "[\n ids: [1, 2]\n].ids", "[\n ids: [1, 2]\n]['ids']",
+    "new HashMap().values()", "new LinkedHashMap().keySet()",
+])
+def test_assignment_expression_does_not_inherit_its_map_prefix(expression):
+    source = f"""def leaf() {{ return [:] }}
+def consume(Map container, int index) {{
+ def result = {expression}
+ return result[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("expression", [
+    "[[id: 1]]", "[\n [id: 1],\n [id: 2]\n]",
+    "[flag ? left : right]", "[flag ? (other ? left : right) : right]",
+    "[entry?.label ?: fallback]",
+])
+def test_list_initializer_and_alias_are_not_inferred_as_maps(expression):
+    source = f"""def read(int index) {{
+ def rows = {expression}
+ def alias = rows
+ rows[index] = alias[index]
+ return rows[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("closure", [
+    "items.each { Map x = [:] }",
+    "items.each { Map x -> x.size() }",
+])
+def test_closure_local_map_declaration_does_not_classify_the_enclosing_name(closure):
+    source = f"""def f(String idx, List items) {{
+ def x = []
+ {closure}
+ x[idx] = 1
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_closure_local_map_is_still_classified_inside_its_closure():
+    source = """def f(String idx, List items) {
+ items.each { Map x = [:]
+  x[idx] = 1 }
+}"""
+    assert [f["line"] for f in sandbox_map_findings(source)] == [3]
+
+
+def test_app_field_map_is_in_scope_for_library_writes():
+    findings = sl.check_sandbox_map_subscripts({
+        "hubitat-mcp-server.groovy": "@groovy.transform.Field static final Map CACHE = new java.util.HashMap()\n",
+        "libraries/x.groovy": "def remember(String key) {\n CACHE[key] = 1\n}\n",
+        "hubitat-mcp-rule.groovy": "def remember(String key) {\n CACHE[key] = 1\n}\n",
+    })
+    assert [(f["file"], f["line"]) for f in findings] == [("libraries/x.groovy", 2)]
+
+
+@pytest.mark.parametrize("key, flagged", [
+    ('"${k}"', True), ('k + "s"', True), ('"switch${k}.@N"', False), ('"a" + k', False),
+])
+def test_composed_keys_are_bounded_by_their_fixed_parts(key, flagged):
+    source = f"""def f(String k) {{
+ def m = [:]
+ m[{key}] = 1
+}}"""
+    assert [f["line"] for f in sandbox_map_findings(source)] == ([3] if flagged else [])
+
+
+@pytest.mark.parametrize("expression", [
+    "[[id: 1]]", "[flag ? left : right]", "[entry?.label ?: fallback]",
+])
+def test_list_literal_return_is_not_inferred_as_a_map(expression):
+    source = f"""def rows() {{ return {expression} }}
+def read(int index) {{
+ def result = rows()
+ return result[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("receiver", ["result", "state.result"])
+@pytest.mark.parametrize("expression", [
+    "[:]", "[items: [[id: 1]]]", "[\n items: [],\n selected: false\n]",
+    "[selected: flag ? left : right]",
+])
+def test_map_literal_initializers_preserve_property_and_alias_inference(receiver, expression):
+    declaration = "def " if receiver == "result" else ""
+    source = f"""def copy(String key) {{
+ {declaration}{receiver} = {expression}
+ def alias = {receiver}
+ {receiver}[key] = false
+ return alias[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 2
+    assert all(f["severity"] == "error" for f in findings)
+
+
+@pytest.mark.parametrize("expression", ["[:] + values", "[existing: 1] + values", "new HashMap()"])
+def test_whole_map_copy_or_constructor_initializer_remains_inferred(expression):
+    source = f"""def copy(Map values, String key) {{
+ def result = {expression}
+ return result[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("closure", [
+    "input.each { return [:] }",
+    "input.each { value -> if (value) { return [:] } }",
+    "def callback = { return [:] }",
+])
+def test_closure_returns_do_not_establish_the_enclosing_method_return_type(closure):
+    source = f"""def values(List input) {{
+ {closure}
+ return []
+}}
+def consume(int index) {{
+ def result = values()
+ return result[index]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("body", [
+    "if (flag) { return [:] }\n return null",
+    "try { return [:] } finally { cleanup() }",
+    "def result = [:]\n return (result)",
+])
+def test_method_control_flow_map_returns_remain_inferred(body):
+    source = f"""def values(boolean flag) {{
+ {body}
+}}
+def consume(String key) {{
+ def result = values()
+ result[key] = false
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "result[key]" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("mutation", [
+    "key = input.name", "key += input.name", "key <<= 1", "++key", "key--",
+])
+@pytest.mark.parametrize("wrapper", ["if (key == 'safe')", "['safe'].each"])
+def test_bounded_key_exception_is_invalidated_by_assignment(mutation, wrapper):
+    header = f"{wrapper} {{" + (" key ->" if wrapper.endswith("each") else "")
+    source = f"""def copy(input, key) {{
+ def result = [:]
+ {header}
+  {mutation}
+  result[key] = false
+ }}
+}}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_assignment_in_bounded_condition_invalidates_the_exception():
+    source = """def copy(key) {
+ def result = [:]
+ if (key == 'safe' && (key = 'fields')) {
+  result[key] = false
+ }
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+@pytest.mark.parametrize("literal", ['"${expected}"', '"$expected"', r'"\u0066ields"', r"'\u0066ields'"])
+def test_interpolated_or_escaped_comparison_does_not_establish_key_bounds(literal):
+    source = f"""def copy(String key, String expected) {{
+ def result = [:]
+ if (key == {literal}) {{
+  result[key] = false
+ }}
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("literal", ['"deviceId"', "'deviceId'", '"Fields"', "'getClass'"])
+def test_plain_noncolliding_comparison_still_establishes_key_bounds(literal):
+    source = f"""def copy(String key) {{
+ def result = [:]
+ if (key == {literal}) {{
+  result[key] = false
+ }}
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("condition", [
+    "key == 'safe' && enabled || override",
+    "key == 'safe' && enabled ? selected : override",
+])
+def test_outer_boolean_alternative_does_not_establish_key_bounds(condition):
+    source = f"""def copy(String key, boolean enabled, boolean override) {{
+ def result = [:]
+ if ({condition}) {{
+  result[key] = false
+ }}
+}}"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("condition", [
+    "key == 'safe' && (enabled || override)",
+    "key == 'safe' && (enabled ? selected : override)",
+    "key == 'safe' && enabled && override",
+])
+def test_parenthesized_boolean_alternative_keeps_required_key_comparison(condition):
+    source = f"""def copy(String key, boolean enabled, boolean override) {{
+ def result = [:]
+ if ({condition}) {{
+  result[key] = false
+ }}
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("nested", [
+    "input.each { key, value -> result[key] = value }",
+    "input.each { String key -> result[key] = false }",
+    "for (key in input) { result[key] = false }",
+])
+def test_nested_key_binding_does_not_inherit_the_outer_literal_bounds(nested):
+    source = f"""def copy(input) {{
+ def result = [:]
+ ['safe'].each {{ key ->
+  {nested}
+ }}
+}}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+def test_implicit_it_in_nested_closure_does_not_inherit_outer_literal_bounds():
+    source = """def copy(input) {
+ def result = [:]
+ ['safe'].each { it ->
+  input.each { result[it] = false }
+ }
+}"""
+    assert len(sandbox_map_findings(source)) == 1
+
+
+@pytest.mark.parametrize("access", [
+    "data[KEY] = value", "data[KEY] += value", "data[KEY] -= value",
+    "data[KEY] *= value", "data[KEY] /= value", "data[KEY] %= value",
+    "data[KEY] **= value", "data[KEY] &= value", "data[KEY] |= value",
+    "data[KEY] ^= value", "data[KEY] <<= value", "data[KEY] >>= value",
+    "data[KEY] >>>= value", "data[KEY]++", "data[KEY]--",
+    "++data[KEY]", "--data[KEY]",
+])
+@pytest.mark.parametrize("key", ["key", "'metaClass'"])
+def test_typed_map_write_operators_do_not_receive_the_read_exception(access, key):
+    source = "def update(Map data, String key, value) {\n " + access.replace("KEY", key) + "\n}"
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "write" in findings[0]["message"]
+    assert findings[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("operator", ["==", "!=", "=~", "<=", ">="])
+def test_typed_map_comparisons_remain_reads(operator):
+    source = f"def compare(Map data, String key, value) {{\n return data[key] {operator} value\n}}"
+    assert sandbox_map_findings(source) == []
+
+
+def test_preceding_statement_increment_does_not_turn_typed_map_read_into_write():
+    source = """def read(Map data, String key) {
+ int index = 0
+ index++
+ data[key]
+}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("expression", ["flag ? ++data[key] : 0", "1 + ++data[key]"])
+def test_prefix_map_write_inside_an_expression_remains_blocking(expression):
+    source = f"def update(Map data, String key, boolean flag) {{\n return {expression}\n}}"
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "write" in findings[0]["message"]
 
 # ---------------------------------------------------------------------------
 # format_finding / format_annotation

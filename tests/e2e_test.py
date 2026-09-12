@@ -905,8 +905,10 @@ class HubitatMcpClient:
                 # a client-side hot loop while preserving one logical call.
                 time.sleep(state_only_delay)
                 state_only_delay = min(state_only_delay * 2, 0.25)
-        except BaseException:
+        except BaseException as exc:
             _op_ok = False
+            # Cleanup can make more calls before the runner sees this exception.
+            exc._mcp_failed_op = (op_key, time.monotonic() - _t0, False)
             raise
         finally:
             _dur = time.monotonic() - _t0
@@ -1744,10 +1746,9 @@ class TestRunner:
             "duration": duration,
         })
 
-    def _last_op_str(self) -> str:
-        """The most recent MCP call + its elapsed, for the FULL-FAILURE line -- so a 504 names the
-        exact op that hit the ~10s ceiling in one log read, even when the exception text doesn't."""
-        lo = getattr(self.client, "_last_op", None)
+    def _last_op_str(self, error: BaseException | None = None) -> str:
+        """Prefer the failing call's identity over any subsequent cleanup call."""
+        lo = getattr(error, "_mcp_failed_op", None) or getattr(self.client, "_last_op", None)
         if not lo:
             return "unknown"
         op_key, dur, ok = lo
@@ -1816,9 +1817,9 @@ class TestRunner:
                     continue
                 if "504" in str(exc):
                     print(f"    FULL-FAILURE {name}: persistent relay 504 across retry "
-                          f"(last op {self._last_op_str()}): {exc}")
+                          f"(failure op {self._last_op_str(exc)}): {exc}")
                     self._record(name, group, "fail",
-                                 message=f"persistent relay 504 [{self._last_op_str()}]: {exc}"[:200],
+                                 message=f"persistent relay 504 [{self._last_op_str(exc)}]: {exc}"[:200],
                                  duration=elapsed)
                 else:
                     self._record(name, group, "skip", message=str(exc), duration=elapsed)
@@ -1845,9 +1846,9 @@ class TestRunner:
                 # failure goes to the run log here -- a truncated structured response
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
                 # extra run just to learn why a test failed.
-                print(f"    FULL-FAILURE {name} (last op {self._last_op_str()}): {exc}")
+                print(f"    FULL-FAILURE {name} (failure op {self._last_op_str(exc)}): {exc}")
                 self._record(name, group, "fail",
-                             message=f"[{self._last_op_str()}] {exc}"[:200], duration=elapsed)
+                             message=f"[{self._last_op_str(exc)}] {exc}"[:200], duration=elapsed)
                 return
         # Inter-test breathing room for the hub's per-app load limiter. The limiter has
         # tripped MID-RUN on a freshly-booted hub, and the suite's recent speedups all
@@ -2348,6 +2349,8 @@ class TestRunner:
             "maxResults": 500,
         })
         assert isinstance(result, dict), f"hub_search_tools returned non-dict: {type(result)}"
+        assert all("listed below" not in row.get("description", "") for row in result.get("results", [])), \
+            "a search result promises an operation list that is not part of the result"
         total = result.get("totalToolsSearched")
         names = [r.get("tool") for r in result.get("results", [])]
         assert isinstance(total, int) and total > 0, f"totalToolsSearched not a positive int: {total!r}"
@@ -3473,6 +3476,10 @@ class TestRunner:
             enabled = next(row for row in configuration()["editableFields"] if row["name"] == "enabled")
             assert enabled.get("value") is False, f"Configuration read lost the disabled value: {enabled}"
         finally:
+            primary_error = sys.exc_info()[1]
+            if primary_error is not None:
+                print(f"    CONFIGURATION_PRIMARY_FAILURE {profile['path']} "
+                      f"(failure op {self._last_op_str(primary_error)}): {primary_error}")
             errors = []
             if enabled_dirty:
                 try:
@@ -3526,6 +3533,34 @@ class TestRunner:
         print(f"    DEVICE_CONFIGURATION {profile['path']}: grouped edits and independent restoration verified; "
               "unavailable prerequisite rows are negative coverage only.")
 
+    def _wait_configuration_fixture_identity(self, device_id: str, nonce: str) -> dict:
+        # SDK command acceptance can precede the driver's observer event.
+        deadline = time.monotonic() + 10.0
+        native = {}
+        while True:
+            observed = self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": device_id, "attribute": "nativeDeviceInfo",
+            })
+            if observed.get("value") is not None:
+                native = json.loads(observed["value"])
+                if native.get("nonce") == nonce and str(native.get("deviceId")) == device_id:
+                    return native
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                identity = {key: native.get(key) for key in ("nonce", "deviceId", "fixtureVersion", "enabled")}
+                failure = AssertionError(
+                    f"LAN fixture observer did not complete for device {device_id}, nonce {nonce}: {identity}")
+                failure._mcp_failed_op = getattr(self.client, "_last_op", None)
+                try:
+                    logs = self.client.call_tool("hub_get_logs", {
+                        "deviceId": device_id, "level": "error", "limit": 10,
+                    })
+                    print(f"    CONFIGURATION_OBSERVER_LOGS device {device_id}: {json.dumps(logs)[:12000]}")
+                except Exception as log_error:
+                    print(f"    CONFIGURATION_OBSERVER_LOGS device {device_id}: unavailable: {log_error}")
+                raise failure
+            time.sleep(min(0.25, remaining))
+
     @test("devices")
     def test_configuration_fixture_lan_dispatch(self) -> None:
         """Prove explicit asynchronous HubAction callbacks separately for each provisioned dispatch path."""
@@ -3543,11 +3578,7 @@ class TestRunner:
                 "deviceId": device_id, "command": "captureConfiguration", "parameters": [nonce], "includeState": False,
             }, "independent LAN fixture ownership observation")
             assert captured.get("success") is True, f"LAN fixture identity observer failed: {captured}"
-            summary = self.client.call_tool("hub_get_device", {"deviceId": device_id})
-            native = json.loads(next(row["value"] for row in summary["attributes"] if row["name"] == "nativeDeviceInfo"))
-            assert native.get("nonce") == nonce and str(native.get("deviceId")) == device_id, (
-                f"Wrong/stale LAN fixture observer: {native}"
-            )
+            native = self._wait_configuration_fixture_identity(device_id, nonce)
             assert native.get("fixtureVersion") == manifest["version"] == 2, "Provision the current LAN fixture driver"
             self._assert_configuration_fixture_parent(profile, native)
             try:
@@ -7042,6 +7073,8 @@ class TestRunner:
                 "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
             assert restored.get("success") is True, \
                 f"in-place restore of a rule with a device picker failed: {restored}"
+            assert restored.get("recreated") is False and str(restored.get("ruleId")) == str(app_id), \
+                f"in-place restore unexpectedly created a replacement rule: {restored}"
             assert restored.get("failedStep") is None, restored
             applied = restored.get("settingsApplied") or []
             assert any(str(k).startswith("onOffSwitch.") for k in applied), \
@@ -7399,8 +7432,8 @@ class TestRunner:
         app_id = self._create_native_rule("ReqExpr")
         try:
             built = self._patch_rule(app_id, [
-                {"addLocalVariable": {"name": "batCounter", "type": "Number", "value": 0}},
-                {"addAction": {"capability": "setLocalVariable", "variable": "batCounter", "value": 5}},
+                {"addLocalVariable": {"name": "fields", "type": "Number", "value": 0}},
+                {"addAction": {"capability": "setLocalVariable", "variable": "fields", "value": 0}},
                 {"addRequiredExpression": {"conditions": [
                     {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
             ])
@@ -7411,8 +7444,8 @@ class TestRunner:
                 f"patch addAction setLocalVariable did not return an actionIndex: {built[1]}"
 
             persisted = self._get_persisted_rule_config(app_id).get("settings") or {}
-            assert persisted.get(f"xVarV.{set_local_idx}") == "batCounter" \
-                and str(persisted.get(f"valNumber.{set_local_idx}")) == "5", \
+            assert persisted.get(f"xVarV.{set_local_idx}") == "fields" \
+                and str(persisted.get(f"valNumber.{set_local_idx}")) == "0", \
                 f"setLocalVariable target/value did not persist: {persisted}"
             re_slots = [str(key).split("_", 1)[1] for key, value in persisted.items()
                         if str(key).startswith("rCapab_")
@@ -7427,7 +7460,7 @@ class TestRunner:
             listed = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
             names = [lv.get("name") for lv in (listed.get("localVariables") or [])]
-            assert "batCounter" in names, f"hub_list_rule_local_variables missing batCounter: {listed}"
+            assert "fields" in names, f"hub_list_rule_local_variables missing fields: {listed}"
 
             self._assert_rule_healthy(app_id)
 
@@ -7439,17 +7472,17 @@ class TestRunner:
             # broken-after-delete behaviour is covered by its own scenario).
             removed = self._patch_rule(app_id, [
                 {"removeAction": {"index": set_local_idx}},
-                {"removeLocalVariable": {"name": "batCounter"}},
+                {"removeLocalVariable": {"name": "fields"}},
             ])
             assert len(removed) == 2 and all(entry.get("success") is not False for entry in removed), \
                 f"ordered reference/local removal patches did not both commit: {removed}"
             assert removed[1].get("deleted") is True \
-                and removed[1].get("name") == "batCounter", \
+                and removed[1].get("name") == "fields", \
                 f"removeLocalVariable did not confirm deletion: {removed[1]}"
             relisted = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
-            assert "batCounter" not in [lv.get("name") for lv in (relisted.get("localVariables") or [])], \
-                f"batCounter still present after removeLocalVariable: {relisted}"
+            assert "fields" not in [lv.get("name") for lv in (relisted.get("localVariables") or [])], \
+                f"fields still present after removeLocalVariable: {relisted}"
         finally:
             self._delete_native(app_id)
 
@@ -9918,8 +9951,7 @@ class TestRunner:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4d: app_code_update (2 tests) -- the hub_update_app code-deploy path
-    # (POST /app/saveOrUpdateJson).
+    # GROUP 4d: app_code_update -- app lifecycle and library source updates.
     #
     # test_update_app_code_lifecycle: one throwaway code class, five legs before its delete:
     # a real round-trip edit (success + version advance + source landed), the
@@ -10033,6 +10065,7 @@ class TestRunner:
                 "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
             })
             assert restored.get("success") is True, f"hub_restore_backup failed: {restored}"
+            assert restored.get("undoAvailable") is True, f"restore did not verify its undo backup: {restored}"
             pre_restore_key = restored.get("preRestoreBackup")
             assert pre_restore_key == f"prerestore_app_{code_app_id}", \
                 f"restore did not return the pre-restore backup key: {restored}"
@@ -10045,6 +10078,23 @@ class TestRunner:
                 f"restore did not bring back the pre-update source: {after_restore}"
             assert int(after_restore["version"]) > version_after, \
                 f"restore reported success but the version did not advance ({version_after} -> {after_restore.get('version')})"
+
+            undo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
+            })
+            assert undo.get("source") == final_src, f"undo did not retain the exact pre-restore source: {undo}"
+            retried = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
+            })
+            assert retried.get("success") is True and retried.get("undoAvailable") is True \
+                and retried.get("preRestoreBackup") == pre_restore_key, \
+                f"restore retry lost the verified undo handle: {retried}"
+            undo_after_retry = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
+            })
+            assert undo_after_retry.get("source") == final_src, \
+                f"restore retry replaced the original undo source: {undo_after_retry}"
 
             # Leg 5 (#259): enable OAuth on the (oauth:true-declaring) code class via the
             # hub_update_app oauth fold -- the programmatic "Enable OAuth in App".
@@ -11299,9 +11349,21 @@ class TestRunner:
         # just that the app compiled).
         lib_names = [lib.get("name") for lib in libs]
         # McpRoomsLib is the first REAL extracted module (hub_*_room impls) -- permanent.
-        assert any(
-            lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp" for lib in libs
-        ), f"McpRoomsLib not found in hub libraries (got {lib_names})"
+        rooms_lib = next((lib for lib in libs
+                          if lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp"), None)
+        assert rooms_lib, f"McpRoomsLib not found in hub libraries (got {lib_names})"
+        expected = (Path(__file__).resolve().parent.parent / "libraries" / "mcp-rooms-lib.groovy").read_text(
+            encoding="utf-8")
+        # Stay below the source reader's automatic File Manager save threshold.
+        assert len(expected) <= 64000, "Choose a smaller installed library for the read-only source check"
+        readback = self.client.call_tool("hub_get_source", {
+            "type": "library", "id": str(rooms_lib["id"]), "length": len(expected),
+        })
+        assert readback.get("success") is True, f"installed library source read failed: {readback}"
+        assert readback.get("source", "").replace("\r\n", "\n") == expected, \
+            "installed McpRoomsLib source does not match the deployed branch"
+        assert readback.get("version") is not None and readback.get("version") == rooms_lib.get("version"), \
+            f"library source/list versions differ: source={readback.get('version')}, list={rooms_lib.get('version')}"
 
     def _get_hub_info_optin(self) -> dict:
         """hub_get_info with BOTH additive opt-in blocks in ONE call, shared by the two opt-in tests
@@ -12003,9 +12065,11 @@ class TestRunner:
 
     @test("system_tools")
     def test_delete_bundle(self) -> None:
-        """hub_delete_bundle removes a bundle, verified by re-list. Uses a self-contained throwaway
-        bundle (mcptest namespace, fetched from the PR head) so it NEVER touches the live mcp
-        libraries bundle. Skipped on local runs where the PR raw URL env isn't set."""
+        """Delete a bundle containing unused app code, verified by re-list.
+
+        The fixture creates no running app instance or library. Skipped on local runs
+        where the PR raw URL env isn't set.
+        """
         raw_base = os.environ.get("PR_RAW_BASE")
         sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
         if not (raw_base and sha):
@@ -12054,12 +12118,8 @@ class TestRunner:
                         "throwaway bundle cleanup")
                 except Exception as exc:
                     print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
-            # Deleting the bundle removes only the container, not the library it delivered
-            # (mcptest.E2eThrowawayLib) -- but the run-end cleanup's Layer 7b mcptest-namespace
-            # sweep reaps it with the ONE hub_list_libraries scan it already pays for the whole
-            # run. The per-test scan that used to live here cost 14-40s per attempt: the hub's
-            # /hub2/userLibraries endpoint returns EVERY library WITH full source (~2MB), so it
-            # was the single most expensive read in the suite -- and doubled on a 504 retry.
+            # Bundle deletion leaves its unused app code behind. The run-end Layer 5
+            # sweep removes its mcptest/Deadman Test Target code alongside the other app fixtures.
 
     def _set_write_cap(self, limit: int) -> None:
         """Set maxConcurrentWrites. Never call this while a write holds a slot: the settings
@@ -13489,59 +13549,37 @@ class TestRunner:
     @test("poll_until_attribute")
     def test_poll_immediate_match(self) -> None:
         """Happy path: device already in expected state -> polledCount=1, success=true."""
-        # Use the shared virtual switch; get_or_create ensures it exists in 'off' state.
         dev_id = self.get_test_switch_id()
-
-        def _drive_off_and_poll() -> Any:
-            # Drive it to 'off' first so we know its state.
-            self._native_device_command({"deviceId": dev_id, "command": "off"})
-            time.sleep(0.3)
-            return self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dev_id,
-                "attribute": "switch",
-                "expectedValue": "off",
-                "timeoutMs": 5000,
-            })
-
-        result = _drive_off_and_poll()
-        # An 'off' that produces NO state change while the poll keeps reading the old
-        # value is the load-limiter block signature (the command false-succeeds and
-        # the device never dispatches). Bounce the app via the watchdog and retry once.
-        if result.get("success") is not True and self._clear_load_throttle(
-                f"'off' on device {dev_id} never landed: {result}"):
-            result = _drive_off_and_poll()
+        # Poll the observed state; command delivery is a separate contract and can be throttled.
+        current = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch",
+        }).get("value")
+        assert current in ("on", "off"), f"Switch baseline is unavailable: {current!r}"
+        result = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch", "expectedValue": current, "timeoutMs": 5000,
+        })
         assert result.get("success") is True, f"Expected success=true, got: {result}"
         assert result.get("timedOut") is False, f"Expected timedOut=false, got: {result}"
-        assert result.get("polledCount", 0) >= 1, f"Expected polledCount>=1, got: {result}"
+        assert result.get("polledCount") == 1, f"Expected an immediate match on the first poll, got: {result}"
+        assert result.get("finalValue") == current, f"Poll returned a different value from the baseline: {result}"
 
     @test("poll_until_attribute")
     def test_poll_timeout(self) -> None:
         """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
         dev_id = self.get_test_switch_id()
-        import time as _time
-
-        def _drive_off_and_poll_for_on() -> tuple[Any, float]:
-            # Ensure switch is 'off' so 'on' won't match.
-            self._native_device_command({"deviceId": dev_id, "command": "off",
-                                         "waitFor": {"attribute": "switch", "expectedValue": "off", "timeoutMs": 5000}})
-            time.sleep(0.3)
-            t0 = _time.monotonic()
-            res = self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dev_id,
-                "attribute": "switch",
-                "expectedValue": "on",
-                "timeoutMs": 2000,
-            })
-            return res, (_time.monotonic() - t0) * 1000
-
-        result, elapsed_wall = _drive_off_and_poll_for_on()
-        # success=true here means the switch read 'on' AFTER an 'off' was sent -- the
-        # 'off' never dispatched (load-limiter block leaves it stuck in the old state).
-        if result.get("success") is True and self._clear_load_throttle(
-                f"'off' on device {dev_id} never landed (poll matched 'on'): {result}"):
-            result, elapsed_wall = _drive_off_and_poll_for_on()
+        current = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch",
+        }).get("value")
+        assert current in ("on", "off"), f"Switch baseline is unavailable: {current!r}"
+        expected = "off" if current == "on" else "on"
+        t0 = time.monotonic()
+        result = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch", "expectedValue": expected, "timeoutMs": 2000,
+        })
+        elapsed_wall = (time.monotonic() - t0) * 1000
         assert result.get("success") is False, f"Expected success=false, got: {result}"
         assert result.get("timedOut") is True, f"Expected timedOut=true, got: {result}"
+        assert result.get("finalValue") == current, f"Switch changed during the timeout probe: {result}"
         # Wall clock should reflect roughly the timeout (within 1 second of variance)
         assert elapsed_wall >= 1800, f"Wall clock too short ({elapsed_wall:.0f}ms); poll may not have blocked"
 
@@ -14202,7 +14240,7 @@ class TestRunner:
         4. Native RM apps + Visual Rules (tracked + prefix sweeps)
         5. mcptest throwaway app + driver code classes (namespace+name)
         6. Rooms (prefix sweep)
-        7. Throwaway bundle + library (mcptest namespace)
+        7. Throwaway bundle (mcptest namespace)
         8. Easy Dashboards (tracked + prefix sweep)
         9. File Manager files (prefix sweep, originals then their _backup_ spawn)
 
@@ -14485,24 +14523,6 @@ class TestRunner:
                         print(f"  [WARN] throwaway bundle sweep delete failed for '{b.get('name')}': {exc}")
         except Exception as exc:
             print(f"  [WARN] throwaway bundle sweep failed: {exc}")
-
-        # Layer 7b: the throwaway LIBRARY (mcptest namespace) the bundle delivered. Bundle delete does
-        # not cascade it, and the disarm no-stale gate only sweeps the 'mcp' namespace, so a crashed run
-        # can strand it in Libraries Code. Reclaim it here.
-        try:
-            lres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
-            for lib in (lres.get("libraries", []) if isinstance(lres, dict) else []):
-                if lib.get("namespace") == "mcptest" and lib.get("id"):
-                    try:
-                        print(f"  Sweep: deleting throwaway library '{lib.get('name')}' (id={lib.get('id')})")
-                        self.client.call_tool("hub_manage_code", {
-                            "tool": "hub_delete_item",
-                            "args": {"type": "library", "item_id": str(lib.get("id")), "confirm": True},
-                        })
-                    except Exception as exc:
-                        print(f"  [WARN] throwaway library sweep delete failed for '{lib.get('name')}': {exc}")
-        except Exception as exc:
-            print(f"  [WARN] throwaway library sweep failed: {exc}")
 
         # Layer 8: Easy Dashboards with the BAT_E2E_ prefix (issue #259; dashboards impls in McpDashboardsLib).
         # The create/clone/delete test deletes the original inline; this reclaims the clone

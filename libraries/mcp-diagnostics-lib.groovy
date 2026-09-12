@@ -333,7 +333,7 @@ private Map _parseHubLogLine(String line) {
 }
 
 // Scoped snapshots live only long enough for a continuation or terminal replay. Bound
-// simultaneous snapshots, never their content; a busy caller waits for an available slot.
+// simultaneous snapshots, never their content; retain continuation snapshots until replay expires.
 def _nativeLogSnapshot(Map query, Map args) {
     if (!_mrtrReadContinuationActive()) {
         return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
@@ -367,6 +367,7 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
     String key = deviceRead != null ? "${owner}:device:${deviceRead.id}".toString() :
         "${owner}:${query?.type ?: 'all'}:${query?.id ?: ''}".toString()
     Map job = null
+    String fetchId
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         NATIVE_LOG_SNAPSHOTS.entrySet().findAll { entry ->
             Map value = entry.value as Map
@@ -384,24 +385,42 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
             if (!(current instanceof Map) && deviceRead.fresh != true) {
                 throw new IllegalArgumentException("Device read snapshot expired or was lost; start a fresh call.")
             }
-            // Completed independent reads need no future cache hit; evict the oldest ready
-            // snapshot under pressure. A pending worker always retains its owned slot.
-            if (!(current instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
-                def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v -> v.pending != true }
-                if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
-                else throw new IllegalStateException("Background read capacity is full; finish pending reads before retrying.")
+        }
+        // Returning a continuation reserves its snapshot through terminal replay.
+        // Completed one-round reads can be evicted after every active caller observes them.
+        if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
+            def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v ->
+                v.pending != true && v.replayProtected != true && ((v.readers ?: 0) as Integer) == 0
             }
+            if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
+            else throw new IllegalStateException("Background read capacity is full; retry after existing snapshots expire.")
         }
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
-            String fetchId = java.util.UUID.randomUUID().toString()
-            NATIVE_LOG_SNAPSHOTS[key] = [at: now(), pending: true, fetchId: fetchId]
+            fetchId = java.util.UUID.randomUUID().toString()
+            NATIVE_LOG_SNAPSHOTS.put(key, [at: now(), pending: true, fetchId: fetchId])
             if (deviceRead != null) {
                 NATIVE_LOG_SNAPSHOTS[key].work = deviceRead
                 NATIVE_LOG_SNAPSHOTS[key].scope = deviceRead.scope
             }
             job = [key: key, owner: owner, fetchId: fetchId, query: query]
         }
+        def snapshot = NATIVE_LOG_SNAPSHOTS[key]
+        fetchId = snapshot.fetchId
+        snapshot.readers = ((snapshot.readers ?: 0) as Integer) + 1
     }
+    try {
+        return _observeHubReadSnapshot(key, fetchId, job, args)
+    } finally {
+        synchronized (NATIVE_LOG_SNAPSHOTS) {
+            def snapshot = NATIVE_LOG_SNAPSHOTS[key]
+            if (snapshot instanceof Map && snapshot.fetchId == fetchId) {
+                snapshot.readers = Math.max(0, ((snapshot.readers ?: 0) as Integer) - 1)
+            }
+        }
+    }
+}
+
+private Map _observeHubReadSnapshot(String key, String fetchId, Map job, Map args) {
     if (job != null) {
         try {
             runInMillis(200, "runNativeLogFetch", [overwrite: false, data: job])
@@ -416,9 +435,13 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
     long deadline = t0 + _logsJsonObserveWaitMs()
     long remainingBudget = Math.max(0L, deadline - now())
     while (true) {
+        long remaining
         synchronized (NATIVE_LOG_SNAPSHOTS) {
             def snapshot = NATIVE_LOG_SNAPSHOTS[key]
-            if (snapshot instanceof Map && snapshot.pending != true) {
+            if (!(snapshot instanceof Map) || snapshot.fetchId != fetchId) {
+                throw new IllegalStateException("Background read snapshot expired or was lost; start a fresh call.")
+            }
+            if (snapshot.pending != true) {
                 if (snapshot.error) {
                     NATIVE_LOG_SNAPSHOTS.remove(key)
                     if (snapshot.invalid == true) throw new IllegalArgumentException(snapshot.error.toString())
@@ -426,9 +449,12 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
                 }
                 return [state: "ready", text: snapshot.text, fetchedAt: snapshot.at]
             }
+            remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+            if (remaining <= 0L) {
+                snapshot.replayProtected = true
+                return [state: "pending"]
+            }
         }
-        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
-        if (remaining <= 0L) return [state: "pending"]
         long waitMs = Math.min(250L, remaining)
         pauseExecution(waitMs)
         remainingBudget -= waitMs
@@ -471,7 +497,9 @@ def runNativeLogFetch(Map job = [:]) {
     }
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         if (NATIVE_LOG_SNAPSHOTS[job.key]?.fetchId == job.fetchId) {
-            NATIVE_LOG_SNAPSHOTS[job.key] = result + [at: now(), fetchId: job.fetchId, pending: false]
+            NATIVE_LOG_SNAPSHOTS.put(job.key, result + [at: now(), fetchId: job.fetchId, pending: false,
+                replayProtected: NATIVE_LOG_SNAPSHOTS[job.key].replayProtected == true,
+                readers: NATIVE_LOG_SNAPSHOTS[job.key].readers ?: 0])
         }
     }
 }
@@ -2307,7 +2335,7 @@ private Map _captureStore() {
     if (!owner) throw new IllegalStateException("Capture storage requires an installed app ID")
     synchronized (CAPTURE_STORES) {
         if (!CAPTURE_STORES.containsKey(owner)) {
-            CAPTURE_STORES[owner] = [entries: [:], loaded: false]
+            CAPTURE_STORES.put(owner, [entries: [:], loaded: false])
         }
         return CAPTURE_STORES[owner]
     }
@@ -2331,8 +2359,8 @@ private Map _captureEntriesLocked(Map store) {
             if (!(devices instanceof Map) && !(devices instanceof List)) {
                 throw new IllegalStateException("Legacy capture has an invalid device payload")
             }
-            entries[id.toString()] = [text: groovy.json.JsonOutput.toJson(devices),
-                timestamp: raw instanceof Map ? raw.timestamp : null, deviceCount: devices.size()]
+            entries.put(id.toString(), [text: groovy.json.JsonOutput.toJson(devices),
+                timestamp: raw instanceof Map ? raw.timestamp : null, deviceCount: devices.size()])
         }
         store.entries = entries
         store.loaded = true
@@ -2359,7 +2387,7 @@ def saveCapturedState(stateId, capturedStates) {
     Map store = _captureStore()
     synchronized (store) {
         Map entries = _captureEntriesLocked(store)
-        entries[id] = [text: text, timestamp: now(), deviceCount: capturedStates.size()]
+        entries.put(id, [text: text, timestamp: now(), deviceCount: capturedStates.size()])
         List deleted = []
         int max = getMaxCapturedStates()
         while (entries.size() > max) {

@@ -51,6 +51,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
+    private void stubSourceFiles(Map initialFiles) {
+        def files = new LinkedHashMap(initialFiles)
+        script.metaClass.downloadHubFile = { String fileName -> files.get(fileName) }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> files.put(name, content) }
+    }
+
     // -------- toolInstallApp / toolInstallDriver --------
 
     def "hub_create_app throws when confirm is not provided"() {
@@ -3525,8 +3531,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ]
 
         and: 'downloadHubFile returns the backup contents'
+        def files = ['mcp-backup-app-99.groovy': 'old source v4'.getBytes('UTF-8')]
         script.metaClass.downloadHubFile = { String fileName ->
-            fileName == 'mcp-backup-app-99.groovy' ? 'old source v4'.getBytes('UTF-8') : null
+            files.get(fileName)
         }
 
         and: 'current on-hub source fetch + version lookup (both hit /app/ajax/code)'
@@ -3538,6 +3545,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content ->
             uploads << name
+            files.put(name, content)
         }
 
         and: 'hubInternalPostJson captures the save call and returns success'
@@ -3566,12 +3574,21 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.type == 'app'
         result.id == '99'
         result.restoredVersion == 4
+        result.undoAvailable == true
         result.preRestoreBackup == 'prerestore_app_99'
         result.undoHint.contains('prerestore_app_99')
 
         and: 'both the pre-restore entry and the original backup entry are preserved (original kept so the user can restore again if needed)'
         atomicStateMap.itemBackupManifest.containsKey('prerestore_app_99')
         atomicStateMap.itemBackupManifest.containsKey('app_99')
+
+        when: 'a client reads the generated undo handle as a JSON String'
+        def undo = script.toolGetItemBackup([backupKey: result.preRestoreBackup.toString()])
+
+        then:
+        undo.error == null
+        undo.source == 'current source on hub'
+        undo.fileName == 'mcp-prerestore-app-99.groovy'
     }
 
     @spock.lang.Unroll
@@ -3583,14 +3600,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        script.metaClass.downloadHubFile = { String fileName ->
-            fileName == 'mcp-backup-app-99.groovy' ? 'old source v4'.getBytes('UTF-8') : null
-        }
+        def files = ['mcp-backup-app-99.groovy': 'old source v4'.getBytes('UTF-8')]
+        script.metaClass.downloadHubFile = { String fileName -> files.get(fileName) }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
         def uploads = []
-        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name; files.put(name, content) }
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
@@ -3615,6 +3631,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.type == 'app'
         inner.id == '99'
         inner.restoredVersion == 4
+        inner.undoAvailable == true
         inner.preRestoreBackup == 'prerestore_app_99'
         inner.undoHint.contains('prerestore_app_99')
         atomicStateMap.itemBackupManifest.containsKey('prerestore_app_99')
@@ -3631,11 +3648,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             'driver_88': [type: 'driver', id: '88', fileName: 'mcp-backup-driver-88.groovy',
                           version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
         ]
-        script.metaClass.downloadHubFile = { String fileName -> 'backup bytes'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'backup bytes'.getBytes('UTF-8')])
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "current"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
@@ -3664,11 +3680,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             'driver_88': [type: 'driver', id: '88', fileName: 'mcp-backup-driver-88.groovy',
                           version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
         ]
-        script.metaClass.downloadHubFile = { String fileName -> 'backup bytes'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'backup bytes'.getBytes('UTF-8')])
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "current"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
@@ -3699,11 +3714,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        script.metaClass.downloadHubFile = { String fileName -> 'old source v4'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
 
         when:
@@ -3729,11 +3743,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         script.metaClass._resolveSelfAppClassId = { -> null }
-        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
 
         when:
@@ -3758,11 +3771,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        script.metaClass.downloadHubFile = { String fileName -> 'old source v4'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         and: 'saveOrUpdateJson is an upsert: success with a different echoed id means it saved elsewhere'
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -3792,11 +3804,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
                         version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
-        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
 
         when:
@@ -3823,11 +3834,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         script.metaClass._resolveSelfAppClassId = { -> null }
-        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body ->
             throw new RuntimeException('connection reset mid-restore')
         }
@@ -3855,11 +3865,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         script.metaClass._resolveSelfAppClassId = { -> null }
-        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         and: 'the hub rejects the save with its real compile error'
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -3886,11 +3895,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        script.metaClass.downloadHubFile = { String fileName -> 'old source v4'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: false, foo: 'bar']
         }
@@ -3912,11 +3920,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        script.metaClass.downloadHubFile = { String fileName -> 'old source v4'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true]   // no id key at all
         }
@@ -3939,11 +3946,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             'driver_1': [type: 'driver', id: '1', fileName: 'mcp-backup-driver-1.groovy',
                          version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
         ]
-        script.metaClass.downloadHubFile = { String fileName -> 'driver backup'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'driver backup'.getBytes('UTF-8')])
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "current"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
 
         when:
@@ -3966,11 +3972,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         script.metaClass._resolveSelfAppClassId = { -> null }
-        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         and: 'the response survived the recompile and confirms the save (matching echoed id)'
         script.metaClass.hubInternalPostJson = { String path, String body ->

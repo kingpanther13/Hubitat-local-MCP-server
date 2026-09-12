@@ -131,6 +131,177 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         hubGet.calls.size() == 2
     }
 
+    def "native log reads evict completed one-round snapshots without disturbing pending workers"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        (0..<6).each { index ->
+            snapshots.put("pending-${index}".toString(), [at: timestamp - 20000L, pending: true])
+        }
+        snapshots.put('old-ready', [at: timestamp - 10000L, pending: false, text: '[]'])
+        snapshots.put('new-ready', [at: timestamp - 1000L, pending: false, text: '[]'])
+        hubGet.register('/logs/past/json') { params -> '[]' }
+
+        when:
+        def first = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp - 10000L])
+
+        then:
+        first.state == 'pending'
+        runInMillisCalls.size() == 1
+        !snapshots.containsKey('old-ready')
+        snapshots.containsKey('new-ready')
+        (0..<6).every { index -> snapshots.get("pending-${index}".toString()).pending == true }
+        snapshots.size() == 8
+        hubGet.calls.empty
+
+        when:
+        script.runNativeLogFetch(runInMillisCalls[0][2].data as Map)
+        def ready = script._nativeLogSnapshot([type: 'app', id: '42'], [:])
+
+        then:
+        ready.state == 'ready'
+        ready.text == '[]'
+        hubGet.calls.size() == 1
+        runInMillisCalls.size() == 1
+    }
+
+    def "a worker result cannot be evicted before its foreground caller observes it"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        (0..<7).each { index ->
+            snapshots.put("pending-${index}".toString(), [at: timestamp, pending: true])
+        }
+        hubGet.register('/logs/past/json') { params -> '[]' }
+        Exception capacityFailure = null
+        Map sharedResult = null
+        RUN_IN_MILLIS_OVERRIDE.set({ List scheduled ->
+            runInMillisCalls << scheduled
+            if (scheduled[2].data.query.id == '42') {
+                script.runNativeLogFetch(scheduled[2].data as Map)
+                sharedResult = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
+                try {
+                    script._nativeLogSnapshot([type: 'app', id: '99'], [__reqT0: timestamp - 10000L])
+                } catch (IllegalStateException error) {
+                    capacityFailure = error
+                }
+            }
+        })
+
+        when:
+        def result = script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
+
+        then:
+        capacityFailure?.message?.contains('Background read capacity is full')
+        sharedResult.state == 'ready'
+        result.state == 'ready'
+        result.text == '[]'
+        runInMillisCalls.size() == 1
+        hubGet.calls.size() == 1
+
+        when:
+        def next = script._nativeLogSnapshot([type: 'app', id: '99'], [__reqT0: timestamp - 10000L])
+
+        then:
+        next.state == 'pending'
+        runInMillisCalls.size() == 2
+        hubGet.calls.size() == 1
+        snapshots.size() == 8
+    }
+
+    def "a lost or replaced foreground snapshot fails without claiming replacement readers replacement=#replacement"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms ->
+            String key = runInMillisCalls[0][2].data.key
+            snapshots.remove(key)
+            if (replacement) snapshots.put(key, [at: timestamp, fetchId: 'replacement',
+                pending: false, text: 'newer data', readers: 2])
+        })
+
+        when:
+        script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
+
+        then:
+        def failure = thrown(IllegalStateException)
+        failure.message.contains('snapshot expired or was lost')
+        runInMillisCalls.size() == 1
+        hubGet.calls.empty
+        !replacement || snapshots.values().first().readers == 2
+
+        where:
+        replacement << [false, true]
+    }
+
+    def "terminal native log replay retains its original snapshot under capacity pressure until expiry"() {
+        given:
+        def rows = ['2026-09-06 12:00:00.000\tERROR\tapp|42|Example|original']
+        hubGet.register('/logs/past/json') { params -> JsonOutput.toJson(rows) }
+        def args = [tool: 'hub_get_logs', args: [appId: '42']]
+        def first = call('hub_read_diagnostics', args)
+        String stateId = first.result.requestState
+        script.runNativeLogFetch(runInMillisCalls[0][2].data as Map)
+        long fetchedAt = script.now()
+        def completed = call('hub_read_diagnostics', args, stateId)
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        (0..<7).each { index ->
+            snapshots.put("pending-${index}".toString(), [at: fetchedAt, pending: true])
+        }
+        rows = ['2026-09-06 12:00:01.000\tERROR\tapp|42|Example|newer']
+        NOW_OVERRIDE.set({ -> fetchedAt + 29000L })
+
+        when:
+        def rejected = call('hub_read_diagnostics', [tool: 'hub_get_logs', args: [appId: '99']])
+        def replay = call('hub_read_diagnostics', args, stateId)
+
+        then:
+        completed.result.resultType == 'complete'
+        rejected.error != null || rejected.result?.isError == true
+        JsonOutput.toJson(rejected).contains('Background read capacity is full')
+        replay.result.resultType == 'complete'
+        mcpDriver.parseInner(replay).logs == mcpDriver.parseInner(completed).logs
+        mcpDriver.parseInner(replay).logs[0].message == 'app|42|Example|original'
+        hubGet.calls.size() == 1
+        runInMillisCalls.size() == 1
+        snapshots.size() == 8
+        atomicStateMap.mrtrRequests[stateId].expiresAt == fetchedAt + 30000L
+
+        when:
+        NOW_OVERRIDE.set({ -> fetchedAt + 30000L })
+        def expired = call('hub_read_diagnostics', args, stateId)
+        def next = script._nativeLogSnapshot([type: 'app', id: '99'], [__reqT0: fetchedAt])
+
+        then:
+        expired.error != null
+        JsonOutput.toJson(expired).contains('Invalid or expired requestState')
+        next.state == 'pending'
+        runInMillisCalls.size() == 2
+        snapshots.size() == 8
+        hubGet.calls.size() == 1
+    }
+
+    def "a full pool of pending reads rejects a native log call without empty continuation rounds"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        (0..<8).each { index ->
+            snapshots.put("pending-${index}".toString(), [at: timestamp, pending: true])
+        }
+
+        when:
+        def response = call('hub_read_diagnostics', [tool: 'hub_get_logs', args: [appId: '42']])
+
+        then:
+        response.error != null || response.result?.isError == true
+        JsonOutput.toJson(response).contains('Background read capacity is full')
+        response.result?.resultType != 'input_required'
+        runInMillisCalls.empty
+        hubGet.calls.empty
+        snapshots.size() == 8
+        script.now() == timestamp
+    }
+
     def "MCP log history uses requestState and clearing waits before rotating history"() {
         given:
         script.mcpLog('error', 'server', 'retained error')

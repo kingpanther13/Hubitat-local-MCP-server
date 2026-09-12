@@ -2780,17 +2780,17 @@ def handleDeviceEvent(evt) {
 
             // Check if this trigger already fired and is waiting for condition to go false
             def firedMap = atomicState.durationFired ?: [:]
-            if (firedMap[triggerKey]) {
+            if (firedMap.get(triggerKey)) {
                 log.debug "Duration trigger: already fired, waiting for condition to go false before re-arming"
                 return
             }
 
             def timers = atomicState.durationTimers ?: [:]
-            if (!timers[triggerKey]) {
+            if (!timers.get(triggerKey)) {
                 // First time condition met - start the timer
                 def durationDisplay = formatDurationForDisplay(matchingTrigger)
                 log.debug "Duration trigger: condition met, starting ${durationDisplay} timer for ${evt.device.label} ${evt.name}"
-                timers[triggerKey] = [startTime: now(), trigger: matchingTrigger]
+                timers.put(triggerKey, [startTime: now(), trigger: matchingTrigger])
                 atomicState.durationTimers = timers
                 runIn(matchingTrigger.duration, "checkDurationTrigger", [data: [triggerKey: triggerKey, deviceLabel: evt.device.label, attribute: evt.name]])
             }
@@ -2883,7 +2883,7 @@ def checkDurationTrigger(data) {
         atomicState.durationTimers = timers
         // Mark as fired - won't fire again until condition goes false
         def fired = atomicState.durationFired ?: [:]
-        fired[triggerKey] = true
+        fired.put(triggerKey, true)
         atomicState.durationFired = fired
         executeRule("device_event: ${data.deviceLabel} ${data.attribute} (held for ${durationDisplay})")
     } else {
@@ -3469,7 +3469,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             } else if (action.delayId) {
                 // Mark this specific delay ID as cancelled - will be checked in resumeDelayedActions
                 def cancelIds = atomicState.cancelledDelayIds ?: [:]
-                cancelIds[action.delayId] = true
+                cancelIds.put(action.delayId, true)
                 atomicState.cancelledDelayIds = cancelIds
                 log.debug "Marked delay '${action.delayId}' for cancellation"
             }

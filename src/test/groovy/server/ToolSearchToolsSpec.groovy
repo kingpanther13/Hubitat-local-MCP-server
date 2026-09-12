@@ -73,6 +73,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         device != null
         !device.description.contains('device commands and updates live')
         !device.description.contains('send commands')
+        !device.description.contains('listed below')
         device.description.endsWith('[' + listedGateway.description.split('\\n\\n')[0] + ']')
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.is(cachedCorpus)
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.is(cachedTokens)
@@ -388,11 +389,8 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         listFilesChecked == 2
     }
 
-    // The BM25 maps are subscripted with a COMPUTED key -- a corpus token -- and the platform
-    // sandbox rejects a computed key that collides with a reflection-ish property name. The
-    // catalog really does produce one: hub_list_devices' `fields` parameter is joined into the
-    // corpus text, so an unprefixed key made every search throw. These pin that the token is
-    // present AND that searching for it still scores, which is what the prefix buys.
+    // The catalog contributes the real token 'fields', which historically broke
+    // sandbox subscript scoring. Keep that token present and its search useful.
 
     def "the live corpus contains the sandbox-reserved token that broke raw-key scoring"() {
         when:
