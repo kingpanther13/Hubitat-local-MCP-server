@@ -1,6 +1,7 @@
 package server
 
 import support.TestLocation
+import support.TestDevice
 import support.ToolSpecBase
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
@@ -843,14 +844,16 @@ class RadioGatewaySpec extends ToolSpecBase {
 
     def "hub_set_zigbee ping_device toggles per-device keep-alive ping"() {
         given:
-        hubGet.register('/hub/zigbee/updatePingDevice/0x1234/true') { p -> 'ok' }
+        settingsMap.selectedDevices = [new TestDevice(id: 42)]
+        hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 42]]) }
+        hubGet.register('/hub/zigbee/updatePingDevice/42/true') { p -> 'ok' }
 
         when:
-        def r = script.toolSetZigbee([ping_device: [device_id: '0x1234', enabled: true]])
+        def r = script.toolSetZigbee([ping_device: [device_id: '42', enabled: true]])
 
         then:
         r.success == true
-        r.pingDevice.deviceId == '0x1234'
+        r.pingDevice.deviceId == '42'
         r.pingDevice.enabled == true
     }
 
@@ -912,13 +915,15 @@ class RadioGatewaySpec extends ToolSpecBase {
     def "dispatch: hub_set_zigbee ping_device routes through executeTool"() {
         given:
         settingsMap.enableWrite = true
-        hubGet.register('/hub/zigbee/updatePingDevice/0xABCD/false') { p -> 'ok' }
+        settingsMap.selectedDevices = [new TestDevice(id: 42)]
+        hubGet.register('/device/fullJson/42') { JsonOutput.toJson([device: [id: 42]]) }
+        hubGet.register('/hub/zigbee/updatePingDevice/42/false') { p -> 'ok' }
 
         when:
-        def r = script.executeTool('hub_set_zigbee', [ping_device: [device_id: '0xABCD', enabled: false]])
+        def r = script.executeTool('hub_set_zigbee', [ping_device: [device_id: '42', enabled: false]])
 
         then:
         r.success == true
-        r.pingDevice.deviceId == '0xABCD'
+        r.pingDevice.deviceId == '42'
     }
 }

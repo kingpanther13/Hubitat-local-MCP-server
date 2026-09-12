@@ -2930,6 +2930,247 @@ def _run_read_write_split_self_test() -> int:
     return failures
 
 
+# ---------------------------------------------------------------------------
+# Device-tool access gate placement (issue: authorization was a per-call-site
+# convention; format validation had a chokepoint but authorization did not)
+# ---------------------------------------------------------------------------
+
+# Native per-device reads/writes. A device tool whose body reaches one of these must
+# ALSO call the access gate (_requireDeviceToolAccess), or carry an explicit exemption
+# below with the reason. _fetchDeviceFullJson validates the id FORMAT for every caller;
+# it deliberately does not authorize, so the gate is what a new tool has to remember.
+DEVICE_NATIVE_ACCESS_TOKENS = (
+    # per-device helpers
+    "_fetchDeviceFullJson(",
+    "_fetchBypassDeviceEvents(",
+    "_postBypassDeviceModel(",
+    "_fireBypassCommand(",
+    # whole-population (bulk) helpers: the path the device tools now read through
+    "_mcpVisibleDevices(",
+    "_fetchAllHubDeviceRecords(",
+    "_seedNativeInventoryFromTree(",
+    "_loadContextResourcePopulation(",
+)
+# Endpoint paths live inside string literals, which the body scan blanks; they are matched on a
+# comments-blanked copy of the body instead, and only as the argument of a native call
+# (hubInternal*/_radioGet), so a path named in a comment or a log message never counts.
+DEVICE_NATIVE_ENDPOINT_PATHS = ("/device/", "updatePingDevice")
+_NATIVE_CALL_ARG = r"(?:hubInternal\w*|_radioGet)\(\s*['\"]"
+
+
+def _device_native_tokens(body_code: str, body_strings: str) -> list[str]:
+    hits = [t for t in DEVICE_NATIVE_ACCESS_TOKENS if t in body_code]
+    for p in DEVICE_NATIVE_ENDPOINT_PATHS:
+        # A slash path must START the call's literal; a bare endpoint name may sit anywhere in it.
+        pattern = _NATIVE_CALL_ARG + (re.escape(p) if p.startswith("/") else r"[^'\"\n]*" + re.escape(p))
+        if re.search(pattern, body_strings):
+            hits.append(p)
+    return hits
+
+
+def _device_gate_libraries() -> list[str]:
+    """Every #include library is scanned -- no hand-kept list to fall out of date."""
+    lib_dir = REPO_ROOT / "libraries"
+    return sorted(f"libraries/{p.name}" for p in lib_dir.glob("*.groovy")) if lib_dir.is_dir() else []
+
+# tool method -> why it reaches native device endpoints without the per-device gate.
+# Every entry is a documented scope decision, not a convenience.
+DEVICE_GATE_EXEMPT = {
+    "toolListDevices": "population is _mcpVisibleDevices (selection + MCP children, or the bypass inventory); no caller-supplied device id",
+    "toolDeleteDevice": "administrative force-delete keeps its documented broader scope behind confirm + backup",
+    "toolCreateDevice": "creates the device it then reads; there is no pre-existing device to authorize",
+    "toolCreateVirtualDevice": "MCP-child ownership scoped (reads only the child it created)",
+    "toolListVirtualDevices": "MCP-child ownership scoped",
+    "toolDeleteVirtualDevice": "MCP-child ownership scoped",
+    "toolGetHubLogs": "hub-wide diagnostics by design; deviceId is a log filter and the identity probe returns a boolean only",
+    "toolListHubDrivers": "/device/drivers is the driver catalog, not a device",
+}
+
+
+# Public tool declarations: `def toolX(`, or a typed form such as `Map toolX(`. Private/protected
+# helpers are deliberately excluded -- they are reached only through a public tool, which is
+# where the gate belongs.
+_DEVICE_TOOL_DECL = re.compile(r"^(?:def|Map|List|String|Object|boolean|void)\s+(tool\w+)\s*\(", re.M)
+
+
+def _blank_comments(src: str) -> str:
+    """Replace comment CONTENT with spaces (same length, newlines kept); string literals stay."""
+    pattern = re.compile(r'"""(?:\\.|[^\\])*?"""|\'\'\'(?:\\.|[^\\])*?\'\'\''
+                         r'|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
+    return pattern.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else re.sub(r"[^\n]", " ", m.group(0)), src)
+
+
+def _blank_noncode(src: str) -> str:
+    """Replace the CONTENT of comments and string literals with spaces (same length, newlines
+    kept) so brace matching and token scanning never see a `{` inside a string or comment.
+    Triple-quoted strings, single/double-quoted strings (with escapes), // and /* */ comments."""
+    pattern = re.compile(
+        r'"""(?:\\.|[^\\])*?"""|\'\'\'(?:\\.|[^\\])*?\'\'\''
+        r'|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\''
+        r'|//[^\n]*|/\*.*?\*/',
+        re.S,
+    )
+    return pattern.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), src)
+
+
+def _device_tool_bodies(src: str) -> list[tuple[str, int, str, str]]:
+    """(tool name, 1-based line, body) for every top-level public `tool<Name>(` declaration in
+    src. Bodies are scanned with comments and string contents blanked, so a brace or a gate
+    token inside a string or comment neither shifts the boundary nor counts as code."""
+    out: list[tuple[str, int, str, str]] = []
+    code = _blank_noncode(src)
+    strings = _blank_comments(src)
+    for m in _DEVICE_TOOL_DECL.finditer(code):
+        name = m.group(1)
+        i = code.find("{", m.end())
+        if i < 0:
+            continue
+        depth = 0
+        j = i
+        while j < len(code):
+            c = code[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out.append((name, code.count("\n", 0, m.start()) + 1, code[i:j], strings[i:j]))
+    return out
+
+
+def check_device_tool_access_gate(src_override: dict[str, str] | None = None) -> list[dict]:
+    """Every device tool that reaches a native per-device endpoint must call
+    _requireDeviceToolAccess in its own body, or be listed in DEVICE_GATE_EXEMPT
+    with the reason. Both directions:
+      (A) native access without the gate and without an exemption
+          -> rule "device-tool-access-gate-missing".
+      (B) an exemption for a tool that does not exist or no longer reaches a
+          native endpoint (a stale exemption would silently cover a future tool of
+          that name) -> rule "device-tool-access-gate-stale-exemption".
+    Ships with must-catch + must-not-catch fixtures (DEVICE_GATE_SELF_TEST_CASES).
+    """
+    findings: list[dict] = []
+    sources: dict[str, str]
+    if src_override is not None:
+        sources = src_override
+    else:
+        sources = {}
+        for rel in _device_gate_libraries():
+            sources[rel] = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+    seen_native: set[str] = set()
+    for rel, src in sources.items():
+        for name, line, body, raw in _device_tool_bodies(src):
+            native = _device_native_tokens(body, raw)
+            if not native:
+                continue
+            seen_native.add(name)
+            if "_requireDeviceToolAccess(" in body or name in DEVICE_GATE_EXEMPT:
+                continue
+            findings.append({
+                "file": rel, "line": line, "rule": "device-tool-access-gate-missing",
+                "severity": "error", "source": "",
+                "message": (f"{name} reaches a native device endpoint ({native[0]}) without calling "
+                            "_requireDeviceToolAccess; gate it at tool entry or add a DEVICE_GATE_EXEMPT "
+                            "entry with the scope reason"),
+            })
+    for name in sorted(DEVICE_GATE_EXEMPT):
+        if src_override is not None and name not in {b[0] for src in sources.values() for b in _device_tool_bodies(src)}:
+            continue
+        if name not in seen_native:
+            findings.append({
+                "file": "tests/sandbox_lint.py", "line": 1, "rule": "device-tool-access-gate-stale-exemption",
+                "severity": "error", "source": "",
+                "message": f"DEVICE_GATE_EXEMPT lists {name}, which does not reach a native device endpoint (or no longer exists); remove the entry",
+            })
+    return findings
+
+
+DEVICE_GATE_SELF_TEST_CASES = [
+    # (description, {file: groovy source}, expected_rule_codes)
+    (
+        "native fullJson read without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolPingDevice(args) {\n    def fj = _fetchDeviceFullJson(args.deviceId)\n    return [ok: fj != null]\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "gate at tool entry -- must-not-catch",
+        {"libraries/x.groovy": 'def toolPingDevice(args) {\n    _requireDeviceToolAccess(args.deviceId)\n    def fj = _fetchDeviceFullJson(args.deviceId)\n    return [ok: fj != null]\n}\n'},
+        set(),
+    ),
+    (
+        "native write via /device/ endpoint without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolPokeDevice(args) {\n    hubInternalGet("/device/updateLabel", [deviceId: args.id, label: "x"])\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "exempted tool without the gate -- must-not-catch",
+        {"libraries/x.groovy": 'def toolListHubDrivers(args) {\n    return hubInternalGet("/device/drivers")\n}\n'},
+        set(),
+    ),
+    (
+        "no native access at all -- must-not-catch",
+        {"libraries/x.groovy": 'def toolHello(args) {\n    return [hi: findDevice(args.id)?.label]\n}\n'},
+        set(),
+    ),
+    (
+        "typed public declaration without the gate -- must-catch",
+        {"libraries/x.groovy": 'Map toolPingDevice(args) {\n    return [ok: _fetchDeviceFullJson(args.deviceId) != null]\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "gate named only in a string and a comment, braces inside strings -- must-catch (not fooled)",
+        {"libraries/x.groovy": 'def toolPingDevice(args) {\n    // _requireDeviceToolAccess(args.deviceId) is documented here only\n'
+                               '    def note = "call _requireDeviceToolAccess( first { not here }"\n'
+                               '    def fj = _fetchDeviceFullJson(args.deviceId)\n    return [ok: fj != null, note: note]\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "private typed helper is not a tool surface -- must-not-catch",
+        {"libraries/x.groovy": 'private Map toolInstallItem(String type, args) {\n    return _fetchDeviceFullJson(args.id)\n}\n'},
+        set(),
+    ),
+    (
+        "bulk-population read without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolCountDevices(args) {\n    return [count: _mcpVisibleDevices().size()]\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "endpoint name only in a comment, no native call -- must-not-catch",
+        {"libraries/x.groovy": 'def toolPingNote(args) {\n    // legacy: updatePingDevice was removed here; /device/ping too\n    return [ok: true]\n}\n'},
+        set(),
+    ),
+    (
+        "radio endpoint carrying a device id without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolPingDevice(args) {\n    return _radioGet("/hub/zigbee/updatePingDevice/${args.id}/true")\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "stale exemption (exempt tool present but reaches no native endpoint) -- must-catch",
+        {"libraries/x.groovy": 'def toolListHubDrivers(args) {\n    return [drivers: []]\n}\n'},
+        {"device-tool-access-gate-stale-exemption"},
+    ),
+]
+
+
+def _run_device_gate_self_test() -> int:
+    failures = 0
+    for i, (desc, src, expected_codes) in enumerate(DEVICE_GATE_SELF_TEST_CASES, start=1):
+        findings = check_device_tool_access_gate(src_override=src)
+        for f in findings:
+            format_finding(f)
+        actual_codes = {f["rule"] for f in findings}
+        if actual_codes != expected_codes:
+            failures += 1
+            print(
+                f"DEVICE-GATE-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}"
+            )
+    return failures
+
+
 def format_finding(f: dict) -> str:
     """Format a single finding for human-readable output."""
     severity = f["severity"].upper()
@@ -4055,6 +4296,9 @@ def run_self_test() -> int:
     read_write_split_failures = _run_read_write_split_self_test()
     failures += read_write_split_failures
 
+    # Device-tool access gate placement: must-catch / must-not-catch fixtures.
+    failures += _run_device_gate_self_test()
+
     # BP20 library file-scope block-comment guard: must-catch / must-not-catch fixtures.
     failures += _run_tool_guide_library_pointer_self_test()
     failures += _run_library_block_comment_self_test()
@@ -4073,6 +4317,7 @@ def run_self_test() -> int:
         + len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)
         + len(ENVELOPE_PARITY_SELF_TEST_CASES)
         + len(READ_WRITE_SPLIT_SELF_TEST_CASES)
+        + len(DEVICE_GATE_SELF_TEST_CASES)
         + LIBRARY_POINTER_FIXTURES
         + BLOCK_COMMENT_FIXTURES
         + SCHEMA_PROVENANCE_FIXTURES
@@ -4085,6 +4330,7 @@ def run_self_test() -> int:
         f"{len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)} discrete-event-caps, "
         f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity, "
         f"{len(READ_WRITE_SPLIT_SELF_TEST_CASES)} read-write-split, "
+        f"{len(DEVICE_GATE_SELF_TEST_CASES)} device-tool-access-gate, "
         f"{LIBRARY_POINTER_FIXTURES} tool-guide-library-pointer, "
         f"{BLOCK_COMMENT_FIXTURES} library-block-comment, "
         f"{SCHEMA_PROVENANCE_FIXTURES} mcp-schema-provenance)."
@@ -4872,6 +5118,10 @@ def main() -> int:
     # "a read got added to a manage gateway but never surfaced on the read side"
     # class, which mislabels the read as a write and hides it from the read path.
     all_findings.extend(check_read_write_split())
+
+    # Authorization chokepoint: a device tool that reaches a native per-device endpoint
+    # must gate at entry (or carry a documented exemption), so a new tool cannot forget it.
+    all_findings.extend(check_device_tool_access_gate())
 
     # Issue #209/#250 lockstep: every #include'd library must have a libraries/ file + a
     # build-bundle.py LIBS entry, so a broken/undelivered library fails CI here instead of

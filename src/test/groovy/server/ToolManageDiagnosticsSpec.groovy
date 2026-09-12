@@ -424,6 +424,15 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.contains('could not read memory values')
     }
 
+    private List nativeHealthRows = []
+
+    private void nativeHealthDevice(TestDevice device, Long activityTime) {
+        nativeHealthRows << [data: [id: device.id, name: device.label ?: device.name, lastActivity: activityTime]]
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: nativeHealthRows])
+        }
+    }
+
     // -------- toolDeviceHealthCheck --------
 
     def "hub_get_device_health returns empty summary when no devices are selected"() {
@@ -439,11 +448,11 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
-        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 3600000L) }  // 1h ago
+        nativeHealthDevice(fresh, nowMs - 3600000L)  // 1h ago
         def stale = new TestDevice(id: 2, name: 'Stale', label: 'Stale Sensor')
-        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }  // 48h ago
+        nativeHealthDevice(stale, nowMs - (48 * 3600000L))  // 48h ago
         def never = new TestDevice(id: 3, name: 'Never', label: 'Never-reported')
-        never.metaClass.getLastActivity = { -> null }
+        nativeHealthDevice(never, null)
         settingsMap.selectedDevices = [fresh, stale, never]
 
         when:
@@ -454,6 +463,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.healthyCount == 1
         result.summary.staleCount == 1
         result.summary.unknownCount == 1
+        hubGet.calls.count { it.path == '/hub2/devicesList' } == 1
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
         result.staleDevices[0].name == 'Stale Sensor'
         result.unknownDevices[0].lastActivity == 'never'
         result.recommendation.contains('1 stale and 1 unknown')
@@ -465,9 +476,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
-        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 3600000L) }
+        nativeHealthDevice(fresh, nowMs - 3600000L)
         def stale = new TestDevice(id: 2, name: 'Stale', label: 'Stale Sensor')
-        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+        nativeHealthDevice(stale, nowMs - (48 * 3600000L))
         settingsMap.selectedDevices = [fresh, stale]
 
         when:
@@ -489,7 +500,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
-        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        nativeHealthDevice(fresh, nowMs - 600000L)
         settingsMap.selectedDevices = [fresh]
 
         when:
@@ -505,7 +516,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def nowMs = 1234567890000L
         def staleDevs = (0..<150).collect { i ->
             def d = new TestDevice(id: 1000 + i, name: "S${i}", label: "Stale Sensor ${i}")
-            d.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+            nativeHealthDevice(d, nowMs - (48 * 3600000L))
             d
         }
         settingsMap.selectedDevices = staleDevs
@@ -534,7 +545,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         def nowMs = 1234567890000L
         def stale = new TestDevice(id: 1, name: 'S', label: 'Stale')
-        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+        nativeHealthDevice(stale, nowMs - (48 * 3600000L))
         settingsMap.selectedDevices = [stale]
 
         when:
@@ -551,7 +562,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'F', label: 'Fresh')
-        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        nativeHealthDevice(fresh, nowMs - 600000L)
         settingsMap.selectedDevices = [fresh]
 
         when:
@@ -571,7 +582,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'F', label: 'Fresh')
-        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        nativeHealthDevice(fresh, nowMs - 600000L)
         settingsMap.selectedDevices = [fresh]
 
         when:
@@ -588,7 +599,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         def nowMs = 1234567890000L
         def stale = new TestDevice(id: 1, name: 'S', label: 'Stale')
-        stale.metaClass.getLastActivity = { -> new Date(nowMs - (48 * 3600000L)) }
+        nativeHealthDevice(stale, nowMs - (48 * 3600000L))
         settingsMap.selectedDevices = [stale]
 
         when:
@@ -835,7 +846,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
-        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        nativeHealthDevice(fresh, nowMs - 600000L)
         settingsMap.selectedDevices = [fresh]
         hubGet.register('/hub/advanced/blinkLED') { params -> 'true' }
 
@@ -867,7 +878,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
-        fresh.metaClass.getLastActivity = { -> new Date(nowMs - 600000L) }
+        nativeHealthDevice(fresh, nowMs - 600000L)
         settingsMap.selectedDevices = [fresh]
 
         when:

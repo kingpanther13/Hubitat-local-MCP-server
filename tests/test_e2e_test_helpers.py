@@ -30,6 +30,35 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
+@pytest.mark.parametrize("method", ["test_device_health_traceroute", "test_device_health_speedtest"])
+@pytest.mark.parametrize("failure", [None, "relay", "slow_leg"])
+def test_health_probes_require_completed_bounded_transport(method, failure):
+    def call_tool(tool, args):
+        if tool == "hub_get_logs":
+            assert failure == "relay"
+            return {"logs": [{"message": "native network timeout"}]}
+        assert tool == "hub_get_device_health"
+        if failure == "relay":
+            raise et.McpError("504 Gateway Timeout")
+        return {"traceroute": {"host": args.get("tracerouteHost"), "output": "route"},
+                "speedtest": {"output": "download complete"}}
+
+    runner = et.TestRunner.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(
+        call_tool=call_tool, _last_continuation_rounds=3, _last_logical_elapsed=12.0,
+        _last_http_legs=[(10.1 if failure == "slow_leg" else 4.0, 200, True)] * 3,
+    )
+    invoke = getattr(runner, method)
+    if failure == "relay":
+        with pytest.raises(et.McpError, match="504"):
+            invoke()
+    elif failure == "slow_leg":
+        with pytest.raises(AssertionError, match="relay limits"):
+            invoke()
+    else:
+        invoke()
+
+
 @pytest.mark.parametrize("failure", [None, "flip", "read", "restore"])
 def test_metadata_mode_switch_is_registered_and_restores_without_catalog(monkeypatch, failure):
     name = "test_metadata_after_mode_switch"
@@ -92,6 +121,32 @@ def _watchdog_response(logs):
     )
 
 
+@pytest.mark.parametrize("denial", ["access", "confirmation", "accepted"])
+def test_device_replace_boundary_requires_access_denial_for_both_positions(denial):
+    calls = []
+
+    def call_tool(name, args):
+        assert name == "hub_call_device_replace"
+        assert args.get("list_options") is True or args.get("confirm") is False
+        calls.append(args)
+        if denial == "accepted":
+            return {"success": True}
+        reason = "Device not found: 10" if denial == "access" else "confirm=true is required"
+        raise et.McpError(reason)
+
+    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool))
+    if denial == "access":
+        runner._device_replace_boundary_checks("10", "20")
+        assert calls == [
+            {"old_device_id": "10", "list_options": True},
+            {"old_device_id": "10", "new_device_id": "20", "confirm": False},
+            {"old_device_id": "20", "new_device_id": "10", "confirm": False},
+        ]
+    else:
+        with pytest.raises(AssertionError, match=r"unselected device|reject device access"):
+            runner._device_replace_boundary_checks("10", "20")
+
+
 @pytest.mark.parametrize("rejection", ["unknown", "wrong-code", "wrong-name", "unavailable", "accepted"])
 def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_name_rejection(rejection):
     prefix = f"{et.PREFIX}UnknownPreference"
@@ -101,25 +156,50 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     label_attempts = []
     bypass_changes = []
     bypass = False
+    current_label = "Native original"
+    native_observations = []
+    denied_tools = []
+    log_bypasses = []
 
     class FakeClient:
         def call_tool(self, name, arguments=None):
+            nonlocal current_label
             arguments = arguments or {}
+            if name == "hub_get_logs":
+                assert arguments == {"deviceId": "10", "limit": 5}
+                log_bypasses.append(bypass)
+                return {"logs": [{"deviceId": "10", "message": "Unselected device log"}]}
             if not bypass:
-                raise et.McpError("Device not found")
+                assert arguments["deviceId"] == "10"
+                denied_tools.append(name)
+                raise et.McpError("Device not found: 10")
+            if name == "hub_list_devices":
+                assert arguments == {"scope": "all", "labelFilter": f"{et.SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}
+                return {"devices": [{"id": "10", "mcpAuthorized": True}]}
             if name == "hub_get_device":
                 if arguments.get("mode") == "configuration":
                     assert arguments.get("fields") == ["label"]
                     return {
                         "preferenceRead": {"status": "complete"},
                         "availableFields": {"preferences": list(declared)},
-                        "editableFields": [{"name": "label", "valuePresent": True, "value": "Native original"}],
+                        "editableFields": [{"name": "label", "valuePresent": True, "value": current_label}],
                     }
-                return {"id": "10", "name": "Unlisted", "label": "Original", "commands": []}
+                return {"id": "10", "name": "Unlisted", "label": "Original",
+                        "commands": [{"name": "captureConfiguration"}]}
             if name == "hub_list_device_events":
                 return {"events": [], "count": 0}
+            if name == "hub_list_device_dependents":
+                return {"deviceId": "10", "appsUsing": []}
+            if name == "hub_call_device_command":
+                assert arguments["command"] == "captureConfiguration"
+                native_observations.append({"nonce": arguments["parameters"][0]})
+                return {"success": True}
+            if name == "hub_get_device_attribute":
+                assert arguments["attribute"] == "nativeConfiguration"
+                return {"value": json.dumps(native_observations[-1])}
             if name == "hub_update_device":
                 if "label" in arguments:
+                    current_label = arguments["label"]
                     label_attempts.append(arguments["label"])
                     return {"success": True, "changes": [{"property": "label"}]}
                 patch = arguments["preferences"]
@@ -156,6 +236,12 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert preference_attempts == [{prefix + "__": True}]
     assert declared == preferences_before
     assert label_attempts == ["Native original _BWTEST", "Native original"]
+    assert current_label == "Native original"
+    assert len(native_observations) == 1
+    assert log_bypasses == [False, True]
+    assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
+                            "hub_update_device", "hub_call_device_command",
+                            "hub_list_device_dependents"] + (["hub_get_device"] if rejection == "unknown" else [])
     assert bypass_changes == [True, False]
 
 
@@ -166,19 +252,32 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
     label_attempts = []
     bypass_changes = []
     bypass = False
+    denied_tools = []
+    log_bypasses = []
 
     class FakeClient:
         def call_tool(self, name, arguments=None):
             nonlocal current_label
             arguments = arguments or {}
+            if name == "hub_get_logs":
+                assert arguments == {"deviceId": "10", "limit": 5}
+                log_bypasses.append(bypass)
+                return {"logs": [{"deviceId": "10", "message": "Unselected device log"}]}
             if not bypass:
-                raise et.McpError("Device not found")
+                assert arguments["deviceId"] == "10"
+                denied_tools.append(name)
+                raise et.McpError("Device not found: 10")
+            if name == "hub_list_devices":
+                assert arguments == {"scope": "all", "labelFilter": f"{et.SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}
+                return {"devices": [{"id": "10", "mcpAuthorized": True}]}
             if name == "hub_get_device":
                 if arguments.get("mode") == "configuration":
                     return {"editableFields": [{"name": "label", "valuePresent": True, "value": current_label}]}
                 return {"id": "10", "name": "Fallback name", "label": "Summary fallback", "commands": []}
             if name == "hub_list_device_events":
                 return {"events": [], "count": 0}
+            if name == "hub_list_device_dependents":
+                return {"deviceId": "10", "appsUsing": []}
             if name == "hub_update_device" and "label" in arguments:
                 current_label = arguments["label"]
                 label_attempts.append(current_label)
@@ -203,6 +302,10 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
 
     assert label_attempts == [f"{native_label} _BWTEST", native_label]
     assert current_label == native_label
+    assert log_bypasses == [False, True]
+    assert denied_tools == ["hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
+                            "hub_update_device", "hub_call_device_command",
+                            "hub_list_device_dependents"]
     assert bypass_changes == [True, False]
 
 

@@ -1,5 +1,6 @@
 package server
 
+import support.NativePollFixture
 import support.TestDevice
 import support.ToolSpecBase
 
@@ -27,7 +28,7 @@ import support.ToolSpecBase
  *  - Device not found -> throws
  *  - Attribute absent from currentStates (neverReported=true path) (I5)
  *  - Attribute value transitions from null to wrong -> neverReported absent or false (I5)
- *  - Attribute name typo (not in supportedAttributes) -> throws with helpful message listing available attributes
+ *  - Attribute name absent from native reported states -> times out with neverReported
  *  - Unknown arg (timeoutSeconds) -> throws with message naming the bad key and suggesting timeoutMs
  *  - Multiple unknown args -> all listed in the error plus gotcha hint
  *  - pauseExecution throws InterruptedException -> returns interrupted=true with context fields (I6)
@@ -46,6 +47,40 @@ import support.ToolSpecBase
  */
 class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
+    private void nativePollDevice(TestDevice device) {
+        childDevicesList << device
+        NativePollFixture.register(hubGet, device)
+    }
+
+    @spock.lang.Unroll
+    def "_pollSleepMs keeps the cadence for fast reads and floors at half the interval for slow ones (#label)"() {
+        expect:
+        script._pollSleepMs(interval, remaining, tickElapsed) == sleep
+
+        where:
+        label                      | interval | remaining | tickElapsed | sleep
+        'no read latency'          | 200      | 5000      | 0           | 200
+        'latency subtracted'       | 200      | 5000      | 50          | 150
+        'reads slower than interval' | 200    | 5000      | 300         | 100
+        'reads equal the interval' | 200      | 5000      | 200         | 100
+        'window nearly over'       | 200      | 30        | 50          | 30
+        'window expired'           | 200      | 0         | 0           | 200
+    }
+
+    def "a malformed argument is rejected before any per-device native fetch"() {
+        given:
+        def device = new TestDevice(id: 10, name: 'TestSwitch', label: 'Test Switch',
+            supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        nativePollDevice(device)
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on', comparator: 'bogus'])
+
+        then:
+        thrown(IllegalArgumentException)
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+    }
+
     // ---------------------------------------------------------------------------
     // 1. Match on first poll
     // ---------------------------------------------------------------------------
@@ -59,7 +94,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -80,7 +115,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
     // ---------------------------------------------------------------------------
     // 2. Match on Nth poll (value changes mid-sequence)
-    //    Use a Spy on TestDevice to intercept getCurrentStates() and flip after k reads.
+    //    Script the native HTTP fixture state to flip after k value reads.
     // ---------------------------------------------------------------------------
 
     def "returns success when value changes to expected after several polls"() {
@@ -90,13 +125,13 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.id = 20
         device.label = 'Flip Switch'
         device.supportedAttributes = [[name: 'switch']]
-        // The poll engine reads currentStates (the live event store list), so the stateful
-        // stub drives getCurrentStates: returns 'off' for reads 1-2, 'on' from read 3 onward.
+        // NativePollFixture converts this scripted state to the fullJson HTTP response:
+        // 'off' for value reads 1-2, 'on' from read 3 onward.
         device.getCurrentStates() >> {
             readCount++
             return [[name: 'switch', value: readCount >= 3 ? 'on' : 'off']]
         }
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -111,6 +146,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         result.success     == true
         result.finalValue  == 'on'
         result.polledCount == 3
+        hubGet.calls.findAll { it.path == '/device/fullJson/20' }.size() == result.polledCount
         result.timedOut    == false
     }
 
@@ -126,7 +162,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -156,7 +192,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'contact']],
             attributeValues: [contact: 'open']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -185,7 +221,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'contact']],
             attributeValues: [contact: 'open']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -214,7 +250,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -243,7 +279,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -282,7 +318,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -304,7 +340,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -327,7 +363,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -349,7 +385,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 90, label: 'Low Timeout',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -369,7 +405,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 91, label: 'High Timeout',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -393,7 +429,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 100, label: 'Fast Interval',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -414,7 +450,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 101, label: 'Slow Interval',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -445,7 +481,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -496,7 +532,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [:]  // no value for 'switch' -> absent from currentStates -> find returns null
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -515,10 +551,10 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------------------------
-    // 14. Attribute typo (not in supportedAttributes) -> throws with helpful message
+    // 14. Unknown attribute names cannot be rejected from reported-only metadata
     // ---------------------------------------------------------------------------
 
-    def "throws when attribute name is not in device supportedAttributes"() {
+    def "an attribute absent from native reported states times out with neverReported"() {
         given:
         def device = new TestDevice(
             id: 130,
@@ -526,19 +562,67 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch'], [name: 'level']],
             attributeValues: [switch: 'off', level: '50']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
-        script.toolPollUntilAttribute([
+        def result = script.toolPollUntilAttribute([
             deviceId      : '130',
-            attribute     : 'swich',   // typo -- not in supportedAttributes
-            expectedValue : 'on'
+            attribute     : 'swich',
+            expectedValue : 'on',
+            timeoutMs     : 100,
+            pollIntervalMs: 50
         ])
 
         then:
+        result.success == false
+        result.timedOut == true
+        result.neverReported == true
+        result.finalValue == null
+        result.polledCount >= 1
+        !result.containsKey('readError')
+    }
+
+    def "a previously unreported attribute can appear on a later native poll without SDK declarations"() {
+        given:
+        def reads = 0
+        def device = Spy(TestDevice)
+        device.id = 131
+        device.label = 'Reports Later'
+        device.getSupportedAttributes() >> { throw new AssertionError('SDK declaration reads are forbidden') }
+        device.getCurrentStates() >> {
+            reads++
+            reads == 1 ? [] : [[name: 'customValue', value: 'ready']]
+        }
+        nativePollDevice(device)
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId: '131', attribute: 'customValue', expectedValue: 'ready', timeoutMs: 500, pollIntervalMs: 50
+        ])
+
+        then:
+        result.success == true
+        result.finalValue == 'ready'
+        result.polledCount == 2
+        reads == 2
+        hubGet.calls.findAll { it.path == '/device/fullJson/131' }.size() == 2
+        !result.neverReported
+        !result.readError
+    }
+
+    def "an existing unselected device is denied before native polling when bypass is off"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = false
+        def device = new TestDevice(id: 132, label: 'Not Selected', attributeValues: [switch: 'on'])
+        NativePollFixture.register(hubGet, device)
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '132', attribute: 'switch', expectedValue: 'on', timeoutMs: 100])
+
+        then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('swich')
-        ex.message.contains('switch')   // 'switch' appears in the Available list
+        ex.message.contains('132')
+        hubGet.calls.empty
     }
 
     // ---------------------------------------------------------------------------
@@ -553,7 +637,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -581,7 +665,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -613,7 +697,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.supportedAttributes = [[name: 'level']]
         // A State's value is a String in Hubitat; an integer-equivalent level reads as "50.0".
         device.getCurrentStates() >> [[name: 'level', value: '50.0']]
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -642,7 +726,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.label = 'Fractional Level'
         device.supportedAttributes = [[name: 'level']]
         device.getCurrentStates() >> [[name: 'level', value: '50.5']]
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -670,7 +754,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.label = 'Numeric vs Non-Numeric'
         device.supportedAttributes = [[name: 'level']]
         device.getCurrentStates() >> [[name: 'level', value: '50.0']]
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -699,7 +783,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -726,7 +810,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -753,7 +837,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -777,7 +861,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -805,7 +889,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -828,7 +912,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'level']],
             attributeValues: [level: '50']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([
@@ -850,7 +934,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 230, label: 'Boundary Low',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([deviceId: '230', attribute: 'switch',
@@ -865,7 +949,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 231, label: 'Boundary High',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([deviceId: '231', attribute: 'switch',
@@ -880,7 +964,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 232, label: 'Boundary Min Accept',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([deviceId: '232', attribute: 'switch',
@@ -895,7 +979,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 233, label: 'Boundary Max Accept',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([deviceId: '233', attribute: 'switch',
@@ -914,7 +998,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 240, label: 'Interval Low',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([deviceId: '240', attribute: 'switch',
@@ -929,7 +1013,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 241, label: 'Interval High',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         script.toolPollUntilAttribute([deviceId: '241', attribute: 'switch',
@@ -944,7 +1028,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 242, label: 'Interval Min Accept',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([deviceId: '242', attribute: 'switch',
@@ -959,7 +1043,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         given:
         def device = new TestDevice(id: 243, label: 'Interval Max Accept',
             supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         // pollIntervalMs=5000 > timeoutMs=200 so it gets clamped -- still accepts, not throws
@@ -983,7 +1067,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [:]   // null throughout
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -1013,7 +1097,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             readCount++
             return readCount == 1 ? [] : [[name: 'switch', value: 'off']]
         }
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -1047,7 +1131,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             readCount++
             return [[name: 'level', value: (readCount * 10).toString()]]
         }
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -1072,7 +1156,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -1101,7 +1185,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']   // won't match, so we'll reach sleep
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         // pauseExecution is on BaseExecutor/@Delegate chain; override via metaClass on the script
         script.metaClass.pauseExecution = { long ms ->
@@ -1138,7 +1222,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.supportedAttributes = [[name: 'level']]
         // Driver reports the level as the String "50.0" in the event store.
         device.getCurrentStates() >> [[name: 'level', value: '50.0']]
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -1167,7 +1251,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.supportedAttributes = [[name: 'level']]
         // An integer-valued level reads from the event store as the String "50".
         device.getCurrentStates() >> [[name: 'level', value: '50']]
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -1191,7 +1275,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.supportedAttributes = [[name: 'level']]
         // A decimal-valued level reads from the event store as the String "50.0".
         device.getCurrentStates() >> [[name: 'level', value: '50.0']]
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def result = script.toolPollUntilAttribute([
@@ -1221,7 +1305,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']   // won't match, so we'll reach the sleep
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         // Inject a non-interrupted exception to verify the narrow catch does NOT swallow it
         script.metaClass.pauseExecution = { long ms ->
@@ -1256,7 +1340,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']   // won't match, so we'll reach the sleep
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         // mcpLog is a script-defined method (bucket 1 -- purely dynamic; not on
         // AppExecutor/BaseExecutor). Per-instance metaClass overrides intercept
@@ -1317,7 +1401,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def response = mcpDriver.callTool('hub_get_device_attribute', [
@@ -1350,7 +1434,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def response = mcpDriver.callTool('hub_get_device_attribute', [
@@ -1405,7 +1489,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def response = mcpDriver.callTool('hub_get_device_attribute', [
@@ -1432,7 +1516,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def response = mcpDriver.callTool('hub_get_device_attribute', [
@@ -1461,7 +1545,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         script.metaClass.pauseExecution = { long ms ->
             throw new InterruptedException("hub reloading")
@@ -1498,7 +1582,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'off']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         script.metaClass.pauseExecution = { long ms ->
             throw new RuntimeException("simulated bug in sleep path")
@@ -1542,7 +1626,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
-        childDevicesList << device
+        nativePollDevice(device)
 
         when:
         def response = mcpDriver.callTool('hub_get_device_attribute', [

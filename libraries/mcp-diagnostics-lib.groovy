@@ -351,12 +351,14 @@ private String _deviceReadAccessScope() {
 
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
     Map work = [id: context.id, fresh: context.fresh, tool: tool,
+                outerTool: context.outerTool ?: tool,
                 args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
     Map snapshot = _hubReadSnapshot(null, args, work)
     if (work.scope != _deviceReadAccessScope()) {
         throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
     }
     if (snapshot.state == "pending") return [status: "in_progress", tool: tool]
+    context.fetchedAt = snapshot.fetchedAt
     return new groovy.json.JsonSlurper().parseText(snapshot.text)
 }
 
@@ -368,7 +370,10 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         NATIVE_LOG_SNAPSHOTS.entrySet().findAll { entry ->
             Map value = entry.value as Map
-            long ttl = value.pending == true ? 90000L : 30000L
+            // Health permits serial 30s traceroute + 90s speedtest + inventory/ping work.
+            // Retention outlasts those HTTP deadlines; it is not a worker cancellation timer.
+            long pendingTtl = value.work?.tool == "hub_get_device_health" ? 240000L : 90000L
+            long ttl = value.pending == true ? pendingTtl : 30000L
             now() - (value.at as Long) >= ttl
         }.collect { it.key }.each { NATIVE_LOG_SNAPSHOTS.remove(it) }
         if (deviceRead != null) {
@@ -445,7 +450,11 @@ def runNativeLogFetch(Map job = [:]) {
             if (work.scope != _deviceReadAccessScope()) {
                 throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
             }
-            def payload = _executeWithDeviceReadContext(work.tool, work.args as Map, null)
+            // Re-enter the original route so a gateway disabled while this job was queued
+            // is checked alongside the live read master and leaf permissions.
+            String outer = work.outerTool?.toString() ?: work.tool.toString()
+            Map outerArgs = outer == work.tool ? work.args as Map : [tool: work.tool, args: work.args]
+            def payload = _executeWithDeviceReadContext(outer, outerArgs, null)
             String text = groovy.json.JsonOutput.toJson(payload)
             int bytes = text.getBytes("UTF-8").length
             if (bytes > 120000) text = groovy.json.JsonOutput.toJson(
@@ -672,15 +681,11 @@ def toolGetHubLogs(args) {
     // source filters plus the limit below still apply client-side on top of the scoped
     // result; they are not replaced by deviceId/appId.
     //
-    // Both ids must be validated before the HTTP call. The hub returns 200 OK with an
-    // empty array for unknown or non-numeric ids, which would otherwise be indistinguishable
-    // from a real device that simply has no log entries.
+    // Logs are hub-wide diagnostics, including history for deleted devices. Validate
+    // filter syntax without requiring current device metadata or allowlist membership.
     def query = null
     if (deviceIdFilter) {
-        def device = findDevice(deviceIdFilter)
-        if (!device) {
-            throw new IllegalArgumentException("Device not found: ${deviceIdFilter}")
-        }
+        _validateNativeDeviceId(deviceIdFilter)
         query = [type: "dev", id: deviceIdFilter]
     } else if (appIdFilter) {
         if (!appIdFilter.isInteger()) {
@@ -854,6 +859,13 @@ def toolGetHubLogs(args) {
     // user-specified ceiling. Default limit is 100; max 500. Pair with limit=500
     // for the largest practical full-buffer page.
     def result = [logs: paged.page, count: paged.page.size(), totalParsed: totalParsed, appliedLimit: limit]
+    if (deviceIdFilter) {
+        // The hub answers 200 [] for an unknown id and for a quiet device alike. An entry proves
+        // the id; an empty scoped read is checked with one native identity read so a typo does
+        // not read as "this device is silent". The log scope itself stays hub-wide.
+        result.deviceIdResolved = fullLogs ? true :
+            (_fetchDeviceFullJson(deviceIdFilter)?.device?.id?.toString() == deviceIdFilter)
+    }
     if (fetchedAt != null) result.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
     if (cursor != null) {
         result.total = fullLogs.size()
@@ -1517,6 +1529,32 @@ def toolForceGarbageCollection(args) {
     return result
 }
 
+private Map _deviceHealthInventory() {
+    boolean bypass = _bypassEnabled()
+    def allowedIds = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id.toString() } as Set
+    if (!bypass && !allowedIds) {
+        return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices"]
+    }
+    // The Devices page carries activity for the whole tree in one read, including children.
+    def text = hubInternalGet("/hub2/devicesList")
+    def parsed = new groovy.json.JsonSlurper().parseText(text ?: "{}")
+    def records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
+    if (!(records instanceof List)) throw new IllegalStateException("Native device tree is unavailable or malformed")
+    def byId = [:]
+    records.each { record ->
+        String id = record.id.toString()
+        if (bypass || allowedIds.contains(id)) {
+            byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
+                metadataUnavailable: !record.containsKey('lastActivity')])
+        }
+    }
+    // A missing selected/owned device is an unknown result, not proof that it is healthy or absent.
+    allowedIds.each { id ->
+        if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
+    }
+    return [devices: byId.values() as List]
+}
+
 def toolDeviceHealthCheck(args) {
     def staleHours = args.staleHours ?: 24
     def includeHealthy = args.includeHealthy ?: false
@@ -1589,9 +1627,28 @@ def toolDeviceHealthCheck(args) {
         }
     }
 
-    if (!settings.selectedDevices) {
+    def inventory
+    try {
+        inventory = _deviceHealthInventory()
+    } catch (Exception e) {
+        // Native response text may contain settings; retain operation and failure class only.
+        mcpLog("error", "monitoring", "hub_get_device_health native inventory failed (${e.class.simpleName})")
+        inventory = [success: false, error: "Native device inventory could not be read (${e.class.simpleName})."]
+    }
+    if (inventory?.success == false || !(inventory?.devices instanceof List)) {
+        def failedResult = [success: false,
+            error: inventory?.error ?: "Native device inventory returned an unexpected response.",
+            note: inventory?.note ?: "Retry the native inventory read; device health could not be assessed."]
+        if (pingResults != null) failedResult.pingResults = pingResults
+        if (tracerouteResult != null) failedResult.traceroute = tracerouteResult
+        if (speedtestResult != null) failedResult.speedtest = speedtestResult
+        if (identifyHubFields != null) failedResult.putAll(identifyHubFields)
+        return failedResult
+    }
+    def devices = inventory.devices
+    if (!devices) {
         def emptyResult = [
-            message: "No devices selected for MCP access",
+            message: inventory.message ?: "No devices available for MCP access",
             summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]
         ]
         if (pingResults != null) emptyResult.pingResults = pingResults
@@ -1607,24 +1664,29 @@ def toolDeviceHealthCheck(args) {
     def stale = []
     def unknown = []
 
-    settings.selectedDevices.each { device ->
+    devices.each { device ->
         try {
             def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
             def entry = [
                 id: device.id.toString(),
                 name: deviceLabel
             ]
+            if (device.metadataUnavailable == true) {
+                entry.lastActivity = "unavailable"
+                entry.hoursAgo = null
+                entry.metadataUnavailable = true
+                unknown << entry
+                return
+            }
 
-            def lastActivity = null
-            try {
-                lastActivity = device.lastActivity
-            } catch (MissingPropertyException ignored) {
-                // Expected: some device types don't expose lastActivity. Fall through to "never".
-            } catch (Exception e) {
-                // Unexpected -- a sandbox tightening or device-proxy change rather than the
-                // documented MissingPropertyException case. Log so a "why are all my devices
-                // unknown" report has a breadcrumb to chase; still fall through to "never".
-                mcpLog("debug", "monitoring", "hub_get_device_health could not read lastActivity for device ${device.id}: ${e.class.simpleName}: ${e.message}")
+            def lastActivity = device.lastActivity != null ? _parseSinceArg(device.lastActivity) : null
+            if (device.lastActivity != null && lastActivity == null) {
+                mcpLog("error", "monitoring", "hub_get_device_health could not parse native lastActivity for device ${device.id}")
+                entry.lastActivity = "unavailable"
+                entry.hoursAgo = null
+                entry.metadataUnavailable = true
+                unknown << entry
+                return
             }
 
             if (lastActivity) {
@@ -1667,7 +1729,7 @@ def toolDeviceHealthCheck(args) {
 
     def result = [
         summary: [
-            totalDevices: settings.selectedDevices.size(),
+            totalDevices: devices.size(),
             healthyCount: healthy.size(),
             staleCount: stale.size(),
             unknownCount: unknown.size(),
@@ -1841,6 +1903,12 @@ def toolSetZigbee(args) {
         def pd = args.ping_device
         if (!(pd instanceof Map) || pd.device_id == null || pd.enabled == null) {
             throw new IllegalArgumentException("ping_device requires {device_id, enabled} -- toggle keep-alive pinging for one Zigbee device.")
+        }
+        _requireDeviceToolAccess(pd.device_id)
+        if (!(_fetchDeviceFullJson(pd.device_id)?.device instanceof Map)) {
+            return [success: false, isError: true,
+                error: "Native device identity is unavailable for ${pd.device_id}; keep-alive ping was not changed.",
+                note: "Use the numeric Hubitat device ID and verify the device exists before retrying."]
         }
         try {
             boolean on = (pd.enabled == true)
@@ -2391,7 +2459,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     ruleId: [type: "string", description: "MCP mode: filter by custom rule ID."],
                     level: [type: "string", description: "Filter by log level. Default: all levels.", enum: ["trace", "debug", "info", "warn", "error", "all"]],
                     source: [type: "string", description: "Hub mode: Filter by source/app name (case-insensitive substring match against the log entry)"],
-                    deviceId: [type: "string", description: "Hub mode: Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
+                    deviceId: [type: "string", description: "Hub mode: Filter hub-wide history by numeric device ID, regardless of device selection or bypass (mutually exclusive with appId)."],
                     appId: [type: "string", description: "Hub mode: Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
                     limit: [type: "integer", description: "Max entries: hub default 100/max 500; MCP default 50/max 100."],
                     pattern: [type: "string", description: "Hub mode: Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"],
@@ -2450,7 +2518,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_device_health",
-            description: "Hub network diagnostics + device-staleness checks. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours.",
+            description: "Hub network diagnostics + device-staleness checks. Checks selected devices and MCP-managed children, or all hub devices when allowlist bypass is enabled, for no activity in staleHours.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2514,7 +2582,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     power_level: [description: "Zigbee transmit power level (hub-dependent dBm scale). Set together with channel."],
                     rebuild_on_reboot: [type: "boolean", description: "Radio setting: rebuild the Zigbee network on each hub reboot."],
                     ping_inactive: [type: "boolean", description: "Radio setting: keep-alive ping inactive Zigbee devices."],
-                    ping_device: [type: "object", description: "Toggle keep-alive ping for ONE device: {device_id, enabled}."],
+                    ping_device: [type: "object", description: "Toggle keep-alive ping for one authorized device: {device_id: numeric Hubitat device ID, enabled}. Allowlist bypass permits unselected devices."],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]
                 ]
             ]

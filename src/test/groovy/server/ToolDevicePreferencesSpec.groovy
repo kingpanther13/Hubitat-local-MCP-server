@@ -40,9 +40,10 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         hubGet.register("/device/fullJson/${id}") { params -> JsonOutput.toJson(model) }
     }
 
-    def "omitted and explicit summary preserve the seven-key response without supplemental reads"() {
+    def "omitted and explicit summary preserve the seven-key response through native reads"() {
         given:
         addListedDevice()
+        registerFixture()
 
         when:
         def omitted = script.toolGetDevice(DEVICE_ID)
@@ -53,7 +54,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         omitted.keySet() == ['id', 'name', 'label', 'room', 'capabilities', 'attributes', 'commands'] as Set
         !omitted.containsKey('mode')
         !omitted.containsKey('preferences')
-        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 2
     }
 
     def "unknown mode is rejected before authorization detail is fetched"() {
@@ -365,7 +366,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         'wrong-shape' | '{"devices":"fixture-linked-secret"}'
     }
 
-    def "native fetch failure preserves useful identity and explicitly unavailable discovery"() {
+    def "native fetch failure reports unavailable discovery without falling back to SDK identity"() {
         given:
         addListedDevice()
         hubGet.register("/device/fullJson/${DEVICE_ID}") { throw new RuntimeException('offline') }
@@ -374,12 +375,12 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         def result = script.toolGetDevice(DEVICE_ID, 'configuration')
 
         then:
-        result.id == DEVICE_ID
-        result.label == 'Synthetic Hall Climate'
-        result.preferenceRead.status == 'unavailable'
-        result.preferenceRead.reason
-        result.deviceInfoRead.status == 'unavailable'
-        result.editableFields.every { !it.writable }
+        result.success == false
+        result.isError == true
+        result.error.contains("/device/fullJson/${DEVICE_ID}")
+        result.note
+        !result.containsKey('editableFields')
+        !result.containsKey('preferences')
     }
 
     def "native unset storage does not promote the UI default into a saved #kind preference"() {
@@ -443,6 +444,10 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.sections.identity.lastActivityTime == '2026-09-08T09:00:00.000-0400'
         result.sections.attributes.currentStates.temperature.unit == 'C'
         result.sections.attributes.declaredAttributes[0].name == 'temperature'
+        result.sections.attributes.declaredAttributes[0].dataType == 'NUMBER'
+        result.sections.attributes.declaredAttributes[0].value == 21.5
+        result.sections.attributes.attributeCoverage.source == 'device.currentStates'
+        result.sections.attributes.attributeCoverage.declarationsComplete == false
         result.sections.relationships.parentApp.id == 301
         result.sections.relationships.appsUsing[0].id == 501
         result.sections.state.health == 'online'
@@ -567,15 +572,18 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
 
     def "details redacts secret attribute records from the listed device path"() {
         given:
-        childDevicesList << new TestDevice(id: 901, name: 'Fixture', supportedAttributes: [[name: 'apiToken', dataType: 'STRING']],
-            attributeValues: [apiToken: 'private-attribute-value'])
-        registerFixture()
+        childDevicesList << new TestDevice(id: 901, name: 'Fixture')
+        def nativeModel = fixture()
+        nativeModel.device.currentStates = [apiToken: [name: 'apiToken', value: 'private-attribute-value', dataType: 'STRING']]
+        nativeModel.remove('commands')
+        registerFixture(DEVICE_ID, nativeModel)
 
         when:
         def result = script.toolGetDevice(DEVICE_ID, 'details', ['attributes'])
 
         then:
-        !result.toString().contains('private-attribute-value')
+        !JsonOutput.toJson(result).contains('private-attribute-value')
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
         result.sections.attributes.declaredAttributes[0].name == 'apiToken'
         result.sections.attributes.declaredAttributes[0].value == '***redacted (password)***'
     }
@@ -951,4 +959,23 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('selection')
     }
+    def 'details continuation survives a selection change while bypass still grants access'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        addListedDevice()
+        def full = fixture()
+        full.deviceState = [large: 'x' * 180000]
+        registerFixture(DEVICE_ID, full)
+        def first = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'])
+        assert first.nextCursor
+        childDevicesList.clear()
+
+        when:
+        def page = script.toolGetDevice(DEVICE_ID, 'details', ['state'], ['large'], first.nextCursor)
+
+        then:
+        page.content
+        hubGet.calls.count { it.path == "/device/fullJson/${DEVICE_ID}" } == 1
+    }
+
 }
