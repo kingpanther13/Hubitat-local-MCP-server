@@ -476,18 +476,29 @@ _RETIRED_KEY_PATTERN = "|".join(map(re.escape, RETIRED_PERSISTED_DERIVED_KEYS))
 # Include compound writes while leaving equality and regex comparisons readable.
 _RETIRED_ASSIGNMENT = r"\s*(?:\*\*|>>>|>>|<<|[+\-*/%&|^])?=(?![=~])"
 _RETIRED_DOT_WRITE = re.compile(
-    rf"\b(?:atomicState|state)\s*\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
+    rf"\b(?P<store>atomicState|state)\s*\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
 # The bracket regexes run on masked source, where a string literal is blanked to
 # spaces (quotes included); the key is recovered from the original line at the span.
 _RETIRED_BRACKET_WRITE = re.compile(
-    r"\b(?:atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
+    r"\b(?P<store>atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
 _RETIRED_BRACKET_LITERAL = re.compile(
     rf"\s*(?P<quote>['\"])(?P<key>{_RETIRED_KEY_PATTERN})(?P=quote)\s*"
 )
+
+
+def _literal_state_writes(line: str, original: str, dot_re, bracket_re, literal_re) -> list[tuple[str, str]]:
+    """(store, key) pairs assigned on one masked line; bracket keys are recovered from the original."""
+    writes = [(m.group("store"), m.group("key")) for m in dot_re.finditer(line)]
+    for match in bracket_re.finditer(line):
+        start, end = match.span("literal")
+        literal = literal_re.fullmatch(original[start:end])
+        if literal:
+            writes.append((match.group("store"), literal.group("key")))
+    return writes
 
 
 def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[dict]:
@@ -497,13 +508,9 @@ def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[d
     for line_num, (line, original) in enumerate(
         zip(strip_comments_and_strings(source), source_lines, strict=True), start=1
     ):
-        keys = [m.group("key") for m in _RETIRED_DOT_WRITE.finditer(line)]
-        for match in _RETIRED_BRACKET_WRITE.finditer(line):
-            start, end = match.span("literal")
-            literal = _RETIRED_BRACKET_LITERAL.fullmatch(original[start:end])
-            if literal:
-                keys.append(literal.group("key"))
-        for key in keys:
+        for _store, key in _literal_state_writes(
+            line, original, _RETIRED_DOT_WRITE, _RETIRED_BRACKET_WRITE, _RETIRED_BRACKET_LITERAL
+        ):
             findings.append({
                 "file": display_path,
                 "line": line_num,
@@ -556,21 +563,22 @@ def _scan_persisted_state_inventory(display_path: str, source: str) -> list[dict
     for line_num, (line, original) in enumerate(
         zip(strip_comments_and_strings(source), source.split("\n"), strict=True), start=1
     ):
-        writes = [(m.group("store"), m.group("key")) for m in _INVENTORY_DOT_WRITE.finditer(line)]
-        for match in _INVENTORY_BRACKET_WRITE.finditer(line):
-            start, end = match.span("literal")
-            literal = _INVENTORY_BRACKET_LITERAL.fullmatch(original[start:end])
-            if literal:
-                writes.append((match.group("store"), literal.group("key")))
-        for store, key in writes:
+        for store, key in _literal_state_writes(
+            line, original, _INVENTORY_DOT_WRITE, _INVENTORY_BRACKET_WRITE, _INVENTORY_BRACKET_LITERAL
+        ):
             if key in PERSISTED_STATE_INVENTORY[store] or key in RETIRED_PERSISTED_DERIVED_KEYS:
                 continue
             findings.append({
-                "file": display_path, "line": line_num, "rule": "PERSISTED_STATE_INVENTORY",
-                "message": f"Review new durable `{store}.{key}`: document growth, write frequency and "
-                           "durability in docs/state-storage-audit.md before adding it to the lint inventory. "
-                           "Keep bulk per-call caches in class memory.",
-                "severity": "error", "source": original.strip(),
+                "file": display_path,
+                "line": line_num,
+                "rule": "PERSISTED_STATE_INVENTORY",
+                "message": (
+                    f"Review new durable `{store}.{key}`: document growth, write frequency and "
+                    "durability in docs/state-storage-audit.md before adding it to the lint inventory. "
+                    "Keep bulk per-call caches in class memory."
+                ),
+                "severity": "error",
+                "source": original.strip(),
             })
     return findings
 
@@ -4660,6 +4668,7 @@ def check_sandbox_map_subscripts(
     # `(?<![.\w])` keeps a property assignment (other.rows = []) off a local named rows.
     assignment_re = re.compile(rf"(?<![.\w])({ident})\s*(?<![=!<>+\-*/%&|^])=(?!=|~)")
     list_ctor_re = re.compile(r"new\s+(?:ArrayList|LinkedList|CopyOnWriteArrayList)\b")
+    list_cast_re = re.compile(r"\bas\s+List\b$")
     # The body is masked, so a quoted key has already been blanked; an entry
     # is a bare, blanked or parenthesized key followed by a single colon.
     map_entry_re = re.compile(rf"^\s*(?:{ident}|\([^()]*\))?\s*:(?!:)")
@@ -4713,8 +4722,7 @@ def check_sandbox_map_subscripts(
             if inner.strip() == ":":
                 return False
             return not any(map_entry_re.match(segment) for segment in top_level_segments(inner))
-        return bool(list_ctor_re.match(expression)
-                    or re.search(r"\bas\s+List\b$", expression))
+        return bool(list_ctor_re.match(expression) or list_cast_re.search(expression))
 
     def list_at(records, receiver: str, pos: int) -> bool:
         # A local can change between Map and List within one method, so the

@@ -296,7 +296,7 @@ def toolDeleteFile(args) {
 
     // Delete the file
     try {
-        Map deletionDetails = _deleteItemBackupFile(args.fileName.toString())
+        Map deletionDetails = _deleteHubFileAndUnlinkBackups(args.fileName.toString())
         mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
 
         def result = [
@@ -322,9 +322,10 @@ def toolDeleteFile(args) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
         }
         result.putAll(deletionDetails)
-        if (result.partial) {
+        if (deletionDetails.partial) {
             result.message = "${result.message} Backup bookkeeping did not complete; see note."
-            result.warning = "The file is gone but its backup manifest entry could not be cleaned up. Do not retry the deletion."
+            String cleanupWarning = "The file is gone but its backup manifest entry could not be cleaned up. Do not retry the deletion."
+            result.warning = result.warning ? "${result.warning} ${cleanupWarning}".toString() : cleanupWarning
         }
         return result
     } catch (Exception e) {

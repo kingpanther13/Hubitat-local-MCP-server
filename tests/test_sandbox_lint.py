@@ -10,6 +10,7 @@ All 19 original self-test cases are preserved with zero coverage loss.
 """
 
 import os
+import re
 import sys
 
 # sandbox_lint lives in tests/ — add that directory to the path.
@@ -1526,6 +1527,34 @@ def test_new_persisted_structure_requires_inventory_review(path, target, operato
 ))
 def test_inventory_guard_preserves_reads_migration_and_existing_contracts(source):
     assert sl._scan_persisted_state_inventory("hubitat-mcp-server.groovy", source) == []
+
+
+@pytest.mark.parametrize("source", (
+    "state[someKey] = value",
+    "atomicState[\"prefix${name}\"] = value",
+))
+def test_inventory_guard_only_reviews_literal_keys(source):
+    """Dynamic keys are outside the inventory review; the retention guards cover them elsewhere."""
+    assert sl._scan_persisted_state_inventory("hubitat-mcp-server.groovy", source) == []
+
+
+def test_retired_key_write_yields_one_finding_across_both_scanners():
+    source = "atomicState.toolSearchCorpus = build()"
+    retired = sl._scan_retired_persisted_key_writes("hubitat-mcp-server.groovy", source)
+    inventory = sl._scan_persisted_state_inventory("hubitat-mcp-server.groovy", source)
+    assert [f["rule"] for f in retired + inventory] == ["PERSISTED_DERIVED_KEY"]
+
+
+def test_inventory_matches_the_state_storage_audit_table():
+    """The lint inventory and docs/state-storage-audit.md must name the same keys."""
+    table = (sl.REPO_ROOT / "docs" / "state-storage-audit.md").read_text(encoding="utf-8")
+    documented = {"state": set(), "atomicState": set()}
+    for line in table.splitlines():
+        if not line.startswith("| `"):
+            continue
+        for store, key in re.findall(r"`(atomicState|state)\.([A-Za-z_][A-Za-z0-9_]*)`", line.split("|")[1]):
+            documented[store].add(key)
+    assert documented == {store: set(keys) for store, keys in sl.PERSISTED_STATE_INVENTORY.items()}
 
 
 def test_inventory_guard_does_not_expand_into_legacy_child_or_test_fixtures():

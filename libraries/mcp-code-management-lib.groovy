@@ -1972,19 +1972,14 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
 }
 
 private Map backupLibrarySource(String libraryId) {
-    synchronized (ITEM_BACKUP_MANIFESTS) { return _backupLibrarySourceLocked(libraryId) }
+    return _withBackupLock("backup library ${libraryId}") { _backupLibrarySourceLocked(libraryId) }
 }
 
 private Map _backupLibrarySourceLocked(String libraryId) {
     def manifest = _itemBackupManifest()
-    def key = "library_${libraryId}"
-    def existing = manifest[key]
-
-    if (!existing?.deletePending && existing?.timestamp && (now() - existing.timestamp) < 3600000) {
-        mcpLog("debug", "hub-admin", "Library backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
-        _repairItemBackupRetention(manifest, key.toString(), existing as Map)
-        return existing
-    }
+    String key = "library_${libraryId}"
+    def existing = _reusableItemBackup(manifest, key, "Library")
+    if (existing != null) return existing
 
     def responseText = hubInternalGet("/library/list/single/data/${libraryId}")
     if (!responseText) {
@@ -2020,7 +2015,7 @@ private Map _backupLibrarySourceLocked(String libraryId) {
         timestamp: now(),
         sourceLength: backupSource.length()
     ]
-    _publishUploadedItemBackup(key.toString(), entry)
+    _publishUploadedItemBackup(key, entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
     return entry
 }
@@ -2308,12 +2303,9 @@ def toolUpdateLibraryCode(args) {
     def backupEntry = null
     // The reuse decision and the backup it may take must not interleave with another
     // backup writer. The source download before and the save after need no lock.
-    synchronized (ITEM_BACKUP_MANIFESTS) {
-        def manifest = _itemBackupManifest()
-        existingEntry = manifest["library_${libraryId}"]
-        if (!existingEntry?.deletePending && existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000) {
-            mcpLog("debug", "hub-admin", "Library backup for library_${libraryId} already exists (${formatTimestamp(existingEntry.timestamp)}), skipping")
-            _repairItemBackupRetention(manifest, "library_${libraryId}".toString(), existingEntry as Map)
+    _withBackupLock("update library ${libraryId}") {
+        existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
+        if (existingEntry != null) {
             backupFileName = existingEntry.fileName
         } else {
             // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
@@ -2500,7 +2492,7 @@ def toolListInstalledApps(args) {
             return [success: false, error: "Failed to parse /hub2/appsList response: ${parseErr.message}", note: "Hubitat firmware may have changed the endpoint format."]
         }
         try { _rmReconcilePredClearPending(parsed, pendingBefore) }
-        catch (Exception reconcileError) { mcpLog("error", "rm-native", "Recovery reconciliation failed during hub_list_apps; records are unchanged: ${reconcileError.message}") }
+        catch (Exception reconcileError) { mcpLog("error", "rm-native", "Could not reconcile deleted-app recovery records during hub_list_apps; records are unchanged: ${reconcileError.message}") }
         def apps = parsed?.apps ?: []
 
         // Flatten tree to list with parentId.

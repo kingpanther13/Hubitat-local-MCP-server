@@ -9135,7 +9135,10 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
         // One retry: a transient File Manager read hiccup must not be mistaken for a
         // deleted backup -- the discard path unlinks the manifest handle for good.
         for (int attempt = 0; attempt < 2; attempt++) {
-            try { bytes = downloadHubFile(fileName) } catch (Exception readErr) { bytes = null }
+            try { bytes = downloadHubFile(fileName) } catch (Exception readErr) {
+                bytes = null
+                if (attempt == 1) mcpLog("debug", "rm-native", "Backup file '${fileName}' could not be read on retry: ${readErr.message}")
+            }
             if (bytes != null && bytes.length > 0) break
             if (attempt == 0) pauseExecution(300L)
         }
@@ -9171,7 +9174,7 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // backups are enabled. Destructive delete and Required Expression restore callers
 // continue to call _rmBackupRuleSnapshot directly, so they always get a fresh image.
 Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
-    synchronized (ITEM_BACKUP_MANIFESTS) { return _rmBackupBeforeEditLocked(ruleId, reason) }
+    return _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
 }
 
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
@@ -9195,15 +9198,15 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
         mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
-        try { unlinkItemBackupManifestFile(staleFile, recent.key?.toString()) } catch (Exception ignored) { }
+        try { unlinkItemBackupManifestFile(staleFile, recent.key?.toString()) }
+        catch (Exception unlinkErr) { mcpLog("warn", "rm-native", "Could not unlink the stale backup handle ${recent.key} for rule ${ruleId}: ${unlinkErr.message}; a fresh baseline is taken but the stale entry remains in the manifest") }
         recent = null
     }
 
-    // Repair only a validated handle: trimming to protect a handle that is then
-    // discarded would evict one live rollback point for nothing.
-    if (recent != null) _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
-
     if (recent != null) {
+        // Repair only a validated handle: trimming to protect a handle that is then
+        // discarded would evict one live rollback point for nothing.
+        _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
         def config = null
         try {
             config = _rmFetchConfigJson(ruleId)
@@ -9240,7 +9243,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
 // (the existing tools) handle them too — no separate RM-only backup
 // tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>[-<uuid>].
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
-    synchronized (ITEM_BACKUP_MANIFESTS) { return _rmBackupRuleSnapshotLocked(ruleId, reason) }
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmBackupRuleSnapshotLocked(ruleId, reason) }
 }
 
 private Map _rmBackupRuleSnapshotLocked(Integer ruleId, String reason) {
@@ -9366,7 +9369,9 @@ private Map _rmBackupRuleSnapshotLocked(Integer ruleId, String reason) {
     }
 
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
-    def fileName = _itemBackupFileName("mcp-rm-backup-${ruleId}-${ts}.json")
+    String namePrefix = "mcp-rm-backup-${ruleId}-"
+    String nameExt = ".json"
+    def fileName = _itemBackupFileName(namePrefix + ts + nameExt)
 
     def jsonBytes
     try {
@@ -9380,8 +9385,8 @@ private Map _rmBackupRuleSnapshotLocked(Integer ruleId, String reason) {
         throw new IllegalArgumentException("Cannot save backup file '${fileName}' for rule ${ruleId}: ${e.message}")
     }
 
-    def suffix = fileName.substring("mcp-rm-backup-${ruleId}-".length(), fileName.length() - 5)
-    def backupKey = "rm-rule_${ruleId}_${suffix}"
+    def suffix = fileName.substring(namePrefix.length(), fileName.length() - nameExt.length())
+    String backupKey = "rm-rule_${ruleId}_${suffix}"
     def entry = [
         type: "rm-rule",
         id: ruleId,
@@ -9392,7 +9397,7 @@ private Map _rmBackupRuleSnapshotLocked(Integer ruleId, String reason) {
         timestamp: snapshot.timestamp,
         sourceLength: jsonBytes.length  // reusing the existing field name for byte size
     ]
-    _publishItemBackup(backupKey.toString(), entry)
+    _publishUploadedItemBackup(backupKey, entry)
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     // brokenBefore: the rule's pre-write broken state, derived from the config this snapshot
@@ -10764,22 +10769,6 @@ private void _rmRunPendingPredCapabsClear(Integer appId) {
     _rmDropPredClearPending(appId)
 }
 
-private Map _rmPendingPredClearSnapshot() {
-    synchronized (PRED_CLEAR_STORES) {
-        String owner = _stateOwnerKey()
-        if (!PRED_CLEAR_STORES.containsKey(owner)) {
-            PRED_CLEAR_STORES[owner] = new LinkedHashMap(atomicState.predClearPending ?: [:])
-        }
-        return new LinkedHashMap(PRED_CLEAR_STORES[owner] as Map)
-    }
-}
-
-private void _rmCommitPredClearPending(Map pending) {
-    String owner = _stateOwnerKey()
-    atomicState.predClearPending = pending
-    PRED_CLEAR_STORES[owner] = new LinkedHashMap(pending)
-}
-
 void _rmMarkPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
         Map pending = _rmPendingPredClearSnapshot()
@@ -10797,47 +10786,6 @@ private void _rmDropPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
         Map pending = _rmPendingPredClearSnapshot()
         if (pending.remove(appId.toString()) != null) _rmCommitPredClearPending(pending)
-    }
-}
-
-// A partial or unreadable inventory can never prove an app is gone: only a fully walked,
-// non-empty tree prunes, and only entries whose generation token is unchanged since the snapshot.
-private void _rmReconcilePredClearPending(def inventory, Map observed) {
-    if (!observed || !(inventory instanceof Map) || !(inventory.apps instanceof List)) return
-    if (inventory.error || inventory.success == false || inventory.status == "error" ||
-            inventory.partial == true || inventory.hasMore == true) {
-        mcpLog("debug", "rm-native", "Skipping recovery reconciliation: app inventory was partial or error-flagged; ${observed.size()} pending record(s) retained")
-        return
-    }
-    Set ids = [] as Set
-    boolean complete = true
-    def visit
-    visit = { node ->
-        if (!(node instanceof Map) || !(node.data instanceof Map) || !node.data.id?.toString()?.isInteger() ||
-                (node.children != null && !(node.children instanceof List))) {
-            complete = false
-            return
-        }
-        ids.add(node.data.id.toString())
-        (node.children ?: []).each { visit(it) }
-    }
-    inventory.apps.each { visit(it) }
-    if (!complete) {
-        mcpLog("warn", "rm-native", "App inventory tree was structurally unreadable (missing data.id or non-list children); retaining all ${observed.size()} pending recovery record(s). If this repeats, hub firmware may have changed the /hub2/appsList shape")
-        return
-    }
-    // This app is itself installed, so an empty inventory is an unusable read, not proof of deletion.
-    if (ids.isEmpty()) {
-        mcpLog("warn", "rm-native", "Skipping recovery reconciliation: /hub2/appsList returned no apps; ${observed.size()} pending record(s) retained")
-        return
-    }
-    synchronized (PRED_CLEAR_STORES) {
-        Map current = _rmPendingPredClearSnapshot()
-        def removed = current.keySet().findAll { !ids.contains(it.toString()) && observed[it] == current[it] }
-        if (!removed) return
-        removed.each { current.remove(it) }
-        try { _rmCommitPredClearPending(current) }
-        catch (Exception e) { mcpLog("error", "rm-native", "Could not reconcile deleted-app recovery records: ${e.message}") }
     }
 }
 

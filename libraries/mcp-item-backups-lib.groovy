@@ -41,7 +41,7 @@ private _listSourceItemBackups(args) {
     def backupList = manifest.collect { key, entry ->
         def base = [
             backupKey: key,
-            deletionPending: entry.deletePending == true,
+            deletePending: entry.deletePending == true,
             type: entry.type,
             id: entry.id,
             fileName: entry.fileName,
@@ -76,11 +76,26 @@ private _listSourceItemBackups(args) {
         howToRestore: "Use 'hub_restore_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'hub_update_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
-    if (backupList.any { it.deletionPending }) {
-        result.deletionPendingNote = "Entries with deletionPending=true are leftover markers whose file was already deleted; they cannot be restored or reused as baselines and disappear once replaced or retention cleanup succeeds."
+    if (backupList.any { it.deletePending }) {
+        result.deletePendingNote = "Entries with deletePending=true are leftover markers whose file was already deleted; they cannot be restored or reused as baselines and are purged by the next backup publication."
     }
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
+}
+
+// A pending-deletion marker is written before the delete, so a delete that failed
+// twice or a reload between the two leaves the marker on a file that still exists.
+// Probe before refusing: a present file clears the marker and serves as a backup.
+private boolean _healPendingItemBackup(String backupKey, Map entry) {
+    byte[] bytes = null
+    try { bytes = downloadHubFile(entry.fileName?.toString()) }
+    catch (Exception probeErr) { mcpLog("warn", "hub-admin", "Could not probe '${entry.fileName}' while resolving its pending-deletion marker: ${probeErr.message}") }
+    if (bytes == null || bytes.length == 0) return false
+    Map healed = new LinkedHashMap(entry)
+    healed.remove("deletePending")
+    _publishItemBackup(backupKey, healed)
+    mcpLog("warn", "hub-admin", "Backup '${backupKey}' was marked pending deletion but its file '${entry.fileName}' is still present; the marker was cleared")
+    return true
 }
 
 def toolGetItemBackup(args) {
@@ -98,11 +113,11 @@ def toolGetItemBackup(args) {
             hint: "Use 'hub_list_backups' to see all available backups with details"
         ]
     }
-    if (entry.deletePending == true) {
+    if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
         return [
-            error: "Backup '${args.backupKey}' is marked pending deletion; its file '${entry.fileName}' was already removed from File Manager.",
+            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' is no longer in File Manager.",
             backupKey: args.backupKey,
-            hint: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletionPending=false)."
+            hint: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletePending=false); the marker is purged by the next backup publication."
         ]
     }
 
@@ -174,7 +189,7 @@ def toolRestoreItemBackup(args) {
     }
     requireDestructiveConfirm(args.confirm)
     // Only source restores touch the shared backup manifest.
-    synchronized (ITEM_BACKUP_MANIFESTS) { return _toolRestoreItemBackupLocked(args) }
+    return _withBackupLock("restore ${args.backupKey}") { _toolRestoreItemBackupLocked(args) }
 }
 
 private Map _toolRestoreItemBackupLocked(args) {
@@ -192,12 +207,12 @@ private Map _toolRestoreItemBackupLocked(args) {
             availableBackups: availableKeys.isEmpty() ? "None" : availableKeys.join(", ")
         ]
     }
-    if (entry.deletePending == true) {
+    if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
         return [
             success: false,
-            error: "Backup '${args.backupKey}' is marked pending deletion; its file '${entry.fileName}' was already removed from File Manager. Nothing was restored.",
+            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' is no longer in File Manager. Nothing was restored.",
             backupKey: args.backupKey,
-            note: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletionPending=false)."
+            note: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletePending=false); the marker is purged by the next backup publication."
         ]
     }
 
@@ -259,8 +274,7 @@ private Map _toolRestoreItemBackupLocked(args) {
 
     // Keep the current source under a separate undo key and preserve the requested
     // restore target when enforcing the shared retention cap.
-    def preRestoreFileName = _itemBackupFileName("mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy")
-    def preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
+    String preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
     // The undo point actually on file after this block; null when none exists.
     Map undo = null
     try {
@@ -274,16 +288,17 @@ private Map _toolRestoreItemBackupLocked(args) {
             // real pre-restore undo with the just-restored content, silently
             // destroying the only undo point. Keep the existing undo file.
             mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
-            def existingUndo = manifest[preRestoreBackupKey.toString()]
-            if (existingUndo?.fileName && !existingUndo.deletePending) undo = [key: preRestoreBackupKey.toString(), fileName: existingUndo.fileName.toString()]
+            def existingUndo = manifest[preRestoreBackupKey]
+            if (existingUndo?.fileName && !existingUndo.deletePending) undo = [key: preRestoreBackupKey, fileName: existingUndo.fileName.toString()]
         } else if (parsed.source) {
+            String preRestoreFileName = _itemBackupFileName("mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy")
             uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
-            _publishItemBackup(preRestoreBackupKey.toString(), [
+            _publishUploadedItemBackup(preRestoreBackupKey, [
                 type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
                 version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
             ], args.backupKey.toString())
             mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
-            undo = [key: preRestoreBackupKey.toString(), fileName: preRestoreFileName]
+            undo = [key: preRestoreBackupKey, fileName: preRestoreFileName]
         } else {
             throw new IllegalStateException("Current source is missing from the hub response")
         }

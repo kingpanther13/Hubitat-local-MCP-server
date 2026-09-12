@@ -3575,6 +3575,39 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "hub_restore_backup via dispatch reports a failed pre-restore capture in the success channel (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
+                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass.downloadHubFile = { String fileName ->
+            fileName == 'mcp-backup-app-99.groovy' ? 'old source v4'.getBytes('UTF-8') : null
+        }
+        hubGet.register('/app/ajax/code') { params -> null }
+        def writes = []
+        script.metaClass.hubInternalPostJson = { String path, String body -> writes << path; [success: true, id: 99] }
+
+        when:
+        def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'app_99', confirm: true])
+
+        then: 'the abort is a structured tool result, not a protocol error'
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error.contains('pre-restore backup')
+        inner.note.contains('nothing needs undoing')
+        writes.isEmpty()
+        atomicStateMap.itemBackupManifest.keySet() == ['app_99'] as Set
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
     def "hub_restore_backup via dispatch reads backup creates pre-restore copy and pushes to hub (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways

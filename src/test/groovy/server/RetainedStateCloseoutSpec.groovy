@@ -78,6 +78,24 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         backing.itemBackupManifest.app_99 == entry('99')
     }
 
+    def 'publication failure surfaces even when reclaiming the uploaded file also fails'() {
+        given:
+        def backing = failingManifest()
+        backing.@fail = true
+        def peer = peerFor(backing)
+        peer.metaClass.hubInternalGet = { String path, Map params = null -> '{"source":"new source","version":2}' }
+        peer.metaClass.uploadHubFile = { String name, byte[] bytes -> }
+        peer.metaClass.deleteHubFile = { String name -> throw new IllegalStateException('file manager busy') }
+
+        when:
+        peer.backupItemSource('app', '99')
+
+        then:
+        def error = thrown(IllegalStateException)
+        error.message == 'manifest unavailable'
+        backing.itemBackupManifest.app_99 == entry('99')
+    }
+
     def 'retention repair failure on baseline reuse keeps the reused backup'() {
         given:
         def backing = failingManifest((1..23).collectEntries { [("app_${it}".toString()): entry("${it}", 1234567890000L)] })
@@ -93,6 +111,23 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         result == entry('5', 1234567890000L)
         uploads.isEmpty()
         backing.itemBackupManifest.size() == 23
+    }
+
+    def 'next publication purges pending-deletion markers and removes their files best-effort'() {
+        given:
+        atomicStateMap.itemBackupManifest = [
+            app_1: entry('1') + [deletePending: true],
+            'rm-rule_5_x': [type: 'rm-rule', id: 5, ruleId: 5, fileName: 'mcp-rm-backup-5-x.json', timestamp: 2L, deletePending: true],
+            app_3: entry('3', 3L)]
+        List deleted = []
+        script.metaClass.deleteHubFile = { String name -> deleted << name; if (name.endsWith('.json')) throw new IllegalStateException('already gone') }
+
+        when:
+        script._publishItemBackup('app_4', entry('4', 4L))
+
+        then:
+        atomicStateMap.itemBackupManifest.keySet() == ['app_3', 'app_4'] as Set
+        deleted as Set == ['mcp-backup-app-1.groovy', 'mcp-rm-backup-5-x.json'] as Set
     }
 
     def 'later backup publication includes earlier writes despite a stale execution snapshot'() {
@@ -152,6 +187,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         while (secondThread.get().state != Thread.State.BLOCKED && !second.isDone() && System.nanoTime() < deadline) {
             Thread.yield()
         }
+        if (second.isDone()) second.get() // Surface the worker's own exception instead of a thread-state mismatch.
         assert secondThread.get().state == Thread.State.BLOCKED
         assert files.size() == 1
         release.countDown()
@@ -203,6 +239,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         result.warning.contains('Do not retry the deletion')
         result.message.contains('did not complete')
         deleted == ['mcp-backup-app-99.groovy']
+        backing.@writes == 2 // The pending marker and the failed unlink; a new commit on this path must retarget failAt.
         backing.itemBackupManifest.app_99.deletePending
         peer._itemBackupManifest().app_99.deletePending
     }
@@ -216,7 +253,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         peer.metaClass.deleteHubFile = { String name -> deleted << name }
 
         when:
-        peer._deleteItemBackupFile('mcp-backup-app-99.groovy')
+        peer._deleteHubFileAndUnlinkBackups('mcp-backup-app-99.groovy')
 
         then:
         thrown(IllegalStateException)
@@ -243,15 +280,19 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         backing.@fail = false
         peer._publishItemBackup('app_3', entry('3'))
         peer._rmMarkPredClearPending(10)
+        peer._rmMarkPredClearPending(11)
         backing.put('predClearPending', [:])
         backing.@failedKey = 'predClearPending'
         backing.@fail = true
-        peer.metaClass.hubInternalGet = { String path, Map params = null -> '{"apps":[]}' }
-        peer.toolListInstalledApps([:])
+        peer.metaClass.hubInternalGet = { String path, Map params = null ->
+            '{"apps":[{"data":{"id":1},"children":[{"data":{"id":10},"children":[]}]}]}'
+        }
+        def listing = peer.toolListInstalledApps([:])
 
-        then:
+        then: 'a failed reconciliation commit keeps every record and the listing still succeeds'
+        listing.success != false && listing.error == null
         backing.itemBackupManifest.keySet() == ['app_1', 'app_3'] as Set
-        peer._rmPendingPredClearSnapshot().keySet() == ['10'] as Set
+        peer._rmPendingPredClearSnapshot().keySet() == ['10', '11'] as Set
 
         when:
         backing.@fail = false
@@ -269,7 +310,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         peer.metaClass.deleteHubFile = { String name -> throw new IllegalStateException('file busy') }
 
         when:
-        peer._deleteItemBackupFile('mcp-backup-app-99.groovy')
+        peer._deleteHubFileAndUnlinkBackups('mcp-backup-app-99.groovy')
 
         then:
         def error = thrown(IllegalStateException)
@@ -289,9 +330,12 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         peer.metaClass.hubInternalGet = { String path, Map params = null ->
             failure == 'read' ? null : failure == 'missing-source' ? '{"version":2}' : '{"source":"current","version":2}'
         }
+        Map files = [:]
         peer.metaClass.uploadHubFile = { String name, byte[] bytes ->
             if (failure == 'upload') throw new IllegalStateException('upload unavailable')
+            files[name] = bytes
         }
+        peer.metaClass.deleteHubFile = { String name -> files.remove(name) }
         List writes = []
         peer.metaClass.hubInternalPostJson = { String path, String body -> writes << path; '{"status":"success"}' }
 
@@ -303,6 +347,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         result.error.contains('pre-restore backup')
         result.note.contains('nothing needs undoing')
         writes.isEmpty()
+        files.isEmpty() // A pre-restore upload that could not be published is reclaimed, never orphaned.
         backing.itemBackupManifest.app_99 == entry('99')
 
         where:
@@ -326,8 +371,21 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         fetched.error.contains('pending deletion')
         restored.success == false
         restored.error.contains('pending deletion')
-        reads.isEmpty()
+        reads == ['mcp-backup-app-99.groovy', 'mcp-backup-app-99.groovy'] // Both paths probe before refusing.
         writes.isEmpty()
+    }
+
+    def 'a pending-deletion marker on a file that still exists is cleared and the backup served'() {
+        given:
+        atomicStateMap.itemBackupManifest = [app_99: entry('99') + [deletePending: true]]
+        script.metaClass.downloadHubFile = { String name -> 'still here'.getBytes('UTF-8') }
+
+        when:
+        def fetched = script.toolGetItemBackup([backupKey: 'app_99'])
+
+        then:
+        fetched.source == 'still here'
+        !atomicStateMap.itemBackupManifest.app_99.deletePending
     }
 
     def 'backup listing surfaces pending deletion markers'() {
@@ -338,8 +396,8 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def result = script.toolListItemBackups([:])
 
         then:
-        result.backups.collectEntries { [(it.backupKey): it.deletionPending] } == [app_1: false, app_2: true]
-        result.deletionPendingNote.contains('cannot be restored')
+        result.backups.collectEntries { [(it.backupKey): it.deletePending] } == [app_1: false, app_2: true]
+        result.deletePendingNote.contains('cannot be restored')
     }
 
     def 'pending library baseline is not reused by hub_update_library'() {
@@ -408,6 +466,20 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         where:
         type << ['app', 'library']
+    }
+
+    def 'reconciliation walks nested children before treating an id as absent'() {
+        given:
+        atomicStateMap.predClearPending = ['11': true, '12': true]
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":1},"children":[{"data":{"id":11},"children":[{"data":{"id":111},"children":[]}]}]}]}'
+        }
+
+        when:
+        script.toolListInstalledApps([:])
+
+        then:
+        atomicStateMap.predClearPending.keySet() == ['11'] as Set
     }
 
     def 'unreadable or incomplete app inventory never discards recovery intent'() {

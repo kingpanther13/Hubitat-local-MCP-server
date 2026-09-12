@@ -55,6 +55,11 @@
 // native-rule and pre-restore backup file/manifest writer shares this monitor. Per-app
 // entries mirror the retained manifest; publication enforces its cap.
 @groovy.transform.Field static final Map ITEM_BACKUP_MANIFESTS = new java.util.HashMap()
+// One retention budget shared by every backup type.
+@groovy.transform.Field static final int ITEM_BACKUP_RETENTION = 20
+// Diagnostics for the monitor above: which operation holds it and who last did,
+// so a worker that waited on a slow hub call can say so. Written only under the monitor.
+@groovy.transform.Field static final Map ITEM_BACKUP_LOCK_STATE = new java.util.HashMap()
 // Per-app mirror of atomicState.predClearPending holding generation tokens, so a worker
 // execution's stale snapshot cannot discard newer recovery intent. Guarded by its own monitor.
 @groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
@@ -638,7 +643,7 @@ def updated() {
 def uninstalled() {
     log.info "MCP Rule Server uninstalled"
     _resetCaptureStore()
-    String appKey = app?.id?.toString() ?: "unidentified"
+    String appKey = _stateOwnerKey()
     synchronized (ITEM_BACKUP_MANIFESTS) { ITEM_BACKUP_MANIFESTS.remove(appKey) }
     synchronized (PRED_CLEAR_STORES) { PRED_CLEAR_STORES.remove(appKey) }
     synchronized (WRITE_RESERVATION_LOCK) {
@@ -2310,7 +2315,7 @@ private void _mrtrPutLocked(String stateId, Map rec) {
 }
 
 private Map _mrtrCleanupScheduleLocked() {
-    String appKey = app?.id?.toString() ?: "unidentified"
+    String appKey = _stateOwnerKey()
     Map hint = MRTR_CLEANUP_SCHEDULES.get(appKey) as Map
     if (hint == null) {
         hint = [:]
@@ -2324,7 +2329,7 @@ private void _mrtrPublishCleanupCheckLocked(Map hint) {
     if (hint.retryAt != null) nextCheck = hint.retryAt as Long
     else if (hint.dueAt != null) nextCheck = (hint.dueAt as Long) + 60000L
     else if (hint.checked == true) nextCheck = Long.MAX_VALUE
-    String appKey = app?.id?.toString() ?: "unidentified"
+    String appKey = _stateOwnerKey()
     if (MRTR_CLEANUP_CHECK_AT.get(appKey) != nextCheck) {
         MRTR_CLEANUP_CHECK_AT = MRTR_CLEANUP_CHECK_AT + [(appKey): nextCheck]
     }
@@ -2390,7 +2395,7 @@ private void _mrtrScheduleNextCleanupLocked() {
 }
 
 def _mrtrEnsureCleanupScheduled(boolean reset = false) {
-    String appKey = app?.id?.toString() ?: "unidentified"
+    String appKey = _stateOwnerKey()
     def nextCheck = MRTR_CLEANUP_CHECK_AT.get(appKey)
     if (!reset && nextCheck != null && (nextCheck as Long) > now()) return
     synchronized (WRITE_RESERVATION_LOCK) {
@@ -3752,7 +3757,7 @@ private void _cleanupError(String component, String message) {
 }
 
 def _cleanupRetiredToolState() {
-    String appKey = app?.id?.toString() ?: 'unidentified'
+    String appKey = _stateOwnerKey()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         if (RETIRED_TOOL_STATE_CLEANED.contains(appKey)) return
         def retryAt = RETIRED_TOOL_STATE_RETRY_AT.get(appKey)
@@ -6596,26 +6601,21 @@ def _latestLocalHubBackupEpoch() {
  * Saves the source code as a .groovy file in the hub's local File Manager using uploadHubFile().
  * Metadata (timestamp, version, etc.) is stored in atomicState.itemBackupManifest.
  * Files are accessible at http://<HUB_IP>/local/<filename> even if MCP fails.
- * If a backup of this item already exists within the last hour, skips (preserves the pre-edit original).
+ * If a non-pending backup of this item exists within the last hour, reuses it (preserving the
+ * pre-edit original) and repairs an over-cap manifest.
  * Returns the manifest entry on success, or throws if the source cannot be retrieved
  * or the manifest cannot be published.
  */
 def backupItemSource(String type, String id) {
-    synchronized (ITEM_BACKUP_MANIFESTS) { return _backupItemSourceLocked(type, id) }
+    return _withBackupLock("backup ${type} ${id}") { _backupItemSourceLocked(type, id) }
 }
 
 private Map _backupItemSourceLocked(String type, String id) {
     def manifest = _itemBackupManifest()
 
-    def key = "${type}_${id}"
-    def existing = manifest[key]
-
-    // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
-    if (!existing?.deletePending && existing?.timestamp && (now() - existing.timestamp) < 3600000) {
-        mcpLog("debug", "hub-admin", "Item backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
-        _repairItemBackupRetention(manifest, key.toString(), existing as Map)
-        return existing
-    }
+    String key = "${type}_${id}"
+    def existing = _reusableItemBackup(manifest, key, "Item")
+    if (existing != null) return existing
 
     // Fetch the current source
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
@@ -6651,7 +6651,28 @@ private Map _backupItemSourceLocked(String type, String id) {
     return entry
 }
 
-private String _stateOwnerKey() { app?.id?.toString() ?: "unidentified" }
+String _stateOwnerKey() { app?.id?.toString() ?: "unidentified" }
+
+// Serialize a backup writer on the shared monitor and say so when the wait was
+// long: synchronized has no timeout, and a slow hub call inside another writer
+// would otherwise surface only as this caller's own client timeout.
+def _withBackupLock(String what, Closure work) {
+    long waitedFrom = now()
+    synchronized (ITEM_BACKUP_MANIFESTS) {
+        long waited = now() - waitedFrom
+        if (waited > 1000L) mcpLog("warn", "hub-admin", "'${what}' waited ${waited} ms for the backup lock; the previous holder was '${ITEM_BACKUP_LOCK_STATE.lastHolder ?: 'unknown'}'")
+        boolean outermost = ITEM_BACKUP_LOCK_STATE.holder == null
+        if (outermost) ITEM_BACKUP_LOCK_STATE.holder = what
+        try {
+            return work()
+        } finally {
+            if (outermost) {
+                ITEM_BACKUP_LOCK_STATE.lastHolder = what
+                ITEM_BACKUP_LOCK_STATE.remove("holder")
+            }
+        }
+    }
+}
 
 // Return detached entries: consumers cannot mutate the shared committed view.
 Map _itemBackupManifest() {
@@ -6671,7 +6692,20 @@ private void _commitItemBackupManifest(Map manifest) {
     // Keep the last successful view if persistence throws; reloading an execution's
     // stale snapshot would lose another worker's already committed entries.
     atomicState.itemBackupManifest = manifest
-    ITEM_BACKUP_MANIFESTS[owner] = new LinkedHashMap(manifest)
+    // Detach entries on the way in as well, so no caller keeps a handle into the shared view.
+    ITEM_BACKUP_MANIFESTS[owner] = manifest.collectEntries { key, entry ->
+        [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
+    }
+}
+
+// The reusable within-the-hour baseline for key, or null when a fresh backup is
+// needed. The caller holds the monitor; manifest is its committed view.
+Map _reusableItemBackup(Map manifest, String key, String label) {
+    def existing = manifest[key]
+    if (existing?.deletePending || !existing?.timestamp || (now() - existing.timestamp) >= 3600000) return null
+    mcpLog("debug", "hub-admin", "${label} backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
+    _repairItemBackupRetention(manifest, key, existing as Map)
+    return existing
 }
 
 private String _itemBackupFileName(String preferred) {
@@ -6685,21 +6719,21 @@ private String _itemBackupFileName(String preferred) {
 // Reuse is the one path that never publishes, so an oversized manifest left by an
 // older writer is repaired by republishing the unchanged entry. The repair is
 // best-effort: the reused baseline is valid whether or not the trim persists.
-private void _repairItemBackupRetention(Map manifest, String key, Map entry) {
-    if (manifest.size() <= 20) return
+void _repairItemBackupRetention(Map manifest, String key, Map entry) {
+    if (manifest.size() <= ITEM_BACKUP_RETENTION) return
     try {
         _publishItemBackup(key, entry)
-        mcpLog("info", "hub-admin", "Trimmed an over-cap backup manifest (${manifest.size()} entries) while reusing the baseline for ${key}; the oldest rollback files were removed")
+        mcpLog("info", "hub-admin", "Trimmed an over-cap backup manifest (${manifest.size()} entries) while reusing the baseline for ${key}; the oldest rollback entries were dropped and their files deleted best-effort")
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Backup retention repair failed for ${key} (${e.message}); reusing the existing baseline and leaving the manifest over the 20-entry cap")
+        mcpLog("error", "hub-admin", "Backup retention repair failed for ${key} (${e.message}); reusing the existing baseline and leaving the manifest over the ${ITEM_BACKUP_RETENTION}-entry cap until a later publication succeeds")
     }
 }
 
 // The file was uploaded under a name no committed entry references, so a failed
 // publication would leave it unreferenced in File Manager. Reclaim it, then rethrow.
-private void _publishUploadedItemBackup(String key, Map entry) {
+void _publishUploadedItemBackup(String key, Map entry, String protectedKey = null) {
     try {
-        _publishItemBackup(key, entry)
+        _publishItemBackup(key, entry, protectedKey)
     } catch (Exception publishError) {
         String fileName = entry.fileName?.toString()
         mcpLog("error", "hub-admin", "Backup file '${fileName}' was uploaded but its manifest entry could not be published (${publishError.message}); removing the unreferenced file")
@@ -6713,12 +6747,16 @@ private void _publishUploadedItemBackup(String key, Map entry) {
 // published key and protectedKey (an active restore target) are never evicted.
 void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     synchronized (ITEM_BACKUP_MANIFESTS) {
+        // previous must survive the removals below: it is what finds the files no entry references any more.
         Map previous = _itemBackupManifest()
         Map manifest = new LinkedHashMap(previous)
-        manifest[key] = new LinkedHashMap(entry)
+        manifest[key] = entry
+        // A pending-deletion marker is never usable again, so every publication
+        // purges the leftovers; their files are removed best-effort below.
+        manifest.keySet().findAll { it != key && it != protectedKey && manifest[it]?.deletePending }.each { manifest.remove(it) }
         def victims = manifest.keySet().findAll { it != key && it != protectedKey }
             .sort { a, b -> (manifest[a]?.timestamp ?: 0L) <=> (manifest[b]?.timestamp ?: 0L) }
-            .take(Math.max(0, manifest.size() - 20))
+            .take(manifest.size() - ITEM_BACKUP_RETENTION)
         victims.each { manifest.remove(it) }
         _commitItemBackupManifest(manifest)
         Set retainedFiles = manifest.values().collect { it?.fileName?.toString() } as Set
@@ -6726,7 +6764,7 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
         // never a retained entry whose rollback file was deleted before publication.
         previous.values().collect { it?.fileName?.toString() }.findAll { it && !retainedFiles.contains(it) }.unique().each { file ->
             try { deleteHubFile(file) }
-            catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}; no backup references it, delete it manually from Settings > File Manager") }
+            catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}; no backup references it, remove it from Settings > File Manager if it is still present") }
         }
     }
 }
@@ -6745,8 +6783,10 @@ List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     }
 }
 
-private Map _deleteItemBackupFile(String fileName) {
-    synchronized (ITEM_BACKUP_MANIFESTS) {
+// Delete any File Manager file; backup-manifest entries that point at it are marked
+// pending first and unlinked after, so a half-done deletion can never authorize reuse.
+private Map _deleteHubFileAndUnlinkBackups(String fileName) {
+    return _withBackupLock("delete file ${fileName}") {
         Map previous = _itemBackupManifest()
         List keys = previous.findAll { key, entry -> entry?.fileName?.toString() == fileName }.keySet().toList()
         if (keys) {
@@ -6759,22 +6799,83 @@ private Map _deleteItemBackupFile(String fileName) {
             if (keys) {
                 try { _commitItemBackupManifest(previous) }
                 catch (Exception resetError) {
-                    throw new IllegalStateException("File '${fileName}' deletion failed: ${deleteError.message}; resetting pending deletion also failed: ${resetError.message}. Backup metadata remains retained under ${keys}; retry deletion.", deleteError)
+                    throw new IllegalStateException("File '${fileName}' deletion failed: ${deleteError.message}; resetting pending deletion also failed: ${resetError.message}. Backup metadata under ${keys} stays marked pending deletion, so it can no longer be restored or reused as a baseline; retry deletion.", deleteError)
                 }
             }
             throw deleteError
         }
         // If unlinking fails, the durable pending marker prevents baseline reuse
-        // while retaining enough metadata to retry bookkeeping after a reload.
+        // until the next backup publication purges it.
         try { unlinkItemBackupManifestFile(fileName) }
         catch (Exception cleanupError) {
             mcpLog("error", "hub-admin", "File '${fileName}' deleted but backup metadata cleanup failed: ${cleanupError.message}")
             return [partial: true, fileDeleted: true, manifestCleanupPending: true,
                     pendingBackupKeys: keys.collect { it.toString() },
                     manifestCleanupError: cleanupError.message,
-                    note: "The file is already deleted; do not repeat the deletion. Its durable deletePending entries cannot be reused as baselines and remain discoverable until replacement or retention cleanup succeeds."]
+                    note: keys
+                        ? "The file is already deleted; do not repeat the deletion. Its durable deletePending entries cannot be reused as baselines and are purged by the next backup publication."
+                        : "The file is already deleted; do not repeat the deletion. It had no backup-manifest entry, so no metadata needs repair."]
         }
         return [:]
+    }
+}
+
+// ---- Native-rule predicate recovery records: per-app mirror over atomicState.predClearPending ----
+
+Map _rmPendingPredClearSnapshot() {
+    synchronized (PRED_CLEAR_STORES) {
+        String owner = _stateOwnerKey()
+        if (!PRED_CLEAR_STORES.containsKey(owner)) {
+            PRED_CLEAR_STORES[owner] = new LinkedHashMap(atomicState.predClearPending ?: [:])
+        }
+        return new LinkedHashMap(PRED_CLEAR_STORES[owner] as Map)
+    }
+}
+
+void _rmCommitPredClearPending(Map pending) {
+    String owner = _stateOwnerKey()
+    atomicState.predClearPending = pending
+    PRED_CLEAR_STORES[owner] = new LinkedHashMap(pending)
+}
+
+// A partial or unreadable inventory can never prove an app is gone: only a fully walked,
+// non-empty tree prunes, and only entries whose generation token is unchanged since the snapshot.
+// A persistence failure propagates; the listing that fetched the inventory catches it.
+void _rmReconcilePredClearPending(def inventory, Map observed) {
+    if (!observed || !(inventory instanceof Map) || !(inventory.apps instanceof List)) return
+    if (inventory.error || inventory.success == false || inventory.status == "error" ||
+            inventory.partial == true || inventory.hasMore == true) {
+        mcpLog("debug", "rm-native", "Skipping recovery reconciliation: app inventory was partial or error-flagged; ${observed.size()} pending record(s) retained")
+        return
+    }
+    Set ids = [] as Set
+    boolean complete = true
+    def visit
+    visit = { node ->
+        if (!(node instanceof Map) || !(node.data instanceof Map) || !node.data.id?.toString()?.isInteger() ||
+                (node.children != null && !(node.children instanceof List))) {
+            complete = false
+            return
+        }
+        ids.add(node.data.id.toString())
+        (node.children ?: []).each { visit(it) }
+    }
+    inventory.apps.each { visit(it) }
+    if (!complete) {
+        mcpLog("warn", "rm-native", "App inventory tree was structurally unreadable (missing data.id or non-list children); retaining all ${observed.size()} pending recovery record(s). If this repeats, hub firmware may have changed the /hub2/appsList shape")
+        return
+    }
+    // This app is itself installed, so an empty inventory is an unusable read, not proof of deletion.
+    if (ids.isEmpty()) {
+        mcpLog("warn", "rm-native", "Skipping recovery reconciliation: /hub2/appsList returned no apps; ${observed.size()} pending record(s) retained")
+        return
+    }
+    synchronized (PRED_CLEAR_STORES) {
+        Map current = _rmPendingPredClearSnapshot()
+        def removed = current.keySet().findAll { !ids.contains(it.toString()) && observed[it] == current[it] }
+        if (!removed) return
+        removed.each { current.remove(it) }
+        _rmCommitPredClearPending(current)
     }
 }
 
