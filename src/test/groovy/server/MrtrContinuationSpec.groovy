@@ -2988,7 +2988,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions() as List
         def byName = tools.collectEntries { [(it.name): it] }
 
-        then: 'the hint is on every advertised continuation write surface and on no read-only surface'
+        then: 'the instructions always carry the hint; gateway surfaces carry it inline, the size-capped flat catalog does not'
         hint.contains('read the target before repeating')
         (script.serverInstructions() as String).contains(hint)
         hinted.every { byName[it] != null && (byName[it].description as String).endsWith(hint) }
@@ -3001,8 +3001,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         mode      | gateways | hinted                                                                        | unhinted
         'gateway' | true     | ['hub_manage_virtual_device', 'hub_manage_devices', 'hub_manage_rule_machine',
                                'hub_manage_native_rules_and_apps', 'hub_manage_code']                        | ['hub_read_devices', 'hub_read_rules', 'hub_get_info', 'hub_manage_mode']
-        'flat'    | false    | ['hub_manage_virtual_device', 'hub_update_device', 'hub_set_rule',
-                               'hub_set_native_app', 'hub_update_driver', 'hub_delete_debug_logs']          | ['hub_get_info', 'hub_list_devices', 'hub_manage_mode', 'hub_call_device_command']
+        'flat'    | false    | []                                                                            | ['hub_manage_virtual_device', 'hub_update_device', 'hub_set_rule',
+                                                                                                                'hub_get_info', 'hub_list_devices', 'hub_call_device_command']
     }
 
     def "every continuation-eligible read is a canonical read-only tool"() {

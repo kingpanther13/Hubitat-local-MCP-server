@@ -1287,8 +1287,8 @@ def handleNotification(msg) {
 
 // Guidance a model needs when its client cannot render a continuation result: some
 // clients surface a state-only input_required as a generic client-side error with no
-// body, while the hub keeps running the write. Shipped in server instructions and on
-// every continuation-eligible write surface so the model reads it before acting.
+// body, while the hub keeps running the write. Shipped in server instructions and, in
+// gateway mode, on every continuation-eligible write surface so the model reads it first.
 def _mrtrClientErrorHint() {
     return "If a write returns a client-side error with no result body, the hub may still be running it or may have finished it: read the target before repeating the call. An identical repeat within a few minutes joins the running write instead of starting a second one."
 }
@@ -4901,7 +4901,8 @@ def getToolDefinitions() {
                 def flatTool = applyDescriptionTransform([_setRuleFlatTool()], true)[0]
                 base = base + [description: flatTool.description, inputSchema: flatTool.inputSchema]
             }
-            base = _withMrtrClientErrorHint(base, _mrtrWriteTools().contains(base.name as String))
+            // The flat catalog sits at the hub's 124,000-byte cap, so the client-error hint
+            // rides in the server instructions there; gateway mode has room to carry it inline.
             base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
         }
     }
