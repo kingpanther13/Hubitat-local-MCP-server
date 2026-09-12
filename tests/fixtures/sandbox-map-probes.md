@@ -161,8 +161,13 @@ Receiver inference recognizes Map declarations and script fields, Map literals,
 casts, checked Maps, empty-Map fallbacks, aliases, and observable Map returns
 from explicitly typed and untyped helpers. It follows inferred helper returns
 and aliases without depending on helper names, while separating parent/library
-scope from the child app. Regression fixtures include implicit-return and
-renamed helpers. Local literal branches and finite literal loops exclude
+scope from the child app; app script fields are in scope for every included
+library. A declaration binds its name only inside its innermost brace block and
+after its position, so a closure-local Map does not classify the enclosing
+method's name. Composed keys (interpolated or concatenated) are dynamic unless
+their fixed parts exclude every measured collision. Regression fixtures include
+implicit-return and renamed helpers, the scope cases, and the lint's own
+must-catch/must-not-catch map-subscript pairs. Local literal branches and finite literal loops exclude
 measured collision names before receiving a bounded-key exception; entire
 methods are not exempted by name. Explicitly typed Map reads follow the measured
 exception above; dynamic typed writes retain the `metaClass` hazard.

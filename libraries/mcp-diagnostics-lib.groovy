@@ -397,7 +397,7 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
         }
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
             fetchId = java.util.UUID.randomUUID().toString()
-            NATIVE_LOG_SNAPSHOTS[key] = [at: now(), pending: true, fetchId: fetchId]
+            NATIVE_LOG_SNAPSHOTS.put(key, [at: now(), pending: true, fetchId: fetchId])
             if (deviceRead != null) {
                 NATIVE_LOG_SNAPSHOTS[key].work = deviceRead
                 NATIVE_LOG_SNAPSHOTS[key].scope = deviceRead.scope
@@ -497,9 +497,9 @@ def runNativeLogFetch(Map job = [:]) {
     }
     synchronized (NATIVE_LOG_SNAPSHOTS) {
         if (NATIVE_LOG_SNAPSHOTS[job.key]?.fetchId == job.fetchId) {
-            NATIVE_LOG_SNAPSHOTS[job.key] = result + [at: now(), fetchId: job.fetchId, pending: false,
+            NATIVE_LOG_SNAPSHOTS.put(job.key, result + [at: now(), fetchId: job.fetchId, pending: false,
                 replayProtected: NATIVE_LOG_SNAPSHOTS[job.key].replayProtected == true,
-                readers: NATIVE_LOG_SNAPSHOTS[job.key].readers ?: 0]
+                readers: NATIVE_LOG_SNAPSHOTS[job.key].readers ?: 0])
         }
     }
 }
@@ -2335,7 +2335,7 @@ private Map _captureStore() {
     if (!owner) throw new IllegalStateException("Capture storage requires an installed app ID")
     synchronized (CAPTURE_STORES) {
         if (!CAPTURE_STORES.containsKey(owner)) {
-            CAPTURE_STORES[owner] = [entries: [:], loaded: false]
+            CAPTURE_STORES.put(owner, [entries: [:], loaded: false])
         }
         return CAPTURE_STORES[owner]
     }

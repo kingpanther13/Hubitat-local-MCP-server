@@ -774,6 +774,47 @@ def test_list_initializer_and_alias_are_not_inferred_as_maps(expression):
     assert sandbox_map_findings(source) == []
 
 
+@pytest.mark.parametrize("closure", [
+    "items.each { Map x = [:] }",
+    "items.each { Map x -> x.size() }",
+])
+def test_closure_local_map_declaration_does_not_classify_the_enclosing_name(closure):
+    source = f"""def f(String idx, List items) {{
+ def x = []
+ {closure}
+ x[idx] = 1
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_closure_local_map_is_still_classified_inside_its_closure():
+    source = """def f(String idx, List items) {
+ items.each { Map x = [:]
+  x[idx] = 1 }
+}"""
+    assert [f["line"] for f in sandbox_map_findings(source)] == [3]
+
+
+def test_app_field_map_is_in_scope_for_library_writes():
+    findings = sl.check_sandbox_map_subscripts({
+        "hubitat-mcp-server.groovy": "@groovy.transform.Field static final Map CACHE = new java.util.HashMap()\n",
+        "libraries/x.groovy": "def remember(String key) {\n CACHE[key] = 1\n}\n",
+        "hubitat-mcp-rule.groovy": "def remember(String key) {\n CACHE[key] = 1\n}\n",
+    })
+    assert [(f["file"], f["line"]) for f in findings] == [("libraries/x.groovy", 2)]
+
+
+@pytest.mark.parametrize("key, flagged", [
+    ('"${k}"', True), ('k + "s"', True), ('"switch${k}.@N"', False), ('"a" + k', False),
+])
+def test_composed_keys_are_bounded_by_their_fixed_parts(key, flagged):
+    source = f"""def f(String k) {{
+ def m = [:]
+ m[{key}] = 1
+}}"""
+    assert [f["line"] for f in sandbox_map_findings(source)] == ([3] if flagged else [])
+
+
 @pytest.mark.parametrize("expression", [
     "[[id: 1]]", "[flag ? left : right]", "[entry?.label ?: fallback]",
 ])

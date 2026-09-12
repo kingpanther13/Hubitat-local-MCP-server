@@ -1135,8 +1135,9 @@ private Map _collectLiveApps() {
     boolean complete = true
     def walk
     walk = { node ->
+        // A leaf may carry "children": null; only a present non-List value is malformed.
         if (!(node instanceof Map) || (node.data != null && !(node.data instanceof Map))
-                || (node.containsKey("children") && !(node.children instanceof List))) {
+                || (node.children != null && !(node.children instanceof List))) {
             complete = false
             return
         }
@@ -1149,8 +1150,9 @@ private Map _collectLiveApps() {
                 if (!(idVal.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
                 apps.put(idVal as Integer, [name: node.data?.name, disabled: node.data?.disabled])
             } catch (Exception ignored) { complete = false }
-        } else if (node.data || !(node.children instanceof List)) {
-            // An idless structural container is safe only when all its children can be read.
+        } else if (node.data) {
+            // An idless structural container is safe only when all its children can be read;
+            // absent children are an empty container, not a malformed one.
             complete = false
         }
         (node?.children ?: []).each { walk(it) }
@@ -9432,7 +9434,7 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     // this write, and reuse must not depend on that visibility (see
     // RM_BASELINE_HANDLES in the host app).
     synchronized (RM_BASELINE_HANDLES) {
-        RM_BASELINE_HANDLES[ruleId.toString()] = [key: backupKey.toString(), entry: new LinkedHashMap(entry)]
+        RM_BASELINE_HANDLES.put(ruleId.toString(), [key: backupKey.toString(), entry: new LinkedHashMap(entry)])
     }
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
