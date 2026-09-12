@@ -4648,6 +4648,77 @@ def check_sandbox_map_subscripts(
                 return pos
         return len(code)
 
+    assignment_re = re.compile(rf"\b({ident})\s*(?<![=!<>+\-*/%&|^])=(?!=|~)")
+    list_ctor_re = re.compile(r"new\s+(?:ArrayList|LinkedList|CopyOnWriteArrayList)\b")
+    # The body is masked, so a quoted key has already been blanked; an entry
+    # is a bare, blanked or parenthesized key followed by a single colon.
+    map_entry_re = re.compile(rf"^\s*(?:{ident}|\([^()]*\))?\s*:(?!:)")
+
+    def expression_end(code: str, start: int) -> int:
+        # Keep multiline literals together: the assigned expression runs to
+        # the first newline or semicolon outside any bracket.
+        depth = 0
+        for pos in range(start, len(code)):
+            char = code[pos]
+            if depth == 0 and char in "\n;":
+                return pos
+            depth += (char in "([{") - (char in ")]}")
+        return len(code)
+
+    def assignment_records(body: str) -> list[tuple[str, str, int]]:
+        return [
+            (match.group(1), body[match.end():expression_end(body, match.end())].strip(),
+             match.start())
+            for match in assignment_re.finditer(body)
+        ]
+
+    def top_level_segments(inner: str) -> list[str]:
+        segments, depth, start = [], 0, 0
+        for pos, char in enumerate(inner):
+            if depth == 0 and char == ",":
+                segments.append(inner[start:pos])
+                start = pos + 1
+            depth += (char in "([{") - (char in ")]}")
+        segments.append(inner[start:])
+        return segments
+
+    def close_delimiter(code: str, opening: int, open_char: str, close_char: str) -> int:
+        depth = 0
+        for pos in range(opening, len(code)):
+            depth += (code[pos] == open_char) - (code[pos] == close_char)
+            if depth == 0:
+                return pos
+        return -1
+
+    def is_list_expression(expression: str) -> bool:
+        expression = expression.strip()
+        while expression.startswith("(") and close_delimiter(expression, 0, "(", ")") == len(expression) - 1:
+            expression = expression[1:-1].strip()
+        if expression.startswith("[") and close_delimiter(expression, 0, "[", "]") == len(expression) - 1:
+            inner = expression[1:-1]
+            if inner.strip() == ":":
+                return False
+            return not any(map_entry_re.match(segment) for segment in top_level_segments(inner))
+        return bool(list_ctor_re.match(expression)
+                    or re.search(r"\bas\s+List\b$", expression))
+
+    def list_at(records, body: str, receiver: str, pos: int) -> bool:
+        # A local can change between Map and List within one method, so the
+        # receiver's type at a subscript is the latest preceding assignment to
+        # it, not the method-wide inference. Only a provable List (literal,
+        # constructor, cast) at the same or an outer brace depth counts: a
+        # branch-local reassignment does not prove the type after the branch,
+        # and a non-literal reassignment keeps the Map classification.
+        depth = body.count("{", 0, pos) - body.count("}", 0, pos)
+        latest = None
+        for dest, expression, start in records:
+            if dest != receiver or start >= pos or (latest is not None and start < latest[1]):
+                continue
+            if body.count("{", 0, start) - body.count("}", 0, start) > depth:
+                continue
+            latest = (expression, start)
+        return latest is not None and is_list_expression(latest[0])
+
     masked = {
         path: "\n".join(
             clean.ljust(len(raw))
@@ -4726,6 +4797,7 @@ def check_sandbox_map_subscripts(
                 inherited = [(dest, alias.end(), stop) for name, start, stop in iterations
                              if name == origin and start <= alias.start() < stop]
                 iterations.extend(inherited)
+            records = assignment_records(body)
             bounded = []
             for branch in bounded_if_re.finditer(raw_body):
                 if branch.group("literal") in collisions:
@@ -4746,7 +4818,7 @@ def check_sandbox_map_subscripts(
 
             for literal in literal_re.finditer(raw_body):
                 receiver, key = literal.group("receiver", "key")
-                if receiver not in maps:
+                if receiver not in maps or list_at(records, body, receiver, literal.start()):
                     continue
                 if not body[literal.start():].startswith(receiver):
                     continue
@@ -4763,7 +4835,7 @@ def check_sandbox_map_subscripts(
                 # must not turn map["prefix${id}"] into an apparent map[id].
                 if not subscript_re.fullmatch(raw_body[access.start():access.end()]):
                     continue
-                if receiver not in maps:
+                if receiver not in maps or list_at(records, body, receiver, access.start()):
                     continue
                 writing = bool(re.match(r"\s*=(?!=|~)", body[access.end():]))
                 if receiver in explicit_maps and not writing:

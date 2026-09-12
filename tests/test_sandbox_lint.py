@@ -237,6 +237,61 @@ def sandbox_map_findings(source: str, path: str = "hubitat-mcp-server.groovy") -
     return sl.check_sandbox_map_subscripts({path: source})
 
 
+@pytest.mark.parametrize("map_first", [True, False])
+def test_map_guard_resolves_receiver_type_from_latest_preceding_assignment(map_first):
+    map_phase = " rows = [:]\n rows[key] = 1\n"
+    list_phase = " rows = []\n def first = rows[key]\n"
+    source = ("def read(String key) {\n def rows\n"
+              + (map_phase + list_phase if map_first else list_phase + map_phase)
+              + " return rows\n}")
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [4 if map_first else 6]
+    assert "rows[key]" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("list_expression", [
+    "[]", "[1, 2]", "[[id: 1]]", "[flag ? left : right]", "[entry?.label ?: fallback]",
+    "([])", "new ArrayList()", "new LinkedList<String>()", "source as List",
+    "[\n  1,\n  2\n]",
+])
+def test_map_guard_skips_a_receiver_last_assigned_a_provable_list(list_expression):
+    source = f"""def read(String key, boolean flag) {{
+ def rows = [:]
+ rows = {list_expression}
+ return rows[key]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("reassignment", [
+    "if (flag) { rows = [] }",
+    "rows = rows.findAll { true }",
+    "rows = flag ? [] : [:]",
+    "rows = [a: 1]",
+    "rows = ['a': 1]",
+    "rows = [(key): 1]",
+    "rows == []",
+    "other = []",
+])
+def test_map_guard_keeps_map_classification_unless_a_list_is_proven(reassignment):
+    source = f"""def read(String key, boolean flag) {{
+ def rows = [:]
+ {reassignment}
+ return rows[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [4]
+
+
+def test_map_guard_list_phase_skips_literal_collision_keys():
+    source = """def read() {
+ def rows = [:]
+ rows = []
+ return rows['class']
+}"""
+    assert sandbox_map_findings(source) == []
+
+
 @pytest.mark.parametrize("function_name", ["_publicToolResultValue", "_mrtrCanonicalArgs"])
 def test_sandbox_map_guard_catches_arbitrary_key_assignment_in_implicated_copy_functions(function_name):
     source = f"""
