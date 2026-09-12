@@ -2246,10 +2246,6 @@ def toolInstallLibrary(args) {
 }
 
 def toolUpdateLibraryCode(args) {
-    synchronized (ITEM_BACKUP_MANIFESTS) { return _toolUpdateLibraryCodeLocked(args) }
-}
-
-private Map _toolUpdateLibraryCodeLocked(args) {
     requireDestructiveConfirm(args.confirm)
     def libraryId = args.libraryId
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
@@ -2308,15 +2304,29 @@ private Map _toolUpdateLibraryCodeLocked(args) {
     // Fail-closed: backup-fetch failure (when needed) aborts the update, matching
     // toolUpdateItemCodeInner which calls backupItemSource() without try/catch.
     def backupFileName = null
-    def manifest = _itemBackupManifest()
-    def existingEntry = manifest["library_${libraryId}"]
-    def skipBackup = (!existingEntry?.deletePending && existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000)
+    def existingEntry = null
+    def backupEntry = null
+    // The reuse decision and the backup it may take must not interleave with another
+    // backup writer. The source download before and the save after need no lock.
+    synchronized (ITEM_BACKUP_MANIFESTS) {
+        def manifest = _itemBackupManifest()
+        existingEntry = manifest["library_${libraryId}"]
+        if (!existingEntry?.deletePending && existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000) {
+            mcpLog("debug", "hub-admin", "Library backup for library_${libraryId} already exists (${formatTimestamp(existingEntry.timestamp)}), skipping")
+            _repairItemBackupRetention(manifest, "library_${libraryId}".toString(), existingEntry as Map)
+            backupFileName = existingEntry.fileName
+        } else {
+            // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
+            // Fail-closed: any throw propagates up and aborts the update -- same contract as
+            // toolUpdateItemCodeInner calling backupItemSource() without try/catch.
+            backupEntry = backupLibrarySource(libraryId.toString())
+            backupFileName = backupEntry.fileName
+        }
+    }
+    def skipBackup = backupEntry == null
 
     def versionFetchError = null
     if (skipBackup) {
-        mcpLog("debug", "hub-admin", "Library backup for library_${libraryId} already exists (${formatTimestamp(existingEntry.timestamp)}), skipping")
-        _repairItemBackupRetention(manifest, "library_${libraryId}".toString(), existingEntry as Map)
-        backupFileName = existingEntry.fileName
         // Still need fresh version for optimistic locking when the source-resolution path
         // didn't provide it (i.e., source/sourceFile modes -- resave already set it).
         if (freshVersion == null) {
@@ -2335,13 +2345,8 @@ private Map _toolUpdateLibraryCodeLocked(args) {
             // Fall back to cached backup version (matching toolUpdateItemCodeInner fallback)
             if (freshVersion == null) freshVersion = existingEntry.version
         }
-    } else {
-        // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
-        // Fail-closed: any throw propagates up and aborts the update -- same contract as
-        // toolUpdateItemCodeInner calling backupItemSource() without try/catch.
-        def backupEntry = backupLibrarySource(libraryId.toString())
-        backupFileName = backupEntry.fileName
-        if (freshVersion == null) freshVersion = backupEntry.version
+    } else if (freshVersion == null) {
+        freshVersion = backupEntry.version
     }
 
     if (freshVersion == null) {
