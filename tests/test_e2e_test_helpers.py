@@ -714,7 +714,25 @@ def test_send_retains_structured_rpc_error_with_mixed_quotes(send_client):
     ("hub_update_device", {"deviceId": "88", "label": "Changed"}),
     ("hub_manage_devices", {"tool": "hub_update_device", "args": {"deviceId": "88", "label": "Changed"}}),
 ])
-def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client, name, args):
+def test_send_does_not_retry_a_lost_first_mrtr_request(send_client, name, args):
+    # The first request of an MRTR write starts the write; a fast one may already be
+    # terminal when the relay drops the response, so a transport replay could run it twice.
+    posts = []
+
+    def post(*args, **kwargs):
+        posts.append(kwargs["json"])
+        return SimpleNamespace(status_code=504, reason="Gateway Timeout")
+
+    client = send_client(post)
+
+    with pytest.raises(et.RelayLostResponseError):
+        client._send("tools/call", {"name": name, "arguments": args})
+
+    assert len(posts) == 1
+    assert client._transport_retries == 0
+
+
+def test_send_retries_a_lost_state_bearing_mrtr_continuation(send_client):
     responses = iter([
         SimpleNamespace(status_code=504, reason="Gateway Timeout"),
         SimpleNamespace(
@@ -735,8 +753,9 @@ def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client, name, args
     client = send_client(post)
 
     result = client._send("tools/call", {
-        "name": name,
-        "arguments": args,
+        "name": "hub_manage_virtual_device",
+        "arguments": {"action": "create", "deviceType": "Virtual Switch", "confirm": True},
+        "requestState": "state-live",
     })
 
     assert result == {"resultType": "input_required", "requestState": "state-live"}

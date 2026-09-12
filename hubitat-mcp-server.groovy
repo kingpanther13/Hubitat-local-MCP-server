@@ -1539,8 +1539,10 @@ def handleResourcesRead(msg) {
 // MCP 2026-07-28 request-to-request continuation wrapper. Only modern, explicitly
 // eligible slow operations (the write set and, when the transport carries a time
 // budget, the Logs-page reads) enter this path; every other call keeps the established
-// dispatcher below. The first round is deliberately mutation-free so the client
-// possesses requestState before any write can outlive its HTTP response.
+// dispatcher below. The first round reserves state and starts the work in the same
+// request, so a client that never echoes requestState still completes a fast write;
+// requestState comes back only for work still running at the budget, and an identical
+// replay while the original is active rejoins it instead of starting a second write.
 def handleToolsCall(msg) {
     def toolName = msg.params?.name
     def args = msg.params?.arguments ?: [:]
@@ -1569,38 +1571,11 @@ def handleToolsCall(msg) {
     Map claim = null
     String readSnapshotId = null
     String stateId = requestState?.toString()
+    boolean rejoined = false
     long reqT0 = now()
     try {
         def binding = _mrtrBinding(toolName, reactiveToolName, args)
-        if (stateId != null) {
-            claim = _mrtrClaimWithWait(stateId, toolName, reactiveToolName,
-                binding, reqT0, reactiveToolName?.toString())
-            rec = claim.record as Map
-            if (claim.outcome == "terminal") {
-                if (rec.terminalResult instanceof Map && rec.terminalResult.__slowReadReplay == true
-                        && _mrtrReadTools().contains(rec.leafTool?.toString())) {
-                    Map replayArgs = _mrtrCopyMap(args as Map)
-                    replayArgs.__reqT0 = reqT0
-                    def replayed = _executeWithDeviceReadContext(toolName, replayArgs,
-                        rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null)
-                    if (replayed instanceof Map && replayed.status == "in_progress") {
-                        // The snapshot is gone and a fresh fetch did not land in time; a
-                        // terminal record cannot continue, so the client starts a fresh call.
-                        throw new IllegalArgumentException("Invalid or expired requestState")
-                    }
-                    return _renderToolResult(msg.id, toolName, reactiveToolName, args, replayed, false)
-                }
-                return _renderToolResult(msg.id, toolName, reactiveToolName, args,
-                    rec.terminalResult, rec.terminalIsError == true)
-            }
-            if (claim.outcome == "in_progress") {
-                // Runtime contention is still the same logical request, not a
-                // malformed JSON-RPC call. Keep an automatic modern client in
-                // its continuation loop without advancing or restarting work.
-                return jsonRpcResult(msg.id,
-                    [resultType: "input_required", requestState: stateId])
-            }
-        } else {
+        if (stateId == null) {
             _mrtrValidateAccess(toolName, reactiveToolName, args)
             String outerName = toolName?.toString()
             String leafName = reactiveToolName?.toString()
@@ -1619,7 +1594,8 @@ def handleToolsCall(msg) {
                         args, refusal, false)
                 }
             }
-            if (_mrtrReadTools().contains(leafName)) {
+            boolean readLeaf = _mrtrReadTools().contains(leafName)
+            if (readLeaf) {
                 // A read has no mutation to protect, so round zero runs it: a cached or
                 // quickly landed snapshot answers in one round trip, and only a fetch that is
                 // still pending reserves a requestState for the client to continue.
@@ -1643,9 +1619,43 @@ def handleToolsCall(msg) {
             // already-reserved request: a retry sees expected behavior, and an
             // INTENTIONAL identical repeat learns it must vary its arguments (or
             // wait out the record TTL) to execute again.
-            def roundZero = [resultType: "input_required", requestState: stateId]
-            if (reservation.rejoined == true) roundZero.rejoined = true
-            return jsonRpcResult(msg.id, roundZero)
+            rejoined = reservation.rejoined == true
+            if (readLeaf) {
+                // The read is already running in the background; hand back its state.
+                return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
+            }
+        }
+        // A write claims its record in the same request that reserved it and runs the
+        // first slice now. The spec lets a client decline to echo requestState, so a
+        // write that finishes within this request's budget must not depend on a retry.
+        // A rejoined replay observes the running owner here instead of executing twice.
+        claim = _mrtrClaimWithWait(stateId, toolName, reactiveToolName,
+            binding, reqT0, reactiveToolName?.toString())
+        rec = claim.record as Map
+        if (claim.outcome == "terminal") {
+            if (rec.terminalResult instanceof Map && rec.terminalResult.__slowReadReplay == true
+                    && _mrtrReadTools().contains(rec.leafTool?.toString())) {
+                Map replayArgs = _mrtrCopyMap(args as Map)
+                replayArgs.__reqT0 = reqT0
+                def replayed = _executeWithDeviceReadContext(toolName, replayArgs,
+                    rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null)
+                if (replayed instanceof Map && replayed.status == "in_progress") {
+                    // The snapshot is gone and a fresh fetch did not land in time; a
+                    // terminal record cannot continue, so the client starts a fresh call.
+                    throw new IllegalArgumentException("Invalid or expired requestState")
+                }
+                return _renderToolResult(msg.id, toolName, reactiveToolName, args, replayed, false)
+            }
+            return _renderToolResult(msg.id, toolName, reactiveToolName, args,
+                rec.terminalResult, rec.terminalIsError == true)
+        }
+        if (claim.outcome == "in_progress") {
+            // Runtime contention is still the same logical request, not a
+            // malformed JSON-RPC call. Keep an automatic modern client in
+            // its continuation loop without advancing or restarting work.
+            def pending = [resultType: "input_required", requestState: stateId]
+            if (rejoined) pending.rejoined = true
+            return jsonRpcResult(msg.id, pending)
         }
 
         Map executionArgs = (rec.nextArguments instanceof Map)
@@ -10044,9 +10054,9 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, and `hub_update_device`. When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
 
-The first write request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
+The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
-The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState`; it cannot reserve or run a second write. This lets a client safely replay a mutation-free preflight whose HTTP response was lost. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
+The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and observes the running owner; it cannot reserve or run a second write. This lets a client safely replay a first request whose HTTP response was lost while the work is still running. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation. A write that completed within its first request has no state the client could echo, so a lost response there is the same exposure as any single-request write: read the target before repeating it.
 
 ### Worker checkpoints and limits
 

@@ -586,40 +586,25 @@ class HubitatMcpClient:
 
         # NEVER transport-replay an ordinary write. A relay 504 can lose its response after
         # the hub committed, so replaying a non-idempotent wizard write commits it again.
-        # MRTR is the deliberate exception: round zero is mutation-free, and resumed calls are
-        # bound to one requestState generation, so replaying the exact physical request can
-        # only rejoin/observe that logical operation. This also recovers a round-zero response
-        # lost after the server reserved state but before the client learned requestState.
+        # A state-bearing MRTR continuation is the deliberate exception: it is bound to one
+        # requestState generation, so replaying the exact physical request can only rejoin or
+        # observe that logical operation. The first request of an MRTR write is NOT replayed:
+        # it starts the write, and a fast write may already be terminal when the relay drops
+        # the response, so a replay would run it again.
         replay_safe = method != "tools/call"
         leaf = None
         if method == "tools/call" and isinstance(params, dict):
             request_state = params.get("requestState")
             call_args = params.get("arguments")
             leaf = params.get("name")
-            leaf_args = call_args
             if isinstance(call_args, dict) and isinstance(call_args.get("tool"), str):
                 leaf = call_args["tool"]
-                leaf_args = call_args.get("args")
-            round_zero_mrtr = leaf in {
-                "hub_set_rule", "hub_set_native_app", "hub_clone_native_app",
-                "hub_import_native_app", "hub_create_driver", "hub_update_driver",
-                "hub_manage_virtual_device", "hub_update_device",
-            }
-            if leaf == "hub_delete_item" and isinstance(leaf_args, dict):
-                round_zero_mrtr = leaf_args.get("type") == "driver"
-            if leaf == "hub_call_rule" and isinstance(leaf_args, dict):
-                ids = leaf_args.get("ruleId")
-                round_zero_mrtr = (
-                    leaf_args.get("action") in {"start", "stop"}
-                    and isinstance(ids, list) and len(ids) > 1
-                )
             catalog_read = params.get("name") in (
                 getattr(self, "_read_only_catalog_tools", None) or set()
             )
             replay_safe = bool(
                 catalog_read
                 or (isinstance(request_state, str) and request_state)
-                or round_zero_mrtr
             )
         # Idempotent-write exception: settings assignment yields the same state on re-delivery,
         # so transport replay is safe for it (unlike wizard writes, where replay double-commits).
@@ -5872,9 +5857,9 @@ class TestRunner:
 
     @test("native_apps")
     def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
-        # A multi-ruleId hub_call_rule is MRTR-eligible from round zero (see the
-        # round_zero_mrtr gate), so this proves the envelope a live client actually
-        # receives for the multi-rule contract: one row per rule, no duplicates, and
+        # A multi-ruleId hub_call_rule is MRTR-eligible from its first request (the
+        # server's _mrtrEligibleCall gate), so this proves the envelope a live client
+        # actually receives for the multi-rule contract: one row per rule, no duplicates, and
         # success/partial/failedRuleIds agreeing with those rows.
         #
         # Scope, stated honestly: these rules are tiny, so the write will normally

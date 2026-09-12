@@ -13,7 +13,8 @@ import support.ToolSpecBase
 /**
  * Dispatch-level contract for MCP 2026-07-28 request-to-request continuation.
  *
- * A modern slow write gets a no-mutation preflight InputRequiredResult first.
+ * A modern slow write reserves its state and runs its first slice in the same
+ * request; only work still running at the budget returns an InputRequiredResult.
  * The client echoes requestState with the unchanged original arguments. Each
  * resumed request runs a slice or observes a worker; a terminal response is retained under
  * the same state briefly so a dropped final HTTP response can be replayed without
@@ -219,7 +220,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         runInMillisCalls.isEmpty()
     }
 
-    def "round-zero preflight defers #caseName to canonical worker dispatch"() {
+    def "round zero dispatches #caseName to the canonical worker"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.useGateways = useGateways
@@ -233,12 +234,13 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def response = modernCall(outer, wireArgs)
         String requestState = response.result.requestState
 
-        then: 'round zero does not replace bulk or gateway routing semantics'
+        then: 'round zero schedules the canonical worker without replacing bulk or gateway routing semantics'
         response.error == null
         response.result.resultType == 'input_required'
         requestState instanceof String
         atomicStateMap.mrtrRequests[requestState].leafTool == leaf
-        runInMillisCalls.isEmpty()
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
 
         where:
         caseName                  | useGateways | outer                     | leaf           | editShape
@@ -283,7 +285,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         'backup freshness' | true     | false        | null           | true    | null            || 'BACKUP REQUIRED'
     }
 
-    def "valid #leaf native write still allocates requestState after pure preflight"() {
+    def "valid #leaf native write schedules its worker after pure preflight"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
@@ -302,7 +304,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         response.result.resultType == 'input_required'
         requestState instanceof String
         atomicStateMap.mrtrRequests[requestState].leafTool == leaf
-        runInMillisCalls.isEmpty()
+        runInMillisCalls.size() == 1
 
         where:
         outer                              | leaf
@@ -328,10 +330,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         response.result.resultType == 'input_required'
         requestState instanceof String
         atomicStateMap.mrtrRequests[requestState].leafTool == 'hub_set_rule'
-        runInMillisCalls.isEmpty()
+        runInMillisCalls.size() == 1
     }
 
-    def "modern slow write preflights, continues across bounded slices, and replays its terminal result"() {
+    def "modern slow write runs its first slice, continues across bounded slices, and replays its terminal result"() {
         given:
         settingsMap.enableWrite = true
         def ranWith = []
@@ -357,7 +359,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
         def original = [ruleId: [11, 12], action: 'stop']
 
-        when: 'round zero allocates opaque state but performs no write'
+        when: 'the first request executes one bounded slice and pauses with a remainder'
         def first = modernCall('hub_call_rule', original)
         String requestState = first.result.requestState
 
@@ -367,19 +369,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         requestState instanceof String
         requestState.size() >= 24
         !first.result.containsKey('content')
-        ranWith.isEmpty()
-
-        when: 'the first resumed request executes one bounded slice'
-        def second = modernCall('hub_call_rule', original, requestState)
-
-        then:
-        second.result.resultType == 'input_required'
-        second.result.requestState == requestState
         ranWith.size() == 1
         ranWith[0].ruleId == [11, 12]
         !ranWith[0].containsKey('__mrtr')
 
-        when: 'the next resumed request executes only the stored remainder'
+        when: 'the resumed request executes only the stored remainder'
         def third = modernCall('hub_call_rule', original, requestState)
         def finalInner = mcpDriver.parseInner(third)
 
@@ -442,13 +436,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
         def wire = [tool: 'hub_call_rule', args: [ruleId: [31, 32], action: 'stop']]
 
-        when: 'round zero and the first executing round pause with a remainder'
+        when: 'the first request executes one slice and pauses with a remainder'
         def first = modernCall('hub_manage_rule_machine', wire)
         String requestState = first.result.requestState
-        def second = modernCall('hub_manage_rule_machine', wire, requestState)
 
         then: 'the persisted next-round arguments carry no budget stamp'
-        second.result.resultType == 'input_required'
+        first.result.resultType == 'input_required'
         ranWith.size() == 1
         atomicStateMap.mrtrRequests[requestState].nextArguments.args.__reqT0 == null
 
@@ -466,13 +459,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         NOW_OVERRIDE.set(null)
     }
 
-    def "a resumed native write returns requestState before its blocked worker leaf finishes"() {
+    def "a native write returns requestState before its blocked worker leaf finishes"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
         def args = [appId: 321, confirm: true, settings: [description: 'slow edit']]
-        def preflight = modernCall('hub_set_rule', args)
-        String stateId = preflight.result.requestState
         def entered = new CountDownLatch(1)
         def release = new CountDownLatch(1)
         def workerDone = new CountDownLatch(1)
@@ -497,13 +488,14 @@ class MrtrContinuationSpec extends ToolSpecBase {
             [success: true, appId: actual.appId, settingsApplied: true]
         }
 
-        when: 'the first resumed HTTP leg claims and schedules the generation'
-        def scheduled = modernCall('hub_set_rule', args, stateId)
+        when: 'the first HTTP leg reserves, claims and schedules the generation'
+        def scheduled = modernCall('hub_set_rule', args)
+        String stateId = scheduled.result.requestState
 
         then: 'the mapped request is already free and the Hubitat leaf has not run inline'
         scheduled.error == null
         scheduled.result.resultType == 'input_required'
-        scheduled.result.requestState == stateId
+        stateId instanceof String
         leafCalls.get() == 0
         observedWaitMs.get() ==
             (script._mrtrScheduleObserveWaitMs('hub_set_rule') as Long) - schedulerElapsedMs
@@ -576,12 +568,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         worker?.join(5000)
     }
 
-    def "the scheduling request observes a fast detached terminal result and replays it exactly once"() {
+    def "the first request observes a fast detached terminal result and its state replays it exactly once"() {
         given:
         settingsMap.enableWrite = true
         def args = [appId: 322, confirm: true, settings: [description: 'fast edit']]
-        def preflight = modernCall('hub_set_rule', args)
-        String stateId = preflight.result.requestState
         def leafCalls = new AtomicInteger(0)
         script.metaClass.toolSetRule = { Map actual ->
             leafCalls.incrementAndGet()
@@ -593,12 +583,14 @@ class MrtrContinuationSpec extends ToolSpecBase {
         })
 
         when:
-        def complete = modernCall('hub_set_rule', args, stateId)
+        def complete = modernCall('hub_set_rule', args)
+        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
         def replay = modernCall('hub_set_rule', args, stateId)
 
         then:
         complete.result.resultType == 'complete'
         complete.result.isError != true
+        !complete.result.containsKey('requestState')
         mcpDriver.parseInner(complete).appId == 322
         replay.result.resultType == 'complete'
         mcpDriver.parseInner(replay).settingsApplied == true
@@ -613,8 +605,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         def args = [appId: 323, confirm: true, settings: [description: 'two slices']]
-        def preflight = modernCall('hub_set_rule', args)
-        String stateId = preflight.result.requestState
         def leafCalls = new AtomicInteger(0)
         script.metaClass.toolSetRule = { Map actual ->
             leafCalls.incrementAndGet()
@@ -627,7 +617,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         })
 
         when:
-        def advanced = modernCall('hub_set_rule', args, stateId)
+        def advanced = modernCall('hub_set_rule', args)
+        String stateId = advanced.result.requestState
         Map stored = atomicStateMap.mrtrRequests[stateId] as Map
 
         then:
@@ -646,8 +637,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         def args = [appId: 324, confirm: true, settings: [description: 'worker error']]
-        def preflight = modernCall('hub_set_rule', args)
-        String stateId = preflight.result.requestState
         def leafCalls = new AtomicInteger(0)
         script.metaClass.toolSetRule = { Map actual ->
             leafCalls.incrementAndGet()
@@ -659,7 +648,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         })
 
         when:
-        def failed = modernCall('hub_set_rule', args, stateId)
+        def failed = modernCall('hub_set_rule', args)
+        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
         def replay = modernCall('hub_set_rule', args, stateId)
 
         then:
@@ -673,31 +663,66 @@ class MrtrContinuationSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
     }
 
-    def "an exact round-zero replay rejoins the active MRTR operation without running a second write"() {
-        given:
+    def "an exact first-request replay rejoins the active MRTR operation without running a second write"() {
+        given: 'the original leaf is still executing when the identical call arrives'
         settingsMap.enableWrite = true
-        def ran = 0
-        script.metaClass.toolRunRmRule = { Map a -> ran++; [success: true, ruleIds: a.ruleId, results: []] }
+        mcpDriver.pushHeaders([
+            'MCP-Protocol-Version': '2026-07-28',
+            'Mcp-Method': 'tools/call',
+            'Mcp-Name': 'hub_call_rule'
+        ])
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def ran = new AtomicInteger(0)
+        script.metaClass.toolRunRmRule = { Map a ->
+            ran.incrementAndGet()
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            [success: true, ruleIds: a.ruleId, results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
         def original = [ruleId: [21, 22], action: 'stop']
+        def winner = new AtomicReference()
+        def failure = new AtomicReference()
+        Thread first = Thread.start {
+            try {
+                winner.set(directCall(script, 2101, 'hub_call_rule', original))
+            } catch (Throwable t) {
+                failure.set(t)
+            }
+        }
 
         when:
-        def first = modernCall('hub_call_rule', original)
-        def duplicate = modernCall('hub_call_rule', original)
+        assert entered.await(5, TimeUnit.SECONDS)
+        def duplicate = directCall(script, 2102, 'hub_call_rule', original)
+        String activeState = (atomicStateMap.mrtrRequests as Map).keySet().first()
+        release.countDown()
+        first.join(5000)
 
         then:
-        first.result.resultType == 'input_required'
-        !first.result.containsKey('rejoined')
+        !first.alive
+        failure.get() == null
         duplicate.result.resultType == 'input_required'
-        duplicate.result.requestState == first.result.requestState
+        duplicate.result.requestState == activeState
         duplicate.result.rejoined == true
         !duplicate.result.containsKey('opToken')
-        ran == 0
+        !duplicate.result.containsKey('content')
+        winner.get().result.resultType == 'complete'
+        !winner.get().result.containsKey('rejoined')
+        ran.get() == 1
+
+        cleanup:
+        release.countDown()
+        first?.join(5000)
     }
 
     def "parallel writes are capped by active requestState records without exposing their ids"() {
-        given:
+        given: 'a first write whose slice pauses with a remainder, holding its record active'
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
 
         when:
         def first = modernCall('hub_call_rule', [ruleId: [21, 22], action: 'stop'])
@@ -833,7 +858,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         threads*.join(5000)
     }
 
-    def "two compiled app instances serialize complete identical MRTR preflights"() {
+    def "two compiled app instances serialize identical first requests onto one execution"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 0
@@ -844,17 +869,60 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ])
         def peer = newCompiledScriptInstance()
         def args = [ruleId: [901, 902], action: 'stop']
-
-        when:
-        def attempts = race(24) { int index ->
-            directCall(index % 2 == 0 ? script : peer, 1800 + index,
-                'hub_call_rule', args)
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def calls = new AtomicInteger(0)
+        Closure leaf = { Map a ->
+            calls.incrementAndGet()
+            entered.countDown()
+            release.await(10, TimeUnit.SECONDS)
+            [success: true, partial: false, ruleIds: a.ruleId,
+             results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+        script.metaClass.toolRunRmRule = leaf
+        peer.metaClass.toolRunRmRule = leaf
+        def results = java.util.Collections.synchronizedList([])
+        def failures = java.util.Collections.synchronizedList([])
+        def ready = new CountDownLatch(24)
+        def start = new CountDownLatch(1)
+        def coalesced = new CountDownLatch(23)
+        def threads = (0..<24).collect { int index ->
+            Thread.start("mrtr-identical-${index}") {
+                ready.countDown()
+                start.await()
+                try {
+                    def response = directCall(index % 2 == 0 ? script : peer, 1800 + index,
+                        'hub_call_rule', args)
+                    results << response
+                    if (response.result?.resultType == 'input_required') coalesced.countDown()
+                } catch (Throwable t) {
+                    failures << t
+                }
+            }
         }
 
-        then:
-        attempts.every { it.result?.resultType == 'input_required' }
-        attempts.collect { it.result.requestState }.unique().size() == 1
-        (atomicStateMap.mrtrRequests as Map).values().count { it?.status == 'active' } == 1
+        when: 'every identical call arrives while the single execution is still blocked'
+        assert ready.await(5, TimeUnit.SECONDS)
+        start.countDown()
+        assert entered.await(5, TimeUnit.SECONDS)
+        assert coalesced.await(10, TimeUnit.SECONDS)
+        release.countDown()
+        threads*.join(5000)
+
+        then: 'one leaf ran; every other caller got a state-only continuation naming that record'
+        !threads.any { it.alive }
+        failures.isEmpty()
+        calls.get() == 1
+        results.size() == 24
+        results.count { it.result?.resultType == 'complete' } == 1
+        results.count { it.result?.resultType == 'input_required' } == 23
+        results.findAll { it.result?.resultType == 'input_required' }
+            .collect { it.result.requestState }.unique().size() == 1
+        (atomicStateMap.mrtrRequests as Map).size() == 1
+
+        cleanup:
+        release.countDown()
+        threads*.join(5000)
     }
 
     def "a blocked MRTR generation stays counted past TTL and contention remains a continuation"() {
@@ -868,8 +936,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ])
         def peer = newCompiledScriptInstance()
         def args = [ruleId: [911, 912], action: 'stop']
-        def preflight = directCall(script, 1900, 'hub_call_rule', args)
-        String stateId = preflight.result.requestState
         def entered = new CountDownLatch(1)
         def release = new CountDownLatch(1)
         def calls = new AtomicInteger(0)
@@ -888,7 +954,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def failure = new AtomicReference()
         Thread first = Thread.start {
             try {
-                winner.set(directCall(script, 1901, 'hub_call_rule', args, stateId))
+                winner.set(directCall(script, 1901, 'hub_call_rule', args))
             } catch (Throwable t) {
                 failure.set(t)
             }
@@ -896,6 +962,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         assert entered.await(5, TimeUnit.SECONDS)
+        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
         virtualNow.addAndGet((script._mrtrActiveTtlMs() as Long) + 1L)
         def sameState = directCall(peer, 1902, 'hub_call_rule', args, stateId)
         def competingFresh = directCall(peer, 1903, 'hub_call_rule',
@@ -932,8 +999,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ])
         def peer = newCompiledScriptInstance()
         def args = [ruleId: [921, 922], action: 'stop']
-        def preflight = directCall(script, 1950, 'hub_call_rule', args)
-        String stateId = preflight.result.requestState
         def entered = new CountDownLatch(1)
         def release = new CountDownLatch(1)
         def ownerDone = new CountDownLatch(1)
@@ -964,7 +1029,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def failure = new AtomicReference()
         Thread first = Thread.start {
             try {
-                winner.set(directCall(script, 1951, 'hub_call_rule', args, stateId))
+                winner.set(directCall(script, 1951, 'hub_call_rule', args))
             } catch (Throwable t) {
                 failure.set(t)
             } finally {
@@ -974,6 +1039,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when: 'three complete continuation legs wait while the original leaf remains blocked'
         assert entered.await(5, TimeUnit.SECONDS)
+        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
         def contention = (0..<3).collect { int index ->
             directCall(peer, 1952 + index, 'hub_call_rule', args, stateId)
         }
@@ -1059,15 +1125,13 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
     }
 
-    def "a gateway scheduling request observes the resolved leaf terminal result"() {
+    def "a gateway first request observes the resolved leaf terminal result"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
         def gateway = 'hub_manage_native_rules_and_apps'
         def args = [tool: 'hub_set_native_app', args: [appId: 654, confirm: true,
             settings: [description: 'gateway worker']]]
-        def preflight = modernCall(gateway, args)
-        String stateId = preflight.result.requestState
         def seen = []
         script.metaClass.toolSetNativeApp = { Map actual ->
             seen << new LinkedHashMap(actual)
@@ -1079,7 +1143,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         })
 
         when:
-        def complete = modernCall(gateway, args, stateId)
+        def complete = modernCall(gateway, args)
         def inner = mcpDriver.parseInner(complete)
 
         then:
@@ -1092,7 +1156,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         inner.success == true
     }
 
-    def "modern driver-code lifecycle leaf #leaf preflights without dispatching"() {
+    def "modern driver-code lifecycle leaf #leaf schedules its worker without dispatching inline"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
@@ -1114,11 +1178,13 @@ class MrtrContinuationSpec extends ToolSpecBase {
         when:
         def preflight = modernCall('hub_manage_code', gatewayArgs)
 
-        then: 'round zero allocates requestState but cannot mutate Hubitat code'
+        then: 'round zero schedules the detached worker; nothing mutates Hubitat code inline'
         preflight.error == null
         preflight.result.resultType == 'input_required'
         preflight.result.requestState instanceof String
         dispatched.isEmpty()
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
 
         where:
         leaf                | leafArgs
@@ -1163,19 +1229,18 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def args = [tool: 'hub_update_driver', args: [
             driverId: '55', source: 'metadata { }', confirm: true
         ]]
-        def preflight = modernCall(gateway, args)
-        String stateId = preflight.result.requestState
         def dispatched = []
         script.metaClass.toolUpdateDriverCode = { Map actual ->
             dispatched << new LinkedHashMap(actual)
             [success: true, driverId: '55', previousVersion: 7]
         }
 
-        when: 'the first resumed HTTP leg only schedules the claimed generation'
-        def scheduled = modernCall(gateway, args, stateId)
+        when: 'the first HTTP leg reserves, claims and schedules the generation'
+        def scheduled = modernCall(gateway, args)
+        String stateId = scheduled.result.requestState
 
         then:
-        preflight.result.resultType == 'input_required'
+        stateId instanceof String
         scheduled.error == null
         scheduled.result.resultType == 'input_required'
         scheduled.result.requestState == stateId
@@ -1224,10 +1289,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
             [success: true, appId: actual.appId]
         }
         String completedId = modernCall('hub_set_rule', args).result.requestState
-        modernCall('hub_set_rule', args, completedId)
         script.runMrtrSlice(new LinkedHashMap(runInMillisCalls.last()[2].data as Map))
         String queuedId = modernCall('hub_set_rule', args).result.requestState
-        modernCall('hub_set_rule', args, queuedId)
         Map lateCallback = new LinkedHashMap(runInMillisCalls.last()[2].data as Map)
 
         when: 'a new installation has empty durable state but the class statics are retained'
@@ -1247,7 +1310,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         calls == 1
         fresh.result.resultType == 'input_required'
         !(fresh.result.requestState in [completedId, queuedId])
-        (scriptStaticField('MRTR_WORK_ITEMS') as Map).isEmpty()
+        (scriptStaticField('MRTR_WORK_ITEMS') as Map).values().every {
+            it.stateId == fresh.result.requestState
+        }
     }
 
     def "durable terminal replay survives #boundary without repeating the write"() {
@@ -1260,7 +1325,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
             [success: true, appId: actual.appId]
         }
         String stateId = modernCall('hub_set_rule', args).result.requestState
-        modernCall('hub_set_rule', args, stateId)
         script.runMrtrSlice(new LinkedHashMap(runInMillisCalls.last()[2].data as Map))
 
         when:
@@ -1298,7 +1362,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         int calls = 0
         script.metaClass.toolSetRule = { Map actual -> calls++; [success: true] }
         String stateId = modernCall('hub_set_rule', args).result.requestState
-        modernCall('hub_set_rule', args, stateId)
         Map lateCallback = new LinkedHashMap(runInMillisCalls.last()[2].data as Map)
         ['MRTR_TERMINAL_EVIDENCE', 'MRTR_WORK_ITEMS', 'WRITE_REQUEST_LEASES'].each {
             (scriptStaticField(it) as Map).clear()
@@ -1338,9 +1401,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
             calls++
             [success: true, appId: actual.appId]
         }
-        def preflight = modernCall('hub_set_rule', args)
-        String stateId = preflight.result.requestState
-        def scheduled = modernCall('hub_set_rule', args, stateId)
+        def scheduled = modernCall('hub_set_rule', args)
+        String stateId = scheduled.result.requestState
         Map activeSnapshot = script._mrtrCopyMap(
             atomicStateMap.mrtrRequests[stateId] as Map) as Map
         Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
@@ -1385,9 +1447,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             calls++
             [success: true, appId: actual.appId]
         }
-        def preflight = modernCall('hub_set_rule', args)
-        String stateId = preflight.result.requestState
-        modernCall('hub_set_rule', args, stateId)
+        String stateId = modernCall('hub_set_rule', args).result.requestState
         Map activeSnapshot = script._mrtrCopyMap(
             atomicStateMap.mrtrRequests[stateId] as Map) as Map
         Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
@@ -1455,21 +1515,13 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
         def args = [sourceAppId: 100, confirm: true]
 
-        when: 'preflight allocates state without touching the cloner'
-        def preflight = modernCall('hub_clone_native_app', args)
-        String requestState = preflight.result.requestState
-
-        then:
-        preflight.result.resultType == 'input_required'
-        posts.isEmpty()
-        atomicStateMap.mrtrRequests[requestState].checkpoint == null
-
-        when: 'the first resume initializes and checkpoints the click phase'
-        def initialized = modernCall('hub_clone_native_app', args, requestState)
+        when: 'the first request initializes and checkpoints the click phase'
+        def initialized = modernCall('hub_clone_native_app', args)
+        String requestState = initialized.result.requestState
 
         then:
         initialized.result.resultType == 'input_required'
-        initialized.result.requestState == requestState
+        requestState instanceof String
         atomicStateMap.mrtrRequests[requestState].checkpoint.phase == 'clone_clicks'
         atomicStateMap.mrtrRequests[requestState].checkpoint.clonerAppId == 4242
         posts.isEmpty()
@@ -1547,17 +1599,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
         def args = [jsonContent: importJson, parentHintAppId: 100, confirm: true]
 
-        when: 'preflight allocates state without uploading or committing'
-        def preflight = modernCall('hub_import_native_app', args)
-        String requestState = preflight.result.requestState
-
-        then:
-        preflight.result.resultType == 'input_required'
-        posts.isEmpty()
-        atomicStateMap.mrtrRequests[requestState].checkpoint == null
-
-        when: 'the first resume uploads once and checkpoints import_commit'
-        def uploaded = modernCall('hub_import_native_app', args, requestState)
+        when: 'the first request uploads once and checkpoints import_commit'
+        def uploaded = modernCall('hub_import_native_app', args)
+        String requestState = uploaded.result.requestState
         def uploads = posts.findAll {
             it.path == '/installedapp/update/json' &&
                 it.body['settings[ruleUpload]'] == importJson
@@ -1565,7 +1609,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         then:
         uploaded.result.resultType == 'input_required'
-        uploaded.result.requestState == requestState
+        requestState instanceof String
         atomicStateMap.mrtrRequests[requestState].checkpoint.phase == 'import_commit'
         atomicStateMap.mrtrRequests[requestState].checkpoint.clonerAppId == 4242
         uploads.size() == 1
@@ -1603,8 +1647,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         def args = [appId: 777, confirm: true, settings: [description: 'no scheduler']]
-        def preflight = modernCall('hub_set_rule', args)
-        String stateId = preflight.result.requestState
         def leafCalls = new AtomicInteger(0)
         script.metaClass.toolSetRule = { Map actual ->
             leafCalls.incrementAndGet()
@@ -1613,8 +1655,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         RUN_IN_MILLIS_OVERRIDE.set({ List call -> throw new IllegalStateException('scheduler unavailable') })
 
         when:
-        def failed = modernCall('hub_set_rule', args, stateId)
+        def failed = modernCall('hub_set_rule', args)
         def failedInner = mcpDriver.parseInner(failed)
+        String stateId = (atomicStateMap.mrtrRequests as Map).keySet().first()
         def replay = modernCall('hub_set_rule', args, stateId)
         def replayInner = mcpDriver.parseInner(replay)
 
@@ -1631,9 +1674,13 @@ class MrtrContinuationSpec extends ToolSpecBase {
     }
 
     def "maxConcurrentWrites zero disables the write cap"() {
-        given:
+        given: 'each first slice pauses with a remainder, so both records stay active'
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 0
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
 
         expect:
         modernCall('hub_call_rule', [ruleId: [41, 42], action: 'stop']).result.resultType == 'input_required'
@@ -1649,15 +1696,15 @@ class MrtrContinuationSpec extends ToolSpecBase {
              rmAction: 'stopRule toggle x1', results: a.ruleId.collect { [success: true, ruleId: it] }]
         }
         def args = [ruleId: [61, 62], action: 'stop']
-        def first = modernCall('hub_call_rule', args)
 
         when:
-        def complete = modernCall('hub_call_rule', args, first.result.requestState as String)
+        def complete = modernCall('hub_call_rule', args)
         def next = modernCall('hub_call_rule', [ruleId: [71, 72], action: 'stop'])
 
         then:
         complete.result.resultType == 'complete'
-        next.result.resultType == 'input_required'
+        next.result.resultType == 'complete'
+        next.result.isError != true
     }
 
     def "ordinary write-request leases share the same cap and release in finally"() {
@@ -1930,7 +1977,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         def ran = 0
-        script.metaClass.toolRunRmRule = { Map a -> ran++; [success: true, ruleIds: a.ruleId, results: []] }
+        script.metaClass.toolRunRmRule = { Map a ->
+            ran++
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
         def first = modernCall('hub_call_rule', [ruleId: [31, 32], action: 'stop'])
         String requestState = first.result.requestState
 
@@ -1940,7 +1991,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         mismatchedArgs.error.code == -32602
         mismatchedArgs.error.message.contains('requestState')
-        ran == 0
+        ran == 1
 
         when: 'the client changes the leaf tool'
         def mismatchedTool = modernCall('hub_set_rule', [appId: 31, confirm: true, settings: [x: 1]], requestState)
@@ -1948,12 +1999,16 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         mismatchedTool.error.code == -32602
         mismatchedTool.error.message.contains('requestState')
-        ran == 0
+        ran == 1
     }
 
     def "requestState binding includes a changed best-practice acknowledgment"() {
         given:
         settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
         def original = [ruleId: [81, 82], action: 'stop', bestPracticeKey: 'original-key']
         def first = modernCall('hub_call_rule', original)
 
@@ -2017,7 +2072,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         def ran = 0
-        script.metaClass.toolRunRmRule = { Map a -> ran++; [success: true] }
+        script.metaClass.toolRunRmRule = { Map a ->
+            ran++
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
         def original = [ruleId: [41, 42], action: 'stop']
 
         when:
@@ -2035,10 +2094,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._writeStateCacheInvalidate()
         def expired = modernCall('hub_call_rule', original, stateId)
 
-        then:
+        then: 'the first slice ran once; the expired state dispatches nothing more'
         expired.error.code == -32602
         expired.error.message.contains('Invalid or expired requestState')
-        ran == 0
+        ran == 1
     }
 
     def "legacy slow write keeps its ordinary remainder result and creates no MRTR state"() {
@@ -2256,17 +2315,16 @@ class MrtrContinuationSpec extends ToolSpecBase {
             disableArgs.appId == 251 ? [success: false, error: 'denied'] : [success: true]
         }
 
-        when:
+        when: 'the first request runs the initialize slice'
         def preflight = modernCall(tool, args)
         String requestState = preflight.result.requestState
 
         then:
         preflight.result.resultType == 'input_required'
-        posts.isEmpty()
         disabled.isEmpty()
 
-        when: 'ordinary continuations initialize, commit, and stage one target per slice'
-        for (int round = 1; round < cap; round++) {
+        when: 'ordinary continuations commit and stage one target per slice'
+        for (int round = 2; round < cap; round++) {
             def continued = modernCall(tool, args, requestState)
             assert continued.result.resultType == 'input_required'
         }

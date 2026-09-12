@@ -168,10 +168,14 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
     }
 
     def "a state-only modern tools/call continuation conforms to InputRequiredResult"() {
-        given:
+        given: 'a multi-rule write whose first slice pauses with a remainder'
         settingsMap.enableWrite = true
         def ran = 0
-        script.metaClass.toolRunRmRule = { Map a -> ran++; [success: true] }
+        script.metaClass.toolRunRmRule = { Map a ->
+            ran++
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
 
         when:
         def response = dispatch(
@@ -180,8 +184,8 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
             ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call',
              'Mcp-Name': 'hub_call_rule'])
 
-        then: 'the preflight performs no write and asks only for automatic state echo'
-        ran == 0
+        then: 'the first slice ran and the paused remainder asks only for automatic state echo'
+        ran == 1
         response.result.resultType == 'input_required'
         response.result.requestState instanceof String
         !response.result.containsKey('inputRequests')
@@ -191,8 +195,12 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
     }
 
     def "same-generation contention stays a schema-valid state-only continuation"() {
-        given:
+        given: 'a paused first slice whose next generation is then claimed by another leg'
         settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
         def args = [ruleId: [73, 74], action: 'stop']
         def preflight = dispatch(
             [jsonrpc: '2.0', id: 72, method: 'tools/call',
