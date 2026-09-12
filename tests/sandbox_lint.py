@@ -476,16 +476,29 @@ _RETIRED_KEY_PATTERN = "|".join(map(re.escape, RETIRED_PERSISTED_DERIVED_KEYS))
 # Include compound writes while leaving equality and regex comparisons readable.
 _RETIRED_ASSIGNMENT = r"\s*(?:\*\*|>>>|>>|<<|[+\-*/%&|^])?=(?![=~])"
 _RETIRED_DOT_WRITE = re.compile(
-    rf"\b(?:atomicState|state)\s*\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
+    rf"\b(?P<store>atomicState|state)\s*\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
+# The bracket regexes run on masked source, where a string literal is blanked to
+# spaces (quotes included); the key is recovered from the original line at the span.
 _RETIRED_BRACKET_WRITE = re.compile(
-    r"\b(?:atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
+    r"\b(?P<store>atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
 _RETIRED_BRACKET_LITERAL = re.compile(
     rf"\s*(?P<quote>['\"])(?P<key>{_RETIRED_KEY_PATTERN})(?P=quote)\s*"
 )
+
+
+def _literal_state_writes(line: str, original: str, dot_re, bracket_re, literal_re) -> list[tuple[str, str]]:
+    """(store, key) pairs assigned on one masked line; bracket keys are recovered from the original."""
+    writes = [(m.group("store"), m.group("key")) for m in dot_re.finditer(line)]
+    for match in bracket_re.finditer(line):
+        start, end = match.span("literal")
+        literal = literal_re.fullmatch(original[start:end])
+        if literal:
+            writes.append((match.group("store"), literal.group("key")))
+    return writes
 
 
 def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[dict]:
@@ -495,13 +508,9 @@ def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[d
     for line_num, (line, original) in enumerate(
         zip(strip_comments_and_strings(source), source_lines, strict=True), start=1
     ):
-        keys = [m.group("key") for m in _RETIRED_DOT_WRITE.finditer(line)]
-        for match in _RETIRED_BRACKET_WRITE.finditer(line):
-            start, end = match.span("literal")
-            literal = _RETIRED_BRACKET_LITERAL.fullmatch(original[start:end])
-            if literal:
-                keys.append(literal.group("key"))
-        for key in keys:
+        for _store, key in _literal_state_writes(
+            line, original, _RETIRED_DOT_WRITE, _RETIRED_BRACKET_WRITE, _RETIRED_BRACKET_LITERAL
+        ):
             findings.append({
                 "file": display_path,
                 "line": line_num,
@@ -510,6 +519,63 @@ def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[d
                     f"Do not persist retired code-derived cache `{key}` in state/atomicState; "
                     "keep derived metadata in class memory. Reads and remove-based migration "
                     "cleanup remain allowed."
+                ),
+                "severity": "error",
+                "source": original.strip(),
+            })
+    return findings
+
+
+# New durable structures require an explicit storage-contract review, even when
+# their name differs from a retired cache. Keep it in sync with the table in
+# docs/state-storage-audit.md.
+PERSISTED_STATE_INVENTORY = {
+    "state": {
+        "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
+        "headersReadable", "originLocalIpReadable", "updateCheck",
+        "lastBackupTimestamp", "debugLogs",
+    },
+    "atomicState": {
+        "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy",
+        "hubSecurityCookie", "hubSecurityCookieExpiry", "itemBackupManifest",
+        "debugLogGeneration", "parentAppIds", "inUseHubVars", "variableHistory",
+        "hubVarsAppId", "predClearPending",
+    },
+}
+# `(?<![.\w])` keeps a member chain such as node.state.x from reading as app state.
+_INVENTORY_DOT_WRITE = re.compile(
+    r"(?<![.\w])(?P<store>atomicState|state)\s*\.\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
+)
+_INVENTORY_BRACKET_WRITE = re.compile(
+    r"(?<![.\w])(?P<store>atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
+    r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
+)
+_INVENTORY_BRACKET_LITERAL = re.compile(r"\s*(?P<quote>['\"])(?P<key>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)\s*")
+
+
+def _scan_persisted_state_inventory(display_path: str, source: str) -> list[dict]:
+    """Flag new literal state assignments outside the reviewed inventory in the server and included libraries."""
+    path = display_path.replace("\\", "/")
+    if path != "hubitat-mcp-server.groovy" and not path.startswith("libraries/"):
+        return []
+    findings = []
+    for line_num, (line, original) in enumerate(
+        zip(strip_comments_and_strings(source), source.split("\n"), strict=True), start=1
+    ):
+        for store, key in _literal_state_writes(
+            line, original, _INVENTORY_DOT_WRITE, _INVENTORY_BRACKET_WRITE, _INVENTORY_BRACKET_LITERAL
+        ):
+            if key in PERSISTED_STATE_INVENTORY[store] or key in RETIRED_PERSISTED_DERIVED_KEYS:
+                continue
+            findings.append({
+                "file": display_path,
+                "line": line_num,
+                "rule": "PERSISTED_STATE_INVENTORY",
+                "message": (
+                    f"Review new durable `{store}.{key}`: document growth, write frequency and "
+                    "durability in docs/state-storage-audit.md before adding it to the lint inventory. "
+                    "Keep bulk per-call caches in class memory."
                 ),
                 "severity": "error",
                 "source": original.strip(),
@@ -590,6 +656,7 @@ def scan_source(source: str, display_path: str) -> list[dict]:
                 )
 
     findings.extend(_scan_retired_persisted_key_writes(display_path, source))
+    findings.extend(_scan_persisted_state_inventory(display_path, source))
     return findings
 
 
@@ -4586,13 +4653,90 @@ def check_sandbox_map_subscripts(
     )
     collisions = {"fields", "class", "metaClass"}
 
-    def close_brace(code: str, opening: int) -> int:
-        depth = 1
-        for pos in range(opening + 1, len(code)):
-            depth += (code[pos] == "{") - (code[pos] == "}")
+    def close_delimiter(code: str, opening: int, open_char: str, close_char: str) -> int:
+        depth = 0
+        for pos in range(opening, len(code)):
+            depth += (code[pos] == open_char) - (code[pos] == close_char)
             if depth == 0:
                 return pos
+        return -1
+
+    def close_brace(code: str, opening: int) -> int:
+        end = close_delimiter(code, opening, "{", "}")
+        return len(code) if end == -1 else end
+
+    # `(?<![.\w])` keeps a property assignment (other.rows = []) off a local named rows.
+    assignment_re = re.compile(rf"(?<![.\w])({ident})\s*(?<![=!<>+\-*/%&|^])=(?!=|~)")
+    list_ctor_re = re.compile(r"new\s+(?:ArrayList|LinkedList|CopyOnWriteArrayList)\b")
+    list_cast_re = re.compile(r"\bas\s+List\b$")
+    # The body is masked, so a quoted key has already been blanked; an entry
+    # is a bare, blanked or parenthesized key followed by a single colon.
+    map_entry_re = re.compile(rf"^\s*(?:{ident}|\([^()]*\))?\s*:(?!:)")
+
+    def expression_end(code: str, start: int) -> int:
+        # Keep multiline literals together: the assigned expression runs to
+        # the first newline or semicolon outside any bracket.
+        depth = 0
+        for pos in range(start, len(code)):
+            char = code[pos]
+            if depth == 0 and char in "\n;":
+                return pos
+            depth += (char in "([{") - (char in ")]}")
         return len(code)
+
+    def enclosing_block(body: str, pos: int) -> tuple[int, int]:
+        # Span of the innermost brace block containing pos; the whole body otherwise.
+        stack = []
+        for index in range(pos):
+            if body[index] == "{":
+                stack.append(index)
+            elif body[index] == "}" and stack:
+                stack.pop()
+        if not stack:
+            return -1, len(body)
+        return stack[-1], close_brace(body, stack[-1])
+
+    def assignment_records(body: str) -> list[tuple[str, str, int, tuple[int, int]]]:
+        return [
+            (match.group(1), body[match.end():expression_end(body, match.end())].strip(),
+             match.start(), enclosing_block(body, match.start()))
+            for match in assignment_re.finditer(body)
+        ]
+
+    def top_level_segments(inner: str) -> list[str]:
+        segments, depth, start = [], 0, 0
+        for pos, char in enumerate(inner):
+            if depth == 0 and char == ",":
+                segments.append(inner[start:pos])
+                start = pos + 1
+            depth += (char in "([{") - (char in ")]}")
+        segments.append(inner[start:])
+        return segments
+
+    def is_list_expression(expression: str) -> bool:
+        expression = expression.strip()
+        while expression.startswith("(") and close_delimiter(expression, 0, "(", ")") == len(expression) - 1:
+            expression = expression[1:-1].strip()
+        if expression.startswith("[") and close_delimiter(expression, 0, "[", "]") == len(expression) - 1:
+            inner = expression[1:-1]
+            if inner.strip() == ":":
+                return False
+            return not any(map_entry_re.match(segment) for segment in top_level_segments(inner))
+        return bool(list_ctor_re.match(expression) or list_cast_re.search(expression))
+
+    def list_at(records, receiver: str, pos: int) -> bool:
+        # A local can change between Map and List within one method, so the
+        # receiver's type at a subscript is the latest preceding assignment to
+        # it, not the method-wide inference. Only a provable List (literal,
+        # constructor, cast) whose enclosing block still contains the subscript
+        # counts: a branch-local reassignment proves nothing after the branch or
+        # in a sibling branch, and a non-literal reassignment keeps the Map
+        # classification. finditer yields ascending starts, so the last wins.
+        latest = None
+        for dest, expression, start, (block_open, block_close) in records:
+            if dest == receiver and start < pos and block_open < pos < block_close:
+                latest = expression
+        return latest is not None and is_list_expression(latest)
 
     masked = {
         path: "\n".join(
@@ -4672,6 +4816,7 @@ def check_sandbox_map_subscripts(
                 inherited = [(dest, alias.end(), stop) for name, start, stop in iterations
                              if name == origin and start <= alias.start() < stop]
                 iterations.extend(inherited)
+            records = assignment_records(body)
             bounded = []
             for branch in bounded_if_re.finditer(raw_body):
                 if branch.group("literal") in collisions:
@@ -4692,7 +4837,7 @@ def check_sandbox_map_subscripts(
 
             for literal in literal_re.finditer(raw_body):
                 receiver, key = literal.group("receiver", "key")
-                if receiver not in maps:
+                if receiver not in maps or list_at(records, receiver, literal.start()):
                     continue
                 if not body[literal.start():].startswith(receiver):
                     continue
@@ -4709,7 +4854,7 @@ def check_sandbox_map_subscripts(
                 # must not turn map["prefix${id}"] into an apparent map[id].
                 if not subscript_re.fullmatch(raw_body[access.start():access.end()]):
                     continue
-                if receiver not in maps:
+                if receiver not in maps or list_at(records, receiver, access.start()):
                     continue
                 writing = bool(re.match(r"\s*=(?!=|~)", body[access.end():]))
                 if receiver in explicit_maps and not writing:

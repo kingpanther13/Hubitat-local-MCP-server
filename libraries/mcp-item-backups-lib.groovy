@@ -24,7 +24,7 @@ def toolListItemBackups(args = null) {
 }
 
 private _listSourceItemBackups(args) {
-    def manifest = atomicState.itemBackupManifest ?: [:]
+    def manifest = _itemBackupManifest()
 
     if (manifest.isEmpty()) {
         return [
@@ -41,6 +41,7 @@ private _listSourceItemBackups(args) {
     def backupList = manifest.collect { key, entry ->
         def base = [
             backupKey: key,
+            deletePending: entry.deletePending == true,
             type: entry.type,
             id: entry.id,
             fileName: entry.fileName,
@@ -75,14 +76,39 @@ private _listSourceItemBackups(args) {
         howToRestore: "Use 'hub_restore_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'hub_update_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
+    if (backupList.any { it.deletePending }) {
+        result.deletePendingNote = "Entries with deletePending=true are leftover markers whose file was already deleted; they cannot be restored or reused as baselines and are purged by the next backup publication."
+    }
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
+}
+
+// A pending-deletion marker is written before the delete, so a delete that failed
+// twice or a reload between the two leaves the marker on a file that still exists.
+// Probe before refusing: a present file clears the marker and serves as a backup.
+// Probe and clear run under the monitor against a fresh view, so a deletion that
+// lands in between cannot be resurrected. Only the marker is committed: no
+// retention trim and no file deletion ride on a read path.
+private boolean _healPendingItemBackup(String backupKey, Map entry) {
+    return _withBackupLock("heal ${backupKey}") {
+        Map manifest = _itemBackupManifest()
+        Map current = manifest[backupKey]
+        if (!(current instanceof Map) || current.fileName?.toString() != entry.fileName?.toString()) return false
+        byte[] bytes = null
+        try { bytes = downloadHubFile(current.fileName.toString()) }
+        catch (Exception probeErr) { mcpLog("warn", "hub-admin", "Could not probe '${current.fileName}' while resolving its pending-deletion marker: ${probeErr.message}") }
+        if (bytes == null || bytes.length == 0) return false
+        current.remove("deletePending")
+        _commitItemBackupManifest(manifest)
+        mcpLog("warn", "hub-admin", "Backup '${backupKey}' was marked pending deletion but its file '${current.fileName}' is still present; the marker was cleared")
+        return true
+    }
 }
 
 def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
 
-    def manifest = atomicState.itemBackupManifest ?: [:]
+    def manifest = _itemBackupManifest()
     def entry = manifest[args.backupKey]
 
     if (!entry) {
@@ -92,6 +118,13 @@ def toolGetItemBackup(args) {
             error: "No backup found for key '${args.backupKey}'",
             availableBackups: availableKeys.isEmpty() ? "None -- no backups exist yet" : availableKeys.join(", "),
             hint: "Use 'hub_list_backups' to see all available backups with details"
+        ]
+    }
+    if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
+        return [
+            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' is no longer in File Manager.",
+            backupKey: args.backupKey,
+            hint: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletePending=false); the marker is purged by the next backup publication."
         ]
     }
 
@@ -162,10 +195,13 @@ def toolRestoreItemBackup(args) {
         throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', 'hub_cloud', or 'hub_uploaded'.")
     }
     requireDestructiveConfirm(args.confirm)
+    return _toolRestoreSourceBackup(args)
+}
 
+private Map _toolRestoreSourceBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
 
-    def manifest = atomicState.itemBackupManifest ?: [:]
+    def manifest = _itemBackupManifest()
     def entry = manifest[args.backupKey]
 
     if (!entry) {
@@ -175,6 +211,14 @@ def toolRestoreItemBackup(args) {
             success: false,
             error: "No backup found for key '${args.backupKey}'",
             availableBackups: availableKeys.isEmpty() ? "None" : availableKeys.join(", ")
+        ]
+    }
+    if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
+        return [
+            success: false,
+            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' is no longer in File Manager. Nothing was restored.",
+            backupKey: args.backupKey,
+            note: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletePending=false); the marker is purged by the next backup publication."
         ]
     }
 
@@ -231,17 +275,17 @@ def toolRestoreItemBackup(args) {
 
     mcpLog("info", "hub-admin", "Restoring ${entry.type} ID ${entry.id} from backup file ${entry.fileName} (version ${entry.version}, ${formatTimestamp(entry.timestamp)})")
 
-    // Save a copy of the entry before modifying manifest
-    def entryCopy = entry.clone()
-
-    // Before restoring, back up the CURRENT source under a different filename so it's not overwritten
-    // (the original backup file uses the same deterministic name, so backupItemSource would overwrite it)
-    def preRestoreFileName = "mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy"
-    def preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
+    // Keep the current source under a separate undo key and preserve the requested
+    // restore target when enforcing the shared retention cap. Only this capture
+    // needs the backup monitor; the save below runs outside it.
+    String preRestoreBackupKey = "prerestore_${entry.type}_${entry.id}"
+    // The undo point actually on file after this block; null when none exists.
+    Map undo = null
     try {
-        def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
-        def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])
-        if (responseText) {
+        _withBackupLock("restore ${args.backupKey}") {
+            def ajaxPath = (entry.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+            def responseText = hubInternalGet(ajaxPath, [id: entry.id])
+            if (!responseText) throw new IllegalStateException("Current source could not be read")
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
             if (parsed.source == source) {
                 // The live source already equals the backup being restored (a retry
@@ -249,20 +293,29 @@ def toolRestoreItemBackup(args) {
                 // real pre-restore undo with the just-restored content, silently
                 // destroying the only undo point. Keep the existing undo file.
                 mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
+                def existingUndo = _itemBackupManifest()[preRestoreBackupKey]
+                if (existingUndo?.fileName && !existingUndo.deletePending) undo = [key: preRestoreBackupKey, fileName: existingUndo.fileName.toString()]
             } else if (parsed.source) {
+                String preRestoreFileName = _itemBackupFileName("mcp-prerestore-${entry.type}-${entry.id}.groovy")
                 uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
-                // atomicState read-modify-write: read full map, mutate locally, write back.
-                def mfst = atomicState.itemBackupManifest ?: [:]
-                mfst[preRestoreBackupKey] = [
-                    type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
+                _publishUploadedItemBackup(preRestoreBackupKey, [
+                    type: entry.type, id: entry.id, fileName: preRestoreFileName,
                     version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
-                ]
-                atomicState.itemBackupManifest = mfst
+                ], args.backupKey.toString())
                 mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+                undo = [key: preRestoreBackupKey, fileName: preRestoreFileName]
+            } else {
+                throw new IllegalStateException("Current source is missing from the hub response")
             }
         }
     } catch (Exception preBackupErr) {
-        mcpLog("warn", "hub-admin", "Could not create pre-restore backup: ${preBackupErr.message} -- proceeding with restore anyway")
+        mcpLogError("hub-admin", "Pre-restore backup failed for ${entry.type} ${entry.id} (backupKey ${args.backupKey}); restore aborted", preBackupErr)
+        return [
+            success: false,
+            error: "Could not create pre-restore backup: ${preBackupErr.message}. Nothing was restored.",
+            backupKey: args.backupKey,
+            note: "The current source was left untouched, so nothing needs undoing. Confirm ${entry.type} ID ${entry.id} still exists and that File Manager accepts writes, then retry. To restore without an undo point, fetch the source with hub_get_backup and apply it with hub_update_app or hub_update_driver."
+        ]
     }
 
     // Restoring the MCP server's OWN code drops the response exactly like a self-update
@@ -270,17 +323,17 @@ def toolRestoreItemBackup(args) {
     // and lastSelfDeploy stash the update path has. Computed before the try so the
     // exception path can stash too.
     boolean isSelfRestore = false
-    if (entryCopy.type == "app") {
+    if (entry.type == "app") {
         def selfIds = [app?.id?.toString(), _resolveSelfAppClassId()?.toString()].findAll { it != null }
-        isSelfRestore = selfIds.contains(entryCopy.id?.toString())
+        isSelfRestore = selfIds.contains(entry.id?.toString())
     }
 
     // Now push the backup source directly via the hub internal API (bypass toolUpdateAppCode to avoid
     // its backupItemSource call which would overwrite our original backup file)
     try {
         // Fetch current version for optimistic locking
-        def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
-        def versionResp = hubInternalGet(ajaxPath, [id: entryCopy.id])
+        def ajaxPath = (entry.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+        def versionResp = hubInternalGet(ajaxPath, [id: entry.id])
         def currentVersion = null
         if (versionResp) {
             try {
@@ -290,21 +343,21 @@ def toolRestoreItemBackup(args) {
         }
 
         // Same JSON save endpoint the update path uses; id present => in-place update.
-        def savePath = (entryCopy.type == "app") ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
+        def savePath = (entry.type == "app") ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
 
         def parsed = hubInternalPostJson(savePath, groovy.json.JsonOutput.toJson([
-            id: entryCopy.id as Integer,
+            id: entry.id as Integer,
             source: source,
-            version: currentVersion ?: entryCopy.version
+            version: currentVersion ?: entry.version
         ]))
 
         def success = false
         def errorMsg = null
         if (parsed instanceof Map) {
             success = parsed.success == true
-            if (success && parsed.id != null && parsed.id.toString() != entryCopy.id.toString()) {
+            if (success && parsed.id != null && parsed.id.toString() != entry.id.toString()) {
                 success = false
-                errorMsg = "Hub reported success but saved to ${entryCopy.type} id ${parsed.id} instead of the targeted id ${entryCopy.id} -- a duplicate code entry may have been created."
+                errorMsg = "Hub reported success but saved to ${entry.type} id ${parsed.id} instead of the targeted id ${entry.id} -- a duplicate code entry may have been created."
             } else if (!success) {
                 errorMsg = parsed.message ?: parsed.errorMessage ?: "hub response lacked success=true: ${parsed.toString().take(200)}"
             }
@@ -312,7 +365,7 @@ def toolRestoreItemBackup(args) {
             // null is strictly an EMPTY body (non-JSON bodies arrive as the _unparseable sentinel
             // and fail above). Lenient only for a self-restore; otherwise fail closed.
             success = isSelfRestore
-            if (!success) errorMsg = "Empty response from ${savePath} — restore may or may not have applied. Verify the ${entryCopy.type} source before retrying."
+            if (!success) errorMsg = "Empty response from ${savePath} — restore may or may not have applied. Verify the ${entry.type} source before retrying."
         } else {
             errorMsg = "Unexpected response shape from ${savePath}: ${parsed.toString().take(200)}"
         }
@@ -335,34 +388,38 @@ def toolRestoreItemBackup(args) {
         }
 
         if (success) {
-            mcpLog("info", "hub-admin", "Restore succeeded: ${entryCopy.type} ID ${entryCopy.id} restored to version ${entryCopy.version}")
+            mcpLog("info", "hub-admin", "Restore succeeded: ${entry.type} ID ${entry.id} restored to version ${entry.version}")
             def restoreResult = [
                 success: true,
-                message: "Restored ${entryCopy.type} ID ${entryCopy.id} to version ${entryCopy.version} (backup from ${formatTimestamp(entryCopy.timestamp)})",
-                type: entryCopy.type,
-                id: entryCopy.id,
-                restoredVersion: entryCopy.version,
-                preRestoreBackup: preRestoreBackupKey,
-                preRestoreFile: preRestoreFileName,
-                undoHint: "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
+                message: "Restored ${entry.type} ID ${entry.id} to version ${entry.version} (backup from ${formatTimestamp(entry.timestamp)})",
+                type: entry.type,
+                id: entry.id,
+                restoredVersion: entry.version
             ]
+            if (undo) {
+                restoreResult.preRestoreBackup = undo.key
+                restoreResult.preRestoreFile = undo.fileName
+                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${undo.key}'"
+            } else {
+                restoreResult.undoHint = "No pre-restore undo point exists: the live source already matched this backup, so nothing was captured."
+            }
             if (isSelfRestore && parsed == null) {
                 restoreResult.assumed = true
                 restoreResult.note = "This restored the MCP server's own code, so the hub's response was dropped by the recompile -- success is inferred, not hub-confirmed. Verify via hub_get_info (lastSelfDeploy) or hub_get_source."
             }
             return restoreResult
         } else {
-            mcpLog("error", "hub-admin", "Restore failed for ${entryCopy.type} ID ${entryCopy.id}: ${errorMsg ?: 'unknown error'}")
+            mcpLog("error", "hub-admin", "Restore failed for ${entry.type} ID ${entry.id}: ${errorMsg ?: 'unknown error'}")
             return [
                 success: false,
                 error: "Restore failed: ${errorMsg ?: 'unknown error'}",
                 backupKey: args.backupKey,
                 message: "The backup has been preserved -- you can try again or restore manually.",
-                directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
+                directDownload: "http://<HUB_IP>/local/${entry.fileName}"
             ]
         }
     } catch (Exception e) {
-        mcpLogError("hub-admin", "Restore failed with exception for ${entryCopy.type} ID ${entryCopy.id}", e)
+        mcpLogError("hub-admin", "Restore failed with exception for ${entry.type} ID ${entry.id}", e)
         if (isSelfRestore) {
             try {
                 atomicState.lastSelfDeploy = [
@@ -382,7 +439,7 @@ def toolRestoreItemBackup(args) {
             error: "Restore failed: ${e.message}",
             backupKey: args.backupKey,
             message: "The backup has been preserved -- you can try again or restore manually.",
-            directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
+            directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
     }
 }

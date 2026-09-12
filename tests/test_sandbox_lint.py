@@ -10,6 +10,7 @@ All 19 original self-test cases are preserved with zero coverage loss.
 """
 
 import os
+import re
 import sys
 
 # sandbox_lint lives in tests/ — add that directory to the path.
@@ -235,6 +236,88 @@ def test_clean_source_no_findings():
 def sandbox_map_findings(source: str, path: str = "hubitat-mcp-server.groovy") -> list[dict]:
     """Run the focused source guard against an inline production-shaped fixture."""
     return sl.check_sandbox_map_subscripts({path: source})
+
+
+@pytest.mark.parametrize("map_first", [True, False])
+def test_map_guard_resolves_receiver_type_from_latest_preceding_assignment(map_first):
+    map_phase = " rows = [:]\n rows[key] = 1\n"
+    list_phase = " rows = []\n def first = rows[key]\n"
+    source = ("def read(String key) {\n def rows\n"
+              + (map_phase + list_phase if map_first else list_phase + map_phase)
+              + " return rows\n}")
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [4 if map_first else 6]
+    assert "rows[key]" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("list_expression", [
+    "[]", "[1, 2]", "[[id: 1]]", "[flag ? left : right]", "[entry?.label ?: fallback]",
+    "([])", "new ArrayList()", "new LinkedList<String>()", "source as List",
+    "[\n  1,\n  2\n]",
+])
+def test_map_guard_skips_a_receiver_last_assigned_a_provable_list(list_expression):
+    source = f"""def read(String key, boolean flag) {{
+ def rows = [:]
+ rows = {list_expression}
+ return rows[key]
+}}"""
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("reassignment", [
+    "if (flag) { rows = [] }",
+    "rows = rows.findAll { true }",
+    "rows = flag ? [] : [:]",
+    "rows = [a: 1]",
+    "rows = ['a': 1]",
+    "rows = [(key): 1]",
+    "rows == []",
+    "other = []",
+    "result.rows = []",
+    "result?.rows = []",
+])
+def test_map_guard_keeps_map_classification_unless_a_list_is_proven(reassignment):
+    source = f"""def read(String key, boolean flag) {{
+ def rows = [:]
+ {reassignment}
+ return rows[key]
+}}"""
+    findings = sandbox_map_findings(source)
+    assert [f["line"] for f in findings] == [4]
+
+
+def test_map_guard_sibling_branch_list_does_not_cover_the_else_branch():
+    source = """def read(String key, boolean flag) {
+ def rows = [:]
+ if (flag) {
+  rows = []
+ } else {
+  rows[key] = 1
+ }
+ return rows
+}"""
+    assert [f["line"] for f in sandbox_map_findings(source)] == [6]
+
+
+def test_map_guard_list_assigned_in_an_enclosing_block_covers_nested_subscripts():
+    source = """def read(String key, boolean flag) {
+ def rows = [:]
+ if (flag) {
+  rows = []
+  if (key) { rows[key] = 1 }
+ }
+ return rows
+}"""
+    assert sandbox_map_findings(source) == []
+
+
+def test_map_guard_list_phase_skips_literal_collision_keys():
+    source = """def read() {
+ def rows = [:]
+ rows = []
+ return rows['class']
+}"""
+    assert sandbox_map_findings(source) == []
 
 
 @pytest.mark.parametrize("function_name", ["_publicToolResultValue", "_mrtrCanonicalArgs"])
@@ -1421,6 +1504,62 @@ _RETIRED_DERIVED_KEYS = (
     "requiredParamsByTool",
     "requiredParamsByToolFingerprint",
 )
+
+
+@pytest.mark.parametrize("path", ("hubitat-mcp-server.groovy", "libraries/mcp-new-lib.groovy"))
+@pytest.mark.parametrize("target", ("state.newCache", "atomicState['newCache']", 'state["newCache"].items'))
+@pytest.mark.parametrize("operator", ("=", "+=", "<<="))
+def test_new_persisted_structure_requires_inventory_review(path, target, operator):
+    findings = sl.scan_source(f"{target} {operator} collectEverything()", path)
+    assert "PERSISTED_STATE_INVENTORY" in {f["rule"] for f in findings}
+
+
+@pytest.mark.parametrize("source", (
+    "def old = atomicState.newCache",
+    "atomicState.remove('newCache')",
+    "if (state.newCache == other) inspect()",
+    "// state.newCache = huge",
+    "def description = 'state.newCache = huge'",
+    "atomicState.variableHistory = history.takeRight(200)",
+    "state.debugLogs.logLevel = level",
+    "node.state.newKey = value",
+    "result.state['newKey'] = value",
+))
+def test_inventory_guard_preserves_reads_migration_and_existing_contracts(source):
+    assert sl._scan_persisted_state_inventory("hubitat-mcp-server.groovy", source) == []
+
+
+@pytest.mark.parametrize("source", (
+    "state[someKey] = value",
+    "atomicState[\"prefix${name}\"] = value",
+))
+def test_inventory_guard_only_reviews_literal_keys(source):
+    """Dynamic keys are outside the inventory review; the retention guards cover them elsewhere."""
+    assert sl._scan_persisted_state_inventory("hubitat-mcp-server.groovy", source) == []
+
+
+def test_retired_key_write_yields_one_finding_across_both_scanners():
+    source = "atomicState.toolSearchCorpus = build()"
+    retired = sl._scan_retired_persisted_key_writes("hubitat-mcp-server.groovy", source)
+    inventory = sl._scan_persisted_state_inventory("hubitat-mcp-server.groovy", source)
+    assert [f["rule"] for f in retired + inventory] == ["PERSISTED_DERIVED_KEY"]
+
+
+def test_inventory_matches_the_state_storage_audit_table():
+    """The lint inventory and docs/state-storage-audit.md must name the same keys."""
+    table = (sl.REPO_ROOT / "docs" / "state-storage-audit.md").read_text(encoding="utf-8")
+    documented = {"state": set(), "atomicState": set()}
+    for line in table.splitlines():
+        if not line.startswith("| `"):
+            continue
+        for store, key in re.findall(r"`(atomicState|state)\.([A-Za-z_][A-Za-z0-9_]*)`", line.split("|")[1]):
+            documented[store].add(key)
+    assert documented == {store: set(keys) for store, keys in sl.PERSISTED_STATE_INVENTORY.items()}
+
+
+def test_inventory_guard_does_not_expand_into_legacy_child_or_test_fixtures():
+    for path in ("hubitat-mcp-rule.groovy", "src/test/groovy/server/Fixture.groovy"):
+        assert sl._scan_persisted_state_inventory(path, "state.newCache = value") == []
 
 
 @pytest.mark.parametrize("store", ("state", "atomicState"))
