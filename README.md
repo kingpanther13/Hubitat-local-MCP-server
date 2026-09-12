@@ -863,7 +863,7 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 When you use `hub_update_app`, `hub_update_driver`, or `hub_delete_item` (type: app|driver), the server automatically saves the **original source code** before making changes.
 
 - Backups stored as `.groovy` files in the hub's local **File Manager**
-- Named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`; later backups of the same item carry a `-<uuid>` suffix before `.groovy`
+- Named `mcp-backup-app-<id>.groovy`, `mcp-backup-driver-<id>.groovy` or `mcp-backup-library-<id>.groovy`; later backups of the same item carry a `-<uuid>` suffix before `.groovy`
 - Persist even if the MCP app is uninstalled
 - Downloadable at `http://<your-hub-ip>/local/<filename>`
 - Max 20 kept; oldest pruned automatically

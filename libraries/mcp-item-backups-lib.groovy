@@ -261,6 +261,8 @@ private Map _toolRestoreItemBackupLocked(args) {
     // restore target when enforcing the shared retention cap.
     def preRestoreFileName = _itemBackupFileName("mcp-prerestore-${entryCopy.type}-${entryCopy.id}.groovy")
     def preRestoreBackupKey = "prerestore_${entryCopy.type}_${entryCopy.id}"
+    // The undo point actually on file after this block; null when none exists.
+    Map undo = null
     try {
         def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
         def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])
@@ -272,6 +274,8 @@ private Map _toolRestoreItemBackupLocked(args) {
             // real pre-restore undo with the just-restored content, silently
             // destroying the only undo point. Keep the existing undo file.
             mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
+            def existingUndo = manifest[preRestoreBackupKey.toString()]
+            if (existingUndo?.fileName && !existingUndo.deletePending) undo = [key: preRestoreBackupKey.toString(), fileName: existingUndo.fileName.toString()]
         } else if (parsed.source) {
             uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
             _publishItemBackup(preRestoreBackupKey.toString(), [
@@ -279,6 +283,7 @@ private Map _toolRestoreItemBackupLocked(args) {
                 version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
             ], args.backupKey.toString())
             mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+            undo = [key: preRestoreBackupKey.toString(), fileName: preRestoreFileName]
         } else {
             throw new IllegalStateException("Current source is missing from the hub response")
         }
@@ -368,11 +373,15 @@ private Map _toolRestoreItemBackupLocked(args) {
                 message: "Restored ${entryCopy.type} ID ${entryCopy.id} to version ${entryCopy.version} (backup from ${formatTimestamp(entryCopy.timestamp)})",
                 type: entryCopy.type,
                 id: entryCopy.id,
-                restoredVersion: entryCopy.version,
-                preRestoreBackup: preRestoreBackupKey,
-                preRestoreFile: preRestoreFileName,
-                undoHint: "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
+                restoredVersion: entryCopy.version
             ]
+            if (undo) {
+                restoreResult.preRestoreBackup = undo.key
+                restoreResult.preRestoreFile = undo.fileName
+                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${undo.key}'"
+            } else {
+                restoreResult.undoHint = "No pre-restore undo point exists: the live source already matched this backup, so nothing was captured."
+            }
             if (isSelfRestore && parsed == null) {
                 restoreResult.assumed = true
                 restoreResult.note = "This restored the MCP server's own code, so the hub's response was dropped by the recompile -- success is inferred, not hub-confirmed. Verify via hub_get_info (lastSelfDeploy) or hub_get_source."
