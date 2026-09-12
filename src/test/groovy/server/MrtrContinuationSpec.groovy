@@ -2977,6 +2977,34 @@ class MrtrContinuationSpec extends ToolSpecBase {
         !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
     }
 
+    def "continuation-eligible write surfaces and the server instructions carry the client-error hint in #mode mode"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = gateways
+        String hint = script._mrtrClientErrorHint() as String
+
+        when:
+        def tools = script.getToolDefinitions() as List
+        def byName = tools.collectEntries { [(it.name): it] }
+
+        then: 'the hint is on every advertised continuation write surface and on no read-only surface'
+        hint.contains('read the target before repeating')
+        (script.serverInstructions() as String).contains(hint)
+        hinted.every { byName[it] != null && (byName[it].description as String).endsWith(hint) }
+        unhinted.every { byName[it] != null && !(byName[it].description as String).contains(hint) }
+        tools.findAll { (it.description as String).contains(hint) }.every {
+            it.annotations?.readOnlyHint != true
+        }
+
+        where:
+        mode      | gateways | hinted                                                                        | unhinted
+        'gateway' | true     | ['hub_manage_virtual_device', 'hub_manage_devices', 'hub_manage_rule_machine',
+                               'hub_manage_native_rules_and_apps', 'hub_manage_code']                        | ['hub_read_devices', 'hub_read_rules', 'hub_get_info', 'hub_manage_mode']
+        'flat'    | false    | ['hub_manage_virtual_device', 'hub_update_device', 'hub_set_rule',
+                               'hub_set_native_app', 'hub_update_driver', 'hub_delete_debug_logs']          | ['hub_get_info', 'hub_list_devices', 'hub_manage_mode', 'hub_call_device_command']
+    }
+
     def "every continuation-eligible read is a canonical read-only tool"() {
         expect:
         (script._mrtrReadTools() as Set).every { (script.getReadOnlyToolNames() as Set).contains(it) }

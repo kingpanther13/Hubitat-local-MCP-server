@@ -1284,15 +1284,24 @@ def handleNotification(msg) {
     logDebug("MCP Notification: ${msg.method}")
 }
 
+
+// Guidance a model needs when its client cannot render a continuation result: some
+// clients surface a state-only input_required as a generic client-side error with no
+// body, while the hub keeps running the write. Shipped in server instructions and on
+// every continuation-eligible write surface so the model reads it before acting.
+def _mrtrClientErrorHint() {
+    return "If a write returns a client-side error with no result body, the hub may still be running it or may have finished it: read the target before repeating the call. An identical repeat within a few minutes joins the running write instead of starting a second one."
+}
+
 def serverInstructions() {
     // Flat mode advertises every tool individually and BLOCKS gateway-name calls
     // ("useGateways is OFF"), so the gateway guidance would send a flat client
     // straight into an error (worse: hub_manage_virtual_device / hub_manage_mode
     // match the hub_manage_* pattern but are direct tools, not gateways).
     if (settings.useGateways == false) {
-        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart."
+        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
     }
-    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart."
+    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
 }
 
 // Protocol versions this server can speak, newest first. Single source for the
@@ -4892,6 +4901,7 @@ def getToolDefinitions() {
                 def flatTool = applyDescriptionTransform([_setRuleFlatTool()], true)[0]
                 base = base + [description: flatTool.description, inputSchema: flatTool.inputSchema]
             }
+            base = _withMrtrClientErrorHint(base, _mrtrWriteTools().contains(base.name as String))
             base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
         }
     }
@@ -4938,12 +4948,23 @@ def getToolDefinitions() {
     // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
     // if a future author adds one to a base-tool description.
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
+    Set writeLeaves = _mrtrWriteTools()
     return transformed.collect { tool ->
+        String name = tool.name as String
+        boolean hinted = writeLeaves.contains(name) ||
+            (gatewayConfig.containsKey(name) &&
+                (tool.inputSchema?.properties?.tool?.enum ?: []).any { writeLeaves.contains(it?.toString()) })
+        def withHint = _withMrtrClientErrorHint(tool, hinted)
         // Gateways already carry complete annotations from above. Check readOnlyHint,
         // not just the map: a leaf with only a title still needs its canonical hints.
-        if (tool.annotations?.containsKey('readOnlyHint')) return tool
-        tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+        if (withHint.annotations?.containsKey('readOnlyHint')) return withHint
+        withHint + [annotations: (withHint.annotations ?: [:]) + annotationsForLeaf(name, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
+}
+
+private Map _withMrtrClientErrorHint(Map tool, boolean applies) {
+    if (!applies) return tool
+    return tool + [description: "${tool.description}\n\n${_mrtrClientErrorHint()}".toString()]
 }
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
@@ -10056,7 +10077,7 @@ The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop
 
 The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
-The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and observes the running owner; it cannot reserve or run a second write. This lets a client safely replay a first request whose HTTP response was lost while the work is still running. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation. A write that completed within its first request has no state the client could echo, so a lost response there is the same exposure as any single-request write: read the target before repeating it.
+The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and observes the running owner; it cannot reserve or run a second write. This lets a client safely replay a first request whose HTTP response was lost while the work is still running. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation. A write that completed within its first request has no state the client could echo, so a lost response there is the same exposure as any single-request write: read the target before repeating it. A client that cannot render `input_required` shows a generic client-side error with no result body while the hub keeps running the write; the same rule applies -- read the target, and know that an identical repeat within the active window joins the running write rather than starting a second one.
 
 ### Worker checkpoints and limits
 
