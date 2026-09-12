@@ -3392,7 +3392,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_delete_item', args={type:'library', id:'<id>', confirm:true})`. Result: `{success:true, backupFile:'mcp-backup-library-<id>.groovy', restoreHint:...}`. Backup file appears in `hub_list_backups`. Subsequent `hub_get_source` (type=library) for the same ID returns `success:false` with "not found".
+**Expected**: AI calls `hub_manage_code(tool='hub_delete_item', args={type:'library', id:'<id>', confirm:true})`. Result: `{success:true, backupFile:'mcp-backup-library-<id>[-<uuid>].groovy', restoreHint:...}`. Backup file appears in `hub_list_backups`. Subsequent `hub_get_source` (type=library) for the same ID returns `success:false` with "not found".
 
 ### T505 — hub_create_library refuses without confirm flag
 

@@ -76,6 +76,9 @@ private _listSourceItemBackups(args) {
         howToRestore: "Use 'hub_restore_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'hub_update_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
+    if (backupList.any { it.deletionPending }) {
+        result.deletionPendingNote = "Entries with deletionPending=true are leftover markers whose file was already deleted; they cannot be restored or reused as baselines and disappear once replaced or retention cleanup succeeds."
+    }
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
 }
@@ -93,6 +96,13 @@ def toolGetItemBackup(args) {
             error: "No backup found for key '${args.backupKey}'",
             availableBackups: availableKeys.isEmpty() ? "None -- no backups exist yet" : availableKeys.join(", "),
             hint: "Use 'hub_list_backups' to see all available backups with details"
+        ]
+    }
+    if (entry.deletePending == true) {
+        return [
+            error: "Backup '${args.backupKey}' is marked pending deletion; its file '${entry.fileName}' was already removed from File Manager.",
+            backupKey: args.backupKey,
+            hint: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletionPending=false)."
         ]
     }
 
@@ -146,10 +156,6 @@ def toolGetItemBackup(args) {
 }
 
 def toolRestoreItemBackup(args) {
-    synchronized (ITEM_BACKUP_MANIFESTS) { return _toolRestoreItemBackupLocked(args) }
-}
-
-private Map _toolRestoreItemBackupLocked(args) {
     args = args ?: [:]
     // `scope` folds WHOLE-HUB database restore (issue #259 item #1) into this tool. hub_local/hub_cloud
     // REPLACE THE ENTIRE HUB DATABASE and REBOOT the hub -- far higher blast radius than a source
@@ -167,7 +173,11 @@ private Map _toolRestoreItemBackupLocked(args) {
         throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', 'hub_cloud', or 'hub_uploaded'.")
     }
     requireDestructiveConfirm(args.confirm)
+    // Only source restores touch the shared backup manifest.
+    synchronized (ITEM_BACKUP_MANIFESTS) { return _toolRestoreItemBackupLocked(args) }
+}
 
+private Map _toolRestoreItemBackupLocked(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
 
     def manifest = _itemBackupManifest()
@@ -180,6 +190,14 @@ private Map _toolRestoreItemBackupLocked(args) {
             success: false,
             error: "No backup found for key '${args.backupKey}'",
             availableBackups: availableKeys.isEmpty() ? "None" : availableKeys.join(", ")
+        ]
+    }
+    if (entry.deletePending == true) {
+        return [
+            success: false,
+            error: "Backup '${args.backupKey}' is marked pending deletion; its file '${entry.fileName}' was already removed from File Manager. Nothing was restored.",
+            backupKey: args.backupKey,
+            note: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletionPending=false)."
         ]
     }
 
@@ -247,27 +265,31 @@ private Map _toolRestoreItemBackupLocked(args) {
         def ajaxPath = (entryCopy.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
         def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])
         if (!responseText) throw new IllegalStateException("Current source could not be read")
-        if (responseText) {
-            def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-            if (parsed.source == source) {
-                // The live source already equals the backup being restored (a retry
-                // after a dropped response): capturing it now would overwrite the
-                // real pre-restore undo with the just-restored content, silently
-                // destroying the only undo point. Keep the existing undo file.
-                mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
-            } else if (parsed.source) {
-                uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
-                _publishItemBackup(preRestoreBackupKey.toString(), [
-                    type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
-                    version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
-                ], args.backupKey.toString())
-                mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
-            } else {
-                throw new IllegalStateException("Current source is missing from the hub response")
-            }
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (parsed.source == source) {
+            // The live source already equals the backup being restored (a retry
+            // after a dropped response): capturing it now would overwrite the
+            // real pre-restore undo with the just-restored content, silently
+            // destroying the only undo point. Keep the existing undo file.
+            mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
+        } else if (parsed.source) {
+            uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
+            _publishItemBackup(preRestoreBackupKey.toString(), [
+                type: entryCopy.type, id: entryCopy.id, fileName: preRestoreFileName,
+                version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
+            ], args.backupKey.toString())
+            mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
+        } else {
+            throw new IllegalStateException("Current source is missing from the hub response")
         }
     } catch (Exception preBackupErr) {
-        return [success: false, error: "Could not create pre-restore backup: ${preBackupErr.message}. Nothing was restored."]
+        mcpLogError("hub-admin", "Pre-restore backup failed for ${entryCopy.type} ${entryCopy.id} (backupKey ${args.backupKey}); restore aborted", preBackupErr)
+        return [
+            success: false,
+            error: "Could not create pre-restore backup: ${preBackupErr.message}. Nothing was restored.",
+            backupKey: args.backupKey,
+            note: "The current source was left untouched, so nothing needs undoing. Confirm ${entryCopy.type} ID ${entryCopy.id} still exists and that File Manager accepts writes, then retry. To restore without an undo point, fetch the source with hub_get_backup and apply it with hub_update_app or hub_update_driver."
+        ]
     }
 
     // Restoring the MCP server's OWN code drops the response exactly like a self-update

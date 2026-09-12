@@ -10851,10 +10851,13 @@ class TestRunner:
 
         # The default scope=source (code backups) still works unchanged.
         src = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {}})
-        assert isinstance(src.get("total"), int) and src["total"] == len(src.get("backups", [])) <= 20, \
-            f"shared source-backup retention/count contract failed: {src}"
         assert isinstance(src, dict) and "backups" in src, \
             f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
+        # One 20-entry retention cap is shared by every backup type.
+        total = src.get("total")
+        assert isinstance(total, int) and total == len(src["backups"]), \
+            f"shared source-backup count contract failed: {src}"
+        assert total <= 20, f"shared source-backup retention contract failed: {src}"
 
     @test("system_tools")
     def test_backup_gate_list_fallback(self) -> None:

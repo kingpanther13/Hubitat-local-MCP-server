@@ -51,9 +51,12 @@
 // Native hub logs retain the history; each app keeps a bounded, lazy JVM view.
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 @groovy.transform.Field static final Map CAPTURE_STORES = new java.util.HashMap()
-// Latest committed backup view bridges stale worker snapshots; all file/manifest
-// writers share this monitor. Per-app entries mirror the retained manifest; publication enforces its cap.
+// Latest committed backup view bridges stale worker snapshots; every source, library,
+// native-rule and pre-restore backup file/manifest writer shares this monitor. Per-app
+// entries mirror the retained manifest; publication enforces its cap.
 @groovy.transform.Field static final Map ITEM_BACKUP_MANIFESTS = new java.util.HashMap()
+// Per-app mirror of atomicState.predClearPending holding generation tokens, so a worker
+// execution's stale snapshot cannot discard newer recovery intent. Guarded by its own monitor.
 @groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
 // Snapshots of the two atomicState keys the reservation/MRTR machinery below reads:
 // every atomicState property access is a hub DB round trip, and one tool call reads
@@ -6594,7 +6597,8 @@ def _latestLocalHubBackupEpoch() {
  * Metadata (timestamp, version, etc.) is stored in atomicState.itemBackupManifest.
  * Files are accessible at http://<HUB_IP>/local/<filename> even if MCP fails.
  * If a backup of this item already exists within the last hour, skips (preserves the pre-edit original).
- * Returns the manifest entry on success, or throws if the source cannot be retrieved.
+ * Returns the manifest entry on success, or throws if the source cannot be retrieved
+ * or the manifest cannot be published.
  */
 def backupItemSource(String type, String id) {
     synchronized (ITEM_BACKUP_MANIFESTS) { return _backupItemSourceLocked(type, id) }
@@ -6609,7 +6613,7 @@ private Map _backupItemSourceLocked(String type, String id) {
     // If a backup exists within the last hour, keep it (preserves the original before a series of edits)
     if (!existing?.deletePending && existing?.timestamp && (now() - existing.timestamp) < 3600000) {
         mcpLog("debug", "hub-admin", "Item backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
-        if (manifest.size() > 20) _publishItemBackup(key.toString(), existing as Map)
+        _repairItemBackupRetention(manifest, key.toString(), existing as Map)
         return existing
     }
 
@@ -6642,15 +6646,17 @@ private Map _backupItemSourceLocked(String type, String id) {
         timestamp: now(),
         sourceLength: parsed.source.length()
     ]
-    _publishItemBackup(key.toString(), entry)
+    _publishUploadedItemBackup(key.toString(), entry)
     mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
     return entry
 }
 
+private String _stateOwnerKey() { app?.id?.toString() ?: "unidentified" }
+
 // Return detached entries: consumers cannot mutate the shared committed view.
 Map _itemBackupManifest() {
     synchronized (ITEM_BACKUP_MANIFESTS) {
-        String owner = app?.id?.toString() ?: "unidentified"
+        String owner = _stateOwnerKey()
         if (!ITEM_BACKUP_MANIFESTS.containsKey(owner)) {
             ITEM_BACKUP_MANIFESTS[owner] = new LinkedHashMap(atomicState.itemBackupManifest ?: [:])
         }
@@ -6661,7 +6667,7 @@ Map _itemBackupManifest() {
 }
 
 private void _commitItemBackupManifest(Map manifest) {
-    String owner = app?.id?.toString() ?: "unidentified"
+    String owner = _stateOwnerKey()
     // Keep the last successful view if persistence throws; reloading an execution's
     // stale snapshot would lose another worker's already committed entries.
     atomicState.itemBackupManifest = manifest
@@ -6673,14 +6679,43 @@ private String _itemBackupFileName(String preferred) {
     // material if publication fails. First-time backups keep the familiar filename.
     if (!_itemBackupManifest().values().any { it?.fileName?.toString() == preferred }) return preferred
     int dot = preferred.lastIndexOf('.')
-    return preferred.substring(0, dot) + "-${UUID.randomUUID()}" + preferred.substring(dot)
+    return preferred.substring(0, dot) + "-${java.util.UUID.randomUUID()}" + preferred.substring(dot)
 }
 
+// Reuse is the one path that never publishes, so an oversized manifest left by an
+// older writer is repaired by republishing the unchanged entry. The repair is
+// best-effort: the reused baseline is valid whether or not the trim persists.
+private void _repairItemBackupRetention(Map manifest, String key, Map entry) {
+    if (manifest.size() <= 20) return
+    try {
+        _publishItemBackup(key, entry)
+        mcpLog("info", "hub-admin", "Trimmed an over-cap backup manifest (${manifest.size()} entries) while reusing the baseline for ${key}; the oldest rollback files were removed")
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "Backup retention repair failed for ${key} (${e.message}); reusing the existing baseline and leaving the manifest over the 20-entry cap")
+    }
+}
+
+// The file was uploaded under a name no committed entry references, so a failed
+// publication would leave it unreferenced in File Manager. Reclaim it, then rethrow.
+private void _publishUploadedItemBackup(String key, Map entry) {
+    try {
+        _publishItemBackup(key, entry)
+    } catch (Exception publishError) {
+        String fileName = entry.fileName?.toString()
+        mcpLog("error", "hub-admin", "Backup file '${fileName}' was uploaded but its manifest entry could not be published (${publishError.message}); removing the unreferenced file")
+        try { deleteHubFile(fileName) }
+        catch (Exception reclaimError) { mcpLog("error", "hub-admin", "Unreferenced backup file '${fileName}' could not be removed: ${reclaimError.message}; delete it manually from Settings > File Manager") }
+        throw publishError
+    }
+}
+
+// One 20-entry budget is shared by every backup type, oldest evicted first; the
+// published key and protectedKey (an active restore target) are never evicted.
 void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         Map previous = _itemBackupManifest()
         Map manifest = new LinkedHashMap(previous)
-        manifest[key] = entry
+        manifest[key] = new LinkedHashMap(entry)
         def victims = manifest.keySet().findAll { it != key && it != protectedKey }
             .sort { a, b -> (manifest[a]?.timestamp ?: 0L) <=> (manifest[b]?.timestamp ?: 0L) }
             .take(Math.max(0, manifest.size() - 20))
@@ -6691,14 +6726,15 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
         // never a retained entry whose rollback file was deleted before publication.
         previous.values().collect { it?.fileName?.toString() }.findAll { it && !retainedFiles.contains(it) }.unique().each { file ->
             try { deleteHubFile(file) }
-            catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}") }
+            catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}; no backup references it, delete it manually from Settings > File Manager") }
         }
     }
 }
 
+/** Remove manifest records that point at a File Manager file after that file is deleted. */
 List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
+    if (!fileName) return []
     synchronized (ITEM_BACKUP_MANIFESTS) {
-        if (!fileName) return []
         Map manifest = _itemBackupManifest()
         List removed = manifest.findAll { key, entry ->
             (exactKey == null || key?.toString() == exactKey) && entry?.fileName?.toString() == fileName
@@ -6723,7 +6759,7 @@ private Map _deleteItemBackupFile(String fileName) {
             if (keys) {
                 try { _commitItemBackupManifest(previous) }
                 catch (Exception resetError) {
-                    throw new IllegalStateException("File '${fileName}' deletion failed: ${deleteError.message}; resetting pending deletion also failed: ${resetError.message}. Backup metadata remains retained under ${keys}; retry deletion.")
+                    throw new IllegalStateException("File '${fileName}' deletion failed: ${deleteError.message}; resetting pending deletion also failed: ${resetError.message}. Backup metadata remains retained under ${keys}; retry deletion.", deleteError)
                 }
             }
             throw deleteError
@@ -9982,7 +10018,7 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 
 ### hub_list_variable_changes
 
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
 
 ### hub_create_connector
 

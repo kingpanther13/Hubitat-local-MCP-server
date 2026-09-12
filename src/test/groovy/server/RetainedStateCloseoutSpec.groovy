@@ -28,6 +28,17 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
          timestamp: timestamp, version: 1, sourceLength: 3]
     }
 
+    private FailingManifest failingManifest(Map seed = [app_99: entry('99')]) {
+        def backing = new FailingManifest()
+        backing.put('itemBackupManifest', seed)
+        backing.@writes = 0 // The seeding put counts; failAt must start from the first real write.
+        return backing
+    }
+
+    private Object peerFor(FailingManifest backing) {
+        newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+    }
+
     def 'source backup repairs oversized retention and unlinks before deleting old files'() {
         given:
         atomicStateMap.itemBackupManifest = (1..23).collectEntries { [("app_${it}".toString()): entry("${it}", it)] }
@@ -50,10 +61,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
     def 'manifest publication failure preserves the old rollback file and entry'() {
         given:
-        def backing = new FailingManifest()
-        backing.put('itemBackupManifest', [app_99: entry('99')])
+        def backing = failingManifest()
         backing.@fail = true
-        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        def peer = peerFor(backing)
         Map files = ['mcp-backup-app-99.groovy': 'old']
         peer.metaClass.hubInternalGet = { String path, Map params = null -> '{"source":"new source","version":2}' }
         peer.metaClass.uploadHubFile = { String name, byte[] bytes -> files[name] = new String(bytes, 'UTF-8') }
@@ -64,8 +74,25 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         thrown(IllegalStateException)
-        files['mcp-backup-app-99.groovy'] == 'old'
+        files == ['mcp-backup-app-99.groovy': 'old']
         backing.itemBackupManifest.app_99 == entry('99')
+    }
+
+    def 'retention repair failure on baseline reuse keeps the reused backup'() {
+        given:
+        def backing = failingManifest((1..23).collectEntries { [("app_${it}".toString()): entry("${it}", 1234567890000L)] })
+        backing.@fail = true
+        def peer = peerFor(backing)
+        List uploads = []
+        peer.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads << name }
+
+        when:
+        def result = peer.backupItemSource('app', '5')
+
+        then:
+        result == entry('5', 1234567890000L)
+        uploads.isEmpty()
+        backing.itemBackupManifest.size() == 23
     }
 
     def 'later backup publication includes earlier writes despite a stale execution snapshot'() {
@@ -158,11 +185,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
     def 'successful deletion reports partial completion when manifest unlink fails'() {
         given:
         enableWrite()
-        def backing = new FailingManifest()
-        backing.put('itemBackupManifest', [app_99: entry('99')])
-        backing.@writes = 0
+        def backing = failingManifest()
         backing.@failAt = 2 // Pending marker succeeds; unlink fails.
-        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        def peer = peerFor(backing)
         List deleted = []
         peer.metaClass.deleteHubFile = { String name -> deleted << name }
 
@@ -175,6 +200,8 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         result.pendingBackupKeys == ['app_99']
         result.manifestCleanupError == 'manifest unavailable'
         result.note.contains('do not repeat the deletion')
+        result.warning.contains('Do not retry the deletion')
+        result.message.contains('did not complete')
         deleted == ['mcp-backup-app-99.groovy']
         backing.itemBackupManifest.app_99.deletePending
         peer._itemBackupManifest().app_99.deletePending
@@ -182,10 +209,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
     def 'pending-deletion publication failure never deletes the rollback file'() {
         given:
-        def backing = new FailingManifest()
-        backing.put('itemBackupManifest', [app_99: entry('99')])
+        def backing = failingManifest()
         backing.@fail = true
-        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        def peer = peerFor(backing)
         List deleted = []
         peer.metaClass.deleteHubFile = { String name -> deleted << name }
 
@@ -201,7 +227,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
     def 'failed writes keep newer committed backup and predicate views over stale snapshots'() {
         given:
         def backing = new FailingManifest()
-        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        def peer = peerFor(backing)
         peer._publishItemBackup('app_1', entry('1'))
         backing.put('itemBackupManifest', [:])
         backing.@fail = true
@@ -237,11 +263,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
     def 'double deletion failure retains durable pending metadata and both errors'() {
         given:
-        def backing = new FailingManifest()
-        backing.put('itemBackupManifest', [app_99: entry('99')])
-        backing.@writes = 0
+        def backing = failingManifest()
         backing.@failAt = 2
-        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        def peer = peerFor(backing)
         peer.metaClass.deleteHubFile = { String name -> throw new IllegalStateException('file busy') }
 
         when:
@@ -258,13 +282,12 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
     def 'pre-restore backup failure stops the restore write'() {
         given:
         enableWrite()
-        def backing = new FailingManifest()
-        backing.put('itemBackupManifest', [app_99: entry('99')])
+        def backing = failingManifest()
         backing.@fail = failure == 'publication'
-        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L), state: stateMap, atomicState: backing])
+        def peer = peerFor(backing)
         peer.metaClass.downloadHubFile = { String name -> 'original'.getBytes('UTF-8') }
         peer.metaClass.hubInternalGet = { String path, Map params = null ->
-            failure == 'read' ? null : '{"source":"current","version":2}'
+            failure == 'read' ? null : failure == 'missing-source' ? '{"version":2}' : '{"source":"current","version":2}'
         }
         peer.metaClass.uploadHubFile = { String name, byte[] bytes ->
             if (failure == 'upload') throw new IllegalStateException('upload unavailable')
@@ -278,11 +301,68 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains('pre-restore backup')
+        result.note.contains('nothing needs undoing')
         writes.isEmpty()
         backing.itemBackupManifest.app_99 == entry('99')
 
         where:
-        failure << ['read', 'upload', 'publication']
+        failure << ['read', 'missing-source', 'upload', 'publication']
+    }
+
+    def 'pending-deletion backups cannot be fetched or restored'() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [app_99: entry('99') + [deletePending: true]]
+        List reads = []
+        script.metaClass.downloadHubFile = { String name -> reads << name; null }
+        List writes = []
+        script.metaClass.hubInternalPostJson = { String path, String body -> writes << path; '{"status":"success"}' }
+
+        when:
+        def fetched = script.toolGetItemBackup([backupKey: 'app_99'])
+        def restored = script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+
+        then:
+        fetched.error.contains('pending deletion')
+        restored.success == false
+        restored.error.contains('pending deletion')
+        reads.isEmpty()
+        writes.isEmpty()
+    }
+
+    def 'backup listing surfaces pending deletion markers'() {
+        given:
+        atomicStateMap.itemBackupManifest = [app_1: entry('1'), app_2: entry('2') + [deletePending: true]]
+
+        when:
+        def result = script.toolListItemBackups([:])
+
+        then:
+        result.backups.collectEntries { [(it.backupKey): it.deletionPending] } == [app_1: false, app_2: true]
+        result.deletionPendingNote.contains('cannot be restored')
+    }
+
+    def 'pending library baseline is not reused by hub_update_library'() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [library_42: entry('42', 1234567890000L) +
+            [type: 'library', fileName: 'mcp-backup-library-42.groovy', deletePending: true]]
+        hubGet.register('/library/list/single/data/42') { params ->
+            groovy.json.JsonOutput.toJson([[id: 42, version: 9, source: 'library(name:"L")', name: 'L', namespace: 'n']])
+        }
+        List uploads = []
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads << name }
+        script.metaClass.deleteHubFile = { String name -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, message: '', id: 42, version: 10] }
+
+        when:
+        def result = script.toolUpdateLibraryCode([libraryId: '42', source: 'new source', confirm: true])
+
+        then:
+        result.success == true
+        uploads.size() == 1
+        atomicStateMap.itemBackupManifest.library_42.fileName == uploads[0]
+        !atomicStateMap.itemBackupManifest.library_42.deletePending
     }
 
     def 'pre-restore publication protects the requested oldest backup and new undo point'() {
@@ -342,7 +422,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         atomicStateMap.predClearPending == ['10': true]
 
         where:
-        response << ['{}', '{"apps":[],"error":"partial"}', '{"apps":[],"success":false}', '{"apps":[{"data":{}}]}',
-                     '{"apps":[{"data":{"id":11},"children":"unreadable"}]}']
+        response << ['{}', '{"apps":[]}', '{"apps":[],"error":"partial"}', '{"apps":[],"success":false}',
+                     '{"apps":[{"data":{}}]}', '{"apps":[{"data":{"id":11},"children":"unreadable"}]}']
     }
 }

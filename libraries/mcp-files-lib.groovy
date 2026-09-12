@@ -322,6 +322,10 @@ def toolDeleteFile(args) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
         }
         result.putAll(deletionDetails)
+        if (result.partial) {
+            result.message = "${result.message} Backup bookkeeping did not complete; see note."
+            result.warning = "The file is gone but its backup manifest entry could not be cleaned up. Do not retry the deletion."
+        }
         return result
     } catch (Exception e) {
         mcpLogError("file-manager", "Failed to delete file '${args.fileName}'", e)

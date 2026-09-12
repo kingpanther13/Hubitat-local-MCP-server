@@ -1165,6 +1165,34 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         files[next.fileName] != null
     }
 
+    def "native baseline reuse repairs an oversized manifest without evicting the baseline"() {
+        given:
+        hubGet.register('/installedapp/configure/json/503') { params -> ruleConfigJson(503, "cap") }
+        hubGet.register('/installedapp/statusJson/503') { params -> statusJson(503) }
+        Map files = [:]
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> files[name] = bytes }
+        script.metaClass.downloadHubFile = { String name -> files[name] }
+        List deleted = []
+        script.metaClass.deleteHubFile = { String name -> deleted << name; files.remove(name) }
+        def first = script._rmBackupBeforeEdit(503, "pre-addAction")
+        Map oversized = script._itemBackupManifest()
+        (1..22).each {
+            oversized["app_${it}".toString()] = [type: 'app', id: it.toString(), fileName: "mcp-backup-app-${it}.groovy".toString(),
+                                                 timestamp: (long) it, version: 1, sourceLength: 3]
+        }
+        script._commitItemBackupManifest(oversized)
+
+        when:
+        def next = script._rmBackupBeforeEdit(503, "pre-walkStep")
+
+        then:
+        next.baselineReused == true
+        next.backupKey == first.backupKey
+        atomicStateMap.itemBackupManifest.size() == 20
+        atomicStateMap.itemBackupManifest.containsKey(first.backupKey.toString())
+        deleted == (1..3).collect { "mcp-backup-app-${it}.groovy".toString() }
+    }
+
     def "baseline reuse survives a worker execution reading a stale manifest snapshot"() {
         given:
         def clock = [1234567890000L]
@@ -1181,7 +1209,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         clock[0] += 30 * 1000L
         def second = script._rmBackupBeforeEdit(503, "pre-addActions-bulk")
 
-        then: 'the JVM mirror carries the handle across the visibility gap'
+        then: 'the committed backup view carries the handle across the visibility gap'
         second.baselineReused == true
         second.backupKey == first.backupKey
     }
@@ -2241,7 +2269,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                      it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
 
         and: "(deferral) the rule is flagged predClearPending so the next addAction runs the clear just-in-time"
-        atomicStateMap.predClearPending?.get("100")
+        atomicStateMap.predClearPending?.get("100") instanceof String
+        !atomicStateMap.predClearPending.get("100").isEmpty()
 
         and: "no actionCancel / actionDone here -- the ghost slot is never opened during the RE build"
         !posts.any { it.path == "/installedapp/btn" && it.body?.name in ["actionCancel", "actionDone"] }

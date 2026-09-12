@@ -272,6 +272,8 @@ def test_map_guard_skips_a_receiver_last_assigned_a_provable_list(list_expressio
     "rows = [(key): 1]",
     "rows == []",
     "other = []",
+    "result.rows = []",
+    "result?.rows = []",
 ])
 def test_map_guard_keeps_map_classification_unless_a_list_is_proven(reassignment):
     source = f"""def read(String key, boolean flag) {{
@@ -281,6 +283,31 @@ def test_map_guard_keeps_map_classification_unless_a_list_is_proven(reassignment
 }}"""
     findings = sandbox_map_findings(source)
     assert [f["line"] for f in findings] == [4]
+
+
+def test_map_guard_sibling_branch_list_does_not_cover_the_else_branch():
+    source = """def read(String key, boolean flag) {
+ def rows = [:]
+ if (flag) {
+  rows = []
+ } else {
+  rows[key] = 1
+ }
+ return rows
+}"""
+    assert [f["line"] for f in sandbox_map_findings(source)] == [6]
+
+
+def test_map_guard_list_assigned_in_an_enclosing_block_covers_nested_subscripts():
+    source = """def read(String key, boolean flag) {
+ def rows = [:]
+ if (flag) {
+  rows = []
+  if (key) { rows[key] = 1 }
+ }
+ return rows
+}"""
+    assert sandbox_map_findings(source) == []
 
 
 def test_map_guard_list_phase_skips_literal_collision_keys():
@@ -1494,6 +1521,8 @@ def test_new_persisted_structure_requires_inventory_review(path, target, operato
     "def description = 'state.newCache = huge'",
     "atomicState.variableHistory = history.takeRight(200)",
     "state.debugLogs.logLevel = level",
+    "node.state.newKey = value",
+    "result.state['newKey'] = value",
 ))
 def test_inventory_guard_preserves_reads_migration_and_existing_contracts(source):
     assert sl._scan_persisted_state_inventory("hubitat-mcp-server.groovy", source) == []

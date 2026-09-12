@@ -506,7 +506,7 @@ A bundle is a `.zip` that Hubitat Package Manager (HPM) fetches and unpacks into
 - Skip backup for test rules: set `testRule: true` when creating/updating
 
 ### Native RM Rule Backups (Automatic)
-- Existing-rule edits ensure a File Manager baseline exists as `mcp-rm-backup-<ruleId>-<timestamp>.json`; by default the newest same-rule baseline is reused for one hour. Restoring it returns the rule to the start of that edit chain and undoes every later edit. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and destructive Required Expression replacement always snapshot immediately before the operation.
+- Existing-rule edits ensure a File Manager baseline exists as `mcp-rm-backup-<ruleId>-<timestamp>.json` (a `-<uuid>` suffix is added if two snapshots land in the same millisecond); by default the newest same-rule baseline is reused for one hour. Restoring it returns the rule to the start of that edit chain and undoes every later edit. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and destructive Required Expression replacement always snapshot immediately before the operation.
 - Snapshots register in the unified `atomicState.itemBackupManifest` with type=`rm-rule`
 - Use `hub_list_backups` (in `hub_read_apps_code` / `hub_manage_backup`) to enumerate, `hub_restore_backup` (in `hub_manage_backup`) with the backupKey to roll back
 - If the rule still exists, settings are replayed in place; if deleted, a fresh empty rule is recreated and the saved settings replayed onto it

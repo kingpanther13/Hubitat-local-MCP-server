@@ -479,6 +479,8 @@ _RETIRED_DOT_WRITE = re.compile(
     rf"\b(?:atomicState|state)\s*\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
+# The bracket regexes run on masked source, where a string literal is blanked to
+# spaces (quotes included); the key is recovered from the original line at the span.
 _RETIRED_BRACKET_WRITE = re.compile(
     r"\b(?:atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
@@ -518,7 +520,8 @@ def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[d
 
 
 # New durable structures require an explicit storage-contract review, even when
-# their name differs from a retired cache. Keep this list with the state audit.
+# their name differs from a retired cache. Keep it in sync with the table in
+# docs/state-storage-audit.md.
 PERSISTED_STATE_INVENTORY = {
     "state": {
         "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
@@ -532,18 +535,20 @@ PERSISTED_STATE_INVENTORY = {
         "hubVarsAppId", "predClearPending",
     },
 }
+# `(?<![.\w])` keeps a member chain such as node.state.x from reading as app state.
 _INVENTORY_DOT_WRITE = re.compile(
-    r"\b(?P<store>atomicState|state)\s*\.\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?<![.\w])(?P<store>atomicState|state)\s*\.\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
 _INVENTORY_BRACKET_WRITE = re.compile(
-    r"\b(?P<store>atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
+    r"(?<![.\w])(?P<store>atomicState|state)\s*\[(?P<literal>[ \t]*)\]"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
+_INVENTORY_BRACKET_LITERAL = re.compile(r"\s*(?P<quote>['\"])(?P<key>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)\s*")
 
 
 def _scan_persisted_state_inventory(display_path: str, source: str) -> list[dict]:
-    """Review new literal state assignments in the server and included libraries."""
+    """Flag new literal state assignments outside the reviewed inventory in the server and included libraries."""
     path = display_path.replace("\\", "/")
     if path != "hubitat-mcp-server.groovy" and not path.startswith("libraries/"):
         return []
@@ -554,9 +559,9 @@ def _scan_persisted_state_inventory(display_path: str, source: str) -> list[dict
         writes = [(m.group("store"), m.group("key")) for m in _INVENTORY_DOT_WRITE.finditer(line)]
         for match in _INVENTORY_BRACKET_WRITE.finditer(line):
             start, end = match.span("literal")
-            literal = re.fullmatch(r"\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1\s*", original[start:end])
+            literal = _INVENTORY_BRACKET_LITERAL.fullmatch(original[start:end])
             if literal:
-                writes.append((match.group("store"), literal.group(2)))
+                writes.append((match.group("store"), literal.group("key")))
         for store, key in writes:
             if key in PERSISTED_STATE_INVENTORY[store] or key in RETIRED_PERSISTED_DERIVED_KEYS:
                 continue
@@ -4640,15 +4645,20 @@ def check_sandbox_map_subscripts(
     )
     collisions = {"fields", "class", "metaClass"}
 
-    def close_brace(code: str, opening: int) -> int:
-        depth = 1
-        for pos in range(opening + 1, len(code)):
-            depth += (code[pos] == "{") - (code[pos] == "}")
+    def close_delimiter(code: str, opening: int, open_char: str, close_char: str) -> int:
+        depth = 0
+        for pos in range(opening, len(code)):
+            depth += (code[pos] == open_char) - (code[pos] == close_char)
             if depth == 0:
                 return pos
-        return len(code)
+        return -1
 
-    assignment_re = re.compile(rf"\b({ident})\s*(?<![=!<>+\-*/%&|^])=(?!=|~)")
+    def close_brace(code: str, opening: int) -> int:
+        end = close_delimiter(code, opening, "{", "}")
+        return len(code) if end == -1 else end
+
+    # `(?<![.\w])` keeps a property assignment (other.rows = []) off a local named rows.
+    assignment_re = re.compile(rf"(?<![.\w])({ident})\s*(?<![=!<>+\-*/%&|^])=(?!=|~)")
     list_ctor_re = re.compile(r"new\s+(?:ArrayList|LinkedList|CopyOnWriteArrayList)\b")
     # The body is masked, so a quoted key has already been blanked; an entry
     # is a bare, blanked or parenthesized key followed by a single colon.
@@ -4665,10 +4675,22 @@ def check_sandbox_map_subscripts(
             depth += (char in "([{") - (char in ")]}")
         return len(code)
 
-    def assignment_records(body: str) -> list[tuple[str, str, int]]:
+    def enclosing_block(body: str, pos: int) -> tuple[int, int]:
+        # Span of the innermost brace block containing pos; the whole body otherwise.
+        stack = []
+        for index in range(pos):
+            if body[index] == "{":
+                stack.append(index)
+            elif body[index] == "}" and stack:
+                stack.pop()
+        if not stack:
+            return -1, len(body)
+        return stack[-1], close_brace(body, stack[-1])
+
+    def assignment_records(body: str) -> list[tuple[str, str, int, tuple[int, int]]]:
         return [
             (match.group(1), body[match.end():expression_end(body, match.end())].strip(),
-             match.start())
+             match.start(), enclosing_block(body, match.start()))
             for match in assignment_re.finditer(body)
         ]
 
@@ -4682,14 +4704,6 @@ def check_sandbox_map_subscripts(
         segments.append(inner[start:])
         return segments
 
-    def close_delimiter(code: str, opening: int, open_char: str, close_char: str) -> int:
-        depth = 0
-        for pos in range(opening, len(code)):
-            depth += (code[pos] == open_char) - (code[pos] == close_char)
-            if depth == 0:
-                return pos
-        return -1
-
     def is_list_expression(expression: str) -> bool:
         expression = expression.strip()
         while expression.startswith("(") and close_delimiter(expression, 0, "(", ")") == len(expression) - 1:
@@ -4702,22 +4716,19 @@ def check_sandbox_map_subscripts(
         return bool(list_ctor_re.match(expression)
                     or re.search(r"\bas\s+List\b$", expression))
 
-    def list_at(records, body: str, receiver: str, pos: int) -> bool:
+    def list_at(records, receiver: str, pos: int) -> bool:
         # A local can change between Map and List within one method, so the
         # receiver's type at a subscript is the latest preceding assignment to
         # it, not the method-wide inference. Only a provable List (literal,
-        # constructor, cast) at the same or an outer brace depth counts: a
-        # branch-local reassignment does not prove the type after the branch,
-        # and a non-literal reassignment keeps the Map classification.
-        depth = body.count("{", 0, pos) - body.count("}", 0, pos)
+        # constructor, cast) whose enclosing block still contains the subscript
+        # counts: a branch-local reassignment proves nothing after the branch or
+        # in a sibling branch, and a non-literal reassignment keeps the Map
+        # classification. finditer yields ascending starts, so the last wins.
         latest = None
-        for dest, expression, start in records:
-            if dest != receiver or start >= pos or (latest is not None and start < latest[1]):
-                continue
-            if body.count("{", 0, start) - body.count("}", 0, start) > depth:
-                continue
-            latest = (expression, start)
-        return latest is not None and is_list_expression(latest[0])
+        for dest, expression, start, (block_open, block_close) in records:
+            if dest == receiver and start < pos and block_open < pos < block_close:
+                latest = expression
+        return latest is not None and is_list_expression(latest)
 
     masked = {
         path: "\n".join(
@@ -4818,7 +4829,7 @@ def check_sandbox_map_subscripts(
 
             for literal in literal_re.finditer(raw_body):
                 receiver, key = literal.group("receiver", "key")
-                if receiver not in maps or list_at(records, body, receiver, literal.start()):
+                if receiver not in maps or list_at(records, receiver, literal.start()):
                     continue
                 if not body[literal.start():].startswith(receiver):
                     continue
@@ -4835,7 +4846,7 @@ def check_sandbox_map_subscripts(
                 # must not turn map["prefix${id}"] into an apparent map[id].
                 if not subscript_re.fullmatch(raw_body[access.start():access.end()]):
                     continue
-                if receiver not in maps or list_at(records, body, receiver, access.start()):
+                if receiver not in maps or list_at(records, receiver, access.start()):
                     continue
                 writing = bool(re.match(r"\s*=(?!=|~)", body[access.end():]))
                 if receiver in explicit_maps and not writing:

@@ -180,7 +180,7 @@ Source code backups are created automatically before modify/delete operations.
 
 If MCP itself is broken:
 1. Go to Hubitat web UI > Settings > File Manager
-2. Find backup files (named `mcp-backup-app-<id>.groovy`, `mcp-backup-driver-<id>.groovy`, or `mcp-backup-library-<id>.groovy`)
+2. Find backup files (named `mcp-backup-app-<id>.groovy`, `mcp-backup-driver-<id>.groovy`, or `mcp-backup-library-<id>.groovy`; later backups of the same item carry a `-<uuid>` suffix before `.groovy`, and the newest file is the live backup)
 3. Download the file
 4. Go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste source > Save
 

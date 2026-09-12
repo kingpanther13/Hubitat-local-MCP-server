@@ -1982,7 +1982,7 @@ private Map _backupLibrarySourceLocked(String libraryId) {
 
     if (!existing?.deletePending && existing?.timestamp && (now() - existing.timestamp) < 3600000) {
         mcpLog("debug", "hub-admin", "Library backup for ${key} already exists (${formatTimestamp(existing.timestamp)}), skipping")
-        if (manifest.size() > 20) _publishItemBackup(key.toString(), existing as Map)
+        _repairItemBackupRetention(manifest, key.toString(), existing as Map)
         return existing
     }
 
@@ -2020,7 +2020,7 @@ private Map _backupLibrarySourceLocked(String libraryId) {
         timestamp: now(),
         sourceLength: backupSource.length()
     ]
-    _publishItemBackup(key.toString(), entry)
+    _publishUploadedItemBackup(key.toString(), entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
     return entry
 }
@@ -2308,13 +2308,14 @@ private Map _toolUpdateLibraryCodeLocked(args) {
     // Fail-closed: backup-fetch failure (when needed) aborts the update, matching
     // toolUpdateItemCodeInner which calls backupItemSource() without try/catch.
     def backupFileName = null
-    def existingEntry = (_itemBackupManifest())["library_${libraryId}"]
+    def manifest = _itemBackupManifest()
+    def existingEntry = manifest["library_${libraryId}"]
     def skipBackup = (!existingEntry?.deletePending && existingEntry?.timestamp && (now() - existingEntry.timestamp) < 3600000)
 
     def versionFetchError = null
     if (skipBackup) {
         mcpLog("debug", "hub-admin", "Library backup for library_${libraryId} already exists (${formatTimestamp(existingEntry.timestamp)}), skipping")
-        if (_itemBackupManifest().size() > 20) _publishItemBackup("library_${libraryId}".toString(), existingEntry as Map)
+        _repairItemBackupRetention(manifest, "library_${libraryId}".toString(), existingEntry as Map)
         backupFileName = existingEntry.fileName
         // Still need fresh version for optimistic locking when the source-resolution path
         // didn't provide it (i.e., source/sourceFile modes -- resave already set it).
@@ -2479,7 +2480,10 @@ def toolListInstalledApps(args) {
     }
 
     try {
-        Map pendingBefore = _rmPendingPredClearSnapshot()
+        // Recovery bookkeeping rides on this inventory but must never fail the listing.
+        Map pendingBefore = null
+        try { pendingBefore = _rmPendingPredClearSnapshot() }
+        catch (Exception snapshotError) { mcpLog("warn", "rm-native", "Recovery-record snapshot unavailable; skipping reconciliation for this listing: ${snapshotError.message}") }
         def responseText = hubInternalGet("/hub2/appsList")
         if (!responseText) {
             return [success: false, error: "Empty response from /hub2/appsList", note: "Hub internal API may be transiently unavailable."]
@@ -2490,7 +2494,8 @@ def toolListInstalledApps(args) {
         } catch (Exception parseErr) {
             return [success: false, error: "Failed to parse /hub2/appsList response: ${parseErr.message}", note: "Hubitat firmware may have changed the endpoint format."]
         }
-        _rmReconcilePredClearPending(parsed, pendingBefore)
+        try { _rmReconcilePredClearPending(parsed, pendingBefore) }
+        catch (Exception reconcileError) { mcpLog("error", "rm-native", "Recovery reconciliation failed during hub_list_apps; records are unchanged: ${reconcileError.message}") }
         def apps = parsed?.apps ?: []
 
         // Flatten tree to list with parentId.

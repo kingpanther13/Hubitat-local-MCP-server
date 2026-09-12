@@ -9192,14 +9192,16 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
         return age >= 0L && age < 60L * 60L * 1000L
     }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
 
-    if (recent != null && mfst.size() > 20) _publishItemBackup(recent.key.toString(), recent.value as Map)
-
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
         mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
         try { unlinkItemBackupManifestFile(staleFile, recent.key?.toString()) } catch (Exception ignored) { }
         recent = null
     }
+
+    // Repair only a validated handle: trimming to protect a handle that is then
+    // discarded would evict one live rollback point for nothing.
+    if (recent != null) _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
 
     if (recent != null) {
         def config = null
@@ -10762,13 +10764,9 @@ private void _rmRunPendingPredCapabsClear(Integer appId) {
     _rmDropPredClearPending(appId)
 }
 
-// Drop a rule's deferred predCapabs-clear flag WITHOUT firing the clear -- used when the rule's
-// predCapabs goes clean by other means (a rolled-back RE build restored from a clean backup, or the
-// rule deleted), so a stale flag can't trigger a wasted ghost clear on a later addAction or linger
-// in atomicState after the rule is gone.
 private Map _rmPendingPredClearSnapshot() {
     synchronized (PRED_CLEAR_STORES) {
-        String owner = app?.id?.toString() ?: "unidentified"
+        String owner = _stateOwnerKey()
         if (!PRED_CLEAR_STORES.containsKey(owner)) {
             PRED_CLEAR_STORES[owner] = new LinkedHashMap(atomicState.predClearPending ?: [:])
         }
@@ -10777,7 +10775,7 @@ private Map _rmPendingPredClearSnapshot() {
 }
 
 private void _rmCommitPredClearPending(Map pending) {
-    String owner = app?.id?.toString() ?: "unidentified"
+    String owner = _stateOwnerKey()
     atomicState.predClearPending = pending
     PRED_CLEAR_STORES[owner] = new LinkedHashMap(pending)
 }
@@ -10786,11 +10784,15 @@ void _rmMarkPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
         Map pending = _rmPendingPredClearSnapshot()
         // An inventory fetched before this generation cannot discard this intent.
-        pending[appId.toString()] = UUID.randomUUID().toString()
+        pending[appId.toString()] = java.util.UUID.randomUUID().toString()
         _rmCommitPredClearPending(pending)
     }
 }
 
+// Drop a rule's deferred predCapabs-clear flag WITHOUT firing the clear -- used when the rule's
+// predCapabs goes clean by other means (a rolled-back RE build restored from a clean backup, or the
+// rule deleted), so a stale flag can't trigger a wasted ghost clear on a later addAction or linger
+// in atomicState after the rule is gone.
 private void _rmDropPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
         Map pending = _rmPendingPredClearSnapshot()
@@ -10798,9 +10800,15 @@ private void _rmDropPredClearPending(Integer appId) {
     }
 }
 
+// A partial or unreadable inventory can never prove an app is gone: only a fully walked,
+// non-empty tree prunes, and only entries whose generation token is unchanged since the snapshot.
 private void _rmReconcilePredClearPending(def inventory, Map observed) {
-    if (!observed || !(inventory instanceof Map) || !(inventory.apps instanceof List) || inventory.error ||
-            inventory.success == false || inventory.status == "error" || inventory.partial == true || inventory.hasMore == true) return
+    if (!observed || !(inventory instanceof Map) || !(inventory.apps instanceof List)) return
+    if (inventory.error || inventory.success == false || inventory.status == "error" ||
+            inventory.partial == true || inventory.hasMore == true) {
+        mcpLog("debug", "rm-native", "Skipping recovery reconciliation: app inventory was partial or error-flagged; ${observed.size()} pending record(s) retained")
+        return
+    }
     Set ids = [] as Set
     boolean complete = true
     def visit
@@ -10814,7 +10822,15 @@ private void _rmReconcilePredClearPending(def inventory, Map observed) {
         (node.children ?: []).each { visit(it) }
     }
     inventory.apps.each { visit(it) }
-    if (!complete) return
+    if (!complete) {
+        mcpLog("warn", "rm-native", "App inventory tree was structurally unreadable (missing data.id or non-list children); retaining all ${observed.size()} pending recovery record(s). If this repeats, hub firmware may have changed the /hub2/appsList shape")
+        return
+    }
+    // This app is itself installed, so an empty inventory is an unusable read, not proof of deletion.
+    if (ids.isEmpty()) {
+        mcpLog("warn", "rm-native", "Skipping recovery reconciliation: /hub2/appsList returned no apps; ${observed.size()} pending record(s) retained")
+        return
+    }
     synchronized (PRED_CLEAR_STORES) {
         Map current = _rmPendingPredClearSnapshot()
         def removed = current.keySet().findAll { !ids.contains(it.toString()) && observed[it] == current[it] }
