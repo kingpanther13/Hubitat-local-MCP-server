@@ -751,7 +751,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_file', [fileName: 'x.txt', confirm: true])
 
         then:
-        response.error != null
+        response.error == null
         response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Write tools are disabled')

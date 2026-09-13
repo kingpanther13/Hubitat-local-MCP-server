@@ -286,7 +286,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def response = modernCall('hub_manage_rule_machine', args)
 
         then:
-        response.result == null
+        response.result != null
         response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains(expected)

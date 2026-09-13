@@ -587,7 +587,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_shutdown', [confirm: true])
 
         then:
-        response.error != null
+        response.error == null
         response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Write tools are disabled')

@@ -3632,9 +3632,12 @@ private def _renderValidationError(id, toolName, reactiveToolName, args, String 
         return jsonRpcError(id, -32602, "Invalid params: ${detail}")
     }
     // The guide pointer rides inside the error text, as it did on the -32602 message.
-    def hint = _reactiveBpsWarning(reactiveToolName, args, detail)
+    // A throw with no message gets neither a hint nor a literal "null": there is nothing
+    // for the model to act on, and the old -32602 path appended no hint either.
+    String text = detail?.trim() ? detail : "${reactiveToolName} rejected the call without a reason"
+    def hint = detail?.trim() ? _reactiveBpsWarning(reactiveToolName, args, detail) : null
     def failure = [success: false, isError: true, tool: reactiveToolName,
-                   error: hint ? "${detail} ${hint}".toString() : detail, __validation: true]
+                   error: hint ? "${text} ${hint}".toString() : text, __validation: true]
     return _renderToolResult(id, toolName, reactiveToolName, args, failure, true)
 }
 

@@ -81,7 +81,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_device_dependents', [:])
 
         then:
-        response.error != null
+        response.error == null
         response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Read tools are disabled')

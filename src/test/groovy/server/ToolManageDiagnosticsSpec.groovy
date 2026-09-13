@@ -148,7 +148,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_metrics', [:])
 
         then:
-        response.error != null
+        response.error == null
         response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Read tools are disabled')
