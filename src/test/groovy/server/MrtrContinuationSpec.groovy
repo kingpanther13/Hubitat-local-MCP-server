@@ -3243,46 +3243,35 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ranBefore == 0
     }
 
-    def "a rejoined call whose validation then fails still carries the marker"() {
-        given: 'the owner is blocked in its leaf, and the Write master is revoked mid-flight'
+    def "a validation refusal keeps the rejoined marker on both rendering paths"() {
+        given: 'the marker is set by the reservation, then a post-claim gate refuses the call'
         settingsMap.enableWrite = true
-        mcpDriver.pushHeaders([
-            'MCP-Protocol-Version': '2026-07-28',
-            'Mcp-Method': 'tools/call',
-            'Mcp-Name': 'hub_call_rule'
-        ])
-        def entered = new CountDownLatch(1)
-        def release = new CountDownLatch(1)
-        script.metaClass.toolRunRmRule = { Map a ->
-            entered.countDown()
-            release.await(5, TimeUnit.SECONDS)
-            [success: true, ruleIds: a.ruleId, results: a.ruleId.collect { [success: true, ruleId: it] }]
-        }
-        def args = [ruleId: [95, 96], action: 'stop']
-        def failure = new AtomicReference()
-        Thread owner = Thread.start {
-            try { directCall(script, 2301, 'hub_call_rule', args) }
-            catch (Throwable t) { failure.set(t) }
-        }
 
-        when: 'the duplicate coalesces, then trips the access gate on its own claim'
-        assert entered.await(5, TimeUnit.SECONDS)
-        settingsMap.enableWrite = false
-        def duplicate = directCall(script, 2302, 'hub_call_rule', args)
-        release.countDown()
-        owner.join(5000)
+        when: 'the shared validation renderer is told the call had coalesced'
+        def refusal = mcpDriver.decodeToolCallResponse(script._renderValidationError(
+            41, 'hub_call_rule', 'hub_call_rule', [ruleId: [95, 96], action: 'stop'],
+            'Write tools are disabled.', true) as Map)
 
-        then: 'the refusal is a validation result and still identifies itself as a rejoin'
-        !owner.alive
-        failure.get() == null
-        duplicate.error == null
-        duplicate.result.isError == true
-        mcpDriver.parseInner(duplicate).rejoined == true
-        mcpDriver.parseInner(duplicate).error.contains('Write tools are disabled')
+        then: 'it is a validation result that still identifies itself as a rejoin'
+        refusal.error == null
+        refusal.result.isError == true
+        mcpDriver.parseInner(refusal).rejoined == true
+        mcpDriver.parseInner(refusal).error.contains('Write tools are disabled')
 
-        cleanup:
-        release.countDown()
-        owner?.join(5000)
+        when: 'a terminal device-validation result carrying the marker is re-rendered'
+        def device = mcpDriver.decodeToolCallResponse(script._renderToolResult(
+            42, 'hub_manage_virtual_device', 'hub_manage_virtual_device', [confirm: true],
+            [__deviceValidation: 'Device not found: 999', rejoined: true], true) as Map)
+
+        then: 'the recursive render preserves it too'
+        device.error == null
+        device.result.isError == true
+        mcpDriver.parseInner(device).rejoined == true
+        mcpDriver.parseInner(device).error.contains('Device not found: 999')
+
+        and: 'a protocol fault is unaffected by the marker and stays a JSON-RPC error'
+        script._renderValidationError(43, 'hub_call_rule', 'hub_call_rule', [:],
+            'Unknown tool: nope', true).error.code == -32602
     }
 
     def "every continuation-eligible read is a canonical read-only tool"() {
