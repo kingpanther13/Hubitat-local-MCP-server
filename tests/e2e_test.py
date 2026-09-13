@@ -247,30 +247,37 @@ def _validation_log_expectation(
         tool_name = arguments["tool"]
     if not isinstance(tool_name, str) or not tool_name:
         return None
-    reason = message[len(prefix):]
-    # Legacy dispatch appends this one generated recovery hint after logging
-    # e.message. Strip only the exact same-tool suffix so the expectation matches
-    # the raw native line; caller-authored guide text remains part of the reason.
+    return _validation_log_line(tool_name, message[len(prefix):])
+
+
+def _validation_log_line(tool_name: str, reason: str) -> str:
+    """The native "Validation error" line, minus the reactive guide pointer.
+
+    The server logs the raw exception message and appends the pointer afterwards, so only
+    the exact same-tool suffix is stripped; caller-authored guide text stays in the reason.
+    Shared by the JSON-RPC and isError paths so the two can never drift on that suffix.
+    """
     legacy_hint = re.compile(
         r' See hub_get_tool_guide\(section="[A-Za-z0-9_]+"\) for '
         + re.escape(tool_name)
         + r"'s reference and best practices\.$"
     )
-    reason = legacy_hint.sub("", reason)
-    return f"Validation error in {tool_name}: {reason}"
+    return f"Validation error in {tool_name}: {legacy_hint.sub('', reason)}"
 
 
-def _tool_validation_log_expectation(params: dict | None, content_text: str) -> str | None:
+def _tool_validation_log_expectation(content_text: str) -> str | None:
     """Return the native-log line a leaf validation refusal produces, if this is one.
 
     A leaf `IllegalArgumentException` now returns `isError: true` with the message in the
     result (2026-07-28 tools page), while the server still logs one
     "Validation error in <tool>" line. Without this the counted accounting in
     `test_no_hub_errors` would report every intentional negative test as a surprise.
-    Only a payload carrying the server's validation shape qualifies; a runtime
-    `success: false` result logs a different line and must not be consumed here.
+    Only a payload carrying the server's validation shape qualifies. Runtime failures log a
+    different line: a plain `success: false` result, and the MRTR failure shape, which also
+    carries isError/tool/error but prefixes its text with "Tool error:" and may carry a
+    committed-slice aggregate or a status.
     """
-    if not isinstance(params, dict) or not content_text:
+    if not content_text:
         return None
     try:
         payload = json.loads(content_text)
@@ -282,17 +289,13 @@ def _tool_validation_log_expectation(params: dict | None, content_text: str) -> 
     reason = payload.get("error")
     if not isinstance(tool_name, str) or not isinstance(reason, str) or not reason:
         return None
-    # Same exact-suffix strip as the JSON-RPC path: the reactive pointer is appended
-    # after the server logs the raw message.
-    legacy_hint = re.compile(
-        r' See hub_get_tool_guide\(section="[A-Za-z0-9_]+"\) for '
-        + re.escape(tool_name)
-        + r"'s reference and best practices\.$"
-    )
-    return f"Validation error in {tool_name}: {legacy_hint.sub('', reason)}"
+    if reason.startswith("Tool error:") or "aggregate" in payload or "status" in payload:
+        return None
+    return _validation_log_line(tool_name, reason)
 
 
-def _tool_failure_log_expectation(tool_name: str, payload: Any) -> str | None:
+def _tool_failure_log_expectation(tool_name: str, payload: Any,
+                                  arguments: dict | None = None) -> str | None:
     """Return the native-log line a runtime failure result produces, if this is one.
 
     _renderToolResult logs one "Tool <tool> returned a failure result" line for a result
@@ -300,12 +303,20 @@ def _tool_failure_log_expectation(tool_name: str, payload: Any) -> str | None:
     "Validation error in <tool>" and are accounted for separately). Intentional negative
     tests produce these by the dozen; without this the ledger check reported every one as
     an unexplained hub error, which buried any real one.
+
+    The server logs the LEAF tool, so a gateway call is resolved the way the server does:
+    the result's own `tool` field, else the gateway's `tool` argument, else the name called.
     """
     if not isinstance(tool_name, str) or not tool_name or not isinstance(payload, dict):
         return None
     if payload.get("isError") is not True and payload.get("success") is not False:
         return None
-    return f"Tool {tool_name} returned a failure result"
+    leaf = payload.get("tool")
+    if not isinstance(leaf, str) or not leaf:
+        leaf = arguments.get("tool") if isinstance(arguments, dict) else None
+    if not isinstance(leaf, str) or not leaf:
+        leaf = tool_name
+    return f"Tool {leaf} returned a failure result"
 
 
 def _decode_mcp1_envelope(raw_message: str) -> dict | None:
@@ -980,10 +991,10 @@ class HubitatMcpClient:
             for c in result.get("content", []):
                 if c.get("type") == "text":
                     content_text = c["text"]
-            expectation = _tool_validation_log_expectation(params, content_text)
+            expectation = _tool_validation_log_expectation(content_text)
             if expectation is None:
                 try:
-                    expectation = _tool_failure_log_expectation(name, json.loads(content_text))
+                    expectation = _tool_failure_log_expectation(name, json.loads(content_text), arguments)
                 except (json.JSONDecodeError, TypeError, ValueError):
                     expectation = None
             if expectation is not None:
@@ -998,7 +1009,7 @@ class HubitatMcpClient:
                 except (json.JSONDecodeError, TypeError):
                     return c["text"]
                 # A success:false result is logged hub-side as a failure result too.
-                expectation = _tool_failure_log_expectation(name, parsed)
+                expectation = _tool_failure_log_expectation(name, parsed, arguments)
                 if expectation is not None:
                     self._expected_validation_logs.append(expectation)
                 # Bank the token of every op that answered, so recovery can never mistake
@@ -4295,7 +4306,7 @@ class TestRunner:
             ]})
             raise AssertionError("a batch entry with no deviceId should have been rejected")
         except (McpToolError, McpError):
-            pass  # expected -- IllegalArgumentException maps to -32602
+            pass  # expected -- IllegalArgumentException renders as an isError validation result
 
         after = _poll_on()
 
@@ -11039,7 +11050,7 @@ class TestRunner:
                 raise
 
         def _expect_rejected(fn, needle: str, label: str) -> None:
-            # Validation/confirm-gate rejections come back as a JSON-RPC -32602 (McpError) and fire
+            # Validation/confirm-gate rejections come back as isError validation results (McpToolError) and fire
             # BEFORE any hub write, so they cannot trip the limiter; the needle check also tells a
             # genuine rejection apart from a stray "excessive hub load" error.
             try:
@@ -15013,10 +15024,10 @@ def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
     not about the hub -- and refusing there strands every BAT_E2E_ artifact on the shared hub,
     which is the failure the guard's retry loop was added for. A definitive answer still refuses
     in both modes."""
-    # Three failure shapes, and only one of them is the hub speaking. A JSON-RPC error is the
-    # hub's own verdict (toolGetVariable throws IllegalArgumentException for an absent variable
-    # and handleToolsCall maps that to -32602); a lost response, an undecodable body, and an
-    # isError:true runtime fault inside the tool all leave the variable unknown and retry.
+    # Three failure shapes, and only one of them is the hub speaking. The hub's own verdict for
+    # an absent variable is toolGetVariable's IllegalArgumentException, which handleToolsCall
+    # renders as an isError validation result whose text says "not found"; a lost response, an
+    # undecodable body, and any OTHER isError runtime fault leave the variable unknown and retry.
     got = None
     last_exc: Exception | None = None
     last_kind = "the hub was not heard"
@@ -15027,10 +15038,15 @@ def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
             break
         except RelayLostResponseError as exc:  # the response was lost; the hub said nothing
             last_exc, last_kind = exc, "the response was lost in transport"
-        except McpToolError as exc:  # isError:true -- a runtime fault INSIDE the tool
+        except McpToolError as exc:  # isError:true -- the validation verdict, or a runtime fault INSIDE the tool
+            if "not found" in str(exc):
+                _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
+                         f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
             last_exc, last_kind = exc, "the tool faulted at runtime (isError), which says nothing about the variable"
         except McpError as exc:
             if str(exc).startswith("JSON-RPC error:"):
+                # A protocol-level refusal (an older server, or a malformed envelope) is still
+                # the hub speaking, never transport.
                 _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
                          f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
             # The only other McpError is an exhausted-retry decode failure, i.e. transport.

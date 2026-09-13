@@ -33,7 +33,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (format == "context" && (!limit || limit <= 0)) limit = 50
     // Type/format validity for the state-filter args, BEFORE the scope='all' route below
     // (and called by the filter='virtual' route in the dispatch case): a malformed value
-    // must be a -32602 on every path, never silently carried into a specialized listing.
+    // must be a validation refusal on every path, never silently carried into a specialized listing.
     _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attributeNames, format)
     // scope='all' lists EVERY hub device (not just MCP-authorized), tagging each mcpAuthorized
     // true/false so a caller who can't control a device sees it must be added to the MCP list.
@@ -61,9 +61,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def childDevs = getChildDevices() ?: []
 
     // Remaining validation for the classic args, BEFORE the empty-inventory early return
-    // so a bad argument is a -32602 even on a hub with no authorized devices. Groovy
+    // so a bad argument is a validation refusal even on a hub with no authorized devices. Groovy
     // coercion would otherwise surface as MissingMethodException deep in the filter
-    // logic rather than a clear -32602 error. (The state-filter arg types were already
+    // logic rather than a clear validation error. (The state-filter arg types were already
     // validated above, before the scope='all' route.)
     if (labelFilter != null && !(labelFilter instanceof String)) {
         throw new IllegalArgumentException("labelFilter must be a string")
@@ -370,7 +370,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 
     // Validate field names against the documented whitelist. Unknown names would silently
     // produce empty device objects (a typo gives {id: '1'} instead of {id: '1', label: 'X'})
-    // -- catching it here gives the caller a recoverable -32602 instead of bad data.
+    // -- catching it here gives the caller a recoverable validation error instead of bad data.
     if (fieldSet) {
         def validFieldNames = ["id", "name", "label", "room", "disabled", "deviceNetworkId",
             "lastActivity", "parentDeviceId", "mcpManaged", "currentStates",
@@ -528,7 +528,7 @@ private String formatLastActivity(Date d) {
 
 // Type/format validity for the issue-#366 state-filter args, shared by toolListDevices
 // (before its scope='all' route) and the filter='virtual' route in the dispatch case --
-// every path must reject a malformed value with -32602 instead of silently ignoring it.
+// every path must reject a malformed value with a validation refusal instead of silently ignoring it.
 def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attributeNames, format) {
     if (roomFilter != null && !(roomFilter instanceof String)) {
         throw new IllegalArgumentException("roomFilter must be a string")

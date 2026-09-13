@@ -1509,7 +1509,7 @@ def handleResourcesRead(msg) {
         // Unlike tools/call, resources/read has no per-call error logging of its own, so a
         // builder throw would otherwise reach the client as a bare -32603 with nothing in
         // the hub log -- log it richly here, then map like handleToolsCall would: an
-        // IllegalArgumentException is caller-recoverable (an invalid-params error), anything else rethrows
+        // IllegalArgumentException is caller-recoverable (-32602; resources/read is not a tool call), anything else rethrows
         // into the top-level -32603.
         try {
             if (uri == "hubitat://context-summary") {
@@ -1548,10 +1548,12 @@ def handleResourcesRead(msg) {
 // MCP 2026-07-28 request-to-request continuation wrapper. Only modern, explicitly
 // eligible slow operations (the write set and, when the transport carries a time
 // budget, the slow reads in _mrtrReadTools()) enter this path; every other call keeps the established
-// dispatcher below. The first round reserves state and starts the work in the same
-// request, so a client that never echoes requestState still completes a fast write;
-// requestState comes back only for work still running at the budget, and an identical
-// replay while the original is active rejoins it instead of starting a second write.
+// dispatcher below. For a write, the first round reserves state and starts the work in
+// the same request, so a client that never echoes requestState still completes a fast
+// write; a read runs first and reserves only if its fetch is still pending. requestState
+// comes back only for work still running at the budget, an identical replay while the
+// original is active rejoins it instead of starting a second write, and every
+// state-bearing continuation, reads included, enters at the claim below.
 def handleToolsCall(msg) {
     def toolName = msg.params?.name
     def args = msg.params?.arguments ?: [:]
@@ -1710,18 +1712,20 @@ def handleToolsCall(msg) {
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
                        error: e.message]])
-        return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message, rejoined)
+        return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message, rejoined, rec)
     } catch (Exception e) {
         mcpLog("error", "server", "MRTR tool execution error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
                        error: e.message],
              stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")])
-        if (e instanceof IllegalStateException && sliceResult instanceof Map) {
-            // The slice ran; only its record bookkeeping was lost. Hand back the real
-            // outcome rather than reporting a completed write as a failure.
-            def orphaned = [:] + (sliceResult as Map)
-            orphaned.note = "The operation ran, but its continuation record was lost before the result " +
+        if (e instanceof IllegalStateException && sliceResult instanceof Map &&
+                e.message?.startsWith("requestState ownership was lost")) {
+            // The slice ran; only its record bookkeeping was lost. Report the batch-wide
+            // ledger, not the tail slice's share, and keep any caveat the slice carried.
+            def orphaned = [:] + (_mrtrAggregateTerminal(rec, sliceResult) as Map)
+            String lostNote = "The operation ran, but its continuation record was lost before the result " +
                 "could be stored, so this requestState cannot replay it. Inspect the target before any follow-up."
+            orphaned.note = ((orphaned.note ? orphaned.note + " " : "") + lostNote).toString()
             return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                 _mrtrMarkRejoined(orphaned, rejoined), orphaned.isError == true)
         }
@@ -1751,13 +1755,16 @@ private def _mrtrMarkRejoined(result, boolean rejoined) {
 // of repeating the whole operation.
 private Map _mrtrFailureWithLedger(Map rec, leafTool, String error) {
     def failure = [success: false, isError: true, tool: leafTool, error: error]
-    if (rec instanceof Map && rec.aggregate instanceof Map && !rec.aggregate.isEmpty()) {
-        failure.aggregate = _mrtrCopyMap(rec.aggregate as Map)
-        failure.note = "aggregate records earlier checkpointed slices. The failing slice may " +
-            "also have changed the hub before the error; inspect the target and deferred " +
-            "finalization before deciding on a follow-up. Do not repeat the whole operation."
-    }
+    _mrtrAttachLedger(failure, rec)
     return failure
+}
+
+private void _mrtrAttachLedger(Map failure, Map rec) {
+    if (!(rec instanceof Map && rec.aggregate instanceof Map && !rec.aggregate.isEmpty())) return
+    failure.aggregate = _mrtrCopyMap(rec.aggregate as Map)
+    failure.note = "aggregate records earlier checkpointed slices. The failing slice may " +
+        "also have changed the hub before the error; inspect the target and deferred " +
+        "finalization before deciding on a follow-up. Do not repeat the whole operation."
 }
 
 def handleToolsCallLegacy(msg) {
@@ -2985,8 +2992,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                         "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
                 ]
-                _mrtrNoteIfUnstorable(readCapped,
-                    _mrtrStoreTerminal(stateId, rec, claim, readCapped, true))
+                boolean readCappedStored = _mrtrStoreTerminal(stateId, rec, claim, readCapped, true)
+                _mrtrNoteIfUnstorable(readCapped, readCappedStored)
                 return [outcome: "terminal", result: readCapped, isError: true]
             }
             def capped = [
@@ -3077,8 +3084,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
             capped.mrtr = [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1,
                            startedAt: rec.startedAt]
             _mrtrCleanupRecord(rec)
-            _mrtrNoteIfUnstorable(capped,
-                _mrtrStoreTerminal(stateId, rec, claim, capped, true))
+            boolean cappedStored = _mrtrStoreTerminal(stateId, rec, claim, capped, true)
+            _mrtrNoteIfUnstorable(capped, cappedStored)
             return [outcome: "terminal", result: capped, isError: true]
         }
         Map stored = _mrtrRecordSlice(stateId, rec, claim, result as Map, continuation)
@@ -3274,6 +3281,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
                 MRTR_WORK_ITEMS.remove(claimId)
             }
         }
+        mcpLog("error", "mrtr", "Could not schedule the write worker for ${rec.leafTool}: ${scheduleErr.message}")
         def failure = [
             success: false, isError: true, status: "schedule_failed",
             tool: rec.leafTool,
@@ -3328,13 +3336,13 @@ def runMrtrSlice(Map job = [:]) {
                 rec.leafTool in ["hub_manage_virtual_device", "hub_update_device"]) {
             // Preserve the device tools' validation contract on every replay, including
             // reactive guide hints and the exact error the diagnostics consumer records.
-            _mrtrStoreTerminal(stateId, rec, claim, [__deviceValidation: workerErr.message], true)
+            _mrtrStoreTerminalOrLog(stateId, rec, claim, [__deviceValidation: workerErr.message], rec.leafTool)
             return
         }
         mcpLog("error", "mrtr", "Detached write worker failed for ${rec.leafTool}: ${workerErr.message}")
         def failure = _mrtrFailureWithLedger(rec, rec.leafTool, "Tool error: ${workerErr.message}".toString())
         _mrtrCleanupRecord(rec)
-        _mrtrStoreTerminal(stateId, rec, claim, failure, true)
+        _mrtrStoreTerminalOrLog(stateId, rec, claim, failure, rec.leafTool)
     } finally {
         mrtrWorkerSliceStartedAt = previousWorkerStart
         synchronized (WRITE_RESERVATION_LOCK) {
@@ -3353,10 +3361,6 @@ def runMrtrSlice(Map job = [:]) {
     }
 }
 
-// A checkpointed slice waits for the client's next state-bearing request. The spec lets a
-// client never send one, which would leave the remainder unrun until the record expires,
-// so the server resumes the work itself once a continuing client has had time to. A
-// client request that arrives first claims the generation and this job finds nothing.
 // A capped terminal carries the per-item ledger the caller needs, so a storage failure
 // must not throw it away the way the ordinary terminal path does. Hand the ledger back
 // and say plainly that this requestState cannot replay it.
@@ -3369,6 +3373,10 @@ private void _mrtrNoteIfUnstorable(Map result, boolean stored) {
 
 def _mrtrAutoContinueDelaySeconds() { 5 }
 
+// A checkpointed slice waits for the client's next state-bearing request. The spec lets a
+// client never send one, which would leave the remainder unrun until the record expires,
+// so the server resumes the work itself once a continuing client has had time to. A
+// client request that arrives first claims the generation and this job finds nothing.
 private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
     // Clone and import checkpoints derive their remaining work from the original
     // arguments the client resends, which are not stored; they stay client-driven.
@@ -3383,7 +3391,7 @@ private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
                 [overwrite: false, data: job])
             return
         } catch (Exception scheduleErr) {
-            mcpLog(attempt == 0 ? "warn" : "error", "mrtr",
+            mcpLog("warn", "mrtr",
                 "Could not schedule server-side continuation for ${rec.leafTool} (attempt ${attempt + 1}): ${scheduleErr.message}")
         }
     }
@@ -3395,30 +3403,54 @@ private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
 
 def runMrtrAutoContinue(Map job = [:]) {
     String stateId = job?.stateId?.toString()
-    Integer generation = null
-    try { generation = job?.generation as Integer } catch (Exception ignored) { }
-    if (!stateId || generation == null) return
+    def generationRaw = job?.generation
+    Integer generation = (generationRaw instanceof Number) ? generationRaw.intValue() : null
+    if (!stateId || generation == null) {
+        mcpLog("warn", "mrtr", "Server-side continuation job carried no usable stateId/generation: ${job}")
+        return
+    }
     Map rec
     synchronized (WRITE_RESERVATION_LOCK) {
         def stored = _writeStateMapLocked("mrtrRequests")
         rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
     }
-    // Only an unclaimed record still sitting at the checkpointed generation needs help.
-    if (rec == null || rec.status != "active" || rec.claimId != null ||
-            ((rec.generation ?: 0) as Integer) != generation ||
-            !(rec.nextArguments instanceof Map) ||
-            (rec.expiresAt != null && (rec.expiresAt as Long) <= now())) return
-    Map binding = [outerTool: rec.outerTool?.toString(), leafTool: rec.leafTool?.toString(),
-                   argDigest: rec.argDigest?.toString()]
-    Map claim
-    try {
-        claim = _mrtrClaim(stateId, rec.outerTool, rec.leafTool, binding) as Map
-    } catch (IllegalArgumentException gone) {
+    // Only an unclaimed record still sitting at the checkpointed generation needs help. A
+    // client that claimed or advanced it is the documented no-op; a record that is gone,
+    // expired or has nothing left to run means the remainder will never run, so say so.
+    if (rec == null) {
+        mcpLog("warn", "mrtr", "Server-side continuation found no record for ${stateId}; the checkpoint was swept")
         return
     }
-    if (claim.outcome != "claimed") return
-    rec = claim.record as Map
     String leaf = rec.leafTool?.toString()
+    if (rec.status != "active") {
+        mcpLog("debug", "mrtr", "Server-side continuation of ${leaf} skipped: record is ${rec.status}")
+        return
+    }
+    if (rec.claimId != null || ((rec.generation ?: 0) as Integer) != generation) {
+        mcpLog("debug", "mrtr", "Server-side continuation of ${leaf} skipped: a client request resumed generation ${generation}")
+        return
+    }
+    if (!(rec.nextArguments instanceof Map)) {
+        mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} skipped: the checkpoint holds no next arguments")
+        return
+    }
+    if (rec.expiresAt != null && (rec.expiresAt as Long) <= now()) {
+        mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} skipped: the record expired unresumed at generation ${generation}")
+        return
+    }
+    Map binding = [outerTool: rec.outerTool?.toString(), leafTool: leaf, argDigest: rec.argDigest?.toString()]
+    Map claim
+    try {
+        claim = _mrtrClaim(stateId, rec.outerTool, leaf, binding) as Map
+    } catch (IllegalArgumentException gone) {
+        mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} could not claim its record: ${gone.message}")
+        return
+    }
+    if (claim.outcome != "claimed") {
+        mcpLog("debug", "mrtr", "Server-side continuation of ${leaf} skipped: claim outcome ${claim.outcome}")
+        return
+    }
+    rec = claim.record as Map
     Map executionArgs = _mrtrCopyMap(rec.nextArguments as Map)
     mcpLog("info", "mrtr", "Server-side continuation of ${leaf} at generation ${generation}: no client request resumed it")
     try {
@@ -3430,13 +3462,27 @@ def runMrtrAutoContinue(Map job = [:]) {
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
         _mrtrCommitSlice(stateId, rec, claim, executionArgs, result)
     } catch (IllegalArgumentException e) {
+        // No caller receives this refusal, so the stored terminal is its only channel: an
+        // abandoned record would tell the next client request "expired" and lose the ledger.
         mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} refused: ${e.message}")
-        _mrtrAbandon(stateId, rec, claim, "validation_error")
+        String reason = e.message?.trim() ? e.message : "${leaf} refused the continuation without a reason".toString()
+        def refusal = _mrtrFailureWithLedger(rec, leaf, reason)
+        _mrtrCleanupRecord(rec)
+        _mrtrStoreTerminalOrLog(stateId, rec, claim, refusal, leaf)
     } catch (Exception e) {
         mcpLog("error", "mrtr", "Server-side continuation of ${leaf} failed: ${e.message}")
         def failure = _mrtrFailureWithLedger(rec, leaf, "Tool error: ${e.message}".toString())
         _mrtrCleanupRecord(rec)
-        _mrtrStoreTerminal(stateId, rec, claim, failure, true)
+        _mrtrStoreTerminalOrLog(stateId, rec, claim, failure, leaf)
+    }
+}
+
+// The detached and server-side paths have no caller to hand a failure to; if the record
+// was lost as well, the hub log is the only place the failure can still be found.
+private void _mrtrStoreTerminalOrLog(String stateId, Map rec, Map claim, Map failure, leafTool) {
+    if (!_mrtrStoreTerminal(stateId, rec, claim, failure, true)) {
+        mcpLog("error", "mrtr", "${leafTool} failure could not be stored for its requestState; a continuation " +
+            "will report expiry instead: ${failure.error ?: failure.__deviceValidation}")
     }
 }
 
@@ -3647,27 +3693,53 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
 }
 
 // MCP 2026-07-28 tools/call splits errors in two. Protocol errors are faults in the
-// request structure itself (unknown tool, malformed envelope) and stay JSON-RPC -32602;
-// clients only MAY show those to the model. Tool execution errors, which the spec
-// defines to include input validation, ride in the result as isError: true, because
-// clients SHOULD show those to the model so it can self-correct. Every validation
-// IllegalArgumentException a leaf throws is the second kind.
+// request structure itself and stay JSON-RPC -32602; clients only MAY show those to the
+// model. Tool execution errors, which the spec defines to include input validation, ride
+// in the result as isError: true, because clients SHOULD show those so the model can
+// self-correct. This is the list of thrown IllegalArgumentException messages that are
+// the first kind:
+//   - an unknown tool or gateway, a gateway called from inside a gateway, a gateway
+//     `args` value that is not a JSON object: the CallToolRequest itself is malformed;
+//   - a missing tool name / non-object arguments: same, when the leaf catch sees them;
+//   - the two requestState faults: MRTR server requirement 4 says a server MUST reject
+//     state that fails verification, and a bad or expired state is a malformed
+//     continuation of an earlier request, not input to the tool.
+// Matching is on how each fault message BEGINS, so a leaf refusal that merely mentions
+// a tool name or requestState in its recovery text (the removed-opToken message does)
+// stays a tool result. "Missing required parameter" is deliberately NOT here: a missing
+// tool argument is input validation the model can fix. Envelope faults that never throw
+// (a missing tool name, non-object arguments, resources/read uri) call jsonRpcError
+// directly and never reach this function.
 private boolean _isProtocolValidation(String message) {
     String txt = (message ?: '').toString()
-    return (txt =~ /Unknown tool|Unknown gateway|Cannot call a gateway|Gateway arg|useGateways is OFF|tool name required|tool arguments must be an object|requestState/) as boolean
+    return ["Unknown tool", "Unknown gateway", "Cannot call a gateway", "Gateway arg",
+            "Invalid or expired requestState", "requestState does not match"].any { txt.startsWith(it) }
 }
 
-private def _renderValidationError(id, toolName, reactiveToolName, args, String detail, boolean rejoined = false) {
+private def _renderValidationError(id, toolName, reactiveToolName, args, String detail,
+                                   boolean rejoined = false, Map rec = null) {
     if (_isProtocolValidation(detail)) {
         return jsonRpcError(id, -32602, "Invalid params: ${detail}")
     }
-    // The guide pointer rides inside the error text, as it did on the -32602 message.
+    // The guide pointer rides inside the error text. The legacy dispatcher appended it to
+    // its -32602 message; the MRTR catch never did, so continuation writes gain it here.
     // A throw with no message gets neither a hint nor a literal "null": there is nothing
-    // for the model to act on, and the old -32602 path appended no hint either.
-    String text = detail?.trim() ? detail : "${reactiveToolName} rejected the call without a reason"
-    def hint = detail?.trim() ? _reactiveBpsWarning(reactiveToolName, args, detail) : null
+    // for the model to act on. A hint failure must never mask the genuine refusal.
+    boolean hasDetail = detail?.trim() as boolean
+    String text = hasDetail ? detail : "${reactiveToolName} rejected the call without a reason"
+    def hint = null
+    if (hasDetail) {
+        try { hint = _reactiveBpsWarning(reactiveToolName, args, detail) }
+        catch (Exception bpErr) {
+            mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null,
+                [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
+        }
+    }
     def failure = [success: false, isError: true, tool: reactiveToolName,
                    error: hint ? "${text} ${hint}".toString() : text, __validation: true]
+    // A refusal on a later slice sits on top of committed work; hand that ledger back
+    // exactly as a runtime failure would, so the caller does not repeat the whole batch.
+    _mrtrAttachLedger(failure, rec)
     return _renderToolResult(id, toolName, reactiveToolName, args,
         _mrtrMarkRejoined(failure, rejoined), true)
 }
@@ -4804,9 +4876,10 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     // only the {tool,args} envelope on tools/list, not each sub-tool's inputSchema --
     // fixes everything in one retry instead of discovering params one-at-a-time. This is
     // ADDITIVE: it surfaces schema the gateway defers to the catalog, never filters a
-    // response. It THROWS IllegalArgumentException (-> isError validation result) rather than returning an
-    // isError envelope, so a missing-param error has the SAME shape gateway and flat
-    // (issue #319: the flat handler validation also throws -> isError validation result). The pre-check
+    // response. It THROWS IllegalArgumentException rather than hand-building a result, so
+    // the refusal renders through _renderValidationError like every other leaf validation:
+    // same success/tool/error shape, same reactive guide pointer, and the SAME shape for a
+    // gateway call and a flat call of the same tool (issue #319). The pre-check
     // fires only on an ABSENT key, so a present-but-invalid value (e.g. confirm:false)
     // still reaches the handler's own richer runtime message in both modes.
     def safeArgs = toolArgs ?: [:]
@@ -4859,8 +4932,8 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
                 hint
             }.join("\n")
             def paramWord = (missing.size() == 1) ? "parameter" : "parameters"
-            // Throw (-> the shared validation result) rather than return an isError envelope, so gateway and
-            // flat give the SAME error shape for the same mistake (issue #319). The full
+            // Throw rather than hand-build a result: _renderValidationError gives the gateway
+            // and flat calls the SAME error shape for the same mistake (issue #319). The full
             // all-params list rides in the message -- no content is lost vs the old
             // structured `parameters` field.
             throw new IllegalArgumentException(
@@ -5023,7 +5096,9 @@ def getToolDefinitions() {
             )
         }
         // Flat-mode tools/list is the size-constrained path -- drop content inside
-        // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
+        // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap. The
+        // same cap is why the client-error hint is not appended to flat leaf descriptions:
+        // it rides in the server instructions here, while gateway mode carries it inline.
         def transformed = applyDescriptionTransform(filtered, true)
         return transformed.collect { tool ->
             def base = tool
@@ -5041,8 +5116,6 @@ def getToolDefinitions() {
                 def flatTool = applyDescriptionTransform([_setRuleFlatTool()], true)[0]
                 base = base + [description: flatTool.description, inputSchema: flatTool.inputSchema]
             }
-            // The flat catalog sits at the hub's 124,000-byte cap, so the client-error hint
-            // rides in the server instructions there; gateway mode has room to carry it inline.
             base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
         }
     }
@@ -5106,7 +5179,7 @@ def getToolDefinitions() {
 }
 
 private Map _withMrtrClientErrorHint(Map tool) {
-    return tool + [description: "${tool.description}\n\n${_mrtrClientErrorHint()}".toString()]
+    return tool + [description: "${tool.description ?: ''}\n\n${_mrtrClientErrorHint()}".toString()]
 }
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)

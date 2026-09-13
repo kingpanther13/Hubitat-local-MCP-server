@@ -352,17 +352,30 @@ def test_validation_log_expectation_strips_only_the_exact_legacy_reactive_hint()
 
 
 def test_tool_validation_log_expectation_reads_the_iserror_validation_shape():
-    params = {"name": "hub_manage_devices",
-              "arguments": {"tool": "hub_update_device", "args": {"deviceId": "42"}}}
     reason = "Unknown preference 'probe'"
     hint = (' See hub_get_tool_guide(section="update_device") for '
             "hub_update_device's reference and best practices.")
     payload = json.dumps({"success": False, "isError": True,
                           "tool": "hub_update_device", "error": f"{reason}{hint}"})
 
-    assert et._tool_validation_log_expectation(params, payload) == (
+    assert et._tool_validation_log_expectation(payload) == (
         f"Validation error in hub_update_device: {reason}"
     )
+
+
+def test_tool_failure_log_expectation_names_the_leaf_of_a_gateway_call():
+    # The hub logs "Tool <leaf> returned a failure result"; the gateway name never appears.
+    payload = {"success": False, "error": "boom"}
+    args = {"tool": "hub_update_device", "args": {"deviceId": "42"}}
+    assert et._tool_failure_log_expectation("hub_manage_devices", payload, args) == (
+        "Tool hub_update_device returned a failure result")
+    # The result's own tool field wins when present.
+    assert et._tool_failure_log_expectation("hub_manage_devices",
+                                            {**payload, "tool": "hub_delete_device"}, args) == (
+        "Tool hub_delete_device returned a failure result")
+    # A flat call has no gateway argument to resolve through.
+    assert et._tool_failure_log_expectation("hub_update_device", payload, {"deviceId": "42"}) == (
+        "Tool hub_update_device returned a failure result")
 
 
 @pytest.mark.parametrize(("payload", "expected"), [
@@ -382,12 +395,16 @@ def test_tool_failure_log_expectation_matches_the_failure_result_line(payload, e
     json.dumps({"success": True, "deviceId": "42"}),
     json.dumps({"isError": True, "error": "no tool key"}),
     json.dumps({"isError": True, "tool": "hub_update_device"}),
+    # The MRTR runtime-failure shape: isError/tool/error too, but not a validation refusal.
+    json.dumps({"success": False, "isError": True, "tool": "hub_call_rule",
+                "error": "Tool error: boom", "aggregate": {"kind": "call_rule"}}),
+    json.dumps({"success": False, "isError": True, "tool": "hub_call_rule",
+                "error": "Tool error: boom"}),
     "not json at all",
     "",
 ])
 def test_tool_validation_log_expectation_ignores_everything_else(payload):
-    params = {"name": "hub_update_device", "arguments": {"deviceId": "42"}}
-    assert et._tool_validation_log_expectation(params, payload) is None
+    assert et._tool_validation_log_expectation(payload) is None
 
 
 @pytest.mark.parametrize(

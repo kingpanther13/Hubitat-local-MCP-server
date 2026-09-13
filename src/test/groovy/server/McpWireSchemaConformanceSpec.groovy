@@ -527,4 +527,23 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         McpSchemaValidator.legacyStrictErrors('EmptyResult', 'Result', regressed)
             .any { it.contains('resultType') }
     }
+
+
+    def "a modern validation refusal conforms to CallToolResult as an isError result"() {
+        // Input validation is a tool execution error in 2026-07-28: it rides the result with
+        // isError: true and must carry the modern resultType like every other result.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 8, method: 'tools/call', params: [name: 'hub_get_room', arguments: [:]]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call', 'Mcp-Name': 'hub_get_room'])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        response.result.resultType == 'complete'
+        response.result.content[0].type == 'text'
+
+        and:
+        McpSchemaValidator.modernErrors('CallToolResult', response.result) == []
+    }
 }

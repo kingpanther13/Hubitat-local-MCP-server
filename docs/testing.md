@@ -145,7 +145,7 @@ Two distinct production paths produce different envelope shapes — assert the r
   mcpDriver.parseInner(response).error.startsWith('Device not found')
   ```
 
-  A **protocol** fault still uses `response.error.code == -32602`: unknown tool or gateway, a malformed `tools/call` envelope, or a bad `requestState`. `_isProtocolValidation` in `hubitat-mcp-server.groovy` is the single list.
+  A **protocol** fault still uses `response.error.code == -32602`: unknown tool or gateway, a malformed `tools/call` envelope, or a bad `requestState`. `_isProtocolValidation` in `hubitat-mcp-server.groovy` is the single list of thrown leaf messages; envelope faults that never throw call `jsonRpcError` directly.
 
 - **Generic `Exception` from a tool → success envelope with `isError: true`.** Per the MCP spec, tool *execution* errors stay in the success channel so clients can present them as tool output:
 

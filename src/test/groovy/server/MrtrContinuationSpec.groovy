@@ -3114,6 +3114,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         duplicateInner.rejoined == true
         duplicateInner.success == true
 
+        and: 'the marker is on the duplicate\'s copy only: the owner and the retained terminal stay unmarked'
+        mcpDriver.parseInner(winner.get()).rejoined == null
+        ((atomicStateMap.mrtrRequests as Map).values().first() as Map).terminalResult.rejoined == null
+
         cleanup:
         release.countDown()
         first?.join(5000)
@@ -3352,5 +3356,200 @@ class MrtrContinuationSpec extends ToolSpecBase {
         (script._mrtrReadTools() as Set).every { (script.getReadOnlyToolNames() as Set).contains(it) }
         (script._mrtrReadTools() as Set).every { (script._budgetAwareTools() as Set).contains(it) }
         (script._mrtrReadTools() as Set).intersect(script._mrtrWriteTools() as Set).isEmpty()
+    }
+
+
+    /** First call pauses with a remainder; the second throws whatever the caller hands in. */
+    private Closure pauseThenThrow(Throwable failure) {
+        int calls = 0
+        return { Map a ->
+            if (++calls == 1) {
+                return [success: false, partial: true, ruleIds: a.ruleId,
+                        results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+            }
+            throw failure
+        }
+    }
+
+    def "a first slice whose record vanishes before commit reports its real result, not a failure"() {
+        given: 'a multi-rule write whose leaf sweeps the durable record while it runs'
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = { Map a ->
+            atomicStateMap.mrtrRequests = [:]
+            script._writeStateCacheInvalidate()
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
+
+        when:
+        def response = modernCall('hub_call_rule', [ruleId: [61, 62], action: 'stop'])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'the slice outcome comes back with the loss stated, instead of a generic failure'
+        response.error == null
+        response.result.resultType == 'complete'
+        response.result.isError != true
+        inner.results*.ruleId == [61]
+        inner.note.contains('continuation record was lost')
+        !inner.containsKey('rejoined')
+        !(inner.error?.toString()?.startsWith('Tool error'))
+    }
+
+    def "a validation refusal on a later slice hands back the committed ledger"() {
+        given:
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = pauseThenThrow(new IllegalArgumentException('Rule 72 is locked by another editor'))
+        def args = [ruleId: [71, 72], action: 'stop']
+        String stateId = modernCall('hub_call_rule', args).result.requestState
+
+        when:
+        def response = modernCall('hub_call_rule', args, stateId)
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'the refusal is a validation result that still carries what already committed'
+        response.error == null
+        response.result.isError == true
+        inner.error.contains('Rule 72 is locked')
+        inner.aggregate.results*.ruleId == [71]
+        inner.note.contains('Do not repeat the whole operation')
+        (atomicStateMap.mrtrRequests as Map)[stateId].status == 'abandoned'
+    }
+
+    def "a runtime failure on a later request-path slice hands back the committed ledger"() {
+        given:
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = pauseThenThrow(new RuntimeException('hub timed out'))
+        def args = [ruleId: [75, 76], action: 'stop']
+        String stateId = modernCall('hub_call_rule', args).result.requestState
+
+        when:
+        def response = modernCall('hub_call_rule', args, stateId)
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        response.result.isError == true
+        inner.error.contains('Tool error: hub timed out')
+        inner.aggregate.results*.ruleId == [75]
+        inner.note.contains('Do not repeat the whole operation')
+    }
+
+    def "a server-side continuation the leaf refuses stores the refusal with its ledger for the client"() {
+        given:
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = pauseThenThrow(new IllegalArgumentException('Rule 74 is locked by another editor'))
+        def args = [ruleId: [73, 74], action: 'stop']
+        String stateId = modernCall('hub_call_rule', args).result.requestState
+        Map job = new LinkedHashMap(autoContinueJobs()[0][2].data as Map)
+
+        when: 'nobody has a request in flight, so the stored terminal is the only channel'
+        script.runMrtrAutoContinue(job)
+        def stored = new LinkedHashMap((atomicStateMap.mrtrRequests as Map)[stateId] as Map)
+        def replay = modernCall('hub_call_rule', args, stateId)
+        def inner = mcpDriver.parseInner(replay)
+
+        then:
+        stored.status == 'terminal'
+        stored.terminalIsError == true
+        replay.error == null
+        replay.result.isError == true
+        inner.error.contains('Rule 74 is locked')
+        inner.aggregate.results*.ruleId == [73]
+        inner.note.contains('Do not repeat the whole operation')
+    }
+
+    def "a server-side continuation that fails at runtime stores the failure with its ledger"() {
+        given:
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = pauseThenThrow(new RuntimeException('hub timed out'))
+        def args = [ruleId: [77, 78], action: 'stop']
+        String stateId = modernCall('hub_call_rule', args).result.requestState
+        Map job = new LinkedHashMap(autoContinueJobs()[0][2].data as Map)
+
+        when:
+        script.runMrtrAutoContinue(job)
+        def replay = modernCall('hub_call_rule', args, stateId)
+        def inner = mcpDriver.parseInner(replay)
+
+        then:
+        (atomicStateMap.mrtrRequests as Map)[stateId].status == 'terminal'
+        replay.result.isError == true
+        inner.error.contains('Tool error: hub timed out')
+        inner.aggregate.results*.ruleId == [77]
+        inner.note.contains('Do not repeat the whole operation')
+    }
+
+    def "a stale server-side continuation job does not run a slice the client has already advanced past"() {
+        given: 'a three-rule write paused at generation 1, then resumed by the client to generation 2'
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
+        def args = [ruleId: [51, 52, 53], action: 'stop']
+        String stateId = modernCall('hub_call_rule', args).result.requestState
+        Map staleJob = new LinkedHashMap(autoContinueJobs()[0][2].data as Map)
+        def second = modernCall('hub_call_rule', args, stateId)
+        int ranAfter = 0
+        Closure pausing = pausingMultiRuleWrite()
+        script.metaClass.toolRunRmRule = { Map a -> ranAfter++; pausing(a) }
+
+        when: 'the generation-1 job fires late'
+        script.runMrtrAutoContinue(staleJob)
+
+        then: 'it runs nothing: the record is at generation 2 and a stale job may not claim it'
+        second.result.resultType == 'input_required'
+        ranAfter == 0
+        (atomicStateMap.mrtrRequests as Map)[stateId].status == 'active'
+        autoContinueJobs().size() == 2
+
+        when: 'the generation-2 job is the one entitled to resume'
+        script.runMrtrAutoContinue(new LinkedHashMap(autoContinueJobs()[1][2].data as Map))
+
+        then:
+        ranAfter == 1
+    }
+
+    def "a gateway whose continuation writes are all hidden advertises no client-error hint"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        Set writeLeaves = script._mrtrWriteTools() as Set
+        List gatewayWrites = ((script.getGatewayConfig() as Map)['hub_manage_devices'].tools as List)
+            .findAll { writeLeaves.contains(it) }
+        script.metaClass.getHiddenToolNames = { -> gatewayWrites as Set }
+        String hint = script._mrtrClientErrorHint() as String
+
+        when:
+        def byName = (script.getToolDefinitions() as List).collectEntries { [(it.name): it] }
+        def gateway = byName['hub_manage_devices']
+
+        then: 'the gateway is still advertised for its reads but exposes no write surface to hint about'
+        !gatewayWrites.isEmpty()
+        gateway != null
+        !(gateway.inputSchema.properties.tool.enum as List).any { writeLeaves.contains(it) }
+        !(gateway.description as String).contains(hint)
+    }
+
+    def "a capped slow read that cannot be stored says it is not replayable"() {
+        given: 'a slow read one slice below the cap whose record vanishes before storage'
+        settingsMap.enableRead = true
+        Map claim = [claimId: 'read-cap-unstorable', generation: 1]
+        Map rec = [status: 'active', claimId: 'read-cap-unstorable', claimedGeneration: 1, generation: 1,
+                   rounds: script._mrtrMaxContinuationSlices() - 1,
+                   outerTool: 'hub_get_jobs', leafTool: 'hub_get_jobs',
+                   startedAt: script.now(), expiresAt: script.now() + 60000L]
+        atomicStateMap.mrtrRequests = ['read-cap-unstorable': rec]
+        script._writeStateCacheInvalidate()
+        // Same technique as the write cap: the durable record is gone before the cap stores it.
+        atomicStateMap.mrtrRequests = [:]
+        script._writeStateCacheInvalidate()
+
+        when:
+        def outcome = script._mrtrCommitSlice('read-cap-unstorable', rec, claim, [:],
+            [status: 'in_progress', tool: 'hub_get_jobs'])
+
+        then: 'the timeout still comes back, and the caller is told the state will not replay it'
+        outcome.outcome == 'terminal'
+        outcome.result.status == 'slow_read_timeout'
+        outcome.result.note.contains('could not be retained for replay')
     }
 }

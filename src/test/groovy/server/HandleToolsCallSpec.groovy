@@ -58,9 +58,13 @@ class HandleToolsCallSpec extends ToolSpecBase {
             [name: 'legacyTokenVar', type: 'String', value: 'x', confirm: true, opToken: 'tok-12345678'])
 
         then: 'silence would cost the client its duplicate-commit protection unnoticed'
-        response.error.code == -32602
-        response.error.message.contains('opToken was removed')
-        response.error.message.contains('requestState')
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.error.contains('opToken was removed')
+        // A caller-supplied removed argument is input validation, so it rides the result the
+        // client SHOULD show the model -- even though its recovery text mentions requestState.
+        inner.error.contains('requestState')
 
         and: 'the refusal fired before any side effect -- the write never ran'
         ran == 0
@@ -281,5 +285,48 @@ class HandleToolsCallSpec extends ToolSpecBase {
         decoded.id == 5
         decoded.result.content[0].type == 'text'
         new groovy.json.JsonSlurper().parseText(decoded.result.content[0].text).rooms*.name == ['Den']
+    }
+
+
+    def "a gateway missing-required-param refusal reaches the client as an isError validation result, same shape as flat (#319)"() {
+        // 2026-07-28 classes input validation as a tool execution error: it rides the result
+        // with isError: true so the client SHOULD show it to the model. Both dispatch paths
+        // for the same mistake must land on that channel with the same inner shape.
+        given:
+        settingsMap.enableRead = true
+
+        when: 'gateway mode: the pre-check throws for the missing room'
+        settingsMap.useGateways = true
+        def gw = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_get_room', args: [:]])
+        def gwInner = mcpDriver.parseInner(gw)
+
+        and: 'flat mode: the leaf handler throws its own message'
+        settingsMap.useGateways = false
+        def flat = mcpDriver.callTool('hub_get_room', [:])
+        def flatInner = mcpDriver.parseInner(flat)
+
+        then: 'both are results, never JSON-RPC errors'
+        gw.error == null
+        gw.result.isError == true
+        flat.error == null
+        flat.result.isError == true
+
+        and: 'the gateway text lists the parameters; both name the leaf'
+        gwInner.success == false
+        gwInner.tool == 'hub_get_room'
+        gwInner.error.contains('Missing required parameter for hub_get_room:')
+        gwInner.error.contains('room')
+        flatInner.success == false
+        flatInner.tool == 'hub_get_room'
+        flatInner.error.contains('room')
+
+        and: 'the internal validation marker never reaches the wire'
+        !gwInner.containsKey('__validation')
+        !flatInner.containsKey('__validation')
+
+        and: 'each refusal logs exactly one validation line and no duplicate failure line'
+        def entries = script.getDebugLogEntries()
+        entries.count { it.message?.toString()?.startsWith('Validation error in hub_get_room') } == 2
+        !entries.any { it.message?.toString()?.contains('returned a failure result') }
     }
 }

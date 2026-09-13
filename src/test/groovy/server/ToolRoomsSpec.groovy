@@ -519,8 +519,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         //
         // Vehicle: the flat-mode gateway-name refusal, a genuine RETURNED isError. (The old
         // vehicle -- the gateway missing-required-param pre-check -- is no longer a returner:
-        // issue #319 made it THROW -> -32602 for shape parity with flat dispatch, so it is now
-        // covered by the -32602 assertions in HandleGatewaySpec instead.)
+        // issue #319 made it THROW for shape parity with flat dispatch; it now renders as an
+        // isError validation result and is covered by the dispatch assertions in HandleGatewaySpec.)
         given: 'flat mode: a gateway-NAME call returns the "useGateways is OFF" isError envelope'
         settingsMap.useGateways = false
 
