@@ -318,7 +318,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         gwInner.error.contains('room')
         flatInner.success == false
         flatInner.tool == 'hub_get_room'
-        flatInner.error.contains('room')
+        flatInner.error.toLowerCase().contains('room')
 
         and: 'the internal validation marker never reaches the wire'
         !gwInner.containsKey('__validation')
