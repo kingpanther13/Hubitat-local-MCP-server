@@ -365,6 +365,17 @@ def test_tool_validation_log_expectation_reads_the_iserror_validation_shape():
     )
 
 
+@pytest.mark.parametrize(("payload", "expected"), [
+    ({"success": False, "error": "the hub refused the write"}, "Tool hub_update_device returned a failure result"),
+    ({"isError": True, "error": "worker failed", "tool": "hub_update_device"}, "Tool hub_update_device returned a failure result"),
+    ({"success": True, "deviceId": "42"}, None),
+    ({"partial": True}, None),
+    ("not a dict", None),
+])
+def test_tool_failure_log_expectation_matches_the_failure_result_line(payload, expected):
+    assert et._tool_failure_log_expectation("hub_update_device", payload) == expected
+
+
 @pytest.mark.parametrize("payload", [
     # A runtime failure logs a different line and must not consume a validation slot.
     json.dumps({"success": False, "error": "the hub refused the write"}),

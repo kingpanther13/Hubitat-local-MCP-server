@@ -292,6 +292,22 @@ def _tool_validation_log_expectation(params: dict | None, content_text: str) -> 
     return f"Validation error in {tool_name}: {legacy_hint.sub('', reason)}"
 
 
+def _tool_failure_log_expectation(tool_name: str, payload: Any) -> str | None:
+    """Return the native-log line a runtime failure result produces, if this is one.
+
+    _renderToolResult logs one "Tool <tool> returned a failure result" line for a result
+    carrying isError: true or success: false that is NOT a validation refusal (those log
+    "Validation error in <tool>" and are accounted for separately). Intentional negative
+    tests produce these by the dozen; without this the ledger check reported every one as
+    an unexplained hub error, which buried any real one.
+    """
+    if not isinstance(tool_name, str) or not tool_name or not isinstance(payload, dict):
+        return None
+    if payload.get("isError") is not True and payload.get("success") is not False:
+        return None
+    return f"Tool {tool_name} returned a failure result"
+
+
 def _decode_mcp1_envelope(raw_message: str) -> dict | None:
     """Decode only a complete MCP envelope at a native log prefix boundary."""
     marker = "[MCP1] "
@@ -965,6 +981,11 @@ class HubitatMcpClient:
                 if c.get("type") == "text":
                     content_text = c["text"]
             expectation = _tool_validation_log_expectation(params, content_text)
+            if expectation is None:
+                try:
+                    expectation = _tool_failure_log_expectation(name, json.loads(content_text))
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    expectation = None
             if expectation is not None:
                 self._expected_validation_logs.append(expectation)
             raise McpToolError(name, content_text)
@@ -976,6 +997,10 @@ class HubitatMcpClient:
                     parsed = json.loads(c["text"])
                 except (json.JSONDecodeError, TypeError):
                     return c["text"]
+                # A success:false result is logged hub-side as a failure result too.
+                expectation = _tool_failure_log_expectation(name, parsed)
+                if expectation is not None:
+                    self._expected_validation_logs.append(expectation)
                 # Bank the token of every op that answered, so recovery can never mistake
                 # an earlier op's row for the lost one.
                 return parsed
