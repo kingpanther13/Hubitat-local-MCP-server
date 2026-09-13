@@ -3325,6 +3325,28 @@ class MrtrContinuationSpec extends ToolSpecBase {
         RUN_IN_OVERRIDE.set(null)
     }
 
+    def "a paused slow read schedules no server-side continuation"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 3)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def args = [cursor: '']
+
+        when: 'the fetch is still pending, so the read pauses with a checkpoint'
+        def first = modernCall('hub_get_jobs', args)
+        def paused = modernCall('hub_get_jobs', args, first.result.requestState as String)
+
+        then: 'the read waits for its own background fetch, not for a resumption job'
+        paused.result.resultType == 'input_required'
+        autoContinueJobs().isEmpty()
+        runInMillisCalls.count { it[1] == 'runLogsJsonFetch' } == 1
+    }
+
     def "every continuation-eligible read is a canonical read-only tool"() {
         expect:
         (script._mrtrReadTools() as Set).every { (script.getReadOnlyToolNames() as Set).contains(it) }

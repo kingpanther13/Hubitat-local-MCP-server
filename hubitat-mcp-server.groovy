@@ -1694,7 +1694,7 @@ def handleToolsCall(msg) {
                 return jsonRpcResult(msg.id, _mrtrPendingResult(stateId, rejoined))
             }
             return _renderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
-                scheduled.failure, true)
+                _mrtrMarkRejoined(scheduled.failure, rejoined), true)
         }
         sliceResult = _mrtrExecuteSlice(stateId, rec, executionArgs)
         Map completion = _mrtrCommitSlice(stateId, rec, claim, executionArgs, sliceResult)
@@ -3085,7 +3085,13 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         if (stored == null) {
             throw new IllegalStateException("requestState ownership was lost before its continuation checkpoint could be stored")
         }
-        _mrtrScheduleAutoContinue(stateId, stored)
+        // Writes only, matching the slow_ops contract: a slow read's background fetch already
+        // runs on its own schedule, and resuming it here would re-enter the read for no gain.
+        // hub_delete_debug_logs uses the slow_read continuation kind but is a write, so gate on
+        // the tool set rather than the kind.
+        if (_mrtrWriteTools().contains(stored.leafTool?.toString())) {
+            _mrtrScheduleAutoContinue(stateId, stored)
+        }
         return [outcome: "continued"]
     }
 
