@@ -856,8 +856,8 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         // LogWrapper.error(String) doesn't accept — triggered MissingMethodException
         // cascade and produced a generic "An unexpected error occurred" response,
         // hiding the real exception's message. Two failure modes locked in here:
-        //   (1) gate exception is IllegalArgumentException (routes through -32602, not
-        //       the broad catch that hosted the cascade), AND
+        //   (1) gate exception is IllegalArgumentException (routes through the validation
+        //       channel, not the broad catch that hosted the cascade), AND
         //   (2) IF anything ever does fall into the broad catch, the log.error call is
         //       single-string form so no MissingMethodException re-emerges.
         // This spec exercises (1) directly via handleToolsCall. (2) is locked in by
@@ -878,9 +878,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = script.handleToolsCall(msg)
+        def response = mcpDriver.decodeToolCallResponse(script.handleToolsCall(msg))
 
-        then: 'JSON-RPC error envelope, NOT generic "An unexpected error occurred"'
+        then: 'a validation result envelope, NOT generic "An unexpected error occurred"'
         response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Developer Mode tools are disabled')

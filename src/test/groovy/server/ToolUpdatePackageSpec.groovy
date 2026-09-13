@@ -156,8 +156,9 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_update_package', [ref: 'main', dryRun: true])
 
         then:
-        response.error != null
-        response.result == null
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Developer Mode tools are disabled')
     }
 
     // -------- arg validation --------

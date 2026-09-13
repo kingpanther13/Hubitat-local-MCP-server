@@ -242,7 +242,9 @@ class HealthMrtrSpec extends ToolSpecBase {
 
         then:
         changed.error.code == -32602
-        lost.error.code == -32602
+        lost.error == null
+        lost.result.isError == true
+        mcpDriver.parseInner(lost).error.contains('snapshot expired or was lost')
         hubGet.calls.empty
     }
 }
