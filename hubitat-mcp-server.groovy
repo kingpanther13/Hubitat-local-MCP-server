@@ -2985,7 +2985,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                         "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
                 ]
-                _mrtrStoreTerminal(stateId, rec, claim, readCapped, true)
+                _mrtrNoteIfUnstorable(readCapped,
+                    _mrtrStoreTerminal(stateId, rec, claim, readCapped, true))
                 return [outcome: "terminal", result: readCapped, isError: true]
             }
             def capped = [
@@ -3076,7 +3077,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
             capped.mrtr = [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1,
                            startedAt: rec.startedAt]
             _mrtrCleanupRecord(rec)
-            _mrtrStoreTerminal(stateId, rec, claim, capped, true)
+            _mrtrNoteIfUnstorable(capped,
+                _mrtrStoreTerminal(stateId, rec, claim, capped, true))
             return [outcome: "terminal", result: capped, isError: true]
         }
         Map stored = _mrtrRecordSlice(stateId, rec, claim, result as Map, continuation)
@@ -3349,18 +3351,40 @@ def runMrtrSlice(Map job = [:]) {
 // client never send one, which would leave the remainder unrun until the record expires,
 // so the server resumes the work itself once a continuing client has had time to. A
 // client request that arrives first claims the generation and this job finds nothing.
+// A capped terminal carries the per-item ledger the caller needs, so a storage failure
+// must not throw it away the way the ordinary terminal path does. Hand the ledger back
+// and say plainly that this requestState cannot replay it.
+private void _mrtrNoteIfUnstorable(Map result, boolean stored) {
+    if (stored) return
+    result.note = ((result.note ? result.note + " " : "") +
+        "This result could not be retained for replay -- its continuation record was lost, " +
+        "so repeating the requestState returns an expired-state error rather than this outcome.").toString()
+}
+
 def _mrtrAutoContinueDelaySeconds() { 5 }
 
 private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
     // Clone and import checkpoints derive their remaining work from the original
     // arguments the client resends, which are not stored; they stay client-driven.
     if (!(rec?.nextArguments instanceof Map)) return
-    try {
-        runIn(_mrtrAutoContinueDelaySeconds(), "runMrtrAutoContinue",
-            [overwrite: false, data: [stateId: stateId, generation: rec.generation]])
-    } catch (Exception scheduleErr) {
-        mcpLog("warn", "mrtr", "Could not schedule server-side continuation for ${rec.leafTool}: ${scheduleErr.message}")
+    // runMrtrAutoContinue is a no-op unless the record is still unclaimed at this exact
+    // generation, so a duplicate schedule is harmless -- which makes one bounded retry the
+    // cheapest way to keep the promise that the server resumes an unresumed checkpoint.
+    Map job = [stateId: stateId, generation: rec.generation]
+    for (int attempt = 0; attempt < 2; attempt++) {
+        try {
+            runIn(_mrtrAutoContinueDelaySeconds() * (attempt + 1), "runMrtrAutoContinue",
+                [overwrite: false, data: job])
+            return
+        } catch (Exception scheduleErr) {
+            mcpLog(attempt == 0 ? "warn" : "error", "mrtr",
+                "Could not schedule server-side continuation for ${rec.leafTool} (attempt ${attempt + 1}): ${scheduleErr.message}")
+        }
     }
+    // Both attempts failed: the record stays active and a client continuation can still
+    // resume it, but nothing on the hub will now do it unprompted.
+    mcpLog("error", "mrtr",
+        "Server-side continuation of ${rec.leafTool} is not scheduled; the checkpoint waits for a client requestState until it expires")
 }
 
 def runMrtrAutoContinue(Map job = [:]) {

@@ -3274,6 +3274,54 @@ class MrtrContinuationSpec extends ToolSpecBase {
             'Unknown tool: nope', true).error.code == -32602
     }
 
+    def "a capped terminal that cannot be stored says it is not replayable"() {
+        given: 'a bulk edit one slice below the cap whose record vanishes before storage'
+        settingsMap.enableWrite = true
+        Map claim = [claimId: 'cap-unstorable', generation: 1]
+        Map rec = [status: 'active', claimId: 'cap-unstorable', claimedGeneration: 1, generation: 1,
+                   rounds: script._mrtrMaxContinuationSlices() - 1,
+                   outerTool: 'hub_manage_rule_machine', leafTool: 'hub_call_rule',
+                   startedAt: script.now(), expiresAt: script.now() + 60000L,
+                   aggregate: [kind: 'call_rule', results: [[ruleId: 11, success: true]], ruleIds: [11]]]
+        atomicStateMap.mrtrRequests = ['cap-unstorable': rec]
+        script._writeStateCacheInvalidate()
+        // The record is gone by the time the cap tries to retain its outcome.
+        script.metaClass._mrtrStoreTerminal = { String sid, Map r, Map c, res, boolean isErr -> false }
+        Map execArgs = [tool: 'hub_call_rule', args: [ruleId: [13, 14], action: 'stop']]
+        Map slice = [success: true, ruleIds: [13, 14], results: [[ruleId: 13, success: true]],
+                     remainingRuleIds: [14], partial: true]
+
+        when:
+        def outcome = script._mrtrCommitSlice('cap-unstorable', rec, claim, execArgs, slice)
+
+        then: 'the ledger still comes back, and the caller is told the state will not replay it'
+        outcome.outcome == 'terminal'
+        outcome.result.status == 'continuation_limit'
+        outcome.result.results*.ruleId.collect { it.toString() } == ['11', '13']
+        outcome.result.note.contains('could not be retained for replay')
+    }
+
+    def "a failed auto-continue schedule retries once before giving up"() {
+        given:
+        settingsMap.enableWrite = true
+        def attempts = []
+        RUN_IN_OVERRIDE.set({ List call -> attempts << call; throw new IllegalStateException('scheduler saturated') })
+
+        when:
+        script._mrtrScheduleAutoContinue('mrtr-sched-retry-0001',
+            [leafTool: 'hub_set_rule', generation: 2, nextArguments: [appId: 1, confirm: true]])
+
+        then: 'two bounded attempts at increasing delays, then it stops'
+        attempts.size() == 2
+        attempts*.getAt(1) == ['runMrtrAutoContinue', 'runMrtrAutoContinue']
+        attempts[0][0] == script._mrtrAutoContinueDelaySeconds()
+        attempts[1][0] == script._mrtrAutoContinueDelaySeconds() * 2
+        attempts.every { it[2].data == [stateId: 'mrtr-sched-retry-0001', generation: 2] }
+
+        cleanup:
+        RUN_IN_OVERRIDE.set(null)
+    }
+
     def "every continuation-eligible read is a canonical read-only tool"() {
         expect:
         (script._mrtrReadTools() as Set).every { (script.getReadOnlyToolNames() as Set).contains(it) }
