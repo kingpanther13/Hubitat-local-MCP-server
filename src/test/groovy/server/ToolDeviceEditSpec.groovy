@@ -1206,7 +1206,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: hub_create_device rejects missing confirm with -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: hub_create_device rejects missing confirm with isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -1214,8 +1214,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_device', [deviceTypeId: '500'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('confirm=true is required') || response.error.message.contains('confirm')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('confirm=true is required') || mcpDriver.parseInner(response).error.contains('confirm')
 
         where:
         useGateways << [true, false]
@@ -1231,8 +1231,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_device', [deviceTypeId: '500', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -1411,8 +1412,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_compatible_devices', [brand: 'aeotec'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]

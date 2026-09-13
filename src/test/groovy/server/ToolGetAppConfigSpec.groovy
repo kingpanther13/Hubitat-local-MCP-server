@@ -121,7 +121,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -130,8 +130,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -156,7 +157,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns isError validation result envelope when appId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -165,8 +166,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_app_config', [:])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('appid is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('appid is required')
 
         where:
         useGateways << [true, false]
@@ -185,7 +186,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns -32602 envelope when appId is blank (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns isError validation result envelope when appId is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -194,8 +195,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_app_config', [appId: '   '])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('appid is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('appid is required')
 
         where:
         useGateways << [true, false]
@@ -217,7 +218,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns -32602 envelope when appId is non-numeric (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns isError validation result envelope when appId is non-numeric (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -226,8 +227,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 'not-a-number'])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('numeric')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('numeric')
 
         where:
         useGateways << [true, false]
@@ -246,7 +247,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns -32602 envelope when pageName contains a path separator (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns isError validation result envelope when pageName contains a path separator (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -255,8 +256,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, pageName: '../etc/passwd'])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('pagename')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('pagename')
 
         where:
         useGateways << [true, false]
@@ -275,7 +276,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns -32602 envelope when pageName contains a space (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns isError validation result envelope when pageName contains a space (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -284,8 +285,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, pageName: 'page name'])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('pagename')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('pagename')
 
         where:
         useGateways << [true, false]

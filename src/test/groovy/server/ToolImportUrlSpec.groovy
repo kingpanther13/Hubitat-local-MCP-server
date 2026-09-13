@@ -1328,7 +1328,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         postPaths.contains('/driver/saveOrUpdateJson')
     }
 
-    // -------- JSON-RPC dispatch envelope (-32602 on mutex, success on happy path) --------
+    // -------- JSON-RPC dispatch envelope (isError validation result on mutex, success on happy path) --------
 
     @spock.lang.Unroll
     def "hub_create_app installAsUserApp via dispatch returns success envelope (useGateways=#useGateways)"() {
@@ -1356,7 +1356,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_app installAsUserApp + importUrl via dispatch returns -32602 (useGateways=#useGateways)"() {
+    def "hub_create_app installAsUserApp + importUrl via dispatch returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1369,8 +1369,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('mutually exclusive')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('mutually exclusive')
 
         where:
         useGateways << [true, false]

@@ -445,7 +445,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_reboot via dispatch maps missing-confirm IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_reboot via dispatch maps missing-confirm IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -454,10 +454,10 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_reboot', [:])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
-        response.error.message.contains('confirm=true')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        mcpDriver.parseInner(response).error.contains('confirm=true')
 
         where:
         useGateways << [true, false]
@@ -578,7 +578,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_shutdown via dispatch maps Write-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_shutdown via dispatch maps Write-disabled IAE to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -587,9 +587,10 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_shutdown', [confirm: true])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -864,7 +865,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_device via dispatch maps deviceId-missing IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_device via dispatch maps deviceId-missing IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -873,16 +874,16 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_device', [confirm: true])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('deviceId is required')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('deviceId is required')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_delete_device via dispatch maps device-not-found IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_device via dispatch maps device-not-found IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -892,10 +893,10 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_device', [deviceId: '999', confirm: true])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('not found on hub')
-        response.error.message.contains('999')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('not found on hub')
+        mcpDriver.parseInner(response).error.contains('999')
 
         where:
         useGateways << [true, false]

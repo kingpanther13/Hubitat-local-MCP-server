@@ -73,7 +73,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
 
     // -------- Gate: enableDeveloperMode --------
 
-    def "throws when Developer Mode is off (routes through -32602)"() {
+    def "throws when Developer Mode is off (routes through the validation channel)"() {
         given: 'Write enabled + backup, but Developer Mode off'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
@@ -749,7 +749,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps unknown device id to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps unknown device id to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDevModeAndWrite()
@@ -762,8 +762,8 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('777')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('777')
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -771,7 +771,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps lockout refusal to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps lockout refusal to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDevModeAndWrite()
@@ -783,8 +783,8 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('Refusing to empty')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('Refusing to empty')
         sharedAppStub.settingsStore.isEmpty()
 
         where:

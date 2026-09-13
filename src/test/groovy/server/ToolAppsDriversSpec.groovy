@@ -49,7 +49,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_apps via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "hub_list_apps via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -58,8 +58,9 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_apps', [scope: 'types'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -196,7 +197,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_drivers via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "hub_list_drivers via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -205,8 +206,9 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_drivers', [:])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -559,7 +561,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_source app via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "hub_get_source app via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -568,8 +570,9 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_source', [type: 'app', id: '1'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -595,13 +598,14 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
         when:
         // type present, id omitted: toolGetSource resolves id from args.appId (null) and
-        // toolGetItemSource throws 'appId is required' -> -32602. The ||-isError disjunct
+        // toolGetItemSource throws 'appId is required' -> isError validation result. The ||-isError disjunct
         // tolerates the gateway-name required-param pre-validation path too, matching the
         // PR's established dispatch idiom.
         def response = mcpDriver.callTool('hub_get_source', [type: 'app'])
 
         then:
-        response.error?.code == -32602 || response.result?.isError == true
+        response.error == null
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]
@@ -830,12 +834,13 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
         when:
         // type present, id omitted: toolGetSource resolves id from args.driverId (null) and
-        // toolGetItemSource throws 'driverId is required' -> -32602. The ||-isError disjunct
+        // toolGetItemSource throws 'driverId is required' -> isError validation result. The ||-isError disjunct
         // tolerates the gateway-name required-param pre-validation path too.
         def response = mcpDriver.callTool('hub_get_source', [type: 'driver'])
 
         then:
-        response.error?.code == -32602 || response.result?.isError == true
+        response.error == null
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]
@@ -937,7 +942,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_backup via dispatch returns -32602 envelope when backupKey is missing (useGateways=#useGateways)"() {
+    def "hub_get_backup via dispatch returns isError validation result envelope when backupKey is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -945,8 +950,8 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_backup', [:])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('backupKey is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('backupKey is required')
 
         where:
         useGateways << [true, false]

@@ -202,7 +202,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_logs via dispatch maps malformed-deviceId IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps malformed-deviceId IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -211,9 +211,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_logs', [deviceId: '../999'])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('deviceId')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('deviceId')
         hubGet.calls.empty
 
         where:
@@ -500,7 +500,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_device_events via dispatch rejects deviceId+appId together with -32602 (useGateways=#useGateways)"() {
+    def "hub_list_device_events via dispatch rejects deviceId+appId together with isError validation result (useGateways=#useGateways)"() {
         given: 'no endpoint registered and no device needed -- the exclusivity check fires before any routing'
         settingsMap.useGateways = useGateways
 
@@ -508,9 +508,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_device_events', [deviceId: '42', appId: 974])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('mutually exclusive')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('mutually exclusive')
 
         where:
         useGateways << [true, false]
@@ -985,7 +985,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_device_events: an unparseable since (#desc) throws -32602-style IllegalArgumentException"() {
+    def "hub_list_device_events: an unparseable since (#desc) throws isError validation result-style IllegalArgumentException"() {
         given: 'a selected device so routing reaches the since parse before any HTTP'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
         settingsMap.selectedDevices = [device]
@@ -1876,7 +1876,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_log_level via dispatch maps invalid-level IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_set_log_level via dispatch maps invalid-level IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -1884,9 +1884,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_log_level', [level: 'trace'])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Invalid log level')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Invalid log level')
 
         where:
         useGateways << [true, false]

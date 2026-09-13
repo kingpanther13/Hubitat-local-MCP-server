@@ -60,7 +60,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_install_bundle via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_install_bundle via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -69,8 +69,9 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_install_bundle', [importUrl: BUNDLE_URL, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -89,7 +90,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_install_bundle via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_install_bundle via dispatch returns isError validation result envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -98,8 +99,8 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_install_bundle', [importUrl: BUNDLE_URL])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
 
         where:
         useGateways << [true, false]
@@ -148,7 +149,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_install_bundle via dispatch returns -32602 envelope when importUrl missing/blank (useGateways=#useGateways)"() {
+    def "hub_install_bundle via dispatch returns isError validation result envelope when importUrl missing/blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -157,8 +158,8 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_install_bundle', [confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('importUrl is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('importUrl is required')
 
         where:
         useGateways << [true, false]

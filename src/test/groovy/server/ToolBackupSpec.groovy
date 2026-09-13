@@ -648,8 +648,9 @@ class ToolBackupSpec extends ToolSpecBase {
         when:
         def resp = mcpDriver.callTool('hub_delete_backup', [location: 'bogus', confirm: true])
 
-        then: 'an IllegalArgumentException maps to a -32602 (or isError) envelope, not a success'
-        resp.error?.code == -32602 || resp.result?.isError == true
+        then: 'an IllegalArgumentException maps to a isError validation result (or isError) envelope, not a success'
+        resp.error == null
+        resp.result?.isError == true
     }
 
     def "scheduleOnly without a schedule object falls through to a normal create (scheduleOnly is a no-op)"() {

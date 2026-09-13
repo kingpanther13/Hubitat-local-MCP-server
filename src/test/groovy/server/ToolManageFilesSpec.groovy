@@ -276,7 +276,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_read_file via dispatch maps missing-fileName IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_read_file via dispatch maps missing-fileName IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -284,9 +284,9 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_read_file', [:])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('fileName is required')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('fileName is required')
 
         where:
         useGateways << [true, false]
@@ -523,7 +523,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_write_file via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_write_file via dispatch maps confirm-missing IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -532,10 +532,10 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_write_file', [fileName: 'x.txt', content: 'hi'])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
-        response.error.message.contains('confirm=true')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        mcpDriver.parseInner(response).error.contains('confirm=true')
 
         where:
         useGateways << [true, false]
@@ -742,7 +742,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_file via dispatch maps Write-master-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_file via dispatch maps Write-master-disabled IAE to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -751,9 +751,10 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_file', [fileName: 'x.txt', confirm: true])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]

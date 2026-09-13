@@ -168,10 +168,14 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
     }
 
     def "a state-only modern tools/call continuation conforms to InputRequiredResult"() {
-        given:
+        given: 'a multi-rule write whose first slice pauses with a remainder'
         settingsMap.enableWrite = true
         def ran = 0
-        script.metaClass.toolRunRmRule = { Map a -> ran++; [success: true] }
+        script.metaClass.toolRunRmRule = { Map a ->
+            ran++
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
 
         when:
         def response = dispatch(
@@ -180,8 +184,8 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
             ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call',
              'Mcp-Name': 'hub_call_rule'])
 
-        then: 'the preflight performs no write and asks only for automatic state echo'
-        ran == 0
+        then: 'the first slice ran and the paused remainder asks only for automatic state echo'
+        ran == 1
         response.result.resultType == 'input_required'
         response.result.requestState instanceof String
         !response.result.containsKey('inputRequests')
@@ -190,16 +194,48 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         McpSchemaValidator.modernErrors('InputRequiredResult', response.result) == []
     }
 
-    def "same-generation contention stays a schema-valid state-only continuation"() {
+    def "a continuation-eligible write that finishes in its first request conforms to CallToolResult"() {
         given:
         settingsMap.enableWrite = true
+        def ran = 0
+        script.metaClass.toolRunRmRule = { Map a ->
+            ran++
+            [success: true, ruleIds: a.ruleId, results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 74, method: 'tools/call',
+             params: [name: 'hub_call_rule', arguments: [ruleId: [75, 76], action: 'stop']]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call',
+             'Mcp-Name': 'hub_call_rule'])
+
+        then: 'one round trip, an ordinary complete result, no state for the client to echo'
+        ran == 1
+        response.error == null
+        response.result.resultType == 'complete'
+        !response.result.containsKey('requestState')
+        !response.result.containsKey('inputRequests')
+        response.result.isError != true
+
+        and:
+        McpSchemaValidator.modernErrors('CallToolResult', response.result) == []
+    }
+
+    def "same-generation contention stays a schema-valid state-only continuation"() {
+        given: 'a paused first slice whose next generation is then claimed by another leg'
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = { Map a ->
+            [success: false, partial: true, ruleIds: a.ruleId,
+             results: [[success: true, ruleId: a.ruleId[0]]], remainingRuleIds: a.ruleId.drop(1)]
+        }
         def args = [ruleId: [73, 74], action: 'stop']
-        def preflight = dispatch(
+        def first = dispatch(
             [jsonrpc: '2.0', id: 72, method: 'tools/call',
              params: [name: 'hub_call_rule', arguments: args]],
             ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call',
              'Mcp-Name': 'hub_call_rule'])
-        String stateId = preflight.result.requestState
+        String stateId = first.result.requestState
         Map binding = script._mrtrBinding('hub_call_rule', 'hub_call_rule', args) as Map
         Map claimed = script._mrtrClaim(stateId, 'hub_call_rule', 'hub_call_rule', binding) as Map
         assert claimed.outcome == 'claimed'
@@ -490,5 +526,24 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         and: 'the strict view catches it, naming the offending key'
         McpSchemaValidator.legacyStrictErrors('EmptyResult', 'Result', regressed)
             .any { it.contains('resultType') }
+    }
+
+
+    def "a modern validation refusal conforms to CallToolResult as an isError result"() {
+        // Input validation is a tool execution error in 2026-07-28: it rides the result with
+        // isError: true and must carry the modern resultType like every other result.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 8, method: 'tools/call', params: [name: 'hub_get_room', arguments: [:]]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call', 'Mcp-Name': 'hub_get_room'])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        response.result.resultType == 'complete'
+        response.result.content[0].type == 'text'
+
+        and:
+        McpSchemaValidator.modernErrors('CallToolResult', response.result) == []
     }
 }

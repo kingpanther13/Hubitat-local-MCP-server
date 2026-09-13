@@ -434,8 +434,8 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
             }
         } else {
             def response = mcpDriver.callTool('hub_manage_virtual_device', args)
-            assert response.error.code == -32602
-            message = response.error.message
+            assert response.result.isError == true
+            message = mcpDriver.parseInner(response).error
         }
 
         then:

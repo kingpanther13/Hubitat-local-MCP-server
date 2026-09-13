@@ -2,7 +2,7 @@ library(name: "McpSelfAdminLib", namespace: "mcp", author: "kingpanther13", desc
 
 def toolUpdateMcpSettings(args) {
     // IllegalArgumentException (not IllegalStateException) so the dispatcher routes this
-    // through the clean -32602 Invalid params branch in handleToolsCall — same exception
+    // through handleToolsCall's IllegalArgumentException branch (an isError validation result) — same exception
     // type the other gates throw (requireDestructiveConfirm, the central master gate).
     // Toggle-off is a config refusal, not an unexpected runtime error worth a stack trace.
     if (!settings.enableDeveloperMode) {

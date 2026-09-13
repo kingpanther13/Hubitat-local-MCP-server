@@ -1158,7 +1158,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.health.ok == false
     }
 
-    def "an edit whose definition fails pre-flight throws -32602 before any hub write"() {
+    def "an edit whose definition fails pre-flight throws isError validation result before any hub write"() {
         given:
         enableWrite()
         def graphState = [name: 'Hall light', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}',
@@ -1466,7 +1466,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_set_visual_rule via dispatch returns -32602 when confirm is not provided (useGateways=#useGateways)"() {
+    def "hub_set_visual_rule via dispatch returns isError validation result when confirm is not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1475,15 +1475,15 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_visual_rule', [name: 'X', definition: [whenNodes: [], thenNodes: [], elseNodes: []]])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
 
         where:
         useGateways << [true, false]
     }
 
     @Unroll
-    def "hub_delete_visual_rule via dispatch returns -32602 when confirm is not provided (useGateways=#useGateways)"() {
+    def "hub_delete_visual_rule via dispatch returns isError validation result when confirm is not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1492,8 +1492,8 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_visual_rule', [appId: 31])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
 
         where:
         useGateways << [true, false]

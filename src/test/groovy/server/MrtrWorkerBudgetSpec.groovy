@@ -80,17 +80,9 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def edit = [appId: 1, confirm: true, addActions: specs]
         def args = gateway ? [tool: leaf, args: edit] : edit
 
-        when:
-        def preflight = modernCall(outer, args)
-        String stateId = preflight.result.requestState
-
-        then:
-        preflight.result.resultType == 'input_required'
-        actions.isEmpty()
-        runInMillisCalls.isEmpty()
-
-        when:
-        def paused = modernCall(outer, args, stateId)
+        when: 'the first request runs the first action and pauses at the worker target'
+        def paused = modernCall(outer, args)
+        String stateId = paused.result.requestState
         Map record = atomicStateMap.mrtrRequests[stateId] as Map
 
         then: 'the first completed action crosses the worker target, independent of transport'
@@ -145,10 +137,10 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def tail = [addAction: [capability: 'switch', action: 'off', deviceIds: [99]]]
         def patches = [[(operation): specs], tail]
         def args = [tool: 'hub_set_rule', args: [appId: 1, confirm: true, patches: patches]]
-        String stateId = modernCall('hub_manage_rule_machine', args).result.requestState
 
         when:
-        def paused = modernCall('hub_manage_rule_machine', args, stateId)
+        def paused = modernCall('hub_manage_rule_machine', args)
+        String stateId = paused.result.requestState
         Map record = atomicStateMap.mrtrRequests[stateId] as Map
 
         then:
@@ -195,10 +187,10 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         }
         def specs = actionSpecs()
         def args = [appId: 1, confirm: true, patches: [[addActions: specs]]]
-        String stateId = modernCall('hub_set_rule', args).result.requestState
 
         when:
-        def paused = modernCall('hub_set_rule', args, stateId)
+        def paused = modernCall('hub_set_rule', args)
+        String stateId = paused.result.requestState
 
         then:
         assertPause(paused, stateId, 'hub_set_rule')
@@ -236,10 +228,9 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
             throw new IllegalStateException('backup storage unavailable')
         }
         def args = [appId: 1, confirm: true, addActions: actionSpecs()]
-        String stateId = modernCall('hub_set_rule', args).result.requestState
 
         when:
-        def failed = modernCall('hub_set_rule', args, stateId)
+        def failed = modernCall('hub_set_rule', args)
 
         then:
         failed.result.resultType == 'complete'
@@ -263,10 +254,10 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         }
         def specs = actionSpecs()
         def args = [appId: 1, confirm: true, addActions: specs]
-        String stateId = modernCall('hub_set_rule', args).result.requestState
 
         when:
-        def paused = modernCall('hub_set_rule', args, stateId)
+        def paused = modernCall('hub_set_rule', args)
+        String stateId = paused.result.requestState
 
         then:
         assertPause(paused, stateId, 'hub_set_rule')
@@ -354,11 +345,13 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
             (leadingOp == 'addActions' ? [addActions: actionSpecs()] :
                 [addTriggers: (1..3).collect { [capability: 'Switch', state: 'on'] }])
         def args = [appId: 1, confirm: true, patches: [leading, replacement, replacement]]
-        String stateId = modernCall('hub_set_rule', args).result.requestState
 
         when:
-        def complete = modernCall('hub_set_rule', args, stateId)
+        def complete = modernCall('hub_set_rule', args)
         def terminal = mcpDriver.parseInner(complete)
+        Map records = atomicStateMap.mrtrRequests as Map
+        assert records.size() == 1
+        String stateId = records.keySet().first()
         def replay = modernCall('hub_set_rule', args, stateId)
 
         then: 'the failed first replacement still owns the one-replacement fence for this batch'
@@ -408,10 +401,10 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def steps = [[page: 'selectActions', operation: 'done'],
                      [operation: 'introspect'], [operation: 'done']]
         def args = [appId: 1, confirm: true, walkStep: [operation: 'drive', steps: steps]]
-        String stateId = modernCall('hub_set_native_app', args).result.requestState
 
         when:
-        def paused = modernCall('hub_set_native_app', args, stateId)
+        def paused = modernCall('hub_set_native_app', args)
+        String stateId = paused.result.requestState
         Map record = atomicStateMap.mrtrRequests[stateId] as Map
 
         then:
@@ -459,13 +452,13 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def specs = actionSpecs(10)
         def edit = shape == 'bulk' ? [addActions: specs] : [patches: specs.collect { [addAction: it] }]
         def args = [appId: 1, confirm: true] + edit
-        String stateId = modernCall('hub_set_rule', args).result.requestState
 
-        when:
-        Map response
-        for (int slice = 1; slice <= 8; slice++) {
+        when: 'the first request is slice one; seven continuations reach the cap'
+        Map response = modernCall('hub_set_rule', args)
+        String stateId = response.result.requestState
+        for (int slice = 2; slice <= 8; slice++) {
+            assert response.result.resultType == 'input_required'
             response = modernCall('hub_set_rule', args, stateId)
-            if (slice < 8) assert response.result.resultType == 'input_required'
         }
         def terminal = mcpDriver.parseInner(response)
         def replay = modernCall('hub_set_rule', args, stateId)
@@ -489,7 +482,6 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def remainingEdit = [(shape == 'bulk' ? 'addActions' : 'patches'): terminal[remainingField]]
         def followup = [appId: 1, confirm: true] + remainingEdit
         String nextId = modernCall('hub_set_rule', followup).result.requestState
-        modernCall('hub_set_rule', followup, nextId)
         def finished = modernCall('hub_set_rule', followup, nextId)
 
         then:

@@ -13078,7 +13078,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
     // instant it is clicked. So a malformed spec MUST fail here, with the OLD Required
     // Expression still intact, rather than after the delete. Same validator the add
     // path uses (conditions/operator/operators rules, deviceId normalization, deviceId
-    // existence). Throws IllegalArgumentException -> -32602.
+    // existence). Throws IllegalArgumentException -> isError validation result.
     _rmValidateRequiredExpressionSpec(exprSpec, "replaceRequiredExpression")
 
     // The backup is resolved lazily (Step 2, just before the destructive click) when a
@@ -13595,7 +13595,7 @@ def _applyNativeAppEdit(args) {
     // the snapshot or the wizard. Covers the single addAction and bulk addActions dispatch cases;
     // the patch / createRule intra-batch paths are caught by the _rmAddAction top-of-function
     // hoist. Return the structured refusal envelope (with a null backup -- nothing was snapshotted)
-    // rather than letting the exception escape to a bare JSON-RPC -32602, so the caller still gets
+    // rather than letting the exception escape to a bare validation refusal, so the caller still gets
     // the tailored steer + the not-touched restoreHint that the other pre-flight refusals carry.
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
@@ -14908,7 +14908,7 @@ def _applyNativeAppEdit(args) {
         try {
             replResult = _rmReplaceRequiredExpression(appId, replaceRequiredExpressionSpec, backup)
         } catch (Exception e) {
-            // A throw here is pre-delete input validation (-32602-class) -- the helper
+            // A throw here is pre-delete input validation (validation-refusal class) -- the helper
             // validates the spec before the destructive cancelST click, so a throw
             // means the OLD Required Expression is still intact (no data lost). Suppress
             // the rollback restoreHint: nothing was deleted, so a "roll back via backup"

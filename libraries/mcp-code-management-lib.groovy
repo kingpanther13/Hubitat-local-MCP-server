@@ -2556,7 +2556,7 @@ def toolListInstalledApps(args) {
         }
         return result
     } catch (IllegalArgumentException e) {
-        throw e  // let cursor / arg-validation surface as -32602; don't reframe as transport failure
+        throw e  // let cursor / arg-validation surface as a validation result; don't reframe as transport failure
     } catch (IllegalStateException e) {
         // Programmer error -- e.g. validFilters / switch drift on the filter whitelist.
         // Don't reframe as a transport failure; surface so the drift gets fixed instead

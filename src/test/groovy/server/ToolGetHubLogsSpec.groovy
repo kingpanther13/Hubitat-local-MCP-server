@@ -159,7 +159,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_logs via dispatch maps Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps Read-disabled IAE to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -168,9 +168,10 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_logs', [:])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -274,7 +275,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_logs via dispatch maps invalid-regex IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps invalid-regex IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -283,10 +284,10 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_logs', [pattern: '[unclosed'])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('[unclosed')
-        response.error.message.toLowerCase().contains('invalid regex')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('[unclosed')
+        mcpDriver.parseInner(response).error.toLowerCase().contains('invalid regex')
 
         where:
         useGateways << [true, false]

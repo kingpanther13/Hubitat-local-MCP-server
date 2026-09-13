@@ -478,7 +478,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_call_device_swap via dispatch maps missing confirm to -32602 (useGateways=#useGateways)"() {
+    def "hub_call_device_swap via dispatch maps missing confirm to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -486,9 +486,9 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_swap', [from_device_id: '101', to_device_id: '202'])
 
         then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('confirm=true')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('confirm=true')
 
         where:
         useGateways << [true, false]
@@ -693,7 +693,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "device replace without confirm maps to -32602 via dispatch (useGateways=#useGateways)"() {
+    def "device replace without confirm maps to isError validation result via dispatch (useGateways=#useGateways)"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         settingsMap.useGateways = useGateways
@@ -702,8 +702,8 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_replace', [old_device_id: '80', new_device_id: '23'])
 
         then:
-        response.error != null
-        response.error.code == -32602
+        response.error == null
+        response.result.isError == true
 
         where:
         useGateways << [true, false]
@@ -870,7 +870,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
         then:
         if (ownership == 'unlisted' && !bypass) {
-            assert response.error.code == -32602
+            assert response.result.isError == true
             assert hubGet.calls.empty
         } else {
             assert mcpDriver.parseInner(response).success == true

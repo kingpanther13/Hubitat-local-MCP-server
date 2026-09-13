@@ -19,7 +19,7 @@ import support.ToolSpecBase
  *   5. per-key sub-validation (e.g. mcpLogLevel ∈ getLogLevels()) -> IllegalArgumentException
  *
  * All gates throw IllegalArgumentException so handleToolsCall routes through the clean
- * -32602 Invalid params branch (vs. the broad Exception catch that would generate ERROR
+ * isError validation result Invalid params branch (vs. the broad Exception catch that would generate ERROR
  * + stack trace for what is fundamentally a config refusal).
  *
  * Mocking strategy (see docs/testing.md):
@@ -53,7 +53,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     // -------- Gate: enableDeveloperMode toggle --------
 
-    def "throws IllegalArgumentException when enableDeveloperMode is off (routes through -32602, not generic ERROR catch)"() {
+    def "throws IllegalArgumentException when enableDeveloperMode is off (routes through the validation channel, not the generic ERROR catch)"() {
         given: 'Hub Admin Write is enabled but Developer Mode is not'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
@@ -638,7 +638,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     // -------- Dispatch-envelope counterparts (#187, #121) --------
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
-    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // routing toggles, and error mapping (IAE -> isError validation result, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above.
 
     @spock.lang.Unroll
@@ -666,7 +666,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps developer-mode-off to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps developer-mode-off to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
@@ -678,8 +678,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('Developer Mode tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Developer Mode tools are disabled')
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -687,7 +688,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps missing-confirm to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -698,7 +699,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
+        response.result?.isError == true
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -706,7 +707,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps empty-settings to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps empty-settings to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -717,15 +718,15 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('settings must be a non-empty map')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('settings must be a non-empty map')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps disallowed-key to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps disallowed-key to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -736,9 +737,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains("'enableWrite'")
-        response.error.message.contains('not allowed')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains("'enableWrite'")
+        mcpDriver.parseInner(response).error.contains('not allowed')
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -746,7 +747,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps null-value to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps null-value to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -757,9 +758,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains("'debugLogging'")
-        response.error.message.contains('cannot be null')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains("'debugLogging'")
+        mcpDriver.parseInner(response).error.contains('cannot be null')
 
         where:
         useGateways << [true, false]
@@ -786,7 +787,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch rejects bad-bool 'yes' to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch rejects bad-bool 'yes' to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -797,9 +798,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains("'debugLogging'")
-        response.error.message.contains('boolean')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains("'debugLogging'")
+        mcpDriver.parseInner(response).error.contains('boolean')
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -829,7 +830,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps bad mcpLogLevel enum to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps bad mcpLogLevel enum to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -840,23 +841,23 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('mcpLogLevel')
-        response.error.message.contains('blarg')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('mcpLogLevel')
+        mcpDriver.parseInner(response).error.contains('blarg')
         sharedAppStub.settingsStore.isEmpty()
 
         where:
         useGateways << [true, false]
     }
 
-    def "toggle-off path through handleToolsCall returns clean -32602, never cascades"() {
+    def "toggle-off path through handleToolsCall returns a clean isError validation result, never cascades"() {
         // Regression guard for the LogWrapper bug: previously, the dispatcher's broad
         // Exception catch called `log.error "msg", throwable`, which Hubitat's
         // LogWrapper.error(String) doesn't accept — triggered MissingMethodException
         // cascade and produced a generic "An unexpected error occurred" response,
         // hiding the real exception's message. Two failure modes locked in here:
-        //   (1) gate exception is IllegalArgumentException (routes through -32602, not
-        //       the broad catch that hosted the cascade), AND
+        //   (1) gate exception is IllegalArgumentException (routes through the validation
+        //       channel, not the broad catch that hosted the cascade), AND
         //   (2) IF anything ever does fall into the broad catch, the log.error call is
         //       single-string form so no MissingMethodException re-emerges.
         // This spec exercises (1) directly via handleToolsCall. (2) is locked in by
@@ -877,13 +878,14 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = script.handleToolsCall(msg)
+        def response = mcpDriver.decodeToolCallResponse(script.handleToolsCall(msg))
 
-        then: 'JSON-RPC error envelope, NOT generic "An unexpected error occurred"'
-        response.error?.code == -32602
-        response.error?.message?.contains('Developer Mode tools are disabled')
+        then: 'a validation result envelope, NOT generic "An unexpected error occurred"'
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Developer Mode tools are disabled')
 
         and: 'verbatim message reaches the caller — proves the broad-catch cascade is not in the path'
-        response.error.message.contains("'Developer Mode Tools'")
+        mcpDriver.parseInner(response).error.contains("'Developer Mode Tools'")
     }
 }
