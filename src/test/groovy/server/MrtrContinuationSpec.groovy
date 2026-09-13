@@ -1624,6 +1624,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         uploaded.result.resultType == 'input_required'
         requestState instanceof String
+        autoContinueJobs().isEmpty()
         atomicStateMap.mrtrRequests[requestState].checkpoint.phase == 'import_commit'
         atomicStateMap.mrtrRequests[requestState].checkpoint.clonerAppId == 4242
         uploads.size() == 1
