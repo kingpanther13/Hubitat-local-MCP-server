@@ -3285,8 +3285,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
                    aggregate: [kind: 'call_rule', results: [[ruleId: 11, success: true]], ruleIds: [11]]]
         atomicStateMap.mrtrRequests = ['cap-unstorable': rec]
         script._writeStateCacheInvalidate()
-        // The record is gone by the time the cap tries to retain its outcome.
-        script.metaClass._mrtrStoreTerminal = { String sid, Map r, Map c, res, boolean isErr -> false }
+        // The durable record is gone by the time the cap tries to retain its outcome, so the
+        // real _mrtrStoreTerminal cannot own it. Stubbing is not an option: it is private, and
+        // Groovy dispatches an internal call to a private method without the metaClass.
+        atomicStateMap.mrtrRequests = [:]
+        script._writeStateCacheInvalidate()
         Map execArgs = [tool: 'hub_call_rule', args: [ruleId: [13, 14], action: 'stop']]
         Map slice = [success: true, ruleIds: [13, 14], results: [[ruleId: 13, success: true]],
                      remainingRuleIds: [14], partial: true]
