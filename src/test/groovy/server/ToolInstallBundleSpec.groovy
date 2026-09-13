@@ -60,7 +60,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_install_bundle via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_install_bundle via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -69,8 +69,9 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_install_bundle', [importUrl: BUNDLE_URL, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]

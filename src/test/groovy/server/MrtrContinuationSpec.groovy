@@ -287,9 +287,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         then:
         response.result == null
-        response.error.code == -32602
-        response.error.message.contains(expected)
-        !response.error.message.toLowerCase().contains('periodic')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains(expected)
+        !mcpDriver.parseInner(response).error.toLowerCase().contains('periodic')
         !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
         runInMillisCalls.isEmpty()
 
@@ -2894,8 +2895,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def refused = modernCall('hub_get_performance_stats', [limit: 5])
 
         then:
-        refused.error.code == -32602
-        refused.error.message.contains('Read tools are disabled')
+        refused.error == null
+        refused.result.isError == true
+        mcpDriver.parseInner(refused).error.contains('Read tools are disabled')
         !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
     }
 

@@ -486,7 +486,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_swap', [from_device_id: '101', to_device_id: '202'])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('confirm=true')
 
@@ -702,7 +702,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_replace', [old_device_id: '80', new_device_id: '23'])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
 
         where:

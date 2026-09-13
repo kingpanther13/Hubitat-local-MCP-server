@@ -131,8 +131,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]

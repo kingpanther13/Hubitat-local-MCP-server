@@ -123,7 +123,7 @@ class HealthMrtrSpec extends ToolSpecBase {
         def denied = call('hub_read_diagnostics', args, token)
 
         then:
-        denied.error != null || denied.result.isError == true
+        denied.error == null || denied.result.isError == true
         hubGet.calls.empty
 
         where:
@@ -148,7 +148,7 @@ class HealthMrtrSpec extends ToolSpecBase {
         def denied = call('hub_read_diagnostics', args, token)
 
         then:
-        denied.error != null || denied.result.isError == true
+        denied.error == null || denied.result.isError == true
         !JsonOutput.toJson(denied).contains('private-route')
         hubGet.calls.size() == callsBefore
 

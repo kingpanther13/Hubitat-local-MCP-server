@@ -121,7 +121,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -130,8 +130,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]

@@ -131,7 +131,7 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         def result = dispatch([section: 'set_rule_reference', cursor: '5000'])
 
         then: 'refused as a caller error -- serving chars 5000.. would drop the head of the section with no signal'
-        result.envelope.error != null
+        result.envelope.error == null
         result.envelope.result.isError == true
         (mcpDriver.parseInner(result.envelope).error as String).contains('fits one response')
     }

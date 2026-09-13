@@ -32,7 +32,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.error.message.contains('tool name required')
     }
 
-    def "IllegalArgumentException from a tool is mapped to -32602 with wrapping"() {
+    def "IllegalArgumentException from a tool is mapped to an isError validation result with the guide pointer"() {
         given: 'Read tools are disabled — the central Read master gate will throw IAE'
         settingsMap.enableRead = false
 
@@ -42,9 +42,9 @@ class HandleToolsCallSpec extends ToolSpecBase {
         then:
         response.jsonrpc == '2.0'
         response.id == mcpDriver.lastSentId
-        response.error.code == -32602
-        response.error.message.startsWith('Invalid params:')
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
     }
 
     def "a call still carrying the removed opToken is refused loudly with the requestState pointer"() {

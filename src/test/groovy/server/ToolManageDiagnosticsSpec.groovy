@@ -139,7 +139,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_metrics via dispatch maps Read-master-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_metrics via dispatch maps Read-master-disabled IAE to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -149,8 +149,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
         then:
         response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -989,7 +990,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_custom_rule', [ruleId: 'nope', detailed: true])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Rule not found')
 

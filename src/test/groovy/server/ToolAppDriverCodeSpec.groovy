@@ -95,7 +95,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_app via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -104,8 +104,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "X")', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -932,7 +933,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_driver via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -941,8 +942,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -1165,7 +1167,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_driver bulk via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -1174,8 +1176,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_driver', [installs: [[sourceFile: 'f.groovy']], confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -2644,7 +2647,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_driver bulk via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -2653,8 +2656,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_update_driver', [updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -3165,7 +3169,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_item (app) via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -3174,8 +3178,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '1', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]

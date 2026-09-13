@@ -39,10 +39,12 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         }
 
         then: 'logging configuration never changes the actionable protocol response'
-        observations.error.response.error.code == -32602
-        observations.debug.response.error.code == -32602
-        observations.error.response.error.message == observations.debug.response.error.message
-        observations.error.response.error.message.contains(expectedReason)
+        observations.error.response.error == null
+        observations.error.response.result.isError == true
+        observations.debug.response.error == null
+        observations.debug.response.result.isError == true
+        mcpDriver.parseInner(observations.error.response).error == mcpDriver.parseInner(observations.debug.response).error
+        mcpDriver.parseInner(observations.error.response).error.contains(expectedReason)
 
         and: 'the refusal is visible through both native logging and the MCP error-log reader'
         observations.values().every { observation ->
@@ -163,9 +165,10 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '1', command: 'on'])
 
         then: "the message is the master refusal, with no reactive pointer appended"
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
-        !response.error.message.contains('get_tool_guide')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
+        !mcpDriver.parseInner(response).error.contains('get_tool_guide')
     }
 
     def "the gate's OWN missing-key refusal is NOT double-coached"() {

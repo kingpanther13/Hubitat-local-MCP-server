@@ -3008,7 +3008,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // -------------------------------------------------------------------------
 
     @spock.lang.Unroll
-    def "hub_list_hpm_packages via dispatch maps Read disabled to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch maps Read disabled to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -3017,8 +3017,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_hpm_packages', [:])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -3126,7 +3127,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_hpm_packages includeDrift via dispatch maps Read disabled to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages includeDrift via dispatch maps Read disabled to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -3135,8 +3136,9 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_hpm_packages', [includeDrift: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]

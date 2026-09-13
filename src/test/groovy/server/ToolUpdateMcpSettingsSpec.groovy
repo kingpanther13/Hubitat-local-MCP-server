@@ -53,7 +53,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     // -------- Gate: enableDeveloperMode toggle --------
 
-    def "throws IllegalArgumentException when enableDeveloperMode is off (routes through -32602, not generic ERROR catch)"() {
+    def "throws IllegalArgumentException when enableDeveloperMode is off (routes through the validation channel, not the generic ERROR catch)"() {
         given: 'Hub Admin Write is enabled but Developer Mode is not'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
@@ -666,7 +666,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps developer-mode-off to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps developer-mode-off to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
@@ -678,8 +678,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('Developer Mode tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Developer Mode tools are disabled')
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -849,7 +850,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "toggle-off path through handleToolsCall returns clean -32602, never cascades"() {
+    def "toggle-off path through handleToolsCall returns a clean isError validation result, never cascades"() {
         // Regression guard for the LogWrapper bug: previously, the dispatcher's broad
         // Exception catch called `log.error "msg", throwable`, which Hubitat's
         // LogWrapper.error(String) doesn't accept — triggered MissingMethodException
@@ -880,10 +881,11 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         def response = script.handleToolsCall(msg)
 
         then: 'JSON-RPC error envelope, NOT generic "An unexpected error occurred"'
-        response.error?.code == -32602
-        response.error?.message?.contains('Developer Mode tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Developer Mode tools are disabled')
 
         and: 'verbatim message reaches the caller — proves the broad-catch cascade is not in the path'
-        response.error.message.contains("'Developer Mode Tools'")
+        mcpDriver.parseInner(response).error.contains("'Developer Mode Tools'")
     }
 }

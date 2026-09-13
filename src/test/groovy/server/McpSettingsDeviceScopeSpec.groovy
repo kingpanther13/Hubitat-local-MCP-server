@@ -73,7 +73,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
 
     // -------- Gate: enableDeveloperMode --------
 
-    def "throws when Developer Mode is off (routes through -32602)"() {
+    def "throws when Developer Mode is off (routes through the validation channel)"() {
         given: 'Write enabled + backup, but Developer Mode off'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L

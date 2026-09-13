@@ -546,7 +546,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_room via dispatch returns -32602 envelope when the Write master is disabled (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns an isError validation result when the Write master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -555,8 +555,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_room', [name: 'Garage', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]

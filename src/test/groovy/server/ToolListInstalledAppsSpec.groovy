@@ -43,7 +43,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_apps scope=instances via dispatch returns -32602 envelope when Read master is disabled (useGateways=#useGateways)"() {
+    def "hub_list_apps scope=instances via dispatch returns an isError validation result when Read master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -52,8 +52,9 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_apps', [scope: 'instances'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]

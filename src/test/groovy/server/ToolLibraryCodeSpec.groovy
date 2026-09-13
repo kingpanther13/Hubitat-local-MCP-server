@@ -72,7 +72,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "get_library_source via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "get_library_source via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -81,8 +81,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '42'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -357,7 +358,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_create_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -366,8 +367,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -992,7 +994,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -1001,8 +1003,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -1514,7 +1517,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "delete_library via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -1523,8 +1526,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]

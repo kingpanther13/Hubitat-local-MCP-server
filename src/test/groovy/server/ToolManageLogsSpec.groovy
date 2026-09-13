@@ -211,7 +211,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_logs', [deviceId: '../999'])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('deviceId')
         hubGet.calls.empty
@@ -508,7 +508,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_device_events', [deviceId: '42', appId: 974])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('mutually exclusive')
 
@@ -1884,7 +1884,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_log_level', [level: 'trace'])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Invalid log level')
 

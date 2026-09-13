@@ -1231,8 +1231,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_device', [deviceTypeId: '500', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -1411,8 +1412,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_compatible_devices', [brand: 'aeotec'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]

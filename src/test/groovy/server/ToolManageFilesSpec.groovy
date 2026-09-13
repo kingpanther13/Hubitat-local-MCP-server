@@ -284,7 +284,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_read_file', [:])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('fileName is required')
 
@@ -532,7 +532,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_write_file', [fileName: 'x.txt', content: 'hi'])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
         mcpDriver.parseInner(response).error.contains('confirm=true')
@@ -742,7 +742,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_file via dispatch maps Write-master-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_file via dispatch maps Write-master-disabled IAE to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -752,8 +752,9 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
         then:
         response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]

@@ -454,7 +454,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_reboot', [:])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
         mcpDriver.parseInner(response).error.contains('confirm=true')
@@ -578,7 +578,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_shutdown via dispatch maps Write-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_shutdown via dispatch maps Write-disabled IAE to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -588,8 +588,9 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
         then:
         response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -873,7 +874,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_device', [confirm: true])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('deviceId is required')
 
@@ -892,7 +893,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_device', [deviceId: '999', confirm: true])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('not found on hub')
         mcpDriver.parseInner(response).error.contains('999')

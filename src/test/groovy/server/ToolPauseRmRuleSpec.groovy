@@ -38,7 +38,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_paused via dispatch returns -32602 envelope when Write master is disabled (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused via dispatch returns an isError validation result when Write master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -47,8 +47,9 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 1, paused: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]

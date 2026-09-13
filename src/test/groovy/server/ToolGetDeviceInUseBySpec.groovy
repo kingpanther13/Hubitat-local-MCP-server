@@ -62,7 +62,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_device_dependents', [deviceId: '999'])
 
         then:
-        response.error != null
+        response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Device not found')
         mcpDriver.parseInner(response).error.contains('999')
@@ -72,7 +72,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_device_dependents via dispatch maps Read-master-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_device_dependents via dispatch maps Read-master-disabled IAE to an isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -82,8 +82,9 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
         then:
         response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
