@@ -975,7 +975,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_custom_rule detailed via dispatch maps ruleId-not-found IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_custom_rule detailed via dispatch maps ruleId-not-found IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         // The tool name in executeTool dispatch is hub_get_custom_rule (detailed=true routes
@@ -990,8 +990,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
         then:
         response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Rule not found')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Rule not found')
 
         where:
         useGateways << [true, false]

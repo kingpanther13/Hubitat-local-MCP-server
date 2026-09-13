@@ -557,7 +557,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_apps scope=instances via dispatch returns -32602 envelope for invalid filter (useGateways=#useGateways)"() {
+    def "hub_list_apps scope=instances via dispatch returns isError validation result envelope for invalid filter (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -565,8 +565,8 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_apps', [scope: 'instances', filter: 'bogus'])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('invalid filter')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('invalid filter')
 
         where:
         useGateways << [true, false]
@@ -710,7 +710,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         !lastPage.containsKey('nextCursor')
     }
 
-    def "cursor='not-a-number' throws IllegalArgumentException so dispatch surfaces -32602"() {
+    def "cursor='not-a-number' throws IllegalArgumentException so dispatch surfaces isError validation result"() {
         given:
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: [[data: [id: 1, name: 'App', type: 'X', user: false, disabled: false, hidden: false], children: []]]])

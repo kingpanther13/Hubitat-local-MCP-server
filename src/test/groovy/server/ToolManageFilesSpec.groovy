@@ -276,7 +276,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_read_file via dispatch maps missing-fileName IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_read_file via dispatch maps missing-fileName IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -285,8 +285,8 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
         then:
         response.error != null
-        response.error.code == -32602
-        response.error.message.contains('fileName is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('fileName is required')
 
         where:
         useGateways << [true, false]
@@ -523,7 +523,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_write_file via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_write_file via dispatch maps confirm-missing IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -533,9 +533,9 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
         then:
         response.error != null
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
-        response.error.message.contains('confirm=true')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        mcpDriver.parseInner(response).error.contains('confirm=true')
 
         where:
         useGateways << [true, false]

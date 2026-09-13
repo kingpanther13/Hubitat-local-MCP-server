@@ -84,7 +84,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_call_rule via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch returns isError validation result envelope when ruleId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -92,8 +92,8 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_rule', [:])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('ruleid is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('ruleid is required')
 
         where:
         useGateways << [true, false]
@@ -376,7 +376,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_call_rule via dispatch returns -32602 envelope on invalid action (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch returns isError validation result envelope on invalid action (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -384,8 +384,8 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_rule', [ruleId: 108, action: 'explode'])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('invalid action')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('invalid action')
 
         where:
         useGateways << [true, false]
@@ -431,7 +431,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_call_rule via dispatch returns -32602 envelope on non-numeric ruleId (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch returns isError validation result envelope on non-numeric ruleId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -439,8 +439,8 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_rule', [ruleId: 'not-a-number'])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('integer')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('integer')
 
         where:
         useGateways << [true, false]

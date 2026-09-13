@@ -636,7 +636,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         !result.containsKey('translatedFrom')
     }
 
-    def "an editor definition whose composed graph fails pre-flight throws -32602 BEFORE the child app is created"() {
+    def "an editor definition whose composed graph fails pre-flight throws isError validation result BEFORE the child app is created"() {
         given: 'no triggers -> the composed graph has no trigger node'
         enableWrite()
         registerAppsList([])
@@ -842,7 +842,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         rawPaths == [CREATE_2_0]
     }
 
-    def "a compose error (OR decision with no conditions) surfaces as the pre-flight -32602, before any hub call"() {
+    def "a compose error (OR decision with no conditions) surfaces as the pre-flight isError validation result, before any hub call"() {
         given:
         enableWrite()
         registerAppsList([])
@@ -1834,10 +1834,10 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_visual_rule',
                 [name: 'Nope', definition: [triggers: [], thenActions: []], confirm: true])
 
-        then: 'JSON-RPC -32602 with every problem in the message'
-        response.error.code == -32602
-        response.error.message.contains('pre-flight validation')
-        response.error.message.contains('at least one trigger node')
+        then: 'JSON-RPC isError validation result with every problem in the message'
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('pre-flight validation')
+        mcpDriver.parseInner(response).error.contains('at least one trigger node')
         rawPaths.isEmpty()
         posts.isEmpty()
     }

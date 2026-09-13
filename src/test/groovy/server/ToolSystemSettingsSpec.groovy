@@ -185,7 +185,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
 
     // ---------- lat/long range validation ----------
 
-    def "out-of-range / non-numeric #key=#val is rejected (-> -32602) with no POST"() {
+    def "out-of-range / non-numeric #key=#val is rejected (-> isError validation result) with no POST"() {
         given:
         enableWrite()
 
@@ -548,7 +548,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         hubGet.calls.every { !it.path.startsWith('/hub/advanced/') }
     }
 
-    def "network static IP missing #missing is rejected (-> -32602) before any hub call"() {
+    def "network static IP missing #missing is rejected (-> isError validation result) before any hub call"() {
         given:
         enableWrite()
         def net = [ipMode: 'static', address: '192.168.1.50', netmask: '255.255.255.0', gateway: '192.168.1.1']
@@ -566,7 +566,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         missing << ['address', 'netmask', 'gateway']
     }
 
-    def "network with an invalid ipMode is rejected (-> -32602)"() {
+    def "network with an invalid ipMode is rejected (-> isError validation result)"() {
         given:
         enableWrite()
 
@@ -578,7 +578,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         ex.message.contains('ipMode')
     }
 
-    def "network with an unknown sub-field is rejected (-> -32602)"() {
+    def "network with an unknown sub-field is rejected (-> isError validation result)"() {
         given:
         enableWrite()
 
@@ -589,7 +589,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    def "a network is not an object is rejected (-> -32602)"() {
+    def "a network is not an object is rejected (-> isError validation result)"() {
         given:
         enableWrite()
 
@@ -734,7 +734,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
 
     // ---------- FIX 2: reject network shapes that apply zero legs ----------
 
-    def "network with wifiPassword but no wifiSsid is rejected (-> -32602) before any hub call"() {
+    def "network with wifiPassword but no wifiSsid is rejected (-> isError validation result) before any hub call"() {
         given:
         enableWrite()
 
@@ -747,7 +747,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         hubGet.calls.every { !it.path.startsWith('/hub/advanced/') }
     }
 
-    def "network with #field but no ipMode is rejected (-> -32602) before any hub call"() {
+    def "network with #field but no ipMode is rejected (-> isError validation result) before any hub call"() {
         given:
         enableWrite()
 
@@ -765,7 +765,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         'useDNSFallover' | true
     }
 
-    def "network with only static fields (no ipMode) forms no leg and is rejected (-> -32602)"() {
+    def "network with only static fields (no ipMode) forms no leg and is rejected (-> isError validation result)"() {
         given:
         enableWrite()
 

@@ -260,6 +260,38 @@ def _validation_log_expectation(
     return f"Validation error in {tool_name}: {reason}"
 
 
+def _tool_validation_log_expectation(params: dict | None, content_text: str) -> str | None:
+    """Return the native-log line a leaf validation refusal produces, if this is one.
+
+    A leaf `IllegalArgumentException` now returns `isError: true` with the message in the
+    result (2026-07-28 tools page), while the server still logs one
+    "Validation error in <tool>" line. Without this the counted accounting in
+    `test_no_hub_errors` would report every intentional negative test as a surprise.
+    Only a payload carrying the server's validation shape qualifies; a runtime
+    `success: false` result logs a different line and must not be consumed here.
+    """
+    if not isinstance(params, dict) or not content_text:
+        return None
+    try:
+        payload = json.loads(content_text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("isError") is not True:
+        return None
+    tool_name = payload.get("tool")
+    reason = payload.get("error")
+    if not isinstance(tool_name, str) or not isinstance(reason, str) or not reason:
+        return None
+    # Same exact-suffix strip as the JSON-RPC path: the reactive pointer is appended
+    # after the server logs the raw message.
+    legacy_hint = re.compile(
+        r' See hub_get_tool_guide\(section="[A-Za-z0-9_]+"\) for '
+        + re.escape(tool_name)
+        + r"'s reference and best practices\.$"
+    )
+    return f"Validation error in {tool_name}: {legacy_hint.sub('', reason)}"
+
+
 def _decode_mcp1_envelope(raw_message: str) -> dict | None:
     """Decode only a complete MCP envelope at a native log prefix boundary."""
     marker = "[MCP1] "
@@ -932,6 +964,9 @@ class HubitatMcpClient:
             for c in result.get("content", []):
                 if c.get("type") == "text":
                     content_text = c["text"]
+            expectation = _tool_validation_log_expectation(params, content_text)
+            if expectation is not None:
+                self._expected_validation_logs.append(expectation)
             raise McpToolError(name, content_text)
 
         # Parse the text content
@@ -13017,6 +13052,11 @@ class TestRunner:
                     "deviceId": unauth, "preferences": {unknown_name: True},
                 })
                 raise AssertionError("Bypass update accepted an undeclared preference")
+            except McpToolError as exc:
+                # A leaf validation refusal is a tool execution error (isError: true) per the
+                # 2026-07-28 tools page, so its text arrives in the result, not in error.message.
+                assert f"Unknown preference '{unknown_name}';" in str(exc), \
+                    f"Undeclared preference must be rejected before native writes: {exc}"
             except McpError as exc:
                 error = exc.rpc_error or {}
                 assert error.get("code") == -32602 and error.get("message", "").startswith(

@@ -820,7 +820,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_rule_health via dispatch rejects an invalid source with -32602 (useGateways=#useGateways)"() {
+    def "hub_get_rule_health via dispatch rejects an invalid source with isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -829,8 +829,8 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100, source: "bogus"])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("source must be one of")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("source must be one of")
 
         where:
         useGateways << [true, false]

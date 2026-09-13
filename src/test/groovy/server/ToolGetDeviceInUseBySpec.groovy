@@ -54,7 +54,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_device_dependents via dispatch maps device-not-found IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_device_dependents via dispatch maps device-not-found IAE to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -63,9 +63,9 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
         then:
         response.error != null
-        response.error.code == -32602
-        response.error.message.contains('Device not found')
-        response.error.message.contains('999')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Device not found')
+        mcpDriver.parseInner(response).error.contains('999')
 
         where:
         useGateways << [true, false]

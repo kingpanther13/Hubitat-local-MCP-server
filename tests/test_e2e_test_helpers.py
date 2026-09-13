@@ -351,6 +351,34 @@ def test_validation_log_expectation_strips_only_the_exact_legacy_reactive_hint()
     }) == f"Validation error in hub_update_device: {raw_reason}{altered_hint}"
 
 
+def test_tool_validation_log_expectation_reads_the_iserror_validation_shape():
+    params = {"name": "hub_manage_devices",
+              "arguments": {"tool": "hub_update_device", "args": {"deviceId": "42"}}}
+    reason = "Unknown preference 'probe'"
+    hint = (' See hub_get_tool_guide(section="update_device") for '
+            "hub_update_device's reference and best practices.")
+    payload = json.dumps({"success": False, "isError": True,
+                          "tool": "hub_update_device", "error": f"{reason}{hint}"})
+
+    assert et._tool_validation_log_expectation(params, payload) == (
+        f"Validation error in hub_update_device: {reason}"
+    )
+
+
+@pytest.mark.parametrize("payload", [
+    # A runtime failure logs a different line and must not consume a validation slot.
+    json.dumps({"success": False, "error": "the hub refused the write"}),
+    json.dumps({"success": True, "deviceId": "42"}),
+    json.dumps({"isError": True, "error": "no tool key"}),
+    json.dumps({"isError": True, "tool": "hub_update_device"}),
+    "not json at all",
+    "",
+])
+def test_tool_validation_log_expectation_ignores_everything_else(payload):
+    params = {"name": "hub_update_device", "arguments": {"deviceId": "42"}}
+    assert et._tool_validation_log_expectation(params, payload) is None
+
+
 @pytest.mark.parametrize(
     ("method", "params", "error"),
     [

@@ -132,8 +132,8 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
 
         then: 'refused as a caller error -- serving chars 5000.. would drop the head of the section with no signal'
         result.envelope.error != null
-        result.envelope.error.code == -32602
-        (result.envelope.error.message as String).contains('fits one response')
+        result.envelope.result.isError == true
+        (mcpDriver.parseInner(result.envelope).error as String).contains('fits one response')
     }
 
     def "a malformed cursor is a caller error, not a silent reset to page one"() {
@@ -141,15 +141,15 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         def bad = dispatch([cursor: 'not-a-number'])
 
         then:
-        bad.envelope.error.code == -32602
-        (bad.envelope.error.message as String).contains('cursor')
+        bad.envelope.result.isError == true
+        (mcpDriver.parseInner(bad.envelope).error as String).contains('cursor')
 
         when: 'a cursor past the end of the guide'
         def far = dispatch([cursor: '99999999'])
 
         then:
-        far.envelope.error.code == -32602
-        (far.envelope.error.message as String).contains('out of range')
+        far.envelope.result.isError == true
+        (mcpDriver.parseInner(far.envelope).error as String).contains('out of range')
     }
 
     def "guide:true returns the whole section, never a page a hub_set_rule caller cannot redeem"() {

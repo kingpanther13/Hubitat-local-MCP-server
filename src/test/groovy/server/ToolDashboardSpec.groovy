@@ -805,7 +805,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         createCall.params.showModeTile == 'true'
     }
 
-    def "clone returns a structured failure (not a caller-blaming -32602) when the source can't be read"() {
+    def "clone returns a structured failure (not a caller-blaming isError validation result) when the source can't be read"() {
         given: 'a source id that is not listable -> get returns success:false, so there is no device list to clone'
         enableWrite()
 
@@ -831,7 +831,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         when:
         def r = script.toolCloneDashboard([dashboardId: '38'])
 
-        then: 'clone returns a runtime failure naming the device list -- NOT a caller-blaming -32602 thrown by create'
+        then: 'clone returns a runtime failure naming the device list -- NOT a caller-blaming isError validation result thrown by create'
         r.success == false
         r.sourceId == '38'
         r.error.toLowerCase().contains('device list')
@@ -917,8 +917,8 @@ class ToolDashboardSpec extends ToolSpecBase {
         when:
         def resp = mcpDriver.callTool('hub_create_dashboard', [deviceIds: ['12']])
 
-        then: 'an IllegalArgumentException maps to a -32602 (or isError) envelope, not a success'
-        resp.error?.code == -32602 || resp.result?.isError == true
+        then: 'an IllegalArgumentException maps to a isError validation result (or isError) envelope, not a success'
+        resp.result?.isError == true || resp.result?.isError == true
     }
 
     // ---------- through the gateways (membership + routing) ----------

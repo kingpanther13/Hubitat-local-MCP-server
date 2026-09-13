@@ -2936,8 +2936,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def write = modernCall('hub_call_rule', [ruleId: [401, 402], action: 'stop'])
 
         then:
-        write.error.code == -32602
-        write.error.message.contains('Mandatory best-practice acknowledgment')
+        write.result.isError == true
+        mcpDriver.parseInner(write).error.contains('Mandatory best-practice acknowledgment')
     }
 
     def "modern gateway preflight validation refusal is error logged without reserving or executing"() {
@@ -2964,9 +2964,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
 
         then:
-        observations.error.response.error.code == -32602
-        observations.error.response.error.message == observations.debug.response.error.message
-        observations.error.response.error.message.contains('Mandatory best-practice acknowledgment')
+        observations.error.response.result.isError == true
+        mcpDriver.parseInner(observations.error.response).error == mcpDriver.parseInner(observations.debug.response).error
+        mcpDriver.parseInner(observations.error.response).error.contains('Mandatory best-practice acknowledgment')
         observations.values().every { observation ->
             observation.visible.entries.size() == 1 &&
                 observation.visible.entries[0].level == 'error' &&

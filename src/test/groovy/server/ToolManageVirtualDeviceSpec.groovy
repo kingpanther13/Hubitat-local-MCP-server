@@ -174,8 +174,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('mutually exclusive')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('mutually exclusive')
 
         where:
         useGateways << [true, false]
@@ -211,8 +211,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Either deviceType or customDriver is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Either deviceType or customDriver is required')
 
         where:
         useGateways << [true, false]
@@ -249,8 +249,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('deviceLabel is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('deviceLabel is required')
 
         where:
         useGateways << [true, false]
@@ -275,7 +275,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create with customDriver not a Map returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: create with customDriver not a Map returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -289,8 +289,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("customDriver must be an object")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("customDriver must be an object")
 
         where:
         useGateways << [true, false]
@@ -314,7 +314,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create with customDriver missing namespace returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: create with customDriver missing namespace returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -328,9 +328,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("'namespace'")
-        response.error.message.contains("'name'")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("'namespace'")
+        mcpDriver.parseInner(response).error.contains("'name'")
 
         where:
         useGateways << [true, false]
@@ -354,7 +354,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create with customDriver missing name returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: create with customDriver missing name returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -368,9 +368,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("'namespace'")
-        response.error.message.contains("'name'")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("'namespace'")
+        mcpDriver.parseInner(response).error.contains("'name'")
 
         where:
         useGateways << [true, false]
@@ -602,7 +602,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create with customDriver UnknownDeviceTypeException returns -32602 with hub_list_drivers hint (useGateways=#useGateways)"() {
+    def "via dispatch: create with customDriver UnknownDeviceTypeException returns isError validation result with hub_list_drivers hint (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -619,9 +619,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('fake-namespace:fake-driver')
-        response.error.message.contains('hub_list_drivers')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('fake-namespace:fake-driver')
+        mcpDriver.parseInner(response).error.contains('hub_list_drivers')
 
         where:
         useGateways << [true, false]
@@ -665,9 +665,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('hub_list_drivers')
-        response.error.message.contains('my-ns:My Driver')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('hub_list_drivers')
+        mcpDriver.parseInner(response).error.contains('my-ns:My Driver')
 
         where:
         useGateways << [true, false]
@@ -713,9 +713,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('hub_list_drivers')
-        response.error.message.contains('my-ns:My Driver')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('hub_list_drivers')
+        mcpDriver.parseInner(response).error.contains('my-ns:My Driver')
 
         where:
         useGateways << [true, false]
@@ -840,7 +840,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create with unsupported built-in deviceType returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: create with unsupported built-in deviceType returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -854,9 +854,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Virtual Toaster')
-        response.error.message.contains('Unsupported device type')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Virtual Toaster')
+        mcpDriver.parseInner(response).error.contains('Unsupported device type')
 
         where:
         useGateways << [true, false]
@@ -902,7 +902,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: 'platform error: RuntimeException wraps to isError=true (not -32602)'
+        then: 'platform error: RuntimeException wraps to isError=true (not isError validation result)'
         response.error == null
         response.result.isError == true
         response.result.content[0].text.contains('may not include this built-in driver')
@@ -1037,9 +1037,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create with customDriver IllegalArgumentException root cause echoed in -32602 message (useGateways=#useGateways)"() {
+    def "via dispatch: create with customDriver IllegalArgumentException root cause echoed in isError validation result message (useGateways=#useGateways)"() {
         // Dispatch envelope flattens exception to message string -- can't inspect .cause through render.
-        // Parallel assertion: root-cause text is woven into the -32602 message via the
+        // Parallel assertion: root-cause text is woven into the isError validation result message via the
         // "(Hub reported: ...)" suffix at toolCreateVirtualDevice line 11302.
         given:
         settingsMap.useGateways = useGateways
@@ -1056,9 +1056,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('root cause message')
-        response.error.message.contains('hub_list_drivers')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('root cause message')
+        mcpDriver.parseInner(response).error.contains('hub_list_drivers')
 
         where:
         useGateways << [true, false]
@@ -1151,8 +1151,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('mutually exclusive')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('mutually exclusive')
 
         where:
         useGateways << [true, false]
@@ -1192,8 +1192,8 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Either deviceType or customDriver is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Either deviceType or customDriver is required')
 
         where:
         useGateways << [true, false]
@@ -1217,7 +1217,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create whitespace-only customDriver namespace returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: create whitespace-only customDriver namespace returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1231,9 +1231,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('non-empty strings')
-        response.error.message.contains("'namespace'")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('non-empty strings')
+        mcpDriver.parseInner(response).error.contains("'namespace'")
 
         where:
         useGateways << [true, false]
@@ -1257,7 +1257,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create whitespace-only customDriver name returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: create whitespace-only customDriver name returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1271,9 +1271,9 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('non-empty strings')
-        response.error.message.contains("'name'")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('non-empty strings')
+        mcpDriver.parseInner(response).error.contains("'name'")
 
         where:
         useGateways << [true, false]
@@ -1393,7 +1393,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: 'platform error: RuntimeException wraps to isError=true (not -32602)'
+        then: 'platform error: RuntimeException wraps to isError=true (not isError validation result)'
         response.error == null
         response.result.isError == true
         response.result.content[0].text.contains('addChildDevice returned null')

@@ -1509,7 +1509,7 @@ def handleResourcesRead(msg) {
         // Unlike tools/call, resources/read has no per-call error logging of its own, so a
         // builder throw would otherwise reach the client as a bare -32603 with nothing in
         // the hub log -- log it richly here, then map like handleToolsCall would: an
-        // IllegalArgumentException is caller-recoverable (-32602), anything else rethrows
+        // IllegalArgumentException is caller-recoverable (an invalid-params error), anything else rethrows
         // into the top-level -32603.
         try {
             if (uri == "hubitat://context-summary") {
@@ -1710,7 +1710,7 @@ def handleToolsCall(msg) {
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
                        error: e.message]])
-        return jsonRpcError(msg.id, -32602, "Invalid params: ${e.message}")
+        return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message)
     } catch (Exception e) {
         mcpLog("error", "server", "MRTR tool execution error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
@@ -1805,19 +1805,7 @@ def handleToolsCallLegacy(msg) {
                       gateway: (reactiveToolName != toolName) ? toolName : null,
                       error: e.message]
         ])
-        def msgText = e.message
-        if (e.message) {
-            try {
-                def warning = _reactiveBpsWarning(reactiveToolName, args, e.message)
-                if (warning) msgText = "${e.message} ${warning}"
-            } catch (Exception bpErr) {
-                mcpLog("warn", "server",
-                    "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null,
-                    [details: [tool: reactiveToolName,
-                               gateway: (reactiveToolName != toolName) ? toolName : null]])
-            }
-        }
-        return jsonRpcError(msg.id, -32602, "Invalid params: ${msgText}")
+        return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message)
     } catch (Exception e) {
         mcpLog("error", "server", "Tool execution error in ${reactiveToolName}: ${e.message}", null, [
             details: [tool: reactiveToolName,
@@ -3628,14 +3616,35 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
     return value
 }
 
+// MCP 2026-07-28 tools/call splits errors in two. Protocol errors are faults in the
+// request structure itself (unknown tool, malformed envelope) and stay JSON-RPC -32602;
+// clients only MAY show those to the model. Tool execution errors, which the spec
+// defines to include input validation, ride in the result as isError: true, because
+// clients SHOULD show those to the model so it can self-correct. Every validation
+// IllegalArgumentException a leaf throws is the second kind.
+private boolean _isProtocolValidation(String message) {
+    String txt = (message ?: '').toString()
+    return (txt =~ /Unknown tool|Unknown gateway|Cannot call a gateway|Gateway arg|useGateways is OFF|tool name required|tool arguments must be an object|requestState/) as boolean
+}
+
+private def _renderValidationError(id, toolName, reactiveToolName, args, String detail) {
+    if (_isProtocolValidation(detail)) {
+        return jsonRpcError(id, -32602, "Invalid params: ${detail}")
+    }
+    // The guide pointer rides inside the error text, as it did on the -32602 message.
+    def hint = _reactiveBpsWarning(reactiveToolName, args, detail)
+    def failure = [success: false, isError: true, tool: reactiveToolName,
+                   error: hint ? "${detail} ${hint}".toString() : detail, __validation: true]
+    return _renderToolResult(id, toolName, reactiveToolName, args, failure, true)
+}
+
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
     if (result instanceof Map && result.__deviceValidation != null) {
         String detail = result.__deviceValidation.toString()
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${detail}", null,
             [details: [tool: reactiveToolName,
                        gateway: (reactiveToolName != toolName) ? toolName : null, error: detail]])
-        def hint = _reactiveBpsWarning(reactiveToolName, args, detail)
-        return jsonRpcError(id, -32602, "Invalid params: ${detail}${hint ? ' ' + hint : ''}")
+        return _renderValidationError(id, toolName, reactiveToolName, args, detail)
     }
     // Reactive hints mutate their result map. Terminal MRTR responses are retained
     // for replay, so render from a non-mutating structural copy and keep the cached canonical
@@ -3643,10 +3652,13 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     // its JSON round-trip would throw on a non-serializable tool result before the
     // guarded serialization below can turn that tool bug into a valid MCP error.
     def rendered = _publicToolResultValue(result)
+    // A validation refusal was already logged as "Validation error in <tool>" by its
+    // catch; it is one refusal, so it gets one log line.
+    boolean validation = rendered instanceof Map && rendered.remove("__validation") == true
     boolean failureFlag = rendered instanceof Map && (rendered.isError == true || rendered.success == false)
     boolean stateReadbackFailed = rendered instanceof Map && rendered.stateError instanceof CharSequence &&
         rendered.stateError.toString().trim()
-    if (isErrorOverride || failureFlag || stateReadbackFailed) {
+    if (!validation && (isErrorOverride || failureFlag || stateReadbackFailed)) {
         // Returned error text and arguments may contain secrets; log only safe failure context.
         mcpLog("error", "server", "Tool ${reactiveToolName} returned a failure result", null, [
             details: [tool: reactiveToolName,
@@ -3782,7 +3794,7 @@ def _responseTooLargeSuggestion(String toolName) {
 
 // Shared cursor decoder for opt-in tool-level pagination. Cursor is the opaque numeric
 // offset returned in a prior call's nextCursor; null/"" means "start at 0". Anything else
-// throws IllegalArgumentException so the dispatch layer surfaces -32602. Raw cursor is
+// throws IllegalArgumentException so the dispatch layer surfaces an isError validation result. Raw cursor is
 // sanitized before being echoed back so a defective client can't pollute the hub log.
 def _parseListCursor(cursor, int totalSize, String toolName) {
     if (cursor == null || cursor == "") return 0
@@ -4757,9 +4769,9 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     // only the {tool,args} envelope on tools/list, not each sub-tool's inputSchema --
     // fixes everything in one retry instead of discovering params one-at-a-time. This is
     // ADDITIVE: it surfaces schema the gateway defers to the catalog, never filters a
-    // response. It THROWS IllegalArgumentException (-> -32602) rather than returning an
+    // response. It THROWS IllegalArgumentException (-> isError validation result) rather than returning an
     // isError envelope, so a missing-param error has the SAME shape gateway and flat
-    // (issue #319: the flat handler validation also throws -> -32602). The pre-check
+    // (issue #319: the flat handler validation also throws -> isError validation result). The pre-check
     // fires only on an ABSENT key, so a present-but-invalid value (e.g. confirm:false)
     // still reaches the handler's own richer runtime message in both modes.
     def safeArgs = toolArgs ?: [:]
@@ -4812,7 +4824,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
                 hint
             }.join("\n")
             def paramWord = (missing.size() == 1) ? "parameter" : "parameters"
-            // Throw (-> -32602) rather than return an isError envelope, so gateway and
+            // Throw (-> the shared validation result) rather than return an isError envelope, so gateway and
             // flat give the SAME error shape for the same mistake (issue #319). The full
             // all-params list rides in the message -- no content is lost vs the old
             // structured `parameters` field.
@@ -5202,7 +5214,7 @@ def executeTool(toolName, args) {
             // roomFilter compare by their documented no-op values (false / empty string are
             // no-ops everywhere, so they must not become errors only here).
             if (args.filter == "virtual") {
-                // Malformed values must be -32602 on this route too, not silently carried
+                // Malformed values must be a validation refusal on this route too, not silently carried
                 // past the guard (a non-Boolean onlyOn would otherwise slip through).
                 _validateListDeviceStateArgTypes(args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.format)
                 if (args.format == "context" || args.roomFilter || args.onlyOn == true || args.changedSince != null || args.attributeNames != null) {
@@ -9127,7 +9139,7 @@ MCP-managed virtual devices:
 
 **action="create" error surfaces:**
 - Built-in `deviceType` not-found surfaces as a platform error (`isError`).
-- `customDriver` not-found surfaces as an input error (`-32602`) with a `hub_list_drivers` hint.
+- `customDriver` not-found surfaces as an `isError` validation result with a `hub_list_drivers` hint.
 
 **`customDriver` object:** Both fields (`namespace`, `name`) are required.
 
@@ -9695,7 +9707,7 @@ The `force` flag selects which hub admin-layer endpoint performs the delete:
 - `skippedMalformed` -- manifest URLs whose top-level value was not a Map (the package is skipped).
 - per-package `skippedAppCount` / `skippedDriverCount` / `skippedFileCount` -- non-Map component entries skipped; each field is omitted when 0.
 
-**Errors (all surface as JSON-RPC error -32602):**
+**Errors (all surface as `isError: true` validation results):**
 - Multiple HPM instances -> `IllegalArgumentException` listing up to 10 instance IDs with `"and N more (total M)"`.
 - `hpmAppId` pointing at a non-HPM app -> `IllegalArgumentException` disclosing the actual app type.
 

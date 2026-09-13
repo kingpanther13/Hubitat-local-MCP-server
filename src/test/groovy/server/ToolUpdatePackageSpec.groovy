@@ -147,7 +147,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         ex.message.contains('Developer Mode tools are disabled')
     }
 
-    def "via dispatch (flat) returns -32602 envelope when Developer Mode is off"() {
+    def "via dispatch (flat) returns isError validation result envelope when Developer Mode is off"() {
         given:
         settingsMap.useGateways = false
         settingsMap.remove('enableDeveloperMode')

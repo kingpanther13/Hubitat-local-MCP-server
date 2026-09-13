@@ -496,7 +496,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         invoke.call(script)
 
         then: 'IllegalStateException, NOT IllegalArgumentException'
-        // An IAE maps to -32602 and promises nothing was committed. This guard can fire on a
+        // An IAE maps to isError validation result and promises nothing was committed. This guard can fire on a
         // LATER leg of a multi-step tool whose earlier legs already wrote, so it must remain
         // an ISE and land in the generic -32603/isError path.
         def ex = thrown(IllegalStateException)

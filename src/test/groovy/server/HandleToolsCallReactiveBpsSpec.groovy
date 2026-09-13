@@ -6,7 +6,7 @@ import support.ToolSpecBase
  * Reactive best-practice hints on write errors (issue #299, ALWAYS ON — no toggle) at the
  * handleToolsCall envelope chokepoint. On a write-tool error, the response gains a one-line pointer
  * to the FAILING tool's OWN guide section (via _guideSectionForTool), on both the thrown-IAE ->
- * -32602 path (message augmented) and the returned [success:false]/isError Map path (bp_warning
+ * isError validation result path (message augmented) and the returned [success:false]/isError Map path (bp_warning
  * field). It stays quiet for: tools with no dedicated section (no generic fallback), permission/
  * config refusals, the gate's own missing-key message, success responses, and errors that already
  * point at the guide. A hint failure must never mask the genuine error.
@@ -80,12 +80,12 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '999', command: 'on'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Device not found: 999')
-        response.error.message.contains('hub_get_tool_guide(section="device_authorization")')
-        response.error.message.contains('hub_call_device_command')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Device not found: 999')
+        mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="device_authorization")')
+        mcpDriver.parseInner(response).error.contains('hub_call_device_command')
         and: "NOT the generic best-practice page"
-        !response.error.message.contains('best_practice_reference')
+        !mcpDriver.parseInner(response).error.contains('best_practice_reference')
     }
 
     def "a thrown hub_set_rule error points at set_rule_reference (a DIFFERENT tool -> different section)"() {
@@ -96,8 +96,8 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule', [appId: 1, addTrigger: [:]])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('hub_get_tool_guide(section="set_rule_reference")')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="set_rule_reference")')
     }
 
     def "reactive hint resolves the SUB-TOOL section for a gateway-routed error (not the gateway name)"() {
@@ -111,9 +111,9 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
             [tool: 'hub_set_app_disabled', args: [appId: 'x']])
 
         then: "the hint maps to the SUB-TOOL's own sub-section (builtin_app_tools_rules), since the gateway has none"
-        response.error.code == -32602
-        response.error.message.contains('hub_get_tool_guide(section="builtin_app_tools_rules")')
-        response.error.message.contains('hub_set_app_disabled')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="builtin_app_tools_rules")')
+        mcpDriver.parseInner(response).error.contains('hub_set_app_disabled')
     }
 
     def "a gateway-ENVELOPE error (unknown sub-tool) gets NO hint -- the sub-tool never ran"() {
@@ -150,9 +150,9 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_hsm', [armCommand: 'armHome'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('HSM not configured')
-        !response.error.message.contains('get_tool_guide')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('HSM not configured')
+        !mcpDriver.parseInner(response).error.contains('get_tool_guide')
     }
 
     def "a permission refusal (Write master OFF) is NOT augmented"() {
@@ -176,9 +176,9 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '1', command: 'on'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Mandatory best-practice')
-        !response.error.message.contains('reference and best practices')   // the reactive suffix is absent
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Mandatory best-practice')
+        !mcpDriver.parseInner(response).error.contains('reference and best practices')   // the reactive suffix is absent
     }
 
     // ---- RETURNED-error Map path: bp_warning with the tool's section ------------
@@ -227,8 +227,8 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '1', command: 'on'])
 
         then:
-        response.error.code == -32602
-        !(response.error.message?.contains('get_tool_guide'))
+        response.result.isError == true
+        !(mcpDriver.parseInner(response).error?.contains('get_tool_guide'))
     }
 
     def "a hint-attach failure (immutable result Map) does NOT mask the original error"() {

@@ -305,13 +305,13 @@ class McpResourcesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "resources/read with #label uri returns -32602"() {
+    def "resources/read with #label uri returns isError validation result"() {
         when:
         def response = dispatch([jsonrpc: '2.0', id: 12, method: 'resources/read', params: params])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('uri')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('uri')
 
         where:
         label          | params

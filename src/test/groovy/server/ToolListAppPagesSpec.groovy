@@ -125,7 +125,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_app_pages via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns isError validation result envelope when appId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -134,8 +134,8 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_app_pages', [:])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('appid is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('appid is required')
 
         where:
         useGateways << [true, false]
@@ -154,7 +154,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_app_pages via dispatch returns -32602 envelope when appId is blank (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns isError validation result envelope when appId is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -163,8 +163,8 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_app_pages', [appId: '   '])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('appid is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('appid is required')
 
         where:
         useGateways << [true, false]
@@ -186,7 +186,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_app_pages via dispatch returns -32602 envelope when appId is non-numeric (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns isError validation result envelope when appId is non-numeric (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -195,8 +195,8 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_app_pages', [appId: 'not-a-number'])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('numeric')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('numeric')
 
         where:
         useGateways << [true, false]

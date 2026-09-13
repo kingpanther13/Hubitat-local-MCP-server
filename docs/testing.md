@@ -137,12 +137,15 @@ The CI matrix (see "CI" below) runs the full suite under both default modes, but
 
 Two distinct production paths produce different envelope shapes — assert the right one:
 
-- **`IllegalArgumentException` from a tool → JSON-RPC error `-32602`.** Validation errors surface in the `response.error` slot:
+- **`IllegalArgumentException` from a tool → success envelope with `isError: true`.** The 2026-07-28 tools page classes input validation as a tool execution error that clients SHOULD show the model, so a leaf validation refusal rides the result, with the reactive guide pointer appended to its `error` text:
 
   ```groovy
-  response.error.code == -32602
-  response.error.message.startsWith('Invalid params:')
+  response.error == null
+  response.result.isError == true
+  mcpDriver.parseInner(response).error.startsWith('Device not found')
   ```
+
+  A **protocol** fault still uses `response.error.code == -32602`: unknown tool or gateway, a malformed `tools/call` envelope, or a bad `requestState`. `_isProtocolValidation` in `hubitat-mcp-server.groovy` is the single list.
 
 - **Generic `Exception` from a tool → success envelope with `isError: true`.** Per the MCP spec, tool *execution* errors stay in the success channel so clients can present them as tool output:
 

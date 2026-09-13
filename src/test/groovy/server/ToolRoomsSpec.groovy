@@ -211,7 +211,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         // _paginateList behaves identically -- no cursor returns the full list, cursor=''
         // emits a bounded page with total + nextCursor, last page omits nextCursor,
         // non-numeric/out-of-range cursors throw IllegalArgumentException so dispatch
-        // surfaces -32602. The per-tool spec is exercised exhaustively for hub_list_rooms
+        // surfaces isError validation result. The per-tool spec is exercised exhaustively for hub_list_rooms
         // here; the other paginated tools rely on the shared _paginateList contract
         // pinned by ToolListInstalledAppsSpec.
         given: '150 rooms -> 2 pages of 100 + 50'
@@ -346,7 +346,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_room via dispatch returns -32602 envelope with available rooms when unknown (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch returns isError validation result envelope with available rooms when unknown (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([
@@ -358,10 +358,10 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_room', [room: 'Basement'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Basement')
-        response.error.message.contains('Kitchen')
-        response.error.message.contains('Bedroom')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Basement')
+        mcpDriver.parseInner(response).error.contains('Kitchen')
+        mcpDriver.parseInner(response).error.contains('Bedroom')
 
         where:
         useGateways << [true, false]
@@ -377,7 +377,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_room via dispatch returns -32602 envelope when identifier is empty (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch returns isError validation result envelope when identifier is empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -385,8 +385,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_room', [room: ''])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Room name or ID is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Room name or ID is required')
 
         where:
         useGateways << [true, false]
@@ -493,7 +493,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_room via dispatch returns -32602 envelope when confirm missing (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns isError validation result envelope when confirm missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -502,9 +502,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_room', [name: 'Garage'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
-        response.error.message.contains('confirm=true')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        mcpDriver.parseInner(response).error.contains('confirm=true')
 
         where:
         useGateways << [true, false]
@@ -590,7 +590,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_room via dispatch returns -32602 envelope when name is blank (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns isError validation result envelope when name is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -600,8 +600,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_room', [name: '  ', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Room name is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Room name is required')
 
         where:
         useGateways << [true, false]
@@ -691,7 +691,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_room via dispatch returns -32602 envelope on duplicate name (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns isError validation result envelope on duplicate name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -703,8 +703,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_room', [name: 'GARAGE', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('already exists')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('already exists')
 
         where:
         useGateways << [true, false]
@@ -725,7 +725,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_room via dispatch returns -32602 envelope when identifier missing (useGateways=#useGateways)"() {
+    def "hub_delete_room via dispatch returns isError validation result envelope when identifier missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -734,8 +734,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_room', [confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Room name or ID is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Room name or ID is required')
 
         where:
         useGateways << [true, false]
@@ -923,7 +923,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_room via dispatch returns -32602 envelope when target room does not exist (useGateways=#useGateways)"() {
+    def "hub_delete_room via dispatch returns isError validation result envelope when target room does not exist (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -935,9 +935,9 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_room', [room: 'Garage', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('not found')
-        response.error.message.contains('Kitchen')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('not found')
+        mcpDriver.parseInner(response).error.contains('Kitchen')
 
         where:
         useGateways << [true, false]
@@ -1093,7 +1093,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_room via dispatch returns -32602 envelope when newName is missing (useGateways=#useGateways)"() {
+    def "hub_update_room via dispatch returns isError validation result envelope when newName is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1105,8 +1105,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_update_room', [room: '8', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('New room name is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('New room name is required')
 
         where:
         useGateways << [true, false]
@@ -1129,7 +1129,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_room via dispatch returns -32602 envelope on colliding name (useGateways=#useGateways)"() {
+    def "hub_update_room via dispatch returns isError validation result envelope on colliding name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1142,8 +1142,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_update_room', [room: '1', newName: 'BEDROOM', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('already exists')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('already exists')
 
         where:
         useGateways << [true, false]

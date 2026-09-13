@@ -275,7 +275,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // tools/list cursor handling was removed when the unconditional split was
         // dropped. Stale clients that pass a cursor from a prior version's
         // nextCursor (or any value -- numeric, non-numeric, out-of-range, negative,
-        // empty) now receive the full catalog rather than a -32602 error. Their
+        // empty) now receive the full catalog rather than a isError validation result error. Their
         // iteration loop terminates on the missing nextCursor in the same response.
         // Opt-in tools/call cursors (hub_list_devices etc.) are not affected.
         given:
@@ -439,9 +439,9 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         when:
         script.handleMcpRequest()
 
-        then: 'the -32602 fires and the debug-log entry names the sub-tool with the gateway as context'
+        then: 'the isError validation result fires and the debug-log entry names the sub-tool with the gateway as context'
         def response = mcpDriver.parseResponseJson()
-        response.error.code == -32602
+        response.result.isError == true
         def warn = script.getDebugLogEntries().find { it.message?.startsWith('Validation error in') }
         warn != null
         warn.message.contains('hub_get_room')
@@ -1612,10 +1612,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.error.code == -32600
     }
 
-    def "a modern tools/call answered with -32602 keeps the JSON-RPC-native 200"() {
-        // The -32602 companion to the case above, through a real gateway dispatch:
+    def "a modern tools/call answered with isError validation result keeps the JSON-RPC-native 200"() {
+        // The isError validation result companion to the case above, through a real gateway dispatch:
         // hub_get_room with no rooms configured throws IllegalArgumentException, which
-        // handleToolsCall maps to -32602. Mcp-Name mirrors the OUTER params.name (the
+        // handleToolsCall maps to isError validation result. Mcp-Name mirrors the OUTER params.name (the
         // gateway), which is what the spec says the header carries.
         given:
         settingsMap.enableRead = true
@@ -1636,7 +1636,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         mcpDriver.lastRenderArgs.status == null
         def response = mcpDriver.parseResponseJson()
         response.id == 317
-        response.error.code == -32602
+        response.result.isError == true
     }
 
     def "a modern NOTIFICATION keeps 202 with no header validation at all"() {

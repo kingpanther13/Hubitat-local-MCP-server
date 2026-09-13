@@ -2999,7 +2999,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Dispatch-envelope counterparts (#187, #121)
     //
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
-    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // routing toggles, and error mapping (IAE -> isError validation result, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above. The
     // direct-call tests (above) and the existing hub_read_apps_code gateway-shape tests
     // (line ~2821) already pin tool-result deep structure; these tests add the
@@ -3025,7 +3025,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_hpm_packages via dispatch maps non-numeric hpmAppId to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch maps non-numeric hpmAppId to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -3034,15 +3034,15 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: 'not-a-number'])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('hpmAppId must be numeric')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('hpmAppId must be numeric')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_list_hpm_packages via dispatch maps HPM not installed to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch maps HPM not installed to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -3052,7 +3052,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_hpm_packages', [:])
 
         then:
-        response.error?.code == -32602
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]
@@ -3143,7 +3143,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_hpm_packages includeDrift via dispatch maps non-numeric hpmAppId to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages includeDrift via dispatch maps non-numeric hpmAppId to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -3152,8 +3152,8 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: 'not-a-number', includeDrift: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('hpmAppId must be numeric')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('hpmAppId must be numeric')
 
         where:
         useGateways << [true, false]
@@ -3260,7 +3260,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_hpm_packages via dispatch maps wrong-type explicit hpmAppId to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch maps wrong-type explicit hpmAppId to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -3279,7 +3279,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: '999'])
 
         then:
-        response.error?.code == -32602
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]

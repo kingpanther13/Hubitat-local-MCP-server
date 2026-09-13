@@ -19,7 +19,7 @@ import support.ToolSpecBase
  *   5. per-key sub-validation (e.g. mcpLogLevel ∈ getLogLevels()) -> IllegalArgumentException
  *
  * All gates throw IllegalArgumentException so handleToolsCall routes through the clean
- * -32602 Invalid params branch (vs. the broad Exception catch that would generate ERROR
+ * isError validation result Invalid params branch (vs. the broad Exception catch that would generate ERROR
  * + stack trace for what is fundamentally a config refusal).
  *
  * Mocking strategy (see docs/testing.md):
@@ -638,7 +638,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     // -------- Dispatch-envelope counterparts (#187, #121) --------
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
-    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // routing toggles, and error mapping (IAE -> isError validation result, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above.
 
     @spock.lang.Unroll
@@ -687,7 +687,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps missing-confirm to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -698,7 +698,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
+        response.result?.isError == true
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -706,7 +706,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps empty-settings to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps empty-settings to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -717,15 +717,15 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('settings must be a non-empty map')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('settings must be a non-empty map')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps disallowed-key to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps disallowed-key to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -736,9 +736,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains("'enableWrite'")
-        response.error.message.contains('not allowed')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains("'enableWrite'")
+        mcpDriver.parseInner(response).error.contains('not allowed')
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -746,7 +746,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps null-value to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps null-value to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -757,9 +757,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains("'debugLogging'")
-        response.error.message.contains('cannot be null')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains("'debugLogging'")
+        mcpDriver.parseInner(response).error.contains('cannot be null')
 
         where:
         useGateways << [true, false]
@@ -786,7 +786,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch rejects bad-bool 'yes' to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch rejects bad-bool 'yes' to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -797,9 +797,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains("'debugLogging'")
-        response.error.message.contains('boolean')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains("'debugLogging'")
+        mcpDriver.parseInner(response).error.contains('boolean')
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -829,7 +829,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_mcp_settings via dispatch maps bad mcpLogLevel enum to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps bad mcpLogLevel enum to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
@@ -840,9 +840,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('mcpLogLevel')
-        response.error.message.contains('blarg')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('mcpLogLevel')
+        mcpDriver.parseInner(response).error.contains('blarg')
         sharedAppStub.settingsStore.isEmpty()
 
         where:

@@ -6,7 +6,7 @@ import support.ToolSpecBase
 /**
  * Spec for hubitat-mcp-server.groovy::handleToolsCall.
  *
- * Covers the JSON-RPC 2.0 envelope, IAE → -32602 error mapping for
+ * Covers the JSON-RPC 2.0 envelope, IAE → isError validation result error mapping for
  * validation errors, and the generic-Exception path that returns an
  * isError success envelope per the MCP spec.
  *
