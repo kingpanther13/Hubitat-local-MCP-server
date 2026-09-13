@@ -918,7 +918,8 @@ class ToolDashboardSpec extends ToolSpecBase {
         def resp = mcpDriver.callTool('hub_create_dashboard', [deviceIds: ['12']])
 
         then: 'an IllegalArgumentException maps to a isError validation result (or isError) envelope, not a success'
-        resp.result?.isError == true || resp.result?.isError == true
+        resp.error == null
+        resp.result?.isError == true
     }
 
     // ---------- through the gateways (membership + routing) ----------

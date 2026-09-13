@@ -1496,7 +1496,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then: 'any thrown exception must surface as either isError validation result (IAE) or isError envelope (RuntimeException)'
-        response.result?.isError == true || response.result?.isError == true
+        response.error == null
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]

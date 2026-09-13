@@ -3243,6 +3243,48 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ranBefore == 0
     }
 
+    def "a rejoined call whose validation then fails still carries the marker"() {
+        given: 'the owner is blocked in its leaf, and the Write master is revoked mid-flight'
+        settingsMap.enableWrite = true
+        mcpDriver.pushHeaders([
+            'MCP-Protocol-Version': '2026-07-28',
+            'Mcp-Method': 'tools/call',
+            'Mcp-Name': 'hub_call_rule'
+        ])
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        script.metaClass.toolRunRmRule = { Map a ->
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            [success: true, ruleIds: a.ruleId, results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+        def args = [ruleId: [95, 96], action: 'stop']
+        def failure = new AtomicReference()
+        Thread owner = Thread.start {
+            try { directCall(script, 2301, 'hub_call_rule', args) }
+            catch (Throwable t) { failure.set(t) }
+        }
+
+        when: 'the duplicate coalesces, then trips the access gate on its own claim'
+        assert entered.await(5, TimeUnit.SECONDS)
+        settingsMap.enableWrite = false
+        def duplicate = directCall(script, 2302, 'hub_call_rule', args)
+        release.countDown()
+        owner.join(5000)
+
+        then: 'the refusal is a validation result and still identifies itself as a rejoin'
+        !owner.alive
+        failure.get() == null
+        duplicate.error == null
+        duplicate.result.isError == true
+        mcpDriver.parseInner(duplicate).rejoined == true
+        mcpDriver.parseInner(duplicate).error.contains('Write tools are disabled')
+
+        cleanup:
+        release.countDown()
+        owner?.join(5000)
+    }
+
     def "every continuation-eligible read is a canonical read-only tool"() {
         expect:
         (script._mrtrReadTools() as Set).every { (script.getReadOnlyToolNames() as Set).contains(it) }

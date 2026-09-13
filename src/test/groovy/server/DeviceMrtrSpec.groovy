@@ -190,7 +190,8 @@ class DeviceMrtrSpec extends ToolSpecBase {
         def denied = call('hub_get_device', args, token)
 
         then:
-        denied.error == null || denied.result.isError == true
+        denied.error == null
+        denied.result.isError == true
         !groovy.json.JsonOutput.toJson(denied).contains('private-device-profile')
     }
 
@@ -230,7 +231,8 @@ class DeviceMrtrSpec extends ToolSpecBase {
         def failed = call('hub_get_device', [deviceId: '88'])
 
         then:
-        failed.error == null || failed.result.isError == true
+        failed.error == null
+        failed.result.isError == true
         reads == 0
         script._activeWrites().isEmpty()
     }

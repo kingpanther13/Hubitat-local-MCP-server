@@ -604,7 +604,8 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_source', [type: 'app'])
 
         then:
-        response.result?.isError == true || response.result?.isError == true
+        response.error == null
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]
@@ -838,7 +839,8 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_source', [type: 'driver'])
 
         then:
-        response.result?.isError == true || response.result?.isError == true
+        response.error == null
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]

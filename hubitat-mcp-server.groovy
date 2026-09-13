@@ -1710,7 +1710,7 @@ def handleToolsCall(msg) {
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
                        error: e.message]])
-        return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message)
+        return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message, rejoined)
     } catch (Exception e) {
         mcpLog("error", "server", "MRTR tool execution error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
@@ -3627,7 +3627,7 @@ private boolean _isProtocolValidation(String message) {
     return (txt =~ /Unknown tool|Unknown gateway|Cannot call a gateway|Gateway arg|useGateways is OFF|tool name required|tool arguments must be an object|requestState/) as boolean
 }
 
-private def _renderValidationError(id, toolName, reactiveToolName, args, String detail) {
+private def _renderValidationError(id, toolName, reactiveToolName, args, String detail, boolean rejoined = false) {
     if (_isProtocolValidation(detail)) {
         return jsonRpcError(id, -32602, "Invalid params: ${detail}")
     }
@@ -3638,7 +3638,8 @@ private def _renderValidationError(id, toolName, reactiveToolName, args, String 
     def hint = detail?.trim() ? _reactiveBpsWarning(reactiveToolName, args, detail) : null
     def failure = [success: false, isError: true, tool: reactiveToolName,
                    error: hint ? "${text} ${hint}".toString() : text, __validation: true]
-    return _renderToolResult(id, toolName, reactiveToolName, args, failure, true)
+    return _renderToolResult(id, toolName, reactiveToolName, args,
+        _mrtrMarkRejoined(failure, rejoined), true)
 }
 
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
@@ -3647,7 +3648,8 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${detail}", null,
             [details: [tool: reactiveToolName,
                        gateway: (reactiveToolName != toolName) ? toolName : null, error: detail]])
-        return _renderValidationError(id, toolName, reactiveToolName, args, detail)
+        return _renderValidationError(id, toolName, reactiveToolName, args, detail,
+            result.rejoined == true)
     }
     // Reactive hints mutate their result map. Terminal MRTR responses are retained
     // for replay, so render from a non-mutating structural copy and keep the cached canonical
