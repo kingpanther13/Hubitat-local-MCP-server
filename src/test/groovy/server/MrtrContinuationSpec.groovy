@@ -1535,6 +1535,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         initialized.result.resultType == 'input_required'
         requestState instanceof String
+        autoContinueJobs().isEmpty()
         atomicStateMap.mrtrRequests[requestState].checkpoint.phase == 'clone_clicks'
         atomicStateMap.mrtrRequests[requestState].checkpoint.clonerAppId == 4242
         posts.isEmpty()
@@ -3115,6 +3116,129 @@ class MrtrContinuationSpec extends ToolSpecBase {
         first?.join(5000)
     }
 
+
+    private List autoContinueJobs() { runInCalls.findAll { it[1] == 'runMrtrAutoContinue' } }
+
+    def "the server resumes a checkpointed detached write when no client request does"() {
+        given:
+        settingsMap.enableWrite = true
+        def leafCalls = new AtomicInteger(0)
+        script.metaClass.toolSetRule = { Map actual ->
+            leafCalls.incrementAndGet() == 1
+                ? [success: false, partial: true, status: 'in_progress', stepsRemaining: [[name: 'finish']], appId: actual.appId]
+                : [success: true, appId: actual.appId, settingsApplied: true]
+        }
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+        def args = [appId: 331, confirm: true, settings: [description: 'two slices']]
+
+        when: 'the first request runs slice one and pauses at the checkpoint'
+        def first = modernCall('hub_set_rule', args)
+        String stateId = first.result.requestState
+        def jobs = autoContinueJobs()
+
+        then: 'a server-side continuation is scheduled for exactly that generation'
+        first.result.resultType == 'input_required'
+        leafCalls.get() == 1
+        jobs.size() == 1
+        jobs[0][0] == script._mrtrAutoContinueDelaySeconds()
+        jobs[0][2].overwrite == false
+        jobs[0][2].data == [stateId: stateId, generation: 1]
+
+        when: 'no client request arrives and the job fires'
+        script.runMrtrAutoContinue(new LinkedHashMap(jobs[0][2].data as Map))
+        def replay = modernCall('hub_set_rule', args, stateId)
+        def inner = mcpDriver.parseInner(replay)
+
+        then: 'the remainder ran once and a late client request gets the finished result'
+        leafCalls.get() == 2
+        runInMillisCalls.size() == 2
+        replay.result.resultType == 'complete'
+        inner.success == true
+        inner.mrtr.rounds == 2
+        autoContinueJobs().size() == 1
+    }
+
+    def "the server-side continuation does nothing once a client request has resumed"() {
+        given:
+        settingsMap.enableWrite = true
+        def leafCalls = new AtomicInteger(0)
+        script.metaClass.toolSetRule = { Map actual ->
+            leafCalls.incrementAndGet() == 1
+                ? [success: false, partial: true, status: 'in_progress', stepsRemaining: [[name: 'finish']], appId: actual.appId]
+                : [success: true, appId: actual.appId]
+        }
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+        def args = [appId: 332, confirm: true, settings: [description: 'client resumes']]
+        String stateId = modernCall('hub_set_rule', args).result.requestState
+        Map job = new LinkedHashMap(autoContinueJobs()[0][2].data as Map)
+
+        when: 'the client continues first, then the stale job fires'
+        def complete = modernCall('hub_set_rule', args, stateId)
+        script.runMrtrAutoContinue(job)
+
+        then:
+        complete.result.resultType == 'complete'
+        leafCalls.get() == 2
+        runInMillisCalls.size() == 2
+        (atomicStateMap.mrtrRequests as Map)[stateId].status == 'terminal'
+    }
+
+    def "the server resumes a paused synchronous multi-rule write inline"() {
+        given:
+        settingsMap.enableWrite = true
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            ranWith.size() == 1
+                ? [success: false, partial: true, ruleIds: [81, 82], results: [[success: true, ruleId: 81]], remainingRuleIds: [82]]
+                : [success: true, partial: false, ruleIds: [82], results: [[success: true, ruleId: 82]]]
+        }
+        def args = [ruleId: [81, 82], action: 'stop']
+
+        when:
+        def first = modernCall('hub_call_rule', args)
+        String stateId = first.result.requestState
+        def jobs = autoContinueJobs()
+        script.runMrtrAutoContinue(new LinkedHashMap(jobs[0][2].data as Map))
+        def replay = modernCall('hub_call_rule', args, stateId)
+        def inner = mcpDriver.parseInner(replay)
+
+        then:
+        first.result.resultType == 'input_required'
+        jobs.size() == 1
+        ranWith.size() == 2
+        ranWith[1].ruleId == [82]
+        !ranWith[1].containsKey('__reqT0')
+        replay.result.resultType == 'complete'
+        inner.success == true
+        inner.results*.ruleId == [81, 82]
+        inner.mrtr.rounds == 2
+    }
+
+    def "an expired or already-terminal record is not resumed by the server"() {
+        given:
+        settingsMap.enableWrite = true
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
+        def args = [ruleId: [91, 92], action: 'stop']
+        String stateId = modernCall('hub_call_rule', args).result.requestState
+        Map job = new LinkedHashMap(autoContinueJobs()[0][2].data as Map)
+        int ranBefore = 0
+        script.metaClass.toolRunRmRule = { Map a -> ranBefore++; [success: true] }
+
+        when: 'the record expired while nobody resumed it'
+        atomicStateMap.mrtrRequests[stateId].expiresAt = 1L
+        script._writeStateCacheInvalidate()
+        script.runMrtrAutoContinue(job)
+
+        then:
+        ranBefore == 0
+    }
 
     def "every continuation-eligible read is a canonical read-only tool"() {
         expect:

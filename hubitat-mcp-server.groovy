@@ -3095,6 +3095,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         if (stored == null) {
             throw new IllegalStateException("requestState ownership was lost before its continuation checkpoint could be stored")
         }
+        _mrtrScheduleAutoContinue(stateId, stored)
         return [outcome: "continued"]
     }
 
@@ -3353,6 +3354,71 @@ def runMrtrSlice(Map job = [:]) {
             // own liveness marker.
             if (MRTR_WORK_ITEMS[claimId] == null) _mrtrReleaseExecutionLocked(claimId)
         }
+    }
+}
+
+// A checkpointed slice waits for the client's next state-bearing request. The spec lets a
+// client never send one, which would leave the remainder unrun until the record expires,
+// so the server resumes the work itself once a continuing client has had time to. A
+// client request that arrives first claims the generation and this job finds nothing.
+def _mrtrAutoContinueDelaySeconds() { 5 }
+
+private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
+    // Clone and import checkpoints derive their remaining work from the original
+    // arguments the client resends, which are not stored; they stay client-driven.
+    if (!(rec?.nextArguments instanceof Map)) return
+    try {
+        runIn(_mrtrAutoContinueDelaySeconds(), "runMrtrAutoContinue",
+            [overwrite: false, data: [stateId: stateId, generation: rec.generation]])
+    } catch (Exception scheduleErr) {
+        mcpLog("warn", "mrtr", "Could not schedule server-side continuation for ${rec.leafTool}: ${scheduleErr.message}")
+    }
+}
+
+def runMrtrAutoContinue(Map job = [:]) {
+    String stateId = job?.stateId?.toString()
+    Integer generation = null
+    try { generation = job?.generation as Integer } catch (Exception ignored) { }
+    if (!stateId || generation == null) return
+    Map rec
+    synchronized (WRITE_RESERVATION_LOCK) {
+        def stored = _writeStateMapLocked("mrtrRequests")
+        rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
+    }
+    // Only an unclaimed record still sitting at the checkpointed generation needs help.
+    if (rec == null || rec.status != "active" || rec.claimId != null ||
+            ((rec.generation ?: 0) as Integer) != generation ||
+            !(rec.nextArguments instanceof Map) ||
+            (rec.expiresAt != null && (rec.expiresAt as Long) <= now())) return
+    Map binding = [outerTool: rec.outerTool?.toString(), leafTool: rec.leafTool?.toString(),
+                   argDigest: rec.argDigest?.toString()]
+    Map claim
+    try {
+        claim = _mrtrClaim(stateId, rec.outerTool, rec.leafTool, binding) as Map
+    } catch (IllegalArgumentException gone) {
+        return
+    }
+    if (claim.outcome != "claimed") return
+    rec = claim.record as Map
+    String leaf = rec.leafTool?.toString()
+    Map executionArgs = _mrtrCopyMap(rec.nextArguments as Map)
+    mcpLog("info", "mrtr", "Server-side continuation of ${leaf} at generation ${generation}: no client request resumed it")
+    try {
+        _mrtrValidateAccess(rec.outerTool, leaf, executionArgs)
+        if (_mrtrDetachedWorkerTools().contains(leaf)) {
+            _mrtrScheduleSlice(stateId, rec, claim, executionArgs)
+            return
+        }
+        def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
+        _mrtrCommitSlice(stateId, rec, claim, executionArgs, result)
+    } catch (IllegalArgumentException e) {
+        mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} refused: ${e.message}")
+        _mrtrAbandon(stateId, rec, claim, "validation_error")
+    } catch (Exception e) {
+        mcpLog("error", "mrtr", "Server-side continuation of ${leaf} failed: ${e.message}")
+        def failure = _mrtrFailureWithLedger(rec, leaf, "Tool error: ${e.message}".toString())
+        _mrtrCleanupRecord(rec)
+        _mrtrStoreTerminal(stateId, rec, claim, failure, true)
     }
 }
 
@@ -10110,7 +10176,7 @@ The state is bound to the original leaf tool and exact original arguments. A mis
 
 ### Worker checkpoints and limits
 
-Native bulk trigger/action edits, resumable patch batches and walk-driver steps pause between completed items after the worker target. Driver bulk installs/updates pause between drivers. Each saved checkpoint retains the untouched remainder, renews the active window, and advances the owner generation; the next original-argument request with the same state starts a fresh worker slice. Inner destructive wizard operations never receive this worker clock.
+Native bulk trigger/action edits, resumable patch batches and walk-driver steps pause between completed items after the worker target. Driver bulk installs/updates pause between drivers. Each saved checkpoint retains the untouched remainder, renews the active window, and advances the owner generation; the next original-argument request with the same state starts a fresh worker slice. If no client request resumes a checkpoint within about five seconds, the server resumes it itself and keeps going to completion or the eight-slice cap, so a client that never continues still gets the whole write; a client request that arrives later observes or replays as usual. Clone and import checkpoints are the exception: their remaining work is derived from the original arguments the client resends, so they stay client-driven. Inner destructive wizard operations never receive this worker clock.
 
 Native creation, action replacement, individual driver operations, and patch batches containing `replaceRequiredExpression` remain uninterrupted. Splitting those operations would require additional phase or rollback state. The target is not a hard execution deadline or a guarantee of recovery from a platform kill.
 
