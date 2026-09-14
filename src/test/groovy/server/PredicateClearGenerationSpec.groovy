@@ -159,6 +159,30 @@ class PredicateClearGenerationSpec extends ToolSpecBase {
         [concurrent, token] << [[false, true], ['first-generation', true, null]].combinations()
     }
 
+    def 'deferred clear remains best effort when predicate bookkeeping cannot persist'() {
+        given:
+        def backing = new FailingPredicateState()
+        backing.put('predClearPending', ['100': 'first-generation'])
+        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L),
+            state: stateMap, atomicState: backing])
+        installPages()
+        List buttons = []
+        peer.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            if (path == '/installedapp/btn') buttons << body.name
+            [status: 200, location: null, data: '']
+        }
+        backing.@fail = true
+
+        when:
+        peer._rmRunPendingPredCapabsClear(100)
+
+        then:
+        noExceptionThrown()
+        buttons.contains('actionCancel')
+        backing.predClearPending.get('100') == 'first-generation'
+        peer._rmPendingPredClearSnapshot().get('100') == 'first-generation'
+    }
+
     def 'confirmed rollback stays successful when predicate bookkeeping cannot persist'() {
         given:
         def backing = new FailingPredicateState()

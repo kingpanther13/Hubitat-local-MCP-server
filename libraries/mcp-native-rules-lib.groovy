@@ -10783,7 +10783,10 @@ private void _rmRunPendingPredCapabsClear(Integer appId) {
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore backup if needed")
     }
-    _rmDropPredClearPending(appId, observedGeneration)
+    try { _rmDropPredClearPending(appId, observedGeneration) }
+    catch (Exception cleanupError) {
+        mcpLog("warn", "rm-native", "addAction: deferred predicate-clear bookkeeping failed for app ${appId}: ${cleanupError.message}; the recovery record is retained for a later attempt")
+    }
 }
 
 void _rmMarkPredClearPending(Integer appId) {

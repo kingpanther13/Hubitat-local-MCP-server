@@ -2771,12 +2771,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         atomicStateMap.predClearPending?.get("100") == true
     }
 
-    def "replaceRequiredExpression restore drops the deferred predCapabs-clear flag (null-backup early return)"() {
-        // D. _rmRestoreCommittedREFromBackup rolls back a failed new-RE build, so it drops any
-        // predClearPending the failed build flagged (lib ~10641, at the top before the fileName check):
-        // the restored rule's predCapabs comes from a clean backup, and a leftover flag would fire a
-        // wasted ghost clear on the rule's next addAction. The null-backup early-return path
-        // (fileName == null) reaches the drop and needs no hub stubs.
+    def "replaceRequiredExpression restore preserves the deferred predCapabs-clear flag when no backup exists"() {
+        // A rollback that cannot restore anything must keep its recovery intent.
         given:
         enableWrite()
         atomicStateMap.predClearPending = ["100": true]
@@ -2787,8 +2783,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the restore reports the RE was NOT restored (no backup to restore from)"
         result.requiredExpressionRestored == false
 
-        and: "the deferred predCapabs-clear flag is dropped -- the rolled-back build's flag is cleared"
-        !atomicStateMap.predClearPending?.get("100")
+        and: "the deferred clear remains available for a later recovery attempt"
+        atomicStateMap.predClearPending?.get("100") == true
     }
 
     def "toolDeleteNativeApp force-delete drops the deferred predCapabs-clear flag"() {

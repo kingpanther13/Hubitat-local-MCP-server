@@ -10174,6 +10174,10 @@ class TestRunner:
             })
             assert undone.get("success") is True and undone.get("undoAvailable") is True, \
                 f"restoring the undo backup failed: {undone}"
+            selected_undo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
+            })
+            assert selected_undo.get("source") == final_src, f"undo lost its selected backup: {selected_undo}"
             redo_key = undone.get("preRestoreBackup")
             assert redo_key and redo_key != pre_restore_key, f"undo overwrote its selected backup: {undone}"
             after_undo = self.client.call_tool("hub_read_apps_code", {

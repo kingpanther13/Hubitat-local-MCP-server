@@ -28,6 +28,12 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
          timestamp: timestamp, version: 1, sourceLength: 3]
     }
 
+    private boolean blockedOnBackupMonitor(Thread worker) {
+        def info = java.lang.management.ManagementFactory.threadMXBean.getThreadInfo(worker.id)
+        info?.threadState == Thread.State.BLOCKED &&
+            info.lockInfo?.identityHashCode == System.identityHashCode(scriptStaticField('ITEM_BACKUP_MANIFESTS'))
+    }
+
     private FailingManifest failingManifest(Map seed = [app_99: entry('99')]) {
         def backing = new FailingManifest()
         backing.put('itemBackupManifest', seed)
@@ -184,7 +190,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         } as java.util.concurrent.Callable)
         assert secondStarted.await(10, TimeUnit.SECONDS)
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (secondThread.get().state != Thread.State.BLOCKED && !second.isDone() && System.nanoTime() < deadline) {
+        while (!blockedOnBackupMonitor(secondThread.get()) && !second.isDone() && System.nanoTime() < deadline) {
             Thread.yield()
         }
         if (second.isDone()) second.get() // Surface the worker's own exception instead of a thread-state mismatch.
@@ -251,7 +257,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         publisherFuture.set(publisher)
         assert publisherStarted.await(10, TimeUnit.SECONDS)
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (publisherThread.get().state != Thread.State.BLOCKED && !publisher.isDone() && System.nanoTime() < deadline) {
+        while (!blockedOnBackupMonitor(publisherThread.get()) && !publisher.isDone() && System.nanoTime() < deadline) {
             Thread.yield()
         }
         if (publisher.isDone()) publisher.get()
@@ -323,6 +329,15 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         new String(files.get(restored.preRestoreFile.toString()), 'UTF-8') == 'current source'
 
         when:
+        def retried = script.toolRestoreItemBackup([backupKey: targetKey, confirm: true])
+
+        then:
+        retried.success && retried.undoAvailable
+        retried.preRestoreBackup == restored.preRestoreBackup
+        retried.preRestoreFile == restored.preRestoreFile
+        new String(files.get(targetFile), 'UTF-8') == 'undo target'
+
+        when:
         def redo = script.toolRestoreItemBackup([backupKey: restored.preRestoreBackup, confirm: true])
 
         then:
@@ -343,7 +358,10 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
             files.remove(name)
             throw new IOException('delete response timed out')
         }
-        script.metaClass.downloadHubFile = { String name -> files.get(name) }
+        script.metaClass.downloadHubFile = { String name ->
+            if (probe == 'exception') throw new IOException('probe unavailable')
+            files.get(name)
+        }
 
         when:
         def result = script.toolDeleteFile([fileName: 'mcp-backup-app-99.groovy', confirm: true])
@@ -353,6 +371,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         result.error.contains('delete response timed out')
         script._itemBackupManifest().app_99.deletePending == true
         files.isEmpty()
+
+        where:
+        probe << ['missing', 'exception']
     }
 
     def 'pending recovery commit failure returns an error and keeps the backup unavailable'() {
@@ -371,11 +392,21 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         fetched.error.contains('pending deletion')
+        fetched.error.contains('file is readable') && fetched.error.contains('manifest unavailable')
+        restored.error.contains('file is readable') && restored.error.contains('manifest unavailable')
         restored.success == false
         restored.error.contains('pending deletion')
         peer._itemBackupManifest().app_99.deletePending == true
         backing.itemBackupManifest.app_99.deletePending == true
         writes.isEmpty()
+
+        when:
+        backing.@fail = false
+        def recovered = peer.toolGetItemBackup([backupKey: 'app_99'])
+
+        then:
+        recovered.source == 'baseline'
+        !peer._itemBackupManifest().app_99.deletePending
     }
 
     def 'file deletion failure restores its manifest entry and reusable view'() {

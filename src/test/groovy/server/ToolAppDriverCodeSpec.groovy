@@ -3705,7 +3705,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         and: 'failure is reported, original manifest entry preserved for retry'
         result.success == false
         result.error.contains('bad code')
-        result.message.contains('preserved')
+        result.message.contains('Check the live source') && result.message.contains('hub_get_backup')
         atomicStateMap.itemBackupManifest.containsKey('driver_88')
     }
 
@@ -3738,7 +3738,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('bad code')
-        inner.message.contains('preserved')
+        inner.message.contains('Check the live source') && inner.message.contains('hub_get_backup')
         atomicStateMap.itemBackupManifest.containsKey('driver_88')
 
         where:
@@ -3764,7 +3764,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then: 'failure is reported and the backup entry is preserved for retry'
         result.success == false
         result.error.contains('Empty response from /app/saveOrUpdateJson')
-        result.message.contains('preserved')
+        result.message.contains('Check the live source') && result.message.contains('hub_get_backup')
         atomicStateMap.itemBackupManifest.containsKey('app_99')
     }
 

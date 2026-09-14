@@ -487,7 +487,7 @@ _RETIRED_KEY_PATTERN = "|".join(map(re.escape, RETIRED_PERSISTED_DERIVED_KEYS))
 # Include compound writes while leaving equality and regex comparisons readable.
 _RETIRED_ASSIGNMENT = r"\s*(?:\*\*|>>>|>>|<<|[+\-*/%&|^])?=(?![=~])"
 _RETIRED_DOT_WRITE = re.compile(
-    rf"\b(?P<store>atomicState|state)\s*\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
+    rf"\b(?P<store>atomicState|state)\s*\??\.\s*(?P<key>{_RETIRED_KEY_PATTERN})\b"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
 # The bracket regexes run on masked source, where a string literal is blanked to
@@ -499,16 +499,27 @@ _RETIRED_BRACKET_WRITE = re.compile(
 _RETIRED_BRACKET_LITERAL = re.compile(
     rf"\s*(?P<quote>['\"])(?P<key>{_RETIRED_KEY_PATTERN})(?P=quote)\s*"
 )
+_STATE_QUOTED_PROPERTY_WRITE = re.compile(
+    r"(?<![.\w])(?P<store>atomicState|state)\s*\??\.(?P<literal>[ \t]+)"
+    r"(?:\s*(?:\[[^]]*\]|\??\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
+)
 
 
 def _literal_state_writes(line: str, original: str, dot_re, bracket_re, literal_re) -> list[tuple[str, str]]:
     """(store, key) pairs assigned on one masked line; bracket keys are recovered from the original."""
-    writes = [(m.group("store"), m.group("key")) for m in dot_re.finditer(line)]
-    for match in bracket_re.finditer(line):
-        start, end = match.span("literal")
-        literal = literal_re.fullmatch(original[start:end])
-        if literal:
-            writes.append((match.group("store"), literal.group("key")))
+    # Interpolation remains executable in the mask: state."${name}" must not
+    # masquerade as a literal state.name assignment.
+    writes = []
+    for match in dot_re.finditer(line):
+        prefix = re.sub(r"/\*.*?\*/", "", original[match.end("store"):match.start("key")])
+        if not any(quote in prefix for quote in ("'", '"')):
+            writes.append((match.group("store"), match.group("key")))
+    for pattern in (bracket_re, _STATE_QUOTED_PROPERTY_WRITE):
+        for match in pattern.finditer(line):
+            start, end = match.span("literal")
+            literal = literal_re.fullmatch(original[start:end])
+            if literal:
+                writes.append((match.group("store"), literal.group("key")))
     return writes
 
 
@@ -555,7 +566,7 @@ PERSISTED_STATE_INVENTORY = {
 }
 # `(?<![.\w])` keeps a member chain such as node.state.x from reading as app state.
 _INVENTORY_DOT_WRITE = re.compile(
-    r"(?<![.\w])(?P<store>atomicState|state)\s*\.\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?<![.\w])(?P<store>atomicState|state)\s*\??\.\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?:\s*(?:\[[^]]*\]|\.\s*[A-Za-z_][A-Za-z0-9_]*))*" + _RETIRED_ASSIGNMENT
 )
 _INVENTORY_BRACKET_WRITE = re.compile(
@@ -4951,7 +4962,7 @@ def check_sandbox_map_subscripts(
     )
     field_inferred = re.compile(
         rf"@(?:groovy\.transform\.)?Field\s+(?:(?:static|final|private|protected|public)\s+)*"
-        rf"def\s+({ident})\s*=\s*([^\n;]+)"
+        rf"(?:def\s+)?({ident})\s*=\s*([^\n;]+)"
     )
     # A safe-navigation receiver (ctx?.data[key]) is the same Map access; the
     # receiver is normalised without its '?' before it is looked up.
@@ -4963,17 +4974,10 @@ def check_sandbox_map_subscripts(
         rf"\b(?P<receiver>{ident}(?:\??\.{ident})*)\s*\[\s*"
         r"(?P<quote>['\"])(?P<key>fields|class|metaClass)(?P=quote)\s*\]"
     )
-    # Composed keys are dynamic too: an interpolated GString, or a literal
-    # concatenated with an expression on either side. Matched on the RAW body
-    # (masking blanks the literal halves) and correlated back to code below.
-    composed_re = re.compile(
-        rf"\b(?P<receiver>{ident}(?:\??\.{ident})*)\s*\[\s*(?P<key>"
-        r"\"[^\"\n]*\$(?:\{|[A-Za-z_])[^\"\n]*\""
-        r"|(?:\"[^\"\n]*\"|'[^'\n]*')\s*\+[^\]\n]+"
-        rf"|{ident}(?:\??\.{ident})*(?:\(\))?\s*\+\s*(?:\"[^\"\n]*\"|'[^'\n]*')[^\]\n]*"
-        rf"|{ident}(?:\??\.{ident})*(?:\(\))?\s*\+[^\]\n]+"
-        r")\s*\]"
-    )
+    # Balance the outer subscript so nested call arguments and List indices
+    # remain part of a composed key, rather than ending a regex match early.
+    subscript_open_re = re.compile(rf"\b(?P<receiver>{ident}(?:\??\.{ident})*)\s*\[")
+    interpolated_key_re = re.compile(r'"[^"\n]*\$(?:\{|[A-Za-z_])[^"\n]*"')
     # The raw literal is correlated against executable code below; a quoted
     # example in a comment cannot establish a safe branch.
     bounded_if_re = re.compile(
@@ -5466,12 +5470,12 @@ def check_sandbox_map_subscripts(
                     f"Measured {'write' if writing else 'read'} collision for '{key}' "
                     f"on {receiver}; preserve the key with Map.{'put' if writing else 'get'}.")
 
-            def composed_key_can_collide(raw_key: str) -> bool:
+            def composed_key_can_collide(raw_key: str, masked_key: str) -> bool:
                 # A composed key is bounded by its fixed parts: "switch${id}.@N"
                 # can never spell fields/class/metaClass, "${k}" or k + "s" can.
                 # Literal fragments stay literal, everything else is a wildcard.
                 parts = []
-                for pos, token in outer_expression_tokens(raw_key):
+                for pos, token in outer_expression_tokens(masked_key):
                     if token == "+":
                         parts.append(pos)
                 pieces = [raw_key[i + 1:j].strip() for i, j in
@@ -5483,6 +5487,10 @@ def check_sandbox_map_subscripts(
                         if piece[0] == '"':
                             inner = re.sub(rf"\$\{{[^}}]*\}}|\${ident}(?:\.{ident})*", "\0", inner)
                         skeleton += "".join(".*" if ch == "\0" else re.escape(ch) for ch in inner)
+                    elif re.fullmatch(r"[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?[lLfFdDgG]?", piece):
+                        # Numeric addition stays numeric; string concatenation
+                        # retains a digit, excluding every measured collision.
+                        skeleton += re.escape(piece)
                     else:
                         skeleton += ".*"
                 return any(re.fullmatch(skeleton, name) for name in collisions)
@@ -5494,10 +5502,25 @@ def check_sandbox_map_subscripts(
                 # the composed scan below reports it with its real key.
                 if subscript_re.fullmatch(raw_body[access.start():access.end()]):
                     accesses.append((access.start(), access.end(), *access.group("receiver", "key")))
-            for access in composed_re.finditer(raw_body):
-                if (body[access.start():].startswith(access.group("receiver"))
-                        and composed_key_can_collide(access.group("key"))):
-                    accesses.append((access.start(), access.end(), *access.group("receiver", "key")))
+            for access in subscript_open_re.finditer(body):
+                stop = close_delimiter(body, access.end() - 1, "[", "]")
+                if stop == len(body):
+                    continue
+                raw_key = raw_body[access.end():stop]
+                masked_key = body[access.end():stop]
+                # Strip parentheses together to retain raw/masked offset parity.
+                while True:
+                    leading = len(raw_key) - len(raw_key.lstrip())
+                    raw_key = raw_key.strip()
+                    masked_key = masked_key[leading:leading + len(raw_key)]
+                    if not (masked_key.startswith("(") and
+                            close_delimiter(masked_key, 0, "(", ")") == len(masked_key) - 1):
+                        break
+                    raw_key, masked_key = raw_key[1:-1], masked_key[1:-1]
+                composed = (interpolated_key_re.fullmatch(raw_key) or
+                            any(token == "+" for _, token in outer_expression_tokens(masked_key)))
+                if composed and composed_key_can_collide(raw_key, masked_key):
+                    accesses.append((access.start(), stop + 1, access.group("receiver"), raw_key))
             for start, end, receiver, key in sorted(accesses):
                 receiver = receiver.replace("?", "")
                 if not map_at(receiver, start):

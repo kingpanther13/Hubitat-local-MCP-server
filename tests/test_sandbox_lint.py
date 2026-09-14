@@ -239,17 +239,6 @@ def sandbox_map_findings(source: str, path: str = "hubitat-mcp-server.groovy") -
 
 
 
-
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.parametrize("function_name", ["_publicToolResultValue", "_mrtrCanonicalArgs"])
 def test_sandbox_map_guard_catches_arbitrary_key_assignment_in_implicated_copy_functions(function_name):
     source = f"""
@@ -2296,7 +2285,10 @@ state.requiredParamsByTool = buildRequiredParams()
     ]
 
 
-@pytest.mark.parametrize("key", ["k + suffix", "buildPrefix() + k", "k + suffix + tail"])
+@pytest.mark.parametrize("key", [
+    "k + suffix", "buildPrefix() + k", "k + suffix + tail",
+    "build(k) + suffix", "(k + suffix)", "parts[0] + k",
+])
 @pytest.mark.parametrize("receiver,write,flagged", [
     ("def m = [:]", True, True), ("def m = [:]", False, True),
     ("Map m = [:]", True, True), ("Map m = [:]", False, False),
@@ -2313,6 +2305,9 @@ def test_unquoted_composed_map_keys(key, receiver, write, flagged):
     ("def REG = [:]", True, True),
     ("def REG = new java.util.HashMap()", True, True),
     ("def REG = []", False, False),
+    ("REG = [:]", True, True),
+    ("REG = new java.util.HashMap()", True, True),
+    ("REG = []", False, False),
 ])
 def test_qualified_and_inferred_fields_across_include_scope(declaration, read_flagged, write_flagged):
     findings = sl.check_sandbox_map_subscripts({
@@ -2323,3 +2318,65 @@ def test_qualified_and_inferred_fields_across_include_scope(declaration, read_fl
     assert [(f["file"], f["line"]) for f in findings] == [
         ("libraries/x.groovy", line) for line, flagged in [(2, read_flagged), (3, write_flagged)] if flagged
     ]
+
+
+@pytest.mark.parametrize("key,flagged", [
+    ('build("fixed") + k', True),
+    ('(build(k) + "s")', True),
+    ('(build(k) + "-suffix")', False),
+    ('("prefix-" + parts[0])', False),
+    ('(parts[0] + "-suffix")', False),
+    ('parts["unrelated"] + k', True),
+    ('1 + k', False),
+    ('(1 + 2)', False),
+    ('1', False),
+])
+def test_nested_composed_keys_keep_only_actual_fixed_fragments(key, flagged):
+    assert bool(sandbox_map_findings(f'def f(k, parts) {{\n def m = [:]\n m[{key}] = 1\n}}')) == flagged
+
+
+@pytest.mark.parametrize("declaration", ['List m = []', 'String[] m = new String[3]', 'def m = [:]; m = []'])
+@pytest.mark.parametrize("key", ['build(k) + suffix', '(k + suffix)', 'parts[0] + k'])
+def test_nested_composed_keys_preserve_list_and_array_controls(declaration, key):
+    assert sandbox_map_findings(f'def f(k, suffix, parts) {{\n {declaration}\n m[{key}] = 1\n}}') == []
+
+
+def test_nested_composed_key_examples_in_comments_and_strings_are_ignored():
+    source = '''def f(k, parts) {
+ def m = [:]
+ // m[build(k) + suffix] = 1
+ def example = "m[(k + suffix)] = 1"
+ /* m[parts[0] + k] = 1 */
+}'''
+    assert sandbox_map_findings(source) == []
+
+
+@pytest.mark.parametrize("target", [
+    "state?.newKey", "state.'newKey'", 'state."newKey"', "atomicState?.'newKey'",
+    "state?.newKey.items", "state.'newKey'[index]", "state./* key */newKey",
+])
+@pytest.mark.parametrize("operator", ['=', '+=', '<<='])
+def test_inventory_catches_literal_property_assignment_variants(target, operator):
+    findings = sl._scan_persisted_state_inventory('hubitat-mcp-server.groovy', f'{target} {operator} value')
+    assert len(findings) == 1
+    assert findings[0]['rule'] == 'PERSISTED_STATE_INVENTORY'
+    assert 'newKey' in findings[0]['message']
+
+
+@pytest.mark.parametrize("target", ["state?.toolSearchCorpus", "state.'toolSearchCorpus'", 'atomicState?."toolSearchCorpus"'])
+def test_retired_key_property_variants_report_once(target):
+    findings = sl.scan_source(f'{target} = value', 'hubitat-mcp-server.groovy')
+    assert [f['rule'] for f in findings] == ['PERSISTED_DERIVED_KEY']
+
+
+@pytest.mark.parametrize("source", [
+    "state?.debugLogs = value", "state.'debugLogs' = value", 'atomicState?."variableHistory" = value',
+    "node.state?.newKey = value", "node.state.'newKey' = value",
+    "def value = state?.newKey", "def value = state.'newKey'",
+    "if (state?.newKey == other) inspect()", "if (state.'newKey' == other) inspect()",
+    '// state?.newKey = value', '''def example = "state.'newKey' = value"''',
+    'state."${name}" = value', 'state./* key */"${name}" = value', "state.put('newKey', value)",
+    "atomicState.updateMapValue('newKey', key, value)", "atomicState.updateListValue('newKey', index, value)",
+])
+def test_inventory_property_variants_preserve_documented_exemptions(source):
+    assert sl._scan_persisted_state_inventory('hubitat-mcp-server.groovy', source) == []

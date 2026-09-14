@@ -45,7 +45,7 @@ FILE_GROUP_MAP = {
     "libraries/mcp-bundles-lib.groovy":         ["system_tools"],
     "libraries/mcp-hpm-lib.groovy":             ["system_tools"],
     "libraries/mcp-files-lib.groovy":           ["system_tools"],
-    "libraries/mcp-item-backups-lib.groovy":    ["system_tools"],
+    "libraries/mcp-item-backups-lib.groovy":    ["system_tools", "app_code_update"],
     "libraries/mcp-rooms-lib.groovy":           ["infrastructure"],
     # best_practice_gating: the hub_get_tool_guide coverage (section reachability, the paged
     # full-guide call, the sub-section keys) is registered in that group. Without it a PR that

@@ -89,23 +89,30 @@ private _listSourceItemBackups(args) {
 // Probe and clear run under the monitor against a fresh view, so a deletion that
 // lands in between cannot be resurrected. Only the marker is committed: no
 // retention trim and no file deletion ride on a read path.
-private boolean _healPendingItemBackup(String backupKey, Map entry) {
+private Map _healPendingItemBackup(String backupKey, Map entry) {
     return _withBackupLock("heal ${backupKey}") {
         Map manifest = _itemBackupManifest()
         Map current = manifest[backupKey]
-        if (!(current instanceof Map) || current.fileName?.toString() != entry.fileName?.toString()) return false
+        if (!(current instanceof Map) || current.fileName?.toString() != entry.fileName?.toString()) {
+            return [success: false, error: "The indexed backup changed; refresh hub_list_backups and retry."]
+        }
         byte[] bytes = null
         try { bytes = downloadHubFile(current.fileName.toString()) }
-        catch (Exception probeErr) { mcpLog("warn", "hub-admin", "Could not probe '${current.fileName}' while resolving its pending-deletion marker: ${probeErr.message}") }
-        if (bytes == null || bytes.length == 0) return false
+        catch (Exception probeErr) {
+            mcpLog("warn", "hub-admin", "Could not probe '${current.fileName}' while resolving its pending-deletion marker: ${probeErr.message}")
+            return [success: false, error: "File verification failed: ${probeErr.message}. Check File Manager and retry."]
+        }
+        if (bytes == null || bytes.length == 0) {
+            return [success: false, error: "The file is missing or empty. Check File Manager or choose another backup."]
+        }
         current.remove("deletePending")
         try { _commitItemBackupManifest(manifest) }
         catch (Exception commitError) {
             mcpLog("warn", "hub-admin", "Backup '${backupKey}' is readable but its pending-deletion marker could not be cleared: ${commitError.message}")
-            return false
+            return [success: false, error: "The file is readable, but its metadata could not be updated: ${commitError.message}. Retry recovery."]
         }
         mcpLog("warn", "hub-admin", "Backup '${backupKey}' was marked pending deletion but its file '${current.fileName}' is still present; the marker was cleared")
-        return true
+        return [success: true]
     }
 }
 
@@ -124,9 +131,10 @@ def toolGetItemBackup(args) {
             hint: "Use 'hub_list_backups' to see all available backups with details"
         ]
     }
-    if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
+    Map recovery = entry.deletePending == true ? _healPendingItemBackup(args.backupKey.toString(), entry) : [success: true]
+    if (recovery.success != true) {
         return [
-            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be recovered (file verification or metadata update failed).",
+            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be recovered. ${recovery.error}",
             backupKey: args.backupKey,
             hint: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. The next backup publication purges unrecovered markers."
         ]
@@ -230,10 +238,11 @@ private Map _toolRestoreSourceBackup(args) {
                 availableBackups: availableKeys.isEmpty() ? "None" : availableKeys.join(", ")
             ]
         }
-        if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
+        Map recovery = entry.deletePending == true ? _healPendingItemBackup(args.backupKey.toString(), entry) : [success: true]
+        if (recovery.success != true) {
             return [
                 success: false,
-                error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be recovered (file verification or metadata update failed). Nothing was restored.",
+                error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be recovered. ${recovery.error} Nothing was restored.",
                 backupKey: args.backupKey,
                 note: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. The next backup publication purges unrecovered markers."
             ]
