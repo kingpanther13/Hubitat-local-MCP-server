@@ -10789,7 +10789,7 @@ void _rmMarkPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
         Map pending = _rmPendingPredClearSnapshot()
         // An inventory fetched before this generation cannot discard this intent.
-        pending.get(appId.toString()) = java.util.UUID.randomUUID().toString()
+        pending.put(appId.toString(), java.util.UUID.randomUUID().toString())
         _rmCommitPredClearPending(pending)
     }
 }

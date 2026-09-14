@@ -345,6 +345,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains('pre-restore backup')
+        failure != 'publication' || result.error.contains('manifest unavailable')
         result.note.contains('nothing needs undoing')
         writes.isEmpty()
         files.isEmpty() // A pre-restore upload that could not be published is reclaimed, never orphaned.
@@ -354,12 +355,16 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         failure << ['read', 'missing-source', 'upload', 'publication']
     }
 
-    def 'pending-deletion backups cannot be fetched or restored'() {
+    def 'pending-deletion backups stay unavailable when a probe returns #probe'() {
         given:
         enableWrite()
         atomicStateMap.itemBackupManifest = [app_99: entry('99') + [deletePending: true]]
         List reads = []
-        script.metaClass.downloadHubFile = { String name -> reads << name; null }
+        script.metaClass.downloadHubFile = { String name ->
+            reads << name
+            if (probe == 'exception') throw new IOException('temporary read failure')
+            probe == 'empty' ? new byte[0] : null
+        }
         List writes = []
         script.metaClass.hubInternalPostJson = { String path, String body -> writes << path; '{"status":"success"}' }
 
@@ -369,10 +374,16 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         fetched.error.contains('pending deletion')
+        fetched.error.contains('could not be read and verified')
+        fetched.hint.contains('retry')
+        script._itemBackupManifest().app_99.deletePending == true
         restored.success == false
         restored.error.contains('pending deletion')
         reads == ['mcp-backup-app-99.groovy', 'mcp-backup-app-99.groovy'] // Both paths probe before refusing.
         writes.isEmpty()
+
+        where:
+        probe << ['missing', 'empty', 'exception']
     }
 
     def 'a pending-deletion marker on a file that still exists is cleared and the backup served'() {

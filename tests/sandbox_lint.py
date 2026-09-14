@@ -3391,6 +3391,11 @@ MAP_SUBSCRIPT_SELF_TEST_CASES = [
         {"libraries/x.groovy": "def copy(Map src) {\n def m = [:]\n ['a', 'b'].each { k -> m[k] = src.get(k) }\n return m\n}\n"},
         [],
     ),
+    ('unquoted composed Map key -- must-catch', {"libraries/x.groovy": 'def f(k, suffix) {\n def m = [:]\n m[k + suffix] = 1\n}\n'}, [("libraries/x.groovy", 3)]),
+    ('unquoted composed List key -- must-not-catch', {"libraries/x.groovy": 'def f(k, suffix) {\n def m = []\n m[k + suffix] = 1\n}\n'}, []),
+    ('qualified Map field -- must-catch', {"hubitat-mcp-server.groovy": '@groovy.transform.Field static final java.util.Map CACHE = [:]\n', "libraries/x.groovy": 'def f(key) {\n CACHE[key] = 1\n}\n'}, [("libraries/x.groovy", 2)]),
+    ('inferred Map field -- must-catch', {"hubitat-mcp-server.groovy": '@groovy.transform.Field static final def CACHE = [:]\n', "libraries/x.groovy": 'def f(key) {\n CACHE[key] = 1\n}\n'}, [("libraries/x.groovy", 2)]),
+    ('inferred List field -- must-not-catch', {"hubitat-mcp-server.groovy": '@groovy.transform.Field static final def CACHE = []\n', "libraries/x.groovy": 'def f(key) {\n CACHE[key] = 1\n}\n'}, []),
     (
         "app @Field Map written with a dynamic key from a library -- must-catch",
         {"hubitat-mcp-server.groovy": "@groovy.transform.Field static final Map CACHE = new java.util.HashMap()\n",
