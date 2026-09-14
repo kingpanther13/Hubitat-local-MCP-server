@@ -1300,7 +1300,7 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 
 ### hub_list_variable_changes
 
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This buffer caps at 200 entries and clears on hub restart. For the hub's authoritative, complete, restart-surviving change log, call hub_list_device_events with no deviceId (location-event mode).
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
 
 ### hub_create_connector
 

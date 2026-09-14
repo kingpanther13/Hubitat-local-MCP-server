@@ -761,7 +761,7 @@ private Map _appClonerCappedStaging(Map cp) {
     return result
 }
 
-private Map _rmRestoreFromBackup(Map entry) {
+private Map _rmReadBackupSnapshot(Map entry) {
     def fileName = entry.fileName
     def jsonBytes
     try {
@@ -779,6 +779,12 @@ private Map _rmRestoreFromBackup(Map entry) {
         throw new IllegalArgumentException("Unsupported RM backup schemaVersion: ${snapshot?.schemaVersion} (expected 1)")
     }
 
+    return snapshot as Map
+}
+
+private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
+    def fileName = entry.fileName
+    Map snapshot = preparedSnapshot != null ? preparedSnapshot : _rmReadBackupSnapshot(entry)
     def savedId = snapshot.ruleId as Integer
     def savedSettings = (snapshot?.configJson?.settings ?: [:]) as Map
     def savedLabel = snapshot?.appLabel

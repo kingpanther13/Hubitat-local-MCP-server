@@ -308,7 +308,7 @@ Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a p
 **Item Backup Tools** (3 tools — reads available under the Read master, restore under the Write master):
 - `hub_list_backups` — lists all backups with metadata (type, id, version, age, size) and direct download URLs
 - `hub_get_backup` — retrieves full source code from a backup via `downloadHubFile()` by key (e.g., `app_123`); returns source inline for files ≤60KB, otherwise provides download URL
-- `hub_restore_backup` — reads backup via `downloadHubFile()` and writes the source through the hub's save endpoint directly (requires the Write master); first captures the current source under a `prerestore_<type>_<id>` key (returned as `preRestoreBackup` / `undoHint`), and a failed pre-restore capture aborts the restore with nothing written
+- `hub_restore_backup` — reads backup via `downloadHubFile()` and writes the source through the hub's save endpoint directly (requires the Write master); for app/driver restores, first captures the current source under a distinct pre-restore key (returned as `preRestoreBackup` / `undoHint`). A failed required capture aborts before saving. Only an already-matching retry may succeed without verified undo, with `undoAvailable=false` and a warning. Rule snapshots use their own replay path; library restores use `hub_update_library` with the saved source
 - Every tool response includes `howToRestore` and `manualRestore` instructions for user recovery without MCP
 - All operations are fully local — no cloud involvement
 

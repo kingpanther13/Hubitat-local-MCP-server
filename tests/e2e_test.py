@@ -10167,6 +10167,28 @@ class TestRunner:
             assert undo_after_retry.get("source") == final_src, \
                 f"restore retry replaced the original undo source: {undo_after_retry}"
 
+            # Exercise the returned undo handle and its redo on the same throwaway app.
+            undone = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"backupKey": pre_restore_key, "confirm": True},
+            })
+            assert undone.get("success") is True and undone.get("undoAvailable") is True, \
+                f"restoring the undo backup failed: {undone}"
+            redo_key = undone.get("preRestoreBackup")
+            assert redo_key and redo_key != pre_restore_key, f"undo overwrote its selected backup: {undone}"
+            after_undo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source", "args": {"type": "app", "id": code_app_id},
+            })
+            assert after_undo.get("source") == final_src, f"undo restored different source: {after_undo}"
+            redone = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup", "args": {"backupKey": redo_key, "confirm": True},
+            })
+            assert redone.get("success") is True, f"redo failed: {redone}"
+            after_redo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source", "args": {"type": "app", "id": code_app_id},
+            })
+            assert after_redo.get("source") == before["source"], f"redo restored different source: {after_redo}"
+
             # Leg 5 (#259): enable OAuth on the (oauth:true-declaring) code class via the
             # hub_update_app oauth fold -- the programmatic "Enable OAuth in App".
             # (Throwaway app, never the MCP server -- the self-OAuth guard protects that.)

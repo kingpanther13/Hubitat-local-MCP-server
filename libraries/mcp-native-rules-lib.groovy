@@ -10776,13 +10776,14 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 // the pre-deferral worst case (a possible IF(Broken Condition) wrap, surfaced as a warn).
 private void _rmRunPendingPredCapabsClear(Integer appId) {
     def pending = _rmPendingPredClearSnapshot()
-    if (!pending.get(appId.toString())) return
+    def observedGeneration = pending.get(appId.toString())
+    if (!observedGeneration) return
     try {
         _rmClearPredCapabsViaGhostIfThen(appId, "addAction (deferred from addRequiredExpression)")
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore backup if needed")
     }
-    _rmDropPredClearPending(appId)
+    _rmDropPredClearPending(appId, observedGeneration)
 }
 
 void _rmMarkPredClearPending(Integer appId) {
@@ -10802,6 +10803,18 @@ private void _rmDropPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
         Map pending = _rmPendingPredClearSnapshot()
         if (pending.remove(appId.toString()) != null) _rmCommitPredClearPending(pending)
+    }
+}
+
+// A clear may finish after a concurrent rule edit published fresh recovery intent.
+private void _rmDropPredClearPending(Integer appId, Object observedGeneration) {
+    if (observedGeneration == null) return
+    synchronized (PRED_CLEAR_STORES) {
+        Map pending = _rmPendingPredClearSnapshot()
+        String key = appId.toString()
+        if (pending.get(key) != observedGeneration) return
+        pending.remove(key)
+        _rmCommitPredClearPending(pending)
     }
 }
 
@@ -12920,10 +12933,8 @@ private Map _rmFinalizeRequiredExpressionWrite(Integer appId, Map innerResult, M
 // - replay + read-back both confirm -> restored:true.
 // - restore threw -> restored:false, "DELETED ... auto-restore ALSO failed".
 private Map _rmRestoreCommittedREFromBackup(Integer appId, Map backup, String errMsg, Map carry = [:]) {
-    // A rollback discards the failed new-RE build, so drop any predClearPending it flagged: the
-    // restored rule's predCapabs comes from a clean backup, and a leftover flag would fire a wasted
-    // ghost clear on the rule's next addAction.
-    _rmDropPredClearPending(appId)
+    // Keep recovery intent until rollback is confirmed; a newer mark belongs to another edit.
+    def observedGeneration = _rmPendingPredClearSnapshot().get(appId.toString())
     if (backup?.fileName == null) {
         // No usable backup handle -- cannot auto-restore. Say so loudly; the old RE
         // is gone and the caller must recover by hand.
@@ -12988,6 +12999,11 @@ private Map _rmRestoreCommittedREFromBackup(Integer appId, Map backup, String er
                 requiredExpressionRestored: false,
                 error: "${errMsg} Auto-restore from backup ${backup.backupKey} replayed but the original Required Expression could NOT be confirmed re-activated (the rule may be left UNGATED). Verify via hub_get_app_config(appId=${appId}, includeSettings=true) and manually restore via hub_restore_backup(backupKey='${backup.backupKey}') if the gate is missing."
             ]
+        }
+        try {
+            _rmDropPredClearPending(appId, observedGeneration)
+        } catch (Exception cleanupError) {
+            mcpLog("warn", "rm-native", "Required Expression restored for app ${appId}, but its pending predicate-clear record could not be removed: ${cleanupError.message}; the recovery record is retained")
         }
         mcpLog("info", "rm-native", "replaceRequiredExpression: post-delete failure on app ${appId}; auto-restored the original Required Expression from backup ${backup.backupKey} (re-activation confirmed on STPage): ${errMsg}")
         return carry + [

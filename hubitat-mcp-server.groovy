@@ -57,8 +57,8 @@
 @groovy.transform.Field static final Map ITEM_BACKUP_MANIFESTS = new java.util.HashMap()
 // One retention budget shared by every backup type.
 @groovy.transform.Field static final int ITEM_BACKUP_RETENTION = 20
-// Diagnostics for the monitor above: which operation holds it and who last did,
-// so a worker that waited on a slow hub call can say so. Written only under the monitor.
+// Diagnostics for _withBackupLock operations: current and last holder, so a worker
+// waiting on a slow hub call can say so. Direct synchronized helpers do not record holders.
 @groovy.transform.Field static final Map ITEM_BACKUP_LOCK_STATE = new java.util.HashMap()
 // Per-app mirror of atomicState.predClearPending holding generation tokens, so a worker
 // execution's stale snapshot cannot discard newer recovery intent. Guarded by its own monitor.
@@ -7076,7 +7076,7 @@ private String _itemBackupFileName(String preferred) {
     return preferred.substring(0, dot) + "-${java.util.UUID.randomUUID()}" + preferred.substring(dot)
 }
 
-// Reuse is the one path that never publishes, so an oversized manifest left by an
+// Reuse is the backup-taking path that never publishes, so an oversized manifest left by an
 // older writer is repaired by republishing the unchanged entry. The repair is
 // best-effort: the reused baseline is valid whether or not the trim persists.
 void _repairItemBackupRetention(Map manifest, String key, Map entry) {
@@ -7157,6 +7157,13 @@ private Map _deleteHubFileAndUnlinkBackups(String fileName) {
         try { deleteHubFile(fileName) }
         catch (Exception deleteError) {
             if (keys) {
+                // A lost delete response does not prove the file survived.
+                byte[] remaining = null
+                try { remaining = downloadHubFile(fileName) }
+                catch (Exception probeError) { mcpLog("warn", "hub-admin", "Could not verify '${fileName}' after a failed delete: ${probeError.message}") }
+                if (remaining == null || remaining.length == 0) {
+                    throw new IllegalStateException("File '${fileName}' deletion outcome is unconfirmed: ${deleteError.message}. Backup metadata under ${keys} stays pending deletion because the file could not be verified. Check File Manager; hub_get_backup or hub_restore_backup can recover a readable file.", deleteError)
+                }
                 try { _commitItemBackupManifest(previous) }
                 catch (Exception resetError) {
                     throw new IllegalStateException("File '${fileName}' deletion failed: ${deleteError.message}; resetting pending deletion also failed: ${resetError.message}. Backup metadata under ${keys} stays marked pending deletion, so it cannot be reused as a baseline until cleared. Check File Manager; hub_get_backup or hub_restore_backup can recover the marker if the file is still readable.", deleteError)
@@ -9740,7 +9747,7 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 ### hub_restore_backup
 
 - `scope=source` (default) -- restore an app/driver/rule by `backupKey` (for deleted code use hub_create_*; deleted rules DO recreate).
-- App/driver source restores report `undoAvailable=true` only after verifying the pre-restore file. Use the returned `preRestoreBackup` handle to undo. If capture or retry verification fails, restoration can still succeed with `undoAvailable=false` and a warning; an older undo record is not a verified undo for that restore.
+- App/driver source restores report `undoAvailable=true` only after verifying the pre-restore file. Use the returned `preRestoreBackup` handle to undo. A failed required pre-restore capture aborts before saving the source. Only a retry whose live source already matches the target backup may succeed without verified undo, with `undoAvailable=false` and a warning; do not rely on an older undo record for that restore.
 - Native rule restore requires confirmed absence from the app inventory before recreating an unreadable rule. If the config read fails and absence cannot be confirmed, inspect the rule/inventory and retry when readable.
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub.
 - `scope=hub_uploaded` -- upload an external `.lzf` fetched from `backupUrl`, then restore (open-world).''',

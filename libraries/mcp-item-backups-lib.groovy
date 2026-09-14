@@ -99,7 +99,11 @@ private boolean _healPendingItemBackup(String backupKey, Map entry) {
         catch (Exception probeErr) { mcpLog("warn", "hub-admin", "Could not probe '${current.fileName}' while resolving its pending-deletion marker: ${probeErr.message}") }
         if (bytes == null || bytes.length == 0) return false
         current.remove("deletePending")
-        _commitItemBackupManifest(manifest)
+        try { _commitItemBackupManifest(manifest) }
+        catch (Exception commitError) {
+            mcpLog("warn", "hub-admin", "Backup '${backupKey}' is readable but its pending-deletion marker could not be cleared: ${commitError.message}")
+            return false
+        }
         mcpLog("warn", "hub-admin", "Backup '${backupKey}' was marked pending deletion but its file '${current.fileName}' is still present; the marker was cleared")
         return true
     }
@@ -122,7 +126,7 @@ def toolGetItemBackup(args) {
     }
     if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
         return [
-            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be read and verified.",
+            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be recovered (file verification or metadata update failed).",
             backupKey: args.backupKey,
             hint: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. The next backup publication purges unrecovered markers."
         ]
@@ -205,13 +209,14 @@ private Map _toolRestoreSourceBackup(args) {
 
     def entry
     def source
+    Map ruleSnapshot = null
     String preRestoreBackupKey = null
     String preRestoreFileName = null
     boolean undoAvailable = false
     String undoWarning = null
     // Resolve the manifest entry, recover pending metadata, read its file, and
-    // capture undo as one transaction. Release before the source-save HTTP call,
-    // which can recompile this app during a self-restore.
+    // capture undo as one transaction. Release before source saves or rule replay:
+    // self-restore can recompile this app, and rule wizards can take minutes.
     Map earlyResult = _withBackupLock("restore ${args.backupKey}") {
         def manifest = _itemBackupManifest()
         entry = manifest.get(args.backupKey)
@@ -228,7 +233,7 @@ private Map _toolRestoreSourceBackup(args) {
         if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
             return [
                 success: false,
-                error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be read and verified. Nothing was restored.",
+                error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be recovered (file verification or metadata update failed). Nothing was restored.",
                 backupKey: args.backupKey,
                 note: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. The next backup publication purges unrecovered markers."
             ]
@@ -253,7 +258,8 @@ private Map _toolRestoreSourceBackup(args) {
         // the wizard wire format, not POST source code). Dispatch by type.
         if (entry.type == "rm-rule") {
             try {
-                return _rmRestoreFromBackup(entry)
+                ruleSnapshot = _rmReadBackupSnapshot(entry)
+                return null
             } catch (Exception e) {
                 mcpLogError("hub-admin", "RM rule restore failed for key ${args.backupKey}", e)
                 return [success: false, error: e.message, backupKey: args.backupKey, type: "rm-rule"]
@@ -288,6 +294,8 @@ private Map _toolRestoreSourceBackup(args) {
 
         // Retention must protect both the selected restore target and its verified undo.
         preRestoreBackupKey = "prerestore_${entry.type}_${entry.id}"
+        // Undoing an undo must keep the selected key retryable if the save fails.
+        if (preRestoreBackupKey == args.backupKey.toString()) preRestoreBackupKey += "_undo"
         try {
             String restoreSourceHash = _mrtrSha256(source)
             def ajaxPath = (entry.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
@@ -355,6 +363,13 @@ private Map _toolRestoreSourceBackup(args) {
         return null
     }
     if (earlyResult != null) return earlyResult
+    if (ruleSnapshot != null) {
+        try { return _rmRestoreFromBackup(entry, ruleSnapshot) }
+        catch (Exception e) {
+            mcpLogError("hub-admin", "RM rule restore failed for key ${args.backupKey}", e)
+            return [success: false, error: e.message, backupKey: args.backupKey, type: "rm-rule"]
+        }
+    }
 
     // Restoring the MCP server's OWN code drops the response exactly like a self-update
     // (the recompile kills the in-flight request), so it gets the same empty-body leniency
@@ -453,7 +468,7 @@ private Map _toolRestoreSourceBackup(args) {
                 success: false,
                 error: "Restore failed: ${errorMsg ?: 'unknown error'}",
                 backupKey: args.backupKey,
-                message: "The backup has been preserved -- you can try again or restore manually.",
+                message: "Check the live source and confirm this backup is still available with hub_get_backup before retrying or restoring manually.",
                 directDownload: "http://<HUB_IP>/local/${entry.fileName}"
             ]
         }
@@ -477,7 +492,7 @@ private Map _toolRestoreSourceBackup(args) {
             success: false,
             error: "Restore failed: ${e.message}",
             backupKey: args.backupKey,
-            message: "The backup has been preserved -- you can try again or restore manually.",
+            message: "Check the live source and confirm this backup is still available with hub_get_backup before retrying or restoring manually.",
             directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
     }

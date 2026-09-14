@@ -423,7 +423,7 @@ Monitoring tools are gated by the Read master (ON by default).
 |------|-------------|
 | `hub_list_variables` | List all hub connector and rule engine variables |
 | `hub_get_variable` | Get a variable value and metadata |
-| `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started |
+| `hub_list_variable_changes` | Latest 200 subscribed hub-variable changes, retained across restarts |
 
 </details>
 
@@ -484,7 +484,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | `hub_delete_variable` | Permanently delete a hub variable (DESTRUCTIVE) |
 | `hub_create_connector` | Create a virtual-device connector for a hub variable |
 | `hub_delete_connector` | Remove the connector device for a hub variable |
-| `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started (also in `hub_read_variables`) |
+| `hub_list_variable_changes` | Latest 200 subscribed hub-variable changes, retained across restarts (also in `hub_read_variables`) |
 
 </details>
 
@@ -860,7 +860,7 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 <details>
 <summary><b>Item Backup & Restore</b></summary>
 
-When you use `hub_update_app`, `hub_update_driver`, or `hub_delete_item` (type: app|driver), the server automatically saves the **original source code** before making changes.
+When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hub_delete_item` (type: app|driver|library), the server automatically saves the **original source code** before making changes.
 
 - Backups stored as `.groovy` files in the hub's local **File Manager**
 - Named `mcp-backup-app-<id>.groovy`, `mcp-backup-driver-<id>.groovy` or `mcp-backup-library-<id>.groovy`; a replacement taken while the previous one is still indexed carries a `-<uuid>` suffix before `.groovy`
@@ -875,7 +875,7 @@ When you use `hub_update_app`, `hub_update_driver`, or `hub_delete_item` (type: 
 
 **Restore manually (without MCP):**
 1. Go to Hubitat web UI > **Settings** > **File Manager**
-2. Download the backup file (the newest file starting with `mcp-backup-app-123`)
+2. Download the exact file reported by `hub_list_backups` for `app_123`. Without MCP, identify `mcp-backup-app-123.groovy` or its `mcp-backup-app-123-<uuid>.groovy` replacement and inspect its source before restoring; an unindexed leftover file may be newer.
 3. Go to **Apps Code** (or **Drivers Code**) > select the app > paste source > **Save**
 
 </details>

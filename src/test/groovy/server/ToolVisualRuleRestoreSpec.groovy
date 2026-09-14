@@ -158,6 +158,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
     private void stubPostJson(Closure responder = null) {
         def captured = posts
         script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+            assert !Thread.holdsLock(scriptStaticField('ITEM_BACKUP_MANIFESTS'))
             captured << [path: path, body: jsonBody]
             responder ? responder.call(path, jsonBody) : null
         }

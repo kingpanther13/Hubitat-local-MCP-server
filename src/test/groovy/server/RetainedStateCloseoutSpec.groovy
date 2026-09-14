@@ -189,6 +189,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         }
         if (second.isDone()) second.get() // Surface the worker's own exception instead of a thread-state mismatch.
         assert secondThread.get().state == Thread.State.BLOCKED
+        def blocked = java.lang.management.ManagementFactory.threadMXBean.getThreadInfo(secondThread.get().id)
+        assert blocked.lockInfo.identityHashCode == System.identityHashCode(scriptStaticField('ITEM_BACKUP_MANIFESTS'))
+        assert !second.isDone()
         assert files.size() == 1
         release.countDown()
         def firstResult = first.get(10, TimeUnit.SECONDS)
@@ -219,7 +222,8 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def monitor = scriptStaticField('ITEM_BACKUP_MANIFESTS')
         List saved = []
         script.metaClass.downloadHubFile = { String name ->
-            if (name == 'mcp-backup-app-99.groovy') {
+            if ((pausePhase == 'selection' && name == 'mcp-backup-app-99.groovy')
+                    || (pausePhase == 'undo' && name.startsWith('mcp-prerestore-'))) {
                 entered.countDown()
                 assert release.await(10, TimeUnit.SECONDS)
             }
@@ -252,6 +256,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         }
         if (publisher.isDone()) publisher.get()
         assert publisherThread.get().state == Thread.State.BLOCKED
+        def blocked = java.lang.management.ManagementFactory.threadMXBean.getThreadInfo(publisherThread.get().id)
+        assert blocked.lockInfo.identityHashCode == System.identityHashCode(monitor)
+        assert !publisher.isDone()
         assert files.containsKey('mcp-backup-app-99.groovy')
         release.countDown()
         def result = restore.get(10, TimeUnit.SECONDS)
@@ -267,6 +274,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         cleanup:
         release.countDown()
         workers.shutdownNow()
+
+        where:
+        pausePhase << ['selection', 'undo']
     }
 
     def 'restoring an undo key preserves its target across a failed save and supports redo'() {
@@ -541,7 +551,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         fetched.error.contains('pending deletion')
-        fetched.error.contains('could not be read and verified')
+        fetched.error.contains('could not be recovered')
         fetched.hint.contains('retry')
         script._itemBackupManifest().app_99.deletePending == true
         restored.success == false
