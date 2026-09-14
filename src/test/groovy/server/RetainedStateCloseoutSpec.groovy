@@ -203,6 +203,72 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         workers.shutdownNow()
     }
 
+    def 'restore selection and undo capture exclude publication but source save releases the backup monitor'() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [app_99: entry('99')]
+        Map files = Collections.synchronizedMap([
+            'mcp-backup-app-99.groovy': 'selected backup'.getBytes('UTF-8'),
+            'replacement.groovy': 'later backup'.getBytes('UTF-8')])
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def publisherStarted = new CountDownLatch(1)
+        def publisherThread = new java.util.concurrent.atomic.AtomicReference<Thread>()
+        def publisherFuture = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Future>()
+        def workers = Executors.newFixedThreadPool(2)
+        def monitor = scriptStaticField('ITEM_BACKUP_MANIFESTS')
+        List saved = []
+        script.metaClass.downloadHubFile = { String name ->
+            if (name == 'mcp-backup-app-99.groovy') {
+                entered.countDown()
+                assert release.await(10, TimeUnit.SECONDS)
+            }
+            files.get(name)
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> files.put(name, bytes) }
+        script.metaClass.deleteHubFile = { String name -> files.remove(name) }
+        script.metaClass.hubInternalGet = { String path, Map params = null -> '{"source":"live source","version":2}' }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            assert !Thread.holdsLock(monitor)
+            // Publication must be able to finish while the source save is in progress.
+            publisherFuture.get().get(10, TimeUnit.SECONDS)
+            saved << new groovy.json.JsonSlurper().parseText(body).source
+            [success: true, id: 99]
+        }
+
+        when:
+        def restore = workers.submit({ -> script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true]) } as java.util.concurrent.Callable)
+        assert entered.await(10, TimeUnit.SECONDS)
+        def publisher = workers.submit({ ->
+            publisherThread.set(Thread.currentThread())
+            publisherStarted.countDown()
+            script._publishItemBackup('app_99', entry('99', 2L) + [fileName: 'replacement.groovy'])
+        } as java.util.concurrent.Callable)
+        publisherFuture.set(publisher)
+        assert publisherStarted.await(10, TimeUnit.SECONDS)
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (publisherThread.get().state != Thread.State.BLOCKED && !publisher.isDone() && System.nanoTime() < deadline) {
+            Thread.yield()
+        }
+        if (publisher.isDone()) publisher.get()
+        assert publisherThread.get().state == Thread.State.BLOCKED
+        assert files.containsKey('mcp-backup-app-99.groovy')
+        release.countDown()
+        def result = restore.get(10, TimeUnit.SECONDS)
+        publisher.get(10, TimeUnit.SECONDS)
+
+        then:
+        result.success == true
+        result.undoAvailable == true
+        saved == ['selected backup']
+        new String(files.get(result.preRestoreFile.toString()), 'UTF-8') == 'live source'
+        script._itemBackupManifest().app_99.fileName == 'replacement.groovy'
+
+        cleanup:
+        release.countDown()
+        workers.shutdownNow()
+    }
+
     def 'file deletion failure restores its manifest entry and reusable view'() {
         given:
         enableWrite()
