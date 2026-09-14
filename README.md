@@ -168,11 +168,11 @@ Add this block, using your **local** URL (`http://YOUR_HUB_IP/apps/api/123/mcp?a
 }
 ```
 
-- `--allow-http` is required for the **local** (plain-HTTP) URL. Remove it when using the **cloud** (HTTPS) URL.
+- `--allow-http` is required for the **local** (plain-HTTP) URL. Remove it when using the **cloud** (HTTPS) URL. Plain HTTP sends your access token unencrypted, so use the local URL only on a trusted network.
 - `--protocol auto` lets `mcp-remote` use MCP 2026-07-28 with the hub, so slow writes (rules, native apps, drivers, device changes) that need more than one request complete instead of showing a generic error.
-- To troubleshoot, add `"--debug"` to `args`; `mcp-remote` then writes a verbose log under `~/.mcp-auth/` (`%USERPROFILE%\.mcp-auth\` on Windows).
+- To troubleshoot, add `"--debug"` to `args`; `mcp-remote` then writes a verbose log under `~/.mcp-auth/` (`%USERPROFILE%\.mcp-auth\` on Windows). That log includes your full connect URL and access token, so redact it before sharing.
 
-> **Previously used `mcp-proxy` (`uvx`)?** Replace that block with the one above. `mcp-proxy` is unmaintained, crashes on startup without a `--with "mcp<2.0.0"` pin since the `mcp` Python SDK 2.0.0 release (28 July 2026), and only speaks the older protocol. See [#373](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/373).
+> **Previously used `mcp-proxy` (`uvx`)?** Replace that block with the one above. `mcp-proxy` 0.12.0 (its latest release, May 2026) crashes on startup without a `--with "mcp<2.0.0"` pin since the `mcp` Python SDK 2.0.0 release (28 July 2026), and it can't complete the hub's multi-request slow writes. See [#373](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/373).
 
 Save the file, then fully restart Claude Desktop (Quit from the system tray / menu bar — closing the window is not enough). The Hubitat tools appear under the tools (🔨) icon.
 
