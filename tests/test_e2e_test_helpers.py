@@ -1572,7 +1572,7 @@ def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readba
             if len(calls) == 1:
                 raise et.RelayLostResponseError("504 Gateway Timeout")
             if len(calls) == 2:
-                assert name == "hub_manage_native_rules_and_apps"
+                assert name == "hub_read_rules"
                 return {"rules": [{"id": 43, "label": "BAT_E2E_AdoptedCreate_run_1_1"}]}
             assert name == "hub_read_apps_code"
             return {
@@ -1633,7 +1633,7 @@ def test_create_native_rule_relay_lost_waits_for_delayed_exact_match(monkeypatch
                 raise et.RelayLostResponseError("504 Gateway Timeout")
             if len(calls) == 2:
                 return {"rules": [{"id": 99, "label": "some other rule"}]}
-            assert name == "hub_manage_native_rules_and_apps"
+            assert name == "hub_read_rules"
             return {"rules": [{"id": 43, "label": "BAT_E2E_Delayed_run_1_1"}]}
 
     runner = _native_rule_runner(FakeClient())
@@ -1645,9 +1645,50 @@ def test_create_native_rule_relay_lost_waits_for_delayed_exact_match(monkeypatch
     assert result == (43, None)
     assert [name for name, _arguments in calls] == [
         "hub_manage_rule_machine",
-        "hub_manage_native_rules_and_apps",
-        "hub_manage_native_rules_and_apps",
+        "hub_read_rules",
+        "hub_read_rules",
     ]
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_create_native_rule_recovers_lookup_transport_without_replaying_create(monkeypatch, persistent):
+    posts = []
+    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
+    client._gateway_members = {
+        "hub_manage_rule_machine": {"hub_set_rule"},
+        "hub_manage_native_rules_and_apps": {"hub_list_rules"},
+        "hub_read_rules": {"hub_list_rules"},
+    }
+    client._gateway_route = {}
+    client._read_only_catalog_tools = {"hub_read_rules"}
+
+    def post(*args, **kwargs):
+        params = kwargs["json"]["params"]
+        posts.append(params)
+        if params["arguments"]["tool"] == "hub_set_rule" or len(posts) == 2 or persistent:
+            return SimpleNamespace(status_code=504, reason="Gateway Timeout")
+        result = _raw_tool_body({"rules": [{"id": 43, "label": "BAT_E2E_ReadRecovery_run_1_1"}]})
+        return SimpleNamespace(
+            status_code=200, reason="OK", raise_for_status=lambda: None,
+            json=lambda: {"jsonrpc": "2.0", "id": 1, "result": result},
+        )
+
+    client.session = SimpleNamespace(post=post)
+    runner = _native_rule_runner(client)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
+
+    if persistent:
+        with pytest.raises(requests.HTTPError, match="504"):
+            runner._create_native_rule("ReadRecovery", return_result=True)
+        assert runner.created_native_app_ids == []
+        assert len(posts) == 4  # one uncertain create, three bounded read attempts
+    else:
+        assert runner._create_native_rule("ReadRecovery", return_result=True) == (43, None)
+        assert runner.created_native_app_ids == ["43"]
+        assert len(posts) == 3
+    assert [p["arguments"]["tool"] for p in posts].count("hub_set_rule") == 1
+    assert all(p["name"] == "hub_read_rules" for p in posts[1:])
 
 
 def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
@@ -1663,7 +1704,7 @@ def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
                 if create_calls == 1:
                     raise et.RelayLostResponseError("504 Gateway Timeout")
                 return {"success": True, "appId": 44, "ruleId": 44}
-            assert name == "hub_manage_native_rules_and_apps"
+            assert name == "hub_read_rules"
             return {"rules": []}
 
     runner = _native_rule_runner(FakeClient())

@@ -394,6 +394,7 @@ Native requests use the fixed `http://127.0.0.1:8080` loopback endpoint on the h
 ### State Management
 
 **Parent app `state.*`:**
+
 | Key | Type | Purpose |
 |-----|------|---------|
 | `accessToken` | String | OAuth token for MCP endpoint |
@@ -403,6 +404,7 @@ Native requests use the fixed `http://127.0.0.1:8080` loopback endpoint on the h
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
 
 **Parent app `atomicState.*`:**
+
 | Key | Type | Purpose |
 |-----|------|---------|
 | `itemBackupManifest` | Map | Shared File Manager backup index for app/driver/library source, rule snapshots, and pre-restore undo; max 20 entries |

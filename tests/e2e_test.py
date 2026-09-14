@@ -6496,7 +6496,9 @@ class TestRunner:
             print(f"    create '{label}' response lost to relay 504 -- verifying by label lookup")
             app_id = None
             for lookup_attempt in range(4):
-                listed = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                # The read gateway permits the client's bounded transport retries;
+                # a mixed write gateway would abort on the first dropped lookup.
+                listed = self.client.call_tool("hub_read_rules", {
                     "tool": "hub_list_rules", "args": {},
                 })
                 exact_matches = [r for r in (listed.get("rules") or [])
@@ -10022,14 +10024,16 @@ class TestRunner:
     # -----------------------------------------------------------------------
     # GROUP 4d: app_code_update -- app lifecycle and library source updates.
     #
-    # test_update_app_code_lifecycle: one throwaway code class, five legs before its delete:
+    # test_update_app_code_lifecycle: one throwaway code class for update/error/conflict/OAuth:
     # a real round-trip edit (success + version advance + source landed), the
     # hub's verbatim compile error on broken Groovy (not our generic fallback),
     # the client-side expectedVersion optimistic lock (refused, no write), a
-    # hub_restore_backup of the pre-update auto-backup (V1 back, undo key returned), and the
     # OAuth fold (asserted as a hard success -- it covers /app/updateOAuth reached with a
     # query MAP, which only a live hub can prove: the old embedded-querystring form 404s
     # that exact route).
+    #
+    # Restore/retry/undo/redo use their own disposable class, so a dropped restore response
+    # does not spend the update assertions' single fresh-fixture retry.
     #
     # test_update_app_code_trigger_updated: the triggerUpdated lifecycle refresh, which needs
     # a running INSTANCE and so creates + cleans up one. Pins that the Done submit lands on
@@ -10045,6 +10049,7 @@ class TestRunner:
         # Layer 5 startswith sweep reclaims a stranded copy if a crash skips the finally below.
         source_v1 = (Path(__file__).resolve().parent / "fixtures"
                      / "app-code-update.groovy").read_text(encoding="utf-8")
+        source_v1 = source_v1.replace("Deadman Test Target Update", f"Deadman Test Target Update-{time.time_ns()}")
         code_app_id = None
         try:
             created = self.client.call_tool("hub_manage_code", {
@@ -10063,6 +10068,7 @@ class TestRunner:
                 f"could not read back the created code class: {before}"
             version_before = int(before["version"])
 
+            print("    [PHASE] APP_CODE_UPDATE round-trip")
             # Leg 1: round-trip edit -- valid modified source must save, advance the hub's
             # version counter, and be readable back via hub_get_source.
             source_v2 = source_v1.replace("UPDATE-LEG-MARKER-V1", "UPDATE-LEG-MARKER-V2")
@@ -10083,6 +10089,7 @@ class TestRunner:
             assert version_after > version_before, \
                 f"version did not advance after update ({version_before} -> {version_after})"
 
+            print("    [PHASE] APP_CODE_UPDATE compiler rejection")
             # Leg 2: compile error -- the hub's verbatim compiler text must ride back in
             # `error`, not our generic fallback string.
             source_broken = source_v2.replace(
@@ -10100,6 +10107,7 @@ class TestRunner:
             assert "unable to resolve" in err.lower() or "ClassThatDoesNotExistBatE2e" in err, \
                 f"error text is not the hub's compiler output: {err!r}"
 
+            print("    [PHASE] APP_CODE_UPDATE version conflict")
             # Leg 3: optimistic lock -- a stale expectedVersion must be refused client-side
             # with conflict:true, before anything is written.
             source_v3 = source_v2.replace("UPDATE-LEG-MARKER-V2", "UPDATE-LEG-MARKER-V3")
@@ -10125,75 +10133,8 @@ class TestRunner:
             assert int(final["version"]) == version_after, \
                 f"a refused update advanced the version ({version_after} -> {final.get('version')})"
 
-            # Leg 4: restore -- the auto-backup snapped before the FIRST update still
-            # holds the V1 source (backupItemSource keeps the pre-edit original for an
-            # hour rather than re-snapshotting on the later legs), so hub_restore_backup
-            # must bring V1 back and hand back a pre-restore backup key as the undo path.
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
-            })
-            assert restored.get("success") is True, f"hub_restore_backup failed: {restored}"
-            assert restored.get("undoAvailable") is True, f"restore did not verify its undo backup: {restored}"
-            pre_restore_key = restored.get("preRestoreBackup")
-            assert pre_restore_key == f"prerestore_app_{code_app_id}", \
-                f"restore did not return the pre-restore backup key: {restored}"
-            after_restore = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_source",
-                "args": {"type": "app", "id": code_app_id},
-            })
-            restored_src = after_restore.get("source") or ""
-            assert restored_src == before["source"], \
-                "restore did not apply the exact selected pre-update source snapshot"
-            assert "UPDATE-LEG-MARKER-V1" in restored_src and "UPDATE-LEG-MARKER-V2" not in restored_src, \
-                f"restore did not bring back the pre-update source: {after_restore}"
-            assert int(after_restore["version"]) > version_after, \
-                f"restore reported success but the version did not advance ({version_after} -> {after_restore.get('version')})"
-
-            undo = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
-            })
-            assert undo.get("source") == final_src, f"undo did not retain the exact pre-restore source: {undo}"
-            retried = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
-            })
-            assert retried.get("success") is True and retried.get("undoAvailable") is True \
-                and retried.get("preRestoreBackup") == pre_restore_key, \
-                f"restore retry lost the verified undo handle: {retried}"
-            undo_after_retry = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
-            })
-            assert undo_after_retry.get("source") == final_src, \
-                f"restore retry replaced the original undo source: {undo_after_retry}"
-
-            # Exercise the returned undo handle and its redo on the same throwaway app.
-            undone = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"backupKey": pre_restore_key, "confirm": True},
-            })
-            assert undone.get("success") is True and undone.get("undoAvailable") is True, \
-                f"restoring the undo backup failed: {undone}"
-            selected_undo = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
-            })
-            assert selected_undo.get("source") == final_src, f"undo lost its selected backup: {selected_undo}"
-            redo_key = undone.get("preRestoreBackup")
-            assert redo_key and redo_key != pre_restore_key, f"undo overwrote its selected backup: {undone}"
-            after_undo = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_source", "args": {"type": "app", "id": code_app_id},
-            })
-            assert after_undo.get("source") == final_src, f"undo restored different source: {after_undo}"
-            redone = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup", "args": {"backupKey": redo_key, "confirm": True},
-            })
-            assert redone.get("success") is True, f"redo failed: {redone}"
-            after_redo = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_source", "args": {"type": "app", "id": code_app_id},
-            })
-            assert after_redo.get("source") == before["source"], f"redo restored different source: {after_redo}"
-
-            # Leg 5 (#259): enable OAuth on the (oauth:true-declaring) code class via the
+            print("    [PHASE] APP_CODE_UPDATE OAuth")
+            # Leg 4 (#259): enable OAuth on the (oauth:true-declaring) code class via the
             # hub_update_app oauth fold -- the programmatic "Enable OAuth in App".
             # (Throwaway app, never the MCP server -- the self-OAuth guard protects that.)
             #
@@ -10219,7 +10160,7 @@ class TestRunner:
             assert ob.get("enabled") is True, "OAuth reported success but not enabled"
             assert ob.get("clientId"), "OAuth enabled but no clientId returned"
 
-            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; restore brought V1 back (undo key {pre_restore_key}); OAuth leg checked")
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; OAuth leg checked")
         finally:
             if code_app_id:
                 try:
@@ -10229,6 +10170,134 @@ class TestRunner:
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
+
+    @test("app_code_update")
+    def test_app_code_backup_restore_lifecycle(self) -> None:
+        # Throwaway Apps Code class (code only, never installed as an instance). The name
+        # deliberately starts with "Deadman Test Target" (namespace mcptest) so the cleanup
+        # Layer 5 startswith sweep reclaims a stranded copy if a crash skips the finally below.
+        source_v1 = (Path(__file__).resolve().parent / "fixtures"
+                     / "app-code-update.groovy").read_text(encoding="utf-8")
+        source_v1 = source_v1.replace("Deadman Test Target Update", f"Deadman Test Target Restore-{time.time_ns()}")
+        code_app_id = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"source": source_v1, "confirm": True},
+            })
+            code_app_id = created.get("appId")
+            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+
+            before = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            assert before.get("success") is True and before.get("version") is not None \
+                and "UPDATE-LEG-MARKER-V1" in (before.get("source") or ""), \
+                f"could not read back the created code class: {before}"
+            version_before = int(before["version"])
+
+            print("    [PHASE] APP_CODE_RESTORE prepare V1 backup and V2 source")
+            # Establish the exact V1 backup and V2 source used by every restore assertion.
+            source_v2 = source_v1.replace("UPDATE-LEG-MARKER-V1", "UPDATE-LEG-MARKER-V2")
+            updated = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v2, "confirm": True},
+            })
+            assert updated.get("success") is True, f"hub_update_app round-trip failed: {updated}"
+            assert updated.get("previousVersion") is not None, \
+                f"hub_update_app success carries no previousVersion: {updated}"
+            after = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            assert "UPDATE-LEG-MARKER-V2" in (after.get("source") or ""), \
+                f"updated source did not land on the hub: {after}"
+            version_after = int(after["version"])
+            assert version_after > version_before, \
+                f"version did not advance after update ({version_before} -> {version_after})"
+
+            final_src = after["source"]
+
+            print("    [PHASE] APP_CODE_RESTORE restore V1")
+            # Restore the pre-update V1 backup and retain the current V2 source as undo.
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
+            })
+            assert restored.get("success") is True, f"hub_restore_backup failed: {restored}"
+            assert restored.get("undoAvailable") is True, f"restore did not verify its undo backup: {restored}"
+            pre_restore_key = restored.get("preRestoreBackup")
+            assert pre_restore_key == f"prerestore_app_{code_app_id}", \
+                f"restore did not return the pre-restore backup key: {restored}"
+            after_restore = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            restored_src = after_restore.get("source") or ""
+            assert restored_src == before["source"], \
+                "restore did not apply the exact selected pre-update source snapshot"
+            assert "UPDATE-LEG-MARKER-V1" in restored_src and "UPDATE-LEG-MARKER-V2" not in restored_src, \
+                f"restore did not bring back the pre-update source: {after_restore}"
+            assert int(after_restore["version"]) > version_after, \
+                f"restore reported success but the version did not advance ({version_after} -> {after_restore.get('version')})"
+
+            undo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
+            })
+            assert undo.get("source") == final_src, f"undo did not retain the exact pre-restore source: {undo}"
+            print("    [PHASE] APP_CODE_RESTORE repeat restore and preserve undo")
+            retried = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
+            })
+            assert retried.get("success") is True and retried.get("undoAvailable") is True \
+                and retried.get("preRestoreBackup") == pre_restore_key, \
+                f"restore retry lost the verified undo handle: {retried}"
+            undo_after_retry = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
+            })
+            assert undo_after_retry.get("source") == final_src, \
+                f"restore retry replaced the original undo source: {undo_after_retry}"
+
+            # Exercise the returned undo handle and its redo on the same throwaway app.
+            print("    [PHASE] APP_CODE_RESTORE apply undo")
+            undone = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"backupKey": pre_restore_key, "confirm": True},
+            })
+            assert undone.get("success") is True and undone.get("undoAvailable") is True, \
+                f"restoring the undo backup failed: {undone}"
+            selected_undo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_backup", "args": {"backupKey": pre_restore_key},
+            })
+            assert selected_undo.get("source") == final_src, f"undo lost its selected backup: {selected_undo}"
+            redo_key = undone.get("preRestoreBackup")
+            assert redo_key and redo_key != pre_restore_key, f"undo overwrote its selected backup: {undone}"
+            after_undo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source", "args": {"type": "app", "id": code_app_id},
+            })
+            assert after_undo.get("source") == final_src, f"undo restored different source: {after_undo}"
+            print("    [PHASE] APP_CODE_RESTORE apply redo")
+            redone = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup", "args": {"backupKey": redo_key, "confirm": True},
+            })
+            assert redone.get("success") is True, f"redo failed: {redone}"
+            after_redo = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source", "args": {"type": "app", "id": code_app_id},
+            })
+            assert after_redo.get("source") == before["source"], f"redo restored different source: {after_redo}"
+
+            print(f"    APP_CODE_RESTORE ok -- restore + retry preserved undo {pre_restore_key}; undo + redo matched exact source")
+        finally:
+            if code_app_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_item",
+                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] app-code restore cleanup: delete code class {code_app_id} failed: {exc}")
 
     @test("app_code_update")
     def test_update_app_code_trigger_updated(self) -> None:
