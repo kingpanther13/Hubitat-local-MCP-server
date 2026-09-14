@@ -1470,6 +1470,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                               appLabel: "restored", timestamp: 1000, sourceLength: snapshotBytes.length]
         ]
         script.metaClass.downloadHubFile = { String fn ->
+            assert Thread.holdsLock(scriptStaticField('ITEM_BACKUP_MANIFESTS'))
             fn == "mcp-rm-backup-300-x.json" ? snapshotBytes : null
         }
         hubGet.register('/installedapp/configure/json/300') { params ->
@@ -1480,6 +1481,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            assert !Thread.holdsLock(scriptStaticField('ITEM_BACKUP_MANIFESTS'))
             posts << [path: path, body: body]
             [status: 200, location: null, data: '{"status":"success"}']
         }

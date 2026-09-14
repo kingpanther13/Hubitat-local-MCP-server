@@ -269,11 +269,111 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         workers.shutdownNow()
     }
 
+    def 'restoring an undo key preserves its target across a failed save and supports redo'() {
+        given:
+        enableWrite()
+        String targetKey = 'prerestore_app_99'
+        String targetFile = 'saved-undo.groovy'
+        atomicStateMap.itemBackupManifest = [(targetKey): entry('99') + [fileName: targetFile]]
+        Map files = [(targetFile): 'undo target'.getBytes('UTF-8')]
+        String live = 'current source'
+        boolean reject = true
+        script.metaClass.downloadHubFile = { String name -> files.get(name) }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> files.put(name, bytes) }
+        script.metaClass.deleteHubFile = { String name -> files.remove(name) }
+        script.metaClass.hubInternalGet = { String path, Map params = null ->
+            groovy.json.JsonOutput.toJson([source: live, version: 2])
+        }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            if (reject) {
+                if (failure == 'exception') throw new IOException('save timed out')
+                return [success: false, message: 'compile rejected']
+            }
+            live = new groovy.json.JsonSlurper().parseText(body).source
+            [success: true, id: 99]
+        }
+
+        when:
+        def failed = script.toolRestoreItemBackup([backupKey: targetKey, confirm: true])
+
+        then:
+        failed.success == false
+        atomicStateMap.itemBackupManifest[targetKey].fileName == targetFile
+        new String(files.get(targetFile), 'UTF-8') == 'undo target'
+        live == 'current source'
+
+        when:
+        reject = false
+        def restored = script.toolRestoreItemBackup([backupKey: targetKey, confirm: true])
+
+        then:
+        restored.success && restored.undoAvailable
+        restored.preRestoreBackup != targetKey
+        live == 'undo target'
+        new String(files.get(restored.preRestoreFile.toString()), 'UTF-8') == 'current source'
+
+        when:
+        def redo = script.toolRestoreItemBackup([backupKey: restored.preRestoreBackup, confirm: true])
+
+        then:
+        redo.success && redo.undoAvailable
+        live == 'current source'
+        new String(files.get(redo.preRestoreFile.toString()), 'UTF-8') == 'undo target'
+
+        where:
+        failure << ['rejection', 'exception']
+    }
+
+    def 'an uncertain file deletion keeps a missing baseline pending'() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [app_99: entry('99', 1234567890000L)]
+        Map files = ['mcp-backup-app-99.groovy': 'baseline'.getBytes('UTF-8')]
+        script.metaClass.deleteHubFile = { String name ->
+            files.remove(name)
+            throw new IOException('delete response timed out')
+        }
+        script.metaClass.downloadHubFile = { String name -> files.get(name) }
+
+        when:
+        def result = script.toolDeleteFile([fileName: 'mcp-backup-app-99.groovy', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('delete response timed out')
+        script._itemBackupManifest().app_99.deletePending == true
+        files.isEmpty()
+    }
+
+    def 'pending recovery commit failure returns an error and keeps the backup unavailable'() {
+        given:
+        enableWrite()
+        def backing = failingManifest([app_99: entry('99') + [deletePending: true]])
+        backing.@fail = true
+        def peer = peerFor(backing)
+        peer.metaClass.downloadHubFile = { String name -> 'baseline'.getBytes('UTF-8') }
+        List writes = []
+        peer.metaClass.hubInternalPostJson = { String path, String body -> writes << path; [success: true] }
+
+        when:
+        def fetched = peer.toolGetItemBackup([backupKey: 'app_99'])
+        def restored = peer.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+
+        then:
+        fetched.error.contains('pending deletion')
+        restored.success == false
+        restored.error.contains('pending deletion')
+        peer._itemBackupManifest().app_99.deletePending == true
+        backing.itemBackupManifest.app_99.deletePending == true
+        writes.isEmpty()
+    }
+
     def 'file deletion failure restores its manifest entry and reusable view'() {
         given:
         enableWrite()
         atomicStateMap.itemBackupManifest = [app_99: entry('99')]
         script.metaClass.deleteHubFile = { String name -> throw new IllegalStateException('delete unavailable') }
+        script.metaClass.downloadHubFile = { String name -> 'baseline'.getBytes('UTF-8') }
 
         when:
         def result = script.toolDeleteFile([fileName: 'mcp-backup-app-99.groovy', confirm: true])
@@ -374,6 +474,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         backing.@failAt = 2
         def peer = peerFor(backing)
         peer.metaClass.deleteHubFile = { String name -> throw new IllegalStateException('file busy') }
+        peer.metaClass.downloadHubFile = { String name -> 'baseline'.getBytes('UTF-8') }
 
         when:
         peer._deleteHubFileAndUnlinkBackups('mcp-backup-app-99.groovy')
