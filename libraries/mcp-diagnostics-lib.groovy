@@ -375,7 +375,12 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
             // Retention outlasts those HTTP deadlines; it is not a worker cancellation timer.
             long pendingTtl = value.work?.tool == "hub_get_device_health" ? 240000L : 90000L
             long ttl = value.pending == true ? pendingTtl : 30000L
-            now() - (value.at as Long) >= ttl && ((value.readers ?: 0) as Integer) == 0
+            // Readers protect normal TTL expiry. A leaked counter must not reserve
+            // one of the eight slots forever: recover after ten minutes in this
+            // phase. Worker completion resets at, preserving the full replay TTL;
+            // fetchId fencing prevents an expired worker publishing into a new slot.
+            long age = now() - (value.at as Long)
+            age >= 600000L || (age >= ttl && ((value.readers ?: 0) as Integer) == 0)
         }.collect { it.key }.each { NATIVE_LOG_SNAPSHOTS.remove(it) }
         if (deviceRead != null) {
             def current = NATIVE_LOG_SNAPSHOTS[key]

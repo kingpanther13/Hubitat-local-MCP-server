@@ -326,6 +326,30 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         hubGet.calls.size() == 1
     }
 
+    def "an in-flight worker cannot publish across hard expiry"() {
+        given:
+        Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
+        long timestamp = script.now()
+        script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp - 10000L])
+        Map oldJob = runInMillisCalls[0][2].data as Map
+        snapshots.get(oldJob.key).readers = 1
+        hubGet.register('/logs/past/json') { params ->
+            NOW_OVERRIDE.set({ -> timestamp + 600000L })
+            script._nativeLogSnapshot([type: 'app', id: '42'], [__reqT0: timestamp])
+            'old result'
+        }
+
+        when:
+        script.runNativeLogFetch(oldJob)
+
+        then:
+        runInMillisCalls.size() == 2
+        snapshots.get(oldJob.key).fetchId == runInMillisCalls[1][2].data.fetchId
+        snapshots.get(oldJob.key).pending == true
+        !snapshots.get(oldJob.key).containsKey('text')
+        hubGet.calls.size() == 1
+    }
+
     def "hard expiry during observation leaves replacement reader accounting intact"() {
         given:
         Map snapshots = scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map
