@@ -10143,6 +10143,8 @@ class TestRunner:
                 "args": {"type": "app", "id": code_app_id},
             })
             restored_src = after_restore.get("source") or ""
+            assert restored_src == before["source"], \
+                "restore did not apply the exact selected pre-update source snapshot"
             assert "UPDATE-LEG-MARKER-V1" in restored_src and "UPDATE-LEG-MARKER-V2" not in restored_src, \
                 f"restore did not bring back the pre-update source: {after_restore}"
             assert int(after_restore["version"]) > version_after, \

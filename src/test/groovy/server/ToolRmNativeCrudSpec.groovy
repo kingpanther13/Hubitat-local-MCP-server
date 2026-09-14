@@ -24874,7 +24874,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- hub_set_rule dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_set_rule via dispatch returns isError validation result envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule create via dispatch returns isError validation result envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -24945,7 +24945,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- hub_set_rule dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_set_rule via dispatch returns isError validation result envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule update via dispatch returns isError validation result envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()

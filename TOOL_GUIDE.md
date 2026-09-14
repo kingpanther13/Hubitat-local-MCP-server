@@ -499,7 +499,7 @@ A bundle is a `.zip` that Hubitat Package Manager (HPM) fetches and unpacks into
 - Persist even if MCP uninstalled
 - Max 20 kept, oldest pruned
 - Rapid edits preserve original (1-hour protection)
-- App/driver restores return `undoAvailable=true` and a `preRestoreBackup` handle only when the undo file is verified. A failed capture or unverifiable retry may still restore successfully, with `undoAvailable=false` and a warning; do not rely on an older undo record for that restore.
+- App/driver restores return `undoAvailable=true` and a `preRestoreBackup` handle only when the undo file is verified. A failed required pre-restore capture aborts before saving the source. Only a retry whose live source already matches the target backup may succeed without verified undo, with `undoAvailable=false` and a warning; do not rely on an older undo record for that restore.
 
 ### Custom-engine Rule Backups (Automatic)
 - `hub_delete_custom_rule` auto-backs up to File Manager as `mcp_rule_backup_<name>_<timestamp>.json`
