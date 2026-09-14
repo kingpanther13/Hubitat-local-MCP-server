@@ -326,11 +326,11 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def backing = failingManifest()
         backing.@fail = failure == 'publication'
         def peer = peerFor(backing)
-        peer.metaClass.downloadHubFile = { String name -> 'original'.getBytes('UTF-8') }
+        Map files = [:]
+        peer.metaClass.downloadHubFile = { String name -> name == 'mcp-backup-app-99.groovy' ? 'original'.getBytes('UTF-8') : files.get(name) }
         peer.metaClass.hubInternalGet = { String path, Map params = null ->
             failure == 'read' ? null : failure == 'missing-source' ? '{"version":2}' : '{"source":"current","version":2}'
         }
-        Map files = [:]
         peer.metaClass.uploadHubFile = { String name, byte[] bytes ->
             if (failure == 'upload') throw new IllegalStateException('upload unavailable')
             files[name] = bytes
@@ -397,7 +397,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         result.backups.collectEntries { [(it.backupKey): it.deletePending] } == [app_1: false, app_2: true]
-        result.deletePendingNote.contains('cannot be restored')
+        result.deletePendingNote.contains('still readable')
+        result.deletePendingNote.contains('recover the backup')
+        result.deletePendingNote.contains('purges unrecovered markers')
     }
 
     def 'pending library baseline is not reused by hub_update_library'() {
@@ -431,16 +433,19 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
             [("app_${id}".toString()): entry(id, it)]
         }
         List deleted = []
-        script.metaClass.downloadHubFile = { String name -> 'original'.getBytes('UTF-8') }
+        Map files = [:]
+        script.metaClass.downloadHubFile = { String name -> name == 'mcp-backup-app-99.groovy' ? 'original'.getBytes('UTF-8') : files.get(name) }
         hubGet.register('/app/ajax/code') { params -> '{"source":"current","version":2}' }
-        script.metaClass.uploadHubFile = { String name, byte[] bytes -> }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> files.put(name, bytes) }
         script.metaClass.deleteHubFile = { String name -> deleted << name }
-        script.metaClass.hubInternalPostJson = { String path, String body -> '{"status":"success"}' }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 99] }
 
         when:
-        script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+        def result = script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
 
         then:
+        result.success == true
+        result.undoAvailable == true
         atomicStateMap.itemBackupManifest.size() == 20
         atomicStateMap.itemBackupManifest.keySet().containsAll(['app_99', 'prerestore_app_99'])
         !deleted.contains('mcp-backup-app-99.groovy')

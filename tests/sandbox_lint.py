@@ -72,6 +72,17 @@ VERSION_SOURCES = {
 # Anti-pattern rules
 # ---------------------------------------------------------------------------
 
+# Every call shape that hands a path literal to the hub's local HTTP client, matched up to (not
+# including) the path literal's opening quote: the hubInternal* client entry points, the
+# _hubRequest core (path is its SECOND argument, after the method), and the path-forwarding
+# wrappers around them. Both path-sensitive rules anchor on it (SANDBOX-016's querystring check
+# and the device-tool access gate's endpoint match), and check_native_request_wrappers derives
+# the wrapper inventory from the source so a new wrapper cannot silently fall outside either.
+NATIVE_REQUEST_PATH_CALL = (
+    r"(?:(?:hubInternal\w*|_radioGet(?:Safe)?|_radioPost|_modePost)\(\s*"
+    r"|_hubRequest\(\s*['\"][A-Z]+['\"]\s*,\s*)"
+)
+
 RULES = [
     {
         # Match both `getClass()` invocations and bare property-access form
@@ -195,7 +206,7 @@ RULES = [
         # covered by the RUNTIME guard: '?' after an interpolation, a variable-built path, a
         # direct _hubRequest call.
         "id": "SANDBOX-016",
-        "pattern": r"""(?:hubInternal\w*|_radioGet(?:Safe)?|_radioPost|_modePost)\(\s*(?:"[^"$]*\?|'[^'$]*\?)""",
+        "pattern": NATIVE_REQUEST_PATH_CALL + r"""(?:"[^"$]*\?|'[^'$]*\?)""",
         "message": "Querystring embedded in a hub-request PATH. The platform client escapes the '?' into the literal path -- exact hub routes 404 and wildcard routes silently swallow it. Pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]), and do NOT pre-encode the values (the query map encodes them; pre-encoding double-encodes).",
         "severity": "error",
         "raw": True,
@@ -2965,10 +2976,11 @@ DEVICE_NATIVE_ACCESS_TOKENS = (
     "_loadContextResourcePopulation(",
 )
 # Endpoint paths live inside string literals, which the body scan blanks; they are matched on a
-# comments-blanked copy of the body instead, and only as the argument of a native call
-# (hubInternal*/_radioGet), so a path named in a comment or a log message never counts.
+# comments-blanked copy of the body instead, and only as the path argument of a native request
+# call (NATIVE_REQUEST_PATH_CALL: hubInternal*, _hubRequest and every path-forwarding wrapper),
+# so a path named in a comment or a log message never counts.
 DEVICE_NATIVE_ENDPOINT_PATHS = ("/device/", "updatePingDevice")
-_NATIVE_CALL_ARG = r"(?:hubInternal\w*|_radioGet)\(\s*['\"]"
+_NATIVE_CALL_ARG = NATIVE_REQUEST_PATH_CALL + r"['\"]"
 
 
 def _device_native_tokens(body_code: str, body_strings: str) -> list[str]:
@@ -3160,9 +3172,270 @@ DEVICE_GATE_SELF_TEST_CASES = [
         {"device-tool-access-gate-missing"},
     ),
     (
+        "endpoint name only in a message string, no native call -- must-not-catch (pins the call anchor)",
+        {"libraries/x.groovy": 'def toolPingNote(args) {\n    log.warn("updatePingDevice is gone; /device/ping too")\n    return [ok: true]\n}\n'},
+        set(),
+    ),
+    (
+        "radio endpoint reached through the non-throwing wrapper without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolPingDevice(args) {\n    return _radioGetSafe("/hub/zigbee/updatePingDevice/${args.id}/true")\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "device endpoint reached through the request core without the gate -- must-catch",
+        {"libraries/x.groovy": 'def toolPokeDevice(args) {\n    return _hubRequest(\'GET\', "/device/fullJson/${args.id}")\n}\n'},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
         "stale exemption (exempt tool present but reaches no native endpoint) -- must-catch",
         {"libraries/x.groovy": 'def toolListHubDrivers(args) {\n    return [drivers: []]\n}\n'},
         {"device-tool-access-gate-stale-exemption"},
+    ),
+]
+
+
+# Path-forwarding wrappers the anchor deliberately does NOT read: name -> why a caller-supplied
+# path literal can never reach the hub through them. Every entry is checked for staleness.
+NATIVE_WRAPPER_UNANCHORED = {
+    "_deleteItemViaEndpoint": "path is its third argument and toolDeleteItem fixes it to the app/driver code-editor delete endpoints; no caller-supplied literal reaches it",
+}
+
+_NATIVE_WRAPPER_DECL = re.compile(
+    r"^(?:(?:private|protected|public|static)\s+)*(?:def|\w+(?:<[^>]*>)?)\s+(\w+)\s*\(([^)]*)\)\s*\{", re.M
+)
+# The request core and its client entry points: the roots every wrapper is derived from.
+_NATIVE_REQUEST_ROOTS = r"hubInternal\w*|_hubRequest"
+
+
+def _native_wrapper_bodies(src: str) -> list[tuple[str, int, list[str], str]]:
+    """(name, 1-based line, parameter names, comments-blanked body) for every top-level function."""
+    out: list[tuple[str, int, list[str], str]] = []
+    code = _blank_noncode(src)
+    strings = _blank_comments(src)
+    for m in _NATIVE_WRAPPER_DECL.finditer(code):
+        params = [p.strip() for p in m.group(2).split(",") if p.strip()]
+        names = [re.split(r"\s*=", p)[0].split()[-1] for p in params]
+        i = m.end() - 1
+        depth = 0
+        j = i
+        while j < len(code):
+            if code[j] == "{":
+                depth += 1
+            elif code[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out.append((m.group(1), code.count("\n", 0, m.start()) + 1, names, strings[i:j]))
+    return out
+
+
+def check_native_request_wrappers(src_override: dict[str, str] | None = None,
+                                  exempt_override: dict[str, str] | None = None) -> list[dict]:
+    """Derive the native-request wrapper inventory from the source and hold it against
+    NATIVE_REQUEST_PATH_CALL. A wrapper is any function that forwards one of its own parameters
+    as an argument of hubInternal*/_hubRequest or of an already-derived wrapper (to a fixed
+    point, so a wrapper of a wrapper counts). Each one must be recognised by the anchor with
+    the path in its real argument position -- probed by matching the anchor against
+    `name(<placeholder args>, <quote>` -- or carry a NATIVE_WRAPPER_UNANCHORED reason:
+      (A) unrecognised, no reason -> rule "native-wrapper-unanchored" (an endpoint reached
+          through it is invisible to SANDBOX-016 and to the device-tool access gate).
+      (B) a reason for a function that is not a wrapper (or no longer exists)
+          -> rule "native-wrapper-stale-exemption".
+    Ships with must-catch + must-not-catch fixtures (NATIVE_WRAPPER_SELF_TEST_CASES).
+    """
+    findings: list[dict] = []
+    exempt = NATIVE_WRAPPER_UNANCHORED if exempt_override is None else exempt_override
+    if src_override is not None:
+        sources = src_override
+    else:
+        sources = {rel: (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+                   for rel in ["hubitat-mcp-server.groovy", *_device_gate_libraries()]}
+    functions: list[tuple[str, str, int, list[str], str]] = []
+    for rel, src in sources.items():
+        functions.extend((rel, *fn) for fn in _native_wrapper_bodies(src))
+    # callee name pattern -> the argument position its path occupies
+    known: list[tuple[str, int]] = [(r"hubInternal\w*", 0), (r"_hubRequest", 1)]
+    wrappers: dict[str, tuple[str, int, int]] = {}  # name -> (file, line, path param index)
+    grew = True
+    while grew:
+        grew = False
+        # One pattern per path position: the identifier that opens the callee's PATH argument,
+        # bare or opening an interpolated path. A path literal with a parameter appended stays
+        # visible to the rules (the literal is in this body), so it is not forwarding.
+        by_position: dict[int, list[str]] = {}
+        for callee, pos in known:
+            by_position.setdefault(pos, []).append(callee)
+        patterns = [
+            re.compile(r"\b(?:" + "|".join(callees) + r")\(\s*" + r"(?:[^(),\n]*,\s*)" * pos
+                       + r"(?:\"\$\{)?([A-Za-z_]\w*)\b")
+            for pos, callees in by_position.items()
+        ]
+        for rel, name, line, params, body in functions:
+            if name in wrappers or re.fullmatch(_NATIVE_REQUEST_ROOTS, name):
+                continue
+            forwarded = next((m.group(1) for pattern in patterns for m in pattern.finditer(body)
+                              if m.group(1) in params), None)
+            if forwarded is not None:
+                wrappers[name] = (rel, line, params.index(forwarded))
+                known.append((re.escape(name), params.index(forwarded)))
+                grew = True
+    for name, (rel, line, idx) in sorted(wrappers.items()):
+        if name in exempt:
+            continue
+        probe = name + "(" + "'x', " * idx + '"'
+        if re.fullmatch(NATIVE_REQUEST_PATH_CALL + r"['\"]", probe):
+            continue
+        findings.append({
+            "file": rel, "line": line, "rule": "native-wrapper-unanchored",
+            "severity": "error", "source": "",
+            "message": (f"{name} forwards its argument {idx + 1} as a hub request path but "
+                        "NATIVE_REQUEST_PATH_CALL does not read it there; an endpoint reached through it "
+                        "is invisible to SANDBOX-016 and to the device-tool access gate. Add it to the "
+                        "anchor (path in that position) or to NATIVE_WRAPPER_UNANCHORED with the reason"),
+        })
+    present = {fn[1] for fn in functions}
+    for name in sorted(exempt):
+        # A fixture that overrides the exemptions checks the "no longer exists" half too.
+        if src_override is not None and exempt_override is None and name not in present:
+            continue
+        if name not in wrappers:
+            findings.append({
+                "file": "tests/sandbox_lint.py", "line": 1, "rule": "native-wrapper-stale-exemption",
+                "severity": "error", "source": "",
+                "message": f"NATIVE_WRAPPER_UNANCHORED lists {name}, which forwards no hub request path (or no longer exists); remove the entry",
+            })
+    return findings
+
+
+NATIVE_WRAPPER_SELF_TEST_CASES = [
+    # (description, {file: groovy source}, expected_rule_codes)
+    (
+        "anchored wrappers, one forwarding through the other -- must-not-catch",
+        {"libraries/x.groovy": 'private _radioGetSafe(String path, Map query = null) {\n    return _radioGet(path, query)\n}\n'
+                               'private _radioGet(String path, Map query = null) {\n    return hubInternalGet(path, query)\n}\n'},
+        set(),
+    ),
+    (
+        "new wrapper the anchor does not know -- must-catch",
+        {"libraries/x.groovy": 'private _zigbeeGet(String path) {\n    return hubInternalGet(path)\n}\n'},
+        {"native-wrapper-unanchored"},
+    ),
+    (
+        "wrapper of a wrapper, forwarding an interpolated path -- must-catch (transitive)",
+        {"libraries/x.groovy": 'private _pingGet(String p) {\n    return _radioGetSafe("${p}/true")\n}\n'
+                               'private _radioGetSafe(String path) {\n    return _radioGet(path)\n}\n'
+                               'private _radioGet(String path) {\n    return hubInternalGet(path)\n}\n'},
+        {"native-wrapper-unanchored"},
+    ),
+    (
+        "anchored name whose path is not where the anchor reads it -- must-catch",
+        {"libraries/x.groovy": 'private _modePost(Map body, String path) {\n    return hubInternalPostJson(path, body.toString())\n}\n'},
+        {"native-wrapper-unanchored"},
+    ),
+    (
+        "core entry point forwarding to the request core with the path second -- must-not-catch",
+        {"hubitat-mcp-server.groovy": 'def hubInternalGet(String path, Map query = null) {\n    _hubRequest(\'GET\', path, [query: query])\n}\n'},
+        set(),
+    ),
+    (
+        "documented unanchored wrapper -- must-not-catch",
+        {"libraries/x.groovy": 'private Map _deleteItemViaEndpoint(String type, String idParam, String deletePath, args) {\n    return hubInternalGet("${deletePath}${args.id}")\n}\n'},
+        set(),
+    ),
+    (
+        "stale exemption (documented wrapper present but forwards no path) -- must-catch",
+        {"libraries/x.groovy": 'private Map _deleteItemViaEndpoint(String type, args) {\n    return [ok: true]\n}\n'},
+        {"native-wrapper-stale-exemption"},
+    ),
+    (
+        "stale exemption (documented wrapper no longer exists) -- must-catch",
+        {"libraries/x.groovy": 'private _radioGet(String path) {\n    return hubInternalGet(path)\n}\n'},
+        {"native-wrapper-stale-exemption"},
+        {"_ghostGet": "a wrapper that was removed"},
+    ),
+]
+
+
+# Map-subscript rule fixtures: (description, {file: groovy source}, expected (file, line) findings).
+# The scope-model cases pin what a method-wide set got wrong: a closure-local declaration must not
+# classify the enclosing method's name, and an app @Field Map is in scope for every library.
+MAP_SUBSCRIPT_SELF_TEST_CASES = [
+    (
+        "definite Map-to-List reassignment -- must-not-catch",
+        {"libraries/x.groovy": "def read(int index) {\n def rows = [:]\n rows = []\n return rows[index]\n}\n"},
+        [],
+    ),
+    (
+        "branch Map reassignment invalidates outer List proof -- must-catch",
+        {"libraries/x.groovy": "def read(String key, boolean flag) {\n def rows = []\n if (flag) { rows = [:] }\n return rows[key]\n}\n"},
+        [("libraries/x.groovy", 4)],
+    ),
+    (
+        "dynamic read on a def-declared Map -- must-catch",
+        {"libraries/x.groovy": "def read(String key) {\n def m = [:]\n return m[key]\n}\n"},
+        [("libraries/x.groovy", 3)],
+    ),
+    (
+        "dynamic write on a typed Map -- must-catch",
+        {"libraries/x.groovy": "def write(Map m, String key) {\n m[key] = 1\n}\n"},
+        [("libraries/x.groovy", 2)],
+    ),
+    (
+        "dynamic read on a typed Map (measured typed-read exception) -- must-not-catch",
+        {"libraries/x.groovy": "def read(Map m, String key) {\n return m[key]\n}\n"},
+        [],
+    ),
+    (
+        "literal-list bounded key -- must-not-catch",
+        {"libraries/x.groovy": "def copy(Map src) {\n def m = [:]\n ['a', 'b'].each { k -> m[k] = src.get(k) }\n return m\n}\n"},
+        [],
+    ),
+    (
+        "app @Field Map written with a dynamic key from a library -- must-catch",
+        {"hubitat-mcp-server.groovy": "@groovy.transform.Field static final Map CACHE = new java.util.HashMap()\n",
+         "libraries/x.groovy": "def remember(String key) {\n CACHE[key] = 1\n}\n"},
+        [("libraries/x.groovy", 2)],
+    ),
+    (
+        "closure-local typed Map does not classify the enclosing method's List -- must-not-catch",
+        {"libraries/x.groovy": "def f(String idx) {\n def x = []\n items.each { Map x = [:] }\n x[idx] = 1\n}\n"},
+        [],
+    ),
+    (
+        "closure Map parameter does not classify an outer name -- must-not-catch",
+        {"libraries/x.groovy": "def f(String idx, List src) {\n def cfg = []\n src.each { Map cfg -> cfg.size() }\n cfg[idx] = 1\n}\n"},
+        [],
+    ),
+    (
+        "closure-local typed Map is still classified inside its own closure -- must-catch",
+        {"libraries/x.groovy": "def f(String idx) {\n items.each { Map x = [:]\n  x[idx] = 1 }\n}\n"},
+        [("libraries/x.groovy", 3)],
+    ),
+    (
+        "GString key with no fixed part -- must-catch",
+        {"libraries/x.groovy": 'def f(String k) {\n def m = [:]\n m["${k}"] = 1\n}\n'},
+        [("libraries/x.groovy", 3)],
+    ),
+    (
+        "GString key whose fixed parts exclude every measured collision -- must-not-catch",
+        {"libraries/x.groovy": 'def f(String k) {\n def m = [:]\n m["switch${k}.@N"] = 1\n}\n'},
+        [],
+    ),
+    (
+        "concatenated key that can still spell a collision -- must-catch",
+        {"libraries/x.groovy": 'def f(String k) {\n def m = [:]\n m[k + "s"] = 1\n}\n'},
+        [("libraries/x.groovy", 3)],
+    ),
+    (
+        "bounded branch broken by a non-short-circuit OR -- must-catch",
+        {"libraries/x.groovy": "def f(String key, boolean flag) {\n def m = [:]\n if (key == 'a' | flag) { m[key] = 1 }\n}\n"},
+        [("libraries/x.groovy", 3)],
+    ),
+    (
+        "safe-navigation receiver -- must-catch",
+        {"libraries/x.groovy": "def f(String key) {\n state.result = [:]\n state?.result[key] = 1\n}\n"},
+        [("libraries/x.groovy", 3)],
     ),
 ]
 
@@ -3178,6 +3451,40 @@ def _run_device_gate_self_test() -> int:
             failures += 1
             print(
                 f"DEVICE-GATE-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}"
+            )
+    return failures
+
+
+def _run_map_subscript_self_test() -> int:
+    failures = 0
+    for i, (desc, src, expected) in enumerate(MAP_SUBSCRIPT_SELF_TEST_CASES, start=1):
+        findings = check_sandbox_map_subscripts(src_override=src)
+        actual = sorted((f["file"], f["line"]) for f in findings)
+        if actual != sorted(expected):
+            failures += 1
+            for f in findings:
+                print(format_finding(f))
+            print(
+                f"MAP-SUBSCRIPT-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected findings: {sorted(expected)}\n"
+                f"  actual findings:   {actual}"
+            )
+    return failures
+
+
+def _run_native_wrapper_self_test() -> int:
+    failures = 0
+    for i, (desc, src, expected_codes, *rest) in enumerate(NATIVE_WRAPPER_SELF_TEST_CASES, start=1):
+        findings = check_native_request_wrappers(src_override=src, exempt_override=rest[0] if rest else None)
+        actual_codes = {f["rule"] for f in findings}
+        if actual_codes != expected_codes:
+            failures += 1
+            for f in findings:
+                print(format_finding(f))
+            print(
+                f"NATIVE-WRAPPER-SELF-TEST FAIL [{i}] {desc}\n"
                 f"  expected codes: {sorted(expected_codes)}\n"
                 f"  actual codes:   {sorted(actual_codes)}"
             )
@@ -4311,6 +4618,10 @@ def run_self_test() -> int:
 
     # Device-tool access gate placement: must-catch / must-not-catch fixtures.
     failures += _run_device_gate_self_test()
+    # Native-request wrapper inventory: must-catch / must-not-catch fixtures.
+    failures += _run_native_wrapper_self_test()
+    # Map-subscript rule: dynamic read/write, bounded and typed-read exceptions, scope model.
+    failures += _run_map_subscript_self_test()
 
     # BP20 library file-scope block-comment guard: must-catch / must-not-catch fixtures.
     failures += _run_tool_guide_library_pointer_self_test()
@@ -4331,6 +4642,8 @@ def run_self_test() -> int:
         + len(ENVELOPE_PARITY_SELF_TEST_CASES)
         + len(READ_WRITE_SPLIT_SELF_TEST_CASES)
         + len(DEVICE_GATE_SELF_TEST_CASES)
+        + len(NATIVE_WRAPPER_SELF_TEST_CASES)
+        + len(MAP_SUBSCRIPT_SELF_TEST_CASES)
         + LIBRARY_POINTER_FIXTURES
         + BLOCK_COMMENT_FIXTURES
         + SCHEMA_PROVENANCE_FIXTURES
@@ -4344,6 +4657,8 @@ def run_self_test() -> int:
         f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity, "
         f"{len(READ_WRITE_SPLIT_SELF_TEST_CASES)} read-write-split, "
         f"{len(DEVICE_GATE_SELF_TEST_CASES)} device-tool-access-gate, "
+        f"{len(NATIVE_WRAPPER_SELF_TEST_CASES)} native-request-wrapper, "
+        f"{len(MAP_SUBSCRIPT_SELF_TEST_CASES)} map-subscript, "
         f"{LIBRARY_POINTER_FIXTURES} tool-guide-library-pointer, "
         f"{BLOCK_COMMENT_FIXTURES} library-block-comment, "
         f"{SCHEMA_PROVENANCE_FIXTURES} mcp-schema-provenance)."
@@ -4590,9 +4905,10 @@ def check_sandbox_map_subscripts(
     Lowercase fields/class/metaClass fail on untyped bracket receivers.
     Explicit Map receivers accept the measured fields/class operations, but
     metaClass writes attempt a cast. getClass and Fields are valid data keys.
-    Dynamic-key findings remain source candidates: this scanner does not prove
-    interprocedural reachability or infer an exhaustive platform denylist.
-    They are advisory warnings, not CI enforcement of every dynamic boundary.
+    Dynamic accesses require explicit get/put unless their keys are locally
+    bounded or the measured typed-read exception applies. This is a blocking
+    source invariant, not a claim that each match
+    is a reproduced bug or that the measured collision set is exhaustive.
     See tests/fixtures/sandbox-map-probes.md for measurements and inference limits.
     """
     if src_override is None:
@@ -4613,14 +4929,11 @@ def check_sandbox_map_subscripts(
     method_re = re.compile(
         rf"^[ \t]*(?:(?:private|protected|public)\s+)?(?:static\s+)?"
         rf"(?:(?P<type>{ident}(?:<[^{{}}\n]+>)?)\s+)?"
-        rf"(?P<name>(?!(?:if|for|while|switch|catch|synchronized|else)\b){ident})\s*\((?P<params>[^{{}}]*?)\)\s*\{{",
+        rf"(?P<name>(?!(?:if|for|while|switch|catch|synchronized|else)\b){ident})\s*\(",
         re.MULTILINE,
     )
     map_decl = re.compile(rf"\b{map_type}\s+({ident})\b")
-    map_init = re.compile(
-        rf"\b({ident}(?:\.{ident})*)\s*=\s*"
-        rf"(?:new\s+{map_type}\s*\(|\[[^\]\n]*:)"
-    )
+    assignment_re = re.compile(rf"(?<![.\w?])({ident}(?:\??\.{ident})*)\s*=(?!=|~)\s*")
     checked_map = re.compile(rf"\b({ident})\s+(?:instanceof|as)\s+Map\b")
     conditional_map = re.compile(
         rf"\b({ident})\s*=\s*[^\n;]*\binstanceof\s+Map\b[^\n;]*:\s*\[:\]"
@@ -4629,114 +4942,209 @@ def check_sandbox_map_subscripts(
     cast_map = re.compile(rf"\b({ident})\s*=\s*[^\n;]*\bas\s+Map\b")
     field_map = re.compile(
         rf"@(?:groovy\.transform\.)?Field\s+(?:(?:static|final|private|protected|public)\s+)*"
-        rf"{map_type}\s+({ident})\b"
+        rf"(?:java\.util\.(?:concurrent\.)?)?{map_type}\s+({ident})\b"
     )
-    alias_re = re.compile(rf"\b({ident})\s*=\s*({ident})\b(\s*\()?")
+    field_inferred = re.compile(
+        rf"@(?:groovy\.transform\.)?Field\s+(?:(?:static|final|private|protected|public)\s+)*"
+        rf"def\s+({ident})\s*=\s*([^\n;]+)"
+    )
+    # A safe-navigation receiver (ctx?.data[key]) is the same Map access; the
+    # receiver is normalised without its '?' before it is looked up.
     subscript_re = re.compile(
-        rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
+        rf"\b(?P<receiver>{ident}(?:\??\.{ident})*)\s*\[\s*"
         rf"(?P<key>{ident}(?:\??\.{ident})*(?:\(\))?)\s*\]"
     )
     literal_re = re.compile(
-        rf"\b(?P<receiver>{ident}(?:\.{ident})*)\s*\[\s*"
+        rf"\b(?P<receiver>{ident}(?:\??\.{ident})*)\s*\[\s*"
         r"(?P<quote>['\"])(?P<key>fields|class|metaClass)(?P=quote)\s*\]"
     )
-    each_re = re.compile(
-        rf"(?P<receiver>{ident}(?:\.{ident})*)\??\.each\s*\{{\s*"
-        rf"(?P<key>{ident})\s*(?:,\s*{ident}\s*)?->"
+    # Composed keys are dynamic too: an interpolated GString, or a literal
+    # concatenated with an expression on either side. Matched on the RAW body
+    # (masking blanks the literal halves) and correlated back to code below.
+    composed_re = re.compile(
+        rf"\b(?P<receiver>{ident}(?:\??\.{ident})*)\s*\[\s*(?P<key>"
+        r"\"[^\"\n]*\$(?:\{|[A-Za-z_])[^\"\n]*\""
+        r"|(?:\"[^\"\n]*\"|'[^'\n]*')\s*\+[^\]\n]+"
+        rf"|{ident}(?:\??\.{ident})*(?:\(\))?\s*\+\s*(?:\"[^\"\n]*\"|'[^'\n]*')[^\]\n]*"
+        rf"|{ident}(?:\??\.{ident})*(?:\(\))?\s*\+[^\]\n]+"
+        r")\s*\]"
     )
     # The raw literal is correlated against executable code below; a quoted
     # example in a comment cannot establish a safe branch.
     bounded_if_re = re.compile(
         rf"\bif\s*\(\s*(?P<key>{ident})\s*==\s*"
-        r"""(?P<quote>['"])(?P<literal>[^'"\n]+)(?P=quote)"""
+        r"""(?P<quote>['"])(?P<literal>[^'"\n$\\]+)(?P=quote)"""
         r"\s*(?:&&[^{}]*?)?\)\s*\{"
     )
     collisions = {"fields", "class", "metaClass"}
 
-    def close_delimiter(code: str, opening: int, open_char: str, close_char: str) -> int:
-        depth = 0
-        for pos in range(opening, len(code)):
-            depth += (code[pos] == open_char) - (code[pos] == close_char)
+    def close_delimiter(code: str, opening: int, left: str, right: str) -> int:
+        depth = 1
+        for pos in range(opening + 1, len(code)):
+            depth += (code[pos] == left) - (code[pos] == right)
             if depth == 0:
                 return pos
-        return -1
-
-    def close_brace(code: str, opening: int) -> int:
-        end = close_delimiter(code, opening, "{", "}")
-        return len(code) if end == -1 else end
-
-    # `(?<![.\w])` keeps a property assignment (other.rows = []) off a local named rows.
-    assignment_re = re.compile(rf"(?<![.\w])({ident})\s*(?<![=!<>+\-*/%&|^])=(?!=|~)")
-    list_ctor_re = re.compile(r"new\s+(?:ArrayList|LinkedList|CopyOnWriteArrayList)\b")
-    list_cast_re = re.compile(r"\bas\s+List\b$")
-    # The body is masked, so a quoted key has already been blanked; an entry
-    # is a bare, blanked or parenthesized key followed by a single colon.
-    map_entry_re = re.compile(rf"^\s*(?:{ident}|\([^()]*\))?\s*:(?!:)")
-
-    def expression_end(code: str, start: int) -> int:
-        # Keep multiline literals together: the assigned expression runs to
-        # the first newline or semicolon outside any bracket.
-        depth = 0
-        for pos in range(start, len(code)):
-            char = code[pos]
-            if depth == 0 and char in "\n;":
-                return pos
-            depth += (char in "([{") - (char in ")]}")
         return len(code)
 
-    def enclosing_block(body: str, pos: int) -> tuple[int, int]:
-        # Span of the innermost brace block containing pos; the whole body otherwise.
-        stack = []
-        for index in range(pos):
-            if body[index] == "{":
-                stack.append(index)
-            elif body[index] == "}" and stack:
-                stack.pop()
-        if not stack:
-            return -1, len(body)
-        return stack[-1], close_brace(body, stack[-1])
+    def close_brace(code: str, opening: int) -> int:
+        return close_delimiter(code, opening, "{", "}")
 
-    def assignment_records(body: str) -> list[tuple[str, str, int, tuple[int, int]]]:
-        return [
-            (match.group(1), body[match.end():expression_end(body, match.end())].strip(),
-             match.start(), enclosing_block(body, match.start()))
-            for match in assignment_re.finditer(body)
-        ]
+    def method_records(code: str):
+        for match in method_re.finditer(code):
+            params_end = close_delimiter(code, match.end() - 1, "(", ")")
+            opening = params_end + 1
+            while opening < len(code) and code[opening].isspace():
+                opening += 1
+            if opening < len(code) and code[opening] == "{":
+                yield match, code[match.end():params_end], opening, close_brace(code, opening)
 
-    def top_level_segments(inner: str) -> list[str]:
-        segments, depth, start = [], 0, 0
-        for pos, char in enumerate(inner):
-            if depth == 0 and char == ",":
-                segments.append(inner[start:pos])
-                start = pos + 1
-            depth += (char in "([{") - (char in ")]}")
-        segments.append(inner[start:])
-        return segments
+    def is_map_literal(expression: str) -> bool:
+        if not expression.startswith("[") or close_delimiter(expression, 0, "[", "]") != len(expression) - 1:
+            return False
+        # Only an outer entry separator establishes a Map. Nested Maps and
+        # ternary/Elvis expressions are also legal elements of a List.
+        depth = 0
+        ternaries = 0
+        for pos, token in enumerate(expression[1:-1], start=1):
+            depth += (token in "([{") - (token in ")]}")
+            if depth != 0:
+                continue
+            if token == "?" and expression[pos + 1:pos + 2] not in (".", "["):
+                ternaries += 1
+            elif token == ":":
+                if ternaries:
+                    ternaries -= 1
+                else:
+                    return True
+        return False
 
-    def is_list_expression(expression: str) -> bool:
+    def outer_expression_tokens(expression: str):
+        depth = 0
+        for pos, token in enumerate(expression):
+            if depth == 0:
+                yield pos, token
+            depth += (token in "([{") - (token in ")]}")
+
+    def assignment_records(body: str):
+        # Keep multiline literals together and include their property/index/
+        # method suffixes: the initializer result may differ from its prefix.
+        for assignment in assignment_re.finditer(body):
+            tail = body[assignment.end():]
+            end = next((pos for pos, token in outer_expression_tokens(tail)
+                        if token in "\n;,)]}"), len(tail))
+            yield assignment[1], tail[:end].strip(), assignment.start()
+
+    def assignment_expressions(body: str):
+        for dest, expression, _ in assignment_records(body):
+            yield dest, expression
+
+    def is_map_expression(expression: str, maps: set[str], returns: set[str]) -> bool:
         expression = expression.strip()
         while expression.startswith("(") and close_delimiter(expression, 0, "(", ")") == len(expression) - 1:
             expression = expression[1:-1].strip()
-        if expression.startswith("[") and close_delimiter(expression, 0, "[", "]") == len(expression) - 1:
-            inner = expression[1:-1]
-            if inner.strip() == ":":
-                return False
-            return not any(map_entry_re.match(segment) for segment in top_level_segments(inner))
-        return bool(list_ctor_re.match(expression) or list_cast_re.search(expression))
+        if re.fullmatch(rf"{ident}(?:\.{ident})*", expression):
+            return expression in maps
+        for pos, token in outer_expression_tokens(expression):
+            if token == "+":
+                return (is_map_expression(expression[:pos], maps, returns)
+                        and is_map_expression(expression[pos + 1:], maps, returns))
+        constructor = re.match(rf"new\s+(?:java\.util\.(?:concurrent\.)?)?{map_type}\s*\(", expression)
+        call = re.match(rf"({ident})\s*\(", expression)
+        if constructor or (call and call[1] in returns):
+            opening = (constructor or call).end() - 1
+            return close_delimiter(expression, opening, "(", ")") == len(expression) - 1
+        return is_map_literal(expression)
 
-    def list_at(records, receiver: str, pos: int) -> bool:
-        # A local can change between Map and List within one method, so the
-        # receiver's type at a subscript is the latest preceding assignment to
-        # it, not the method-wide inference. Only a provable List (literal,
-        # constructor, cast) whose enclosing block still contains the subscript
-        # counts: a branch-local reassignment proves nothing after the branch or
-        # in a sibling branch, and a non-literal reassignment keeps the Map
-        # classification. finditer yields ascending starts, so the last wins.
-        latest = None
-        for dest, expression, start, (block_open, block_close) in records:
-            if dest == receiver and start < pos and block_open < pos < block_close:
-                latest = expression
-        return latest is not None and is_list_expression(latest)
+    def is_list_expression(expression: str) -> bool:
+        while expression.startswith("(") and close_delimiter(expression, 0, "(", ")") == len(expression) - 1:
+            expression = expression[1:-1].strip()
+        if expression.startswith("[") and close_delimiter(expression, 0, "[", "]") == len(expression) - 1:
+            return not is_map_literal(expression)
+        constructor = re.match(
+            r"new\s+(?:java\.util\.(?:concurrent\.)?)?"
+            r"(?:ArrayList|LinkedList|CopyOnWriteArrayList)(?:\s*<[^{};=]+?>)?\s*\(", expression
+        )
+        if constructor:
+            return close_delimiter(expression, constructor.end() - 1, "(", ")") == len(expression) - 1
+        cast = re.search(r"\s+as\s+(?:java\.util\.)?List(?:\s*<[^{};=]+?>)?$", expression)
+        if cast:
+            operand = expression[:cast.start()].strip()
+            # A trailing cast in a conditional applies only to that arm. Limit
+            # proof to a simple receiver or a fully parenthesized operand.
+            return bool(re.fullmatch(rf"{ident}(?:\??\.{ident})*", operand)) or (
+                operand.startswith("(") and close_delimiter(operand, 0, "(", ")") == len(operand) - 1
+            )
+        return False
+
+    def method_return_expressions(body: str) -> list[str]:
+        # A return inside a closure returns from that closure, not its method.
+        # Keep control blocks, but mask other brace bodies before collecting.
+        visible = list(body)
+        pos = 0
+        while pos < len(body):
+            if body[pos] != "{":
+                pos += 1
+                continue
+            prefix = body[:pos].rstrip()
+            control = bool(re.search(r"\b(?:else|try|finally)\s*$", prefix))
+            if prefix.endswith(")"):
+                depth = 1
+                cursor = len(prefix) - 2
+                while cursor >= 0 and depth:
+                    depth += (prefix[cursor] == ")") - (prefix[cursor] == "(")
+                    cursor -= 1
+                control = bool(re.search(
+                    r"\b(?:if|for|while|switch|catch|synchronized)\s*$", prefix[:cursor + 1]
+                ))
+            if control:
+                pos += 1
+            else:
+                end = close_brace(body, pos)
+                visible[pos:end + 1] = ["\n" if char == "\n" else " " for char in body[pos:end + 1]]
+                pos = end + 1
+        code = "".join(visible)
+        expressions = re.findall(r"\breturn\s+([^\n;{}]+)", code)
+        expressions.extend(re.split(r"[\n;]", code.rstrip())[-1:])
+        return [re.sub(r"^\s*return\s+", "", value).strip() for value in expressions]
+
+    mutation_operator = r"(?:=(?!=|~)|(?:<<|>>>?|\*\*|[+*/%&|^\-])=|\+\+|--)"
+
+    def key_binding_unchanged(key: str, code: str) -> bool:
+        mutation = rf"\b{key}\s*{mutation_operator}|(?:\+\+|--)\s*\b{key}\b"
+        if re.search(mutation, code):
+            return False
+        if any(re.search(rf"\b{key}\b", match[1])
+               for match in re.finditer(r"\{\s*([^{}\n]*?)->", code)):
+            return False
+        # A nested closure without an arrow has its own implicit `it` binding.
+        # Conservatively reject nested braces for that particular parameter.
+        nested = code[code.index("{") + 1:] if code.lstrip().startswith("if") and "{" in code else code
+        if key == "it" and "{" in nested:
+            return False
+        return not re.search(rf"\bfor\s*\([^)]*\b{key}\b", code)
+
+    def condition_requires_key_comparison(condition: str) -> bool:
+        opening = condition.index("(")
+        closing = close_delimiter(condition, opening, "(", ")")
+        expression = condition[opening + 1:closing]
+        # The matcher anchors the first term to the key equality. An outer OR
+        # or conditional can admit keys that fail it; an AND's nested OR cannot.
+        for pos, token in outer_expression_tokens(expression):
+            if expression[pos:pos + 2] == "||":
+                return False
+            # Non-short-circuit OR/XOR bind as (key == 'a') | flag: reachable
+            # with any key, so they admit keys exactly like || does.
+            if token in "|^" and expression[pos - 1:pos] != "|" and expression[pos + 1:pos + 2] != "|":
+                return False
+            if token == "?" and expression[pos + 1:pos + 2] not in (".", "["):
+                return False
+        return True
+
+    def writes_subscript(code: str, start: int, end: int) -> bool:
+        return bool(
+            re.match(rf"\s*{mutation_operator}", code[end:])
+            or re.search(r"(?:^|[\n=;{}(,:?+*/%&|^!<>~\-]|\breturn)\s*(?:\+\+|--)\s*$", code[:start])
+        )
 
     masked = {
         path: "\n".join(
@@ -4745,86 +5153,290 @@ def check_sandbox_map_subscripts(
         )
         for path, source in sources.items()
     }
-    map_returns = {
-        match.group("name")
-        for code in masked.values() for match in method_re.finditer(code)
-        if re.fullmatch(map_type, match.group("type") or "")
+    # Libraries are pasted into the parent app. The child app is a different
+    # class: a same-named helper there must not inherit the parent's return type.
+    def scope(path: str) -> str:
+        return "parent" if path.startswith("libraries/") else path
+
+    def return_scope(path: str) -> str:
+        return "parent" if path == "hubitat-mcp-server.groovy" else scope(path)
+
+    methods_by_path = {
+        path: [(match, params, opening, end, code[opening + 1:end])
+               for match, params, opening, end in method_records(code)]
+        for path, code in masked.items()
     }
+    methods = [(path, *record) for path, records in methods_by_path.items() for record in records]
+    map_returns: dict[str, set[str]] = {}
+    for path, match, _, _, _, _ in methods:
+        known = map_returns.setdefault(return_scope(path), set())
+        if re.fullmatch(map_type, match.group("type") or ""):
+            known.add(match.group("name"))
+
+    def inferred_maps(params: str, body: str, returns: set[str]) -> set[str]:
+        maps = (set(map_decl.findall(params)) | set(map_decl.findall(body)) |
+                set(checked_map.findall(body)) |
+                set(conditional_map.findall(body)) | set(fallback_map.findall(body)) |
+                set(cast_map.findall(body)))
+        aliases = list(assignment_expressions(body))
+        for _ in range(len(aliases) + 1):
+            before = set(maps)
+            for dest, expression in aliases:
+                if is_map_expression(expression, maps, returns):
+                    maps.add(dest)
+            if before == maps:
+                break
+        return maps
+
+    # Infer observable Map returns without relying on helper names. Include
+    # aliases and transitive calls; unknown external helpers stay unknown.
+    for _ in range(len(methods) + 1):
+        changed = False
+        for path, method, params, _, _, body in methods:
+            known = map_returns[return_scope(path)]
+            if method.group("name") in known or method.group("type") not in (None, "def"):
+                continue
+            maps = inferred_maps(params, body, known)
+            for expression in method_return_expressions(body):
+                if is_map_expression(expression, maps, known):
+                    known.add(method.group("name"))
+                    changed = True
+                    break
+        if not changed:
+            break
+    # A @Field Map declared in the app is in scope for every #include'd
+    # library at runtime (they are one class), so field inference follows the
+    # same parent/child scope as return inference, not the file boundary.
+    field_maps_by_scope: dict[str, set[str]] = {}
+    inferred_fields_by_scope: dict[str, set[str]] = {}
+    for path, code in masked.items():
+        field_maps_by_scope.setdefault(return_scope(path), set()).update(field_map.findall(code))
+        inferred_fields_by_scope.setdefault(return_scope(path), set()).update(
+            name for name, expression in field_inferred.findall(code)
+            if is_map_expression(expression, set(), set())
+        )
+
+    def brace_blocks(body: str) -> list[tuple[int, int]]:
+        blocks = []
+        stack = []
+        for pos, token in enumerate(body):
+            if token == "{":
+                stack.append(pos)
+            elif token == "}" and stack:
+                blocks.append((stack.pop(), pos))
+        return blocks
+
+    def statement_end(code: str, start: int) -> int:
+        start += len(code[start:]) - len(code[start:].lstrip())
+        if start >= len(code):
+            return len(code)
+        if code[start] == "{":
+            return min(len(code), close_brace(code, start) + 1)
+        control = re.match(r"(if|for|while|switch|synchronized|catch)\s*\(", code[start:])
+        if control:
+            header_end = close_delimiter(code, start + control.end() - 1, "(", ")")
+            stop = statement_end(code, header_end + 1)
+            alternate = re.match(r"\s*else\b", code[stop:]) if control[1] == "if" else None
+            return statement_end(code, stop + alternate.end()) if alternate else stop
+        if re.match(r"try\b", code[start:]):
+            stop = statement_end(code, start + 3)
+            while continuation := re.match(r"\s*(catch|finally)\b", code[stop:]):
+                if continuation[1] == "catch":
+                    stop = statement_end(code, stop + continuation.start(1))
+                else:
+                    stop = statement_end(code, stop + continuation.end())
+            return stop
+        if re.match(r"do\b", code[start:]):
+            stop = statement_end(code, start + 2)
+            condition = re.match(r"\s*while\s*\(", code[stop:])
+            return (min(len(code), close_delimiter(code, stop + condition.end() - 1, "(", ")") + 1)
+                    if condition else stop)
+        return next((start + pos + (token != "}")
+                     for pos, token in outer_expression_tokens(code[start:]) if token in ";\n}"), len(code))
+
     findings = []
     for path, source in sources.items():
         code = masked[path]
         raw_lines = source.split("\n")
-        field_maps = set(field_map.findall(code))
-        for method in method_re.finditer(code):
-            opening = method.end() - 1
-            end = close_brace(code, opening)
-            body = code[opening + 1:end]
+        field_maps = field_maps_by_scope.get(return_scope(path), set())
+        inferred_fields = inferred_fields_by_scope.get(return_scope(path), set())
+        for method, params, opening, end, body in methods_by_path[path]:
             raw_body = source[opening + 1:end]
-            explicit_maps = set(map_decl.findall(method.group("params")))
+            explicit_maps = set(map_decl.findall(params))
             explicit_maps.update(map_decl.findall(body))
-            # Locals and parameters can shadow a typed script field. The
-            # field's type must not exempt accesses on the shadowing receiver.
-            shadowed = set(re.findall(rf"\bdef\s+({ident})\b", body))
-            shadowed.update(re.findall(
-                rf"\b({ident})\s*(?:=[^,]*)?(?=,|$)", method.group("params")
-            ))
-            explicit_maps.update(field_maps - shadowed)
-            maps = (explicit_maps | set(map_init.findall(body)) |
-                    set(checked_map.findall(body)) | set(conditional_map.findall(body)) |
-                    set(fallback_map.findall(body)) | set(cast_map.findall(body)))
-            aliases = list(alias_re.finditer(body))
-            for _ in range(len(aliases) + 1):
-                before = set(maps)
-                for alias in aliases:
-                    dest, origin, call = alias.groups()
-                    if (call and origin in map_returns) or (not call and origin in maps):
-                        maps.add(dest)
-                if before == maps:
-                    break
-            string_params = set(re.findall(rf"\bString\s+({ident})\b", method.group("params")))
-            untyped_params = {
-                match.group(1)
-                for param in method.group("params").split(",")
-                if (match := re.fullmatch(rf"\s*(?:def\s+)?({ident})\s*(?:=.*)?", param))
-            }
-            attr_names = set(re.findall(
-                rf"\b(?:def|String)\s+({ident})\s*=\s*{ident}\??\.(?:name|key|variableName|id)\b", body
-            ))
-            attr_names.update(re.findall(
-                rf"\b({ident})\s*=\s*{ident}\.keySet\(\)\.iterator\(\)\.next\(\)", body
-            ))
-            iterations = [
-                (m.group("key"), m.end(), close_brace(body, body.index("{", m.start())))
-                for m in each_re.finditer(body)
-            ]
-            # Calls such as (value as Map).each and arbitrary Map-like values
-            # also provide candidate keys; keep their closure scopes local.
-            iterations.extend(
-                (m.group(1), m.end(), close_brace(body, body.index("{", m.start())))
-                for m in re.finditer(rf"(?<!\])\.each\s*\{{\s*({ident})\s*(?:,\s*{ident}\s*)?->", body)
+            explicit_maps.update(field_maps)
+            returns = map_returns[return_scope(path)]
+            maps = explicit_maps | inferred_fields | inferred_maps(params, body, returns)
+            # Groovy scope, not method-wide membership: a declaration (typed
+            # local, closure parameter, `def x = [:]`) binds a name only inside
+            # its innermost brace block and only after its position, so a
+            # closure-local `Map x` cannot classify the enclosing method's `x`.
+            # A plain assignment binds nothing new -- it writes the name already
+            # in scope (a closure assigning an outer local), so it counts from
+            # its position onward regardless of block.
+            blocks = brace_blocks(body)
+            for loop in re.finditer(r"\bfor\s*\(", body):
+                header_end = close_delimiter(body, loop.end() - 1, "(", ")")
+                blocks.append((loop.start(), statement_end(body, header_end + 1)))
+            # Assignment proof must stay within the executed arm, including
+            # controls without braces. This is separate from declaration scope.
+            proof_blocks = list(blocks)
+            control_bodies = []
+            control_headers = []
+            repeat_blocks = []
+            for control in re.finditer(r"\b(?:if|for|while|switch|synchronized|catch)\s*\(", body):
+                header_end = close_delimiter(body, control.end() - 1, "(", ")")
+                control_headers.append((control.start(), header_end))
+                control_bodies.append(header_end + 1)
+                block = (control.start(), statement_end(body, header_end + 1))
+                proof_blocks.append(block)
+                if re.match(r"(?:for|while)\b", control[0]):
+                    repeat_blocks.append(block)
+            for control in re.finditer(r"\b(?:else|do|try|finally)\b", body):
+                control_bodies.append(control.end())
+                block = (control.start(), statement_end(body, control.end()))
+                proof_blocks.append(block)
+                if control[0] == "do":
+                    repeat_blocks.append(block)
+            control_braces = {site + len(body[site:]) - len(body[site:].lstrip()) for site in control_bodies}
+            closure_blocks = [block for block in brace_blocks(body) if block[0] not in control_braces]
+            repeat_blocks.extend(closure_blocks)
+            declared_re = re.compile(rf"\b(?:def|{ident}(?:<[^{{}};=]+>)?)\s+$")
+
+            def declared(site: int, *, body=body, declared_re=declared_re) -> bool:
+                return bool(declared_re.search(body[max(0, site - 64):site]))
+
+            def visible_range(site: int, declaration: bool, *, body=body, blocks=blocks) -> tuple[int, int]:
+                # (from, to): a declaration is visible after itself inside its
+                # innermost block; an assignment is visible after itself anywhere.
+                if declaration:
+                    enclosing = [b for b in blocks if b[0] < site < b[1]]
+                    if enclosing:
+                        return site, max(enclosing)[1]
+                return site, len(body)
+
+            # Resolve the nearest visible declaration at each access. A later
+            # local cannot hide an earlier field use, and a closure parameter
+            # shadows the field only until that closure ends.
+            bindings = []
+            parameter_re = re.compile(rf"\b({ident})\s*(?:=[^,]*)?(?=,|$)")
+            typed_params = set(map_decl.findall(params))
+            bindings.extend((m[1], -1, len(body), m[1] in typed_params)
+                            for m in parameter_re.finditer(params))
+            # Bare command expressions such as `println CACHE` do not declare
+            # a local. Require a type-shaped token before masking a field.
+            local_type = rf"(?:def|boolean|byte|char|double|float|int|long|short|(?:{ident}\.)*[A-Z][A-Za-z0-9_]*)"
+            local_re = re.compile(
+                rf"\b(?P<type>{local_type}(?:\s*<[^{{}};=]+?>)?(?:\[\])?)"
+                rf"\s+(?P<name>{ident})\s*(?==|;|\n|\}}|:|\bin\b)"
             )
-            # Preserve the originating closure's bounds when a key is renamed
-            # or converted to a String (for example dashboard setOptions).
-            key_aliases = list(re.finditer(
-                rf"\b(?:def|String)\s+({ident})\s*=\s*({ident})"
-                rf"(?:\??\.toString\(\))?\s*(?=\n|;|$)", body
-            ))
-            for alias in key_aliases:
-                dest, origin = alias.groups()
-                if origin in attr_names:
-                    attr_names.add(dest)
-                inherited = [(dest, alias.end(), stop) for name, start, stop in iterations
-                             if name == origin and start <= alias.start() < stop]
-                iterations.extend(inherited)
-            records = assignment_records(body)
+            typed_local_sites = {m.start(1) for m in map_decl.finditer(body)}
+            for declaration in local_re.finditer(body):
+                site = declaration.start("name")
+                bindings.append((declaration["name"], *visible_range(site, True),
+                                 site in typed_local_sites))
+            for closure in re.finditer(r"\{\s*([^{}]*?)->", body):
+                closure_params = closure[1]
+                typed = set(map_decl.findall(closure_params))
+                bindings.extend((m[1], closure.start(), close_brace(body, closure.start()), m[1] in typed)
+                                for m in parameter_re.finditer(closure_params))
+
+            def binding_at(receiver: str, pos: int, *, bindings=bindings):
+                return max((binding for binding in bindings
+                            if binding[0] == receiver and binding[1] <= pos < binding[2]),
+                           key=lambda binding: binding[1], default=None)
+
+            inferred_sites = [(m.group(1), *visible_range(m.start(), False)) for m in checked_map.finditer(body)]
+            for regex in (conditional_map, fallback_map, cast_map):
+                inferred_sites.extend(
+                    (m.group(1), *visible_range(m.start(), declared(m.start())))
+                    for m in regex.finditer(body)
+                )
+            def explicit_at(receiver: str, pos: int, *, field_maps=field_maps) -> bool:
+                binding = binding_at(receiver, pos)
+                return binding[3] if binding is not None else receiver in field_maps
+
+            assignments = list(assignment_records(body))
+            list_proofs = []
+            for dest, expression, start in assignments:
+                enclosing = [block for block in proof_blocks if block[0] < start < block[1]]
+                stop = max(enclosing)[1] if enclosing else len(body)
+                boundary = max([body.rfind(token, 0, start) + 1 for token in "\n;{"]
+                               + [site for site in control_bodies if site <= start])
+                prefix = body[boundary:start].strip()
+                standalone = (not prefix or bool(re.fullmatch(local_type + r"\s*(?:<[^{};=]+?>)?", prefix)))
+                # Newlines inside an expression do not turn a skipped operand
+                # into an unconditional statement. Headers are never proof.
+                prior = body[:boundary].rstrip()
+                standalone = standalone and not (prior and prior[-1] in "&|?:=,+-*/%(")
+                standalone = standalone and not any(left < start < right for left, right in control_headers)
+                list_proofs.append((dest.replace("?", ""), start, stop,
+                                    standalone and is_list_expression(expression)))
+
+            def list_at(receiver: str, pos: int, *, list_proofs=list_proofs,
+                        closure_blocks=closure_blocks, repeat_blocks=repeat_blocks) -> bool:
+                binding = binding_at(receiver, pos)
+                # Select the latest assignment before checking its scope: a
+                # branch-local Map assignment invalidates an earlier outer List
+                # proof, while a shadowing local writes a different binding.
+                latest = next((record for record in reversed(list_proofs)
+                               if record[0] == receiver and record[1] < pos
+                               and binding_at(receiver, record[1]) == binding), None)
+                if latest is None or pos >= latest[2] or not latest[3]:
+                    return False
+                for name, site, _, _ in list_proofs:
+                    if name != receiver or binding_at(receiver, site) != binding:
+                        continue
+                    # A captured write can run later than its source position;
+                    # an outer List proof also cannot cover a loop's next pass.
+                    if any(left < site < right and not left < pos < right for left, right in closure_blocks):
+                        return False
+                    if any(latest[1] < left < pos < right and left < site < right for left, right in repeat_blocks):
+                        return False
+                return True
+
+            def map_at(receiver: str, pos: int, *, inferred_sites=inferred_sites,
+                       inferred_fields=inferred_fields) -> bool:
+                field_inferred_here = receiver in inferred_fields and binding_at(receiver, pos) is None
+                return explicit_at(receiver, pos) or (not list_at(receiver, pos) and (field_inferred_here or any(
+                    name == receiver and start < pos < stop
+                    and binding_at(receiver, start) == binding_at(receiver, pos)
+                    for name, start, stop in inferred_sites
+                )))
+
+            for dest, expression, start in assignments:
+                visible_maps = {name for name in maps if map_at(name, start)}
+                if is_map_expression(expression, visible_maps, returns):
+                    inferred_sites.append((dest.replace("?", ""), *visible_range(start, declared(start))))
+
             bounded = []
+            # A literal list is a finite key set, but only if its actual values
+            # exclude measured collisions. Never exempt a whole helper by name.
+            literal_each = re.compile(
+                rf"\[(?P<values>[^\[\]\n]*)\]\.each\s*\{{\s*(?P<key>{ident})\s*->"
+            )
+            for loop in literal_each.finditer(raw_body):
+                values = loop.group("values")
+                literals = re.findall(r"(['\"])([^'\"$\\]*)\1", values)
+                remainder = re.sub(r"(['\"])([^'\"$\\]*)\1", "", values)
+                if (literals and re.fullmatch(r"[\s,]*", remainder)
+                        and not any(value in collisions for _, value in literals)
+                        and body[loop.start():].startswith("[")):
+                    brace = loop.end() - 1
+                    stop = close_brace(body, brace)
+                    if key_binding_unchanged(loop.group("key"), body[loop.end():stop]):
+                        bounded.append((loop.group("key"), brace, stop))
             for branch in bounded_if_re.finditer(raw_body):
                 if branch.group("literal") in collisions:
                     continue
                 if not body[branch.start():].startswith("if"):
                     continue
                 brace = branch.end() - 1
-                bounded.append((branch.group("key"), brace, close_brace(body, brace)))
+                if not condition_requires_key_comparison(body[branch.start():brace]):
+                    continue
+                stop = close_brace(body, brace)
+                if key_binding_unchanged(branch.group("key"), body[branch.start():stop]):
+                    bounded.append((branch.group("key"), brace, stop))
 
             def add(pos: int, message: str, severity: str = "error", *,
                     code=code, opening=opening, path=path, raw_lines=raw_lines) -> None:
@@ -4837,47 +5449,64 @@ def check_sandbox_map_subscripts(
 
             for literal in literal_re.finditer(raw_body):
                 receiver, key = literal.group("receiver", "key")
-                if receiver not in maps or list_at(records, receiver, literal.start()):
-                    continue
                 if not body[literal.start():].startswith(receiver):
                     continue
-                writing = bool(re.match(r"\s*=(?!=|~)", body[literal.end():]))
-                if receiver in explicit_maps and (key != "metaClass" or not writing):
+                receiver = receiver.replace("?", "")
+                if not map_at(receiver, literal.start()):
+                    continue
+                writing = writes_subscript(body, literal.start(), literal.end())
+                if explicit_at(receiver, literal.start()) and (key != "metaClass" or not writing):
                     continue
                 add(literal.start(),
                     f"Measured {'write' if writing else 'read'} collision for '{key}' "
                     f"on {receiver}; preserve the key with Map.{'put' if writing else 'get'}.")
 
+            def composed_key_can_collide(raw_key: str) -> bool:
+                # A composed key is bounded by its fixed parts: "switch${id}.@N"
+                # can never spell fields/class/metaClass, "${k}" or k + "s" can.
+                # Literal fragments stay literal, everything else is a wildcard.
+                parts = []
+                for pos, token in outer_expression_tokens(raw_key):
+                    if token == "+":
+                        parts.append(pos)
+                pieces = [raw_key[i + 1:j].strip() for i, j in
+                          zip([-1, *parts], [*parts, len(raw_key)], strict=True)]
+                skeleton = ""
+                for piece in pieces:
+                    if len(piece) >= 2 and piece[0] == piece[-1] and piece[0] in "'\"":
+                        inner = piece[1:-1]
+                        if piece[0] == '"':
+                            inner = re.sub(rf"\$\{{[^}}]*\}}|\${ident}(?:\.{ident})*", "\0", inner)
+                        skeleton += "".join(".*" if ch == "\0" else re.escape(ch) for ch in inner)
+                    else:
+                        skeleton += ".*"
+                return any(re.fullmatch(skeleton, name) for name in collisions)
+
+            accesses = []
             for access in subscript_re.finditer(body):
-                receiver, key = access.group("receiver", "key")
                 # Masking a GString retains its interpolation expression. That
-                # must not turn map["prefix${id}"] into an apparent map[id].
-                if not subscript_re.fullmatch(raw_body[access.start():access.end()]):
+                # must not turn map["prefix${id}"] into an apparent map[id];
+                # the composed scan below reports it with its real key.
+                if subscript_re.fullmatch(raw_body[access.start():access.end()]):
+                    accesses.append((access.start(), access.end(), *access.group("receiver", "key")))
+            for access in composed_re.finditer(raw_body):
+                if (body[access.start():].startswith(access.group("receiver"))
+                        and composed_key_can_collide(access.group("key"))):
+                    accesses.append((access.start(), access.end(), *access.group("receiver", "key")))
+            for start, end, receiver, key in sorted(accesses):
+                receiver = receiver.replace("?", "")
+                if not map_at(receiver, start):
                     continue
-                if receiver not in maps or list_at(records, receiver, access.start()):
+                writing = writes_subscript(body, start, end)
+                if explicit_at(receiver, start) and not writing:
                     continue
-                writing = bool(re.match(r"\s*=(?!=|~)", body[access.end():]))
-                if receiver in explicit_maps and not writing:
+                if any(key == name and block_start < start < stop
+                       for name, block_start, stop in bounded):
                     continue
-                if any(key == name and start < access.start() < stop
-                       for name, start, stop in bounded):
-                    continue
-                iterated = any(key == name and start <= access.start() < stop
-                               for name, start, stop in iterations)
-                attribute = key in attr_names or bool(re.search(
-                    r"\.(?:name|key|variableName|id)(?:\.toString\(\))?$", key
-                ))
-                if not (iterated or attribute or key in string_params or key in untyped_params):
-                    continue
-                # A String parameter alone does not prove its callers admit a
-                # colliding name. Typed writes have a narrower metaClass hazard.
-                # Iteration and String types cannot establish caller bounds.
-                # Keep candidates visible without equating them to literal
-                # collisions; the live-validation ledger supplies reachability.
-                severity = "warning"
-                add(access.start(),
+                severity = "error"
+                add(start,
                     f"Dynamic Map {'write' if writing else 'read'} candidate "
-                    f"{receiver}[{key}] in {method.group('name')}; "
+                    f"{receiver}[{key.strip()}] in {method.group('name')}; "
                     f"use Map.{'put' if writing else 'get'} for unbounded data keys "
                     "(caller key bounds require separate verification).", severity)
     return sorted(findings, key=lambda item: (item["file"], item["line"]))
@@ -5213,6 +5842,10 @@ def main() -> int:
     # Authorization chokepoint: a device tool that reaches a native per-device endpoint
     # must gate at entry (or carry a documented exemption), so a new tool cannot forget it.
     all_findings.extend(check_device_tool_access_gate())
+
+    # The gate and SANDBOX-016 only see a path handed to a call they recognise: hold the anchor
+    # against the wrapper inventory derived from the source, so a new wrapper cannot hide one.
+    all_findings.extend(check_native_request_wrappers())
 
     # Issue #209/#250 lockstep: every #include'd library must have a libraries/ file + a
     # build-bundle.py LIBS entry, so a broken/undelivered library fails CI here instead of

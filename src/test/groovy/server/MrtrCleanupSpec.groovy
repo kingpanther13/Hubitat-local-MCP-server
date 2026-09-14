@@ -358,8 +358,8 @@ class MrtrCleanupSpec extends ToolSpecBase {
         when: 'retry returns helper cleanup only after durable eviction'
         List cleanup = peer._mrtrSweepLocked()
 
-        then:
-        cleanup == [active]
+        then: 'the evicted copy names its own state id so the expiry warning can'
+        cleanup == [active + [stateId: 'expired']]
         backing.get('mrtrRequests').keySet() == ['keep'] as Set
         !(scriptStaticField('MRTR_WORK_ITEMS') as Map).containsKey('stopped')
 

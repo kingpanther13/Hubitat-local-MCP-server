@@ -32,7 +32,7 @@ def productionFiles = [
     new File(repoRoot, 'e2e-deadman-watchdog.groovy'),
     new File(repoRoot, 'e2e-deadman-watchdog-v2.groovy'),
     new File(repoRoot, 'tests/fixtures/deadman-test-target.groovy'),
-    new File(repoRoot, 'tests/fixtures/e2e-throwaway-lib.groovy'),
+    new File(repoRoot, 'tests/fixtures/e2e-throwaway-app.groovy'),
     new File(repoRoot, 'tests/fixtures/app-code-update.groovy'),
     new File(repoRoot, 'tests/fixtures/app-trigger-updated.groovy'),
     new File(repoRoot, 'tests/fixtures/driver-code-update.groovy'),

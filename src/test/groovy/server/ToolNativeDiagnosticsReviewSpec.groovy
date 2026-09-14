@@ -37,7 +37,7 @@ class ToolNativeDiagnosticsReviewSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_zigbee', [ping_device: [device_id: deviceId, enabled: true]])
 
         then:
-        response.error.code == -32602
+        response.result.isError == true
         hubGet.calls.empty
 
         where:

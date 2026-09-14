@@ -554,13 +554,13 @@ private void registerRmRule(Map combined, def r, String version) {
     if (id == null) return
     def key = id.toString()
     if (!combined.containsKey(key)) {
-        combined[key] = [
+        combined.put(key, [
             id: id,
             label: label,
             name: name,
             type: type,
             rmVersion: version
-        ]
+        ])
     }
 }
 
@@ -1127,23 +1127,39 @@ private Map _collectLiveApps() {
         mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList parse failed (${e.message})")
         return null
     }
+    if (!(parsed instanceof Map) || !(parsed.apps instanceof List)) {
+        mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList is missing its apps list")
+        return null
+    }
     def apps = [:]
+    boolean complete = true
     def walk
     walk = { node ->
-        if (node == null) return
-        def idVal = node?.data?.id ?: node?.id
+        // A leaf may carry "children": null; only a present non-List value is malformed.
+        if (!(node instanceof Map) || (node.data != null && !(node.data instanceof Map))
+                || (node.children != null && !(node.children instanceof List))) {
+            complete = false
+            return
+        }
+        def idVal = node.data?.id != null ? node.data.id : node.id
         if (idVal != null) {
             try {
                 // Store the RAW disabled value (may be null when the key is absent) —
                 // coercing to == true here would erase the "field missing" signal that
                 // _rmAnnotateRuleStatus needs to classify the rule as per-entry unknown.
-                apps[(idVal as Integer)] = [name: node?.data?.name, disabled: node?.data?.disabled]
-            } catch (Exception ignored) { /* skip non-int ids */ }
+                if (!(idVal.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
+                apps.put(idVal as Integer, [name: node.data?.name, disabled: node.data?.disabled])
+            } catch (Exception ignored) { complete = false }
+        } else if (node.data) {
+            // An idless structural container is safe only when all its children can be read;
+            // absent children are an empty container, not a malformed one.
+            complete = false
         }
         (node?.children ?: []).each { walk(it) }
     }
-    (parsed?.apps ?: []).each { walk(it) }
-    return apps
+    parsed.apps.each { walk(it) }
+    if (!complete) mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList contains malformed app nodes; absence cannot be established")
+    return complete ? apps : null
 }
 
 // Normalize an atTime string to the form RM 5.1 expects:
@@ -2547,7 +2563,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             "Yearly":  [weekOfMonth: "weeklyYC${pn}", dayOfWeek: "dailyYC${pn}", monthEnum: "yearlyMonthCX${pn}", time: "startingYC${pn}"],
             "Cron String": [cron: "cronStr${pn}"]
         ]
-        def fields = freqFieldMap[freq] ?: [:]
+        def fields = freqFieldMap.get(freq) ?: [:]
         // (Periodic arg validation -- Seconds/Minutes restricted-enum count and
         // the Monthly dayOfMonth/weekOfMonth mutual-exclusivity -- already ran
         // up front, before the trigger editor opened.)
@@ -3920,7 +3936,7 @@ private List _rmLiveActionIndicesFromSettings(Map status) {
         def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
         if (!m.matches()) return
         def idx = (m[0][1] as Integer)
-        if (s?.value?.toString()?.trim()) live[idx] = true
+        if (s?.value?.toString()?.trim()) live.put(idx, true)
     }
     return live.keySet().sort()
 }
@@ -4271,7 +4287,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     // apply the shared guard predicate and fail SAFE (do not reject) when the capability is
     // unresolved (null) -- a missed guard beats falsely rejecting a legitimate edit.
     if (_rmLooksLikeStateChangeToken(mods.state)) {
-        def committedCap = triggerCaps[triggerIdx]
+        def committedCap = triggerCaps.get(triggerIdx)
         // committedCap != null distinguishes "capability read successfully but unlisted" (a
         // non-null string the deny-list guards) from "capability could not be read" (statusJson
         // carried no tCapab value -> null -> SKIP the guard, fail safe). The deny-list returns TRUE
@@ -4373,7 +4389,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         def indices = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
         throw new IllegalArgumentException("modifyAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${indices.sort().join(', ')}. RM is not touched.")
     }
-    def entry = reverse[actSubType]
+    def entry = reverse.get(actSubType)
     def actType = committedSettings["actType.${actionIdx}".toString()]?.toString()
     if (actType != "rulesActs" || entry == null) {
         throw new IllegalArgumentException("modifyAction currently supports only rule-targeting actions (runRule, cancelTimers, pauseRule, privateBoolean). Action ${actionIdx} is actType='${actType}' actSubType='${actSubType}'. Rebuild other action shapes with removeAction + addAction (one patches call keeps it atomic). RM is not touched.")
@@ -4818,7 +4834,7 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     ]
     if (hrefParams != null && !hrefParams.isEmpty()) {
         def paramsMarker = "params_for_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
-        body[paramsMarker] = groovy.json.JsonOutput.toJson(hrefParams)
+        body.put(paramsMarker, groovy.json.JsonOutput.toJson(hrefParams))
     }
     try {
         def cfg = _rmFetchConfigJson(appId, fromPage, cache)
@@ -6230,7 +6246,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 // statusJson answered (an empty map means the rule simply has no locals).
                 allVars = [:]
                 localsRead.vars.each { lvName, lvMeta ->
-                    allVars[lvName?.toString()] = [type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null)]
+                    allVars.put(lvName?.toString(), [type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null)])
                 }
             } else {
                 mcpLog("warn", "rm-native", "setLocalVariable: local-variable read (statusJson appState.allLocalVars) unavailable for app ${appId} (${localsRead.error}) -- variable-name validation skipped; write will proceed unvalidated")
@@ -6270,7 +6286,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             // exist, so a null or non-numeric token means we cannot prove it is numeric -- reject
             // rather than silently allowing an un-typeable target through to a doomed reveal walk.
             if (actionSpec.value != null || actionSpec.fromDevice != null || actionSpec.math != null) {
-                def targetMeta = allVars[targetVar]
+                def targetMeta = allVars.get(targetVar)
                 def targetType = (targetMeta instanceof Map) ? targetMeta?.type?.toString() : null
                 if (!_rmIsNumericVarType(targetType)) {
                     def modeName = actionSpec.value != null ? "numeric-constant (value)"
@@ -6387,7 +6403,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             "speech": "SpeechSynthesis", "SpeechSynthesis": "SpeechSynthesis"
         ]
         def capFilterRaw = actionSpec.capabilityFilter ?: "Switch"
-        def capFilter = friendlyToKey[capFilterRaw.toString()] ?: capFilterRaw.toString()
+        def capFilter = friendlyToKey.get(capFilterRaw.toString()) ?: capFilterRaw.toString()
         fields = [
             "useLastDev.@N": (actionSpec.useLastEventDevice == true),
             "myCapab.@N": capFilter,
@@ -9114,7 +9130,7 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
         // submit (stale version token, auth, malformed envelope, etc.) instead
         // of just a bare status code.
         def bodyPreview = resp?.data?.toString()?.take(200)
-        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The submit was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via hub_get_app_config(appId=${appId}) and retry). The page may be left in trash-confirmation mode; on this hard-fail path the tool backs it out automatically via cancelTrash. Do NOT treat this as a partial delete.")
+        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The outcome has not been verified. Recovery is best-effort; inspect the rule with hub_get_app_config(appId=${appId}) before retrying.")
     }
     // Surface any non-button inputs the wholesale-replace blanked (absent from
     // currentSettings AND not in extraSettings) so a caller can refuse a
@@ -9594,7 +9610,7 @@ Map _setRuleFromEnvelope(Map env) {
         // EXCEPT 'settings', whose payload is a raw {inputName: value} map that may legitimately
         // contain a single input literally named 'settings'; unwrapping there would misread it.
         def val = payload
-        if (op != 'settings' && val instanceof Map && val.size() == 1 && val.containsKey(op)) val = val[op]
+        if (op != 'settings' && val instanceof Map && val.size() == 1 && val.containsKey(op)) val = val.get(op)
         // List-shaped ops take a BARE array. For the spec-list ops a caller who wrapped it under
         // any single key (e.g. {actions:[...]}) is unwrapped here. NOT for patches: its items are
         // {op: spec} maps, so a single-key map like {addActions:[...]} is a malformed payload, not
@@ -9608,7 +9624,7 @@ Map _setRuleFromEnvelope(Map env) {
                 throw new IllegalArgumentException("hub_set_rule operation='${op}': args must be a bare array, e.g. args:[{...},...] (got ${got}). Call without confirm to see the schema.")
             }
         }
-        legacy[op] = val
+        legacy.put(op, val)
     }
     return [args: legacy]
 }
@@ -10760,7 +10776,7 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 // the pre-deferral worst case (a possible IF(Broken Condition) wrap, surfaced as a warn).
 private void _rmRunPendingPredCapabsClear(Integer appId) {
     def pending = _rmPendingPredClearSnapshot()
-    if (!pending[appId.toString()]) return
+    if (!pending.get(appId.toString())) return
     try {
         _rmClearPredCapabsViaGhostIfThen(appId, "addAction (deferred from addRequiredExpression)")
     } catch (Exception e) {
@@ -10773,7 +10789,7 @@ void _rmMarkPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
         Map pending = _rmPendingPredClearSnapshot()
         // An inventory fetched before this generation cannot discard this intent.
-        pending[appId.toString()] = java.util.UUID.randomUUID().toString()
+        pending.get(appId.toString()) = java.util.UUID.randomUUID().toString()
         _rmCommitPredClearPending(pending)
     }
 }
@@ -11071,7 +11087,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // below so a change token on a discrete cap gets the same "author it as a trigger row" steer
     // as every other condition surface; the discrete-event guard owns only the numeric-shape comparator (>, =, <, ...)
     // with no value, whose recovery is a state value.
-    def discreteValid = DISCRETE_EVENT_CAPS[capCanonical]
+    def discreteValid = DISCRETE_EVENT_CAPS.get(capCanonical)
     if (discreteValid != null && cond.comparator != null && !_rmComparatorIsRhsOptional(cond.comparator)
             && cond.state == null && cond.value == null) {
         cancelInFlightCond()
@@ -11240,8 +11256,8 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
         // Map caller-facing type names to firmware enum values.
         def typeToWire = [clock: "A specific time", sunrise: "Sunrise", sunset: "Sunset"]
-        def startTypeWire = typeToWire[startType]
-        def endTypeWire   = typeToWire[endType]
+        def startTypeWire = typeToWire.get(startType)
+        def endTypeWire   = typeToWire.get(endType)
 
         // Validate that the required time/offset values are present before any hub writes.
         // Validating here (not after reveals) avoids hub round-trips on a caller error.
@@ -13065,7 +13081,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
     // instant it is clicked. So a malformed spec MUST fail here, with the OLD Required
     // Expression still intact, rather than after the delete. Same validator the add
     // path uses (conditions/operator/operators rules, deviceId normalization, deviceId
-    // existence). Throws IllegalArgumentException -> -32602.
+    // existence). Throws IllegalArgumentException -> isError validation result.
     _rmValidateRequiredExpressionSpec(exprSpec, "replaceRequiredExpression")
 
     // The backup is resolved lazily (Step 2, just before the destructive click) when a
@@ -13582,7 +13598,7 @@ def _applyNativeAppEdit(args) {
     // the snapshot or the wizard. Covers the single addAction and bulk addActions dispatch cases;
     // the patch / createRule intra-batch paths are caught by the _rmAddAction top-of-function
     // hoist. Return the structured refusal envelope (with a null backup -- nothing was snapshotted)
-    // rather than letting the exception escape to a bare JSON-RPC -32602, so the caller still gets
+    // rather than letting the exception escape to a bare validation refusal, so the caller still gets
     // the tailored steer + the not-touched restoreHint that the other pre-flight refusals carry.
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
@@ -14895,7 +14911,7 @@ def _applyNativeAppEdit(args) {
         try {
             replResult = _rmReplaceRequiredExpression(appId, replaceRequiredExpressionSpec, backup)
         } catch (Exception e) {
-            // A throw here is pre-delete input validation (-32602-class) -- the helper
+            // A throw here is pre-delete input validation (validation-refusal class) -- the helper
             // validates the spec before the destructive cancelST click, so a throw
             // means the OLD Required Expression is still intact (no data lost). Suppress
             // the rollback restoreHint: nothing was deleted, so a "roll back via backup"

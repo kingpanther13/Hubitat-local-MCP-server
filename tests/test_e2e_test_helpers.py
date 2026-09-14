@@ -8,7 +8,9 @@ actually runs there.
 import json
 import os
 import sys
+import zipfile
 from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
 
 # tests/ is already on sys.path conceptually, but be explicit for safety.
@@ -349,6 +351,62 @@ def test_validation_log_expectation_strips_only_the_exact_legacy_reactive_hint()
     assert et._validation_log_expectation("tools/call", params, {
         "code": -32602, "message": f"Invalid params: {raw_reason}{altered_hint}",
     }) == f"Validation error in hub_update_device: {raw_reason}{altered_hint}"
+
+
+def test_tool_validation_log_expectation_reads_the_iserror_validation_shape():
+    reason = "Unknown preference 'probe'"
+    hint = (' See hub_get_tool_guide(section="update_device") for '
+            "hub_update_device's reference and best practices.")
+    payload = json.dumps({"success": False, "isError": True,
+                          "tool": "hub_update_device", "error": f"{reason}{hint}"})
+
+    assert et._tool_validation_log_expectation(payload) == (
+        f"Validation error in hub_update_device: {reason}"
+    )
+
+
+def test_tool_failure_log_expectation_names_the_leaf_of_a_gateway_call():
+    # The hub logs "Tool <leaf> returned a failure result"; the gateway name never appears.
+    payload = {"success": False, "error": "boom"}
+    args = {"tool": "hub_update_device", "args": {"deviceId": "42"}}
+    assert et._tool_failure_log_expectation("hub_manage_devices", payload, args) == (
+        "Tool hub_update_device returned a failure result")
+    # The result's own tool field wins when present.
+    assert et._tool_failure_log_expectation("hub_manage_devices",
+                                            {**payload, "tool": "hub_delete_device"}, args) == (
+        "Tool hub_delete_device returned a failure result")
+    # A flat call has no gateway argument to resolve through.
+    assert et._tool_failure_log_expectation("hub_update_device", payload, {"deviceId": "42"}) == (
+        "Tool hub_update_device returned a failure result")
+
+
+@pytest.mark.parametrize(("payload", "expected"), [
+    ({"success": False, "error": "the hub refused the write"}, "Tool hub_update_device returned a failure result"),
+    ({"isError": True, "error": "worker failed", "tool": "hub_update_device"}, "Tool hub_update_device returned a failure result"),
+    ({"success": True, "deviceId": "42"}, None),
+    ({"partial": True}, None),
+    ("not a dict", None),
+])
+def test_tool_failure_log_expectation_matches_the_failure_result_line(payload, expected):
+    assert et._tool_failure_log_expectation("hub_update_device", payload) == expected
+
+
+@pytest.mark.parametrize("payload", [
+    # A runtime failure logs a different line and must not consume a validation slot.
+    json.dumps({"success": False, "error": "the hub refused the write"}),
+    json.dumps({"success": True, "deviceId": "42"}),
+    json.dumps({"isError": True, "error": "no tool key"}),
+    json.dumps({"isError": True, "tool": "hub_update_device"}),
+    # The MRTR runtime-failure shape: isError/tool/error too, but not a validation refusal.
+    json.dumps({"success": False, "isError": True, "tool": "hub_call_rule",
+                "error": "Tool error: boom", "aggregate": {"kind": "call_rule"}}),
+    json.dumps({"success": False, "isError": True, "tool": "hub_call_rule",
+                "error": "Tool error: boom"}),
+    "not json at all",
+    "",
+])
+def test_tool_validation_log_expectation_ignores_everything_else(payload):
+    assert et._tool_validation_log_expectation(payload) is None
 
 
 @pytest.mark.parametrize(
@@ -714,7 +772,25 @@ def test_send_retains_structured_rpc_error_with_mixed_quotes(send_client):
     ("hub_update_device", {"deviceId": "88", "label": "Changed"}),
     ("hub_manage_devices", {"tool": "hub_update_device", "args": {"deviceId": "88", "label": "Changed"}}),
 ])
-def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client, name, args):
+def test_send_does_not_retry_a_lost_first_mrtr_request(send_client, name, args):
+    # The first request of an MRTR write starts the write; a fast one may already be
+    # terminal when the relay drops the response, so a transport replay could run it twice.
+    posts = []
+
+    def post(*args, **kwargs):
+        posts.append(kwargs["json"])
+        return SimpleNamespace(status_code=504, reason="Gateway Timeout")
+
+    client = send_client(post)
+
+    with pytest.raises(et.RelayLostResponseError):
+        client._send("tools/call", {"name": name, "arguments": args})
+
+    assert len(posts) == 1
+    assert client._transport_retries == 0
+
+
+def test_send_retries_a_lost_state_bearing_mrtr_continuation(send_client):
     responses = iter([
         SimpleNamespace(status_code=504, reason="Gateway Timeout"),
         SimpleNamespace(
@@ -735,8 +811,9 @@ def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client, name, args
     client = send_client(post)
 
     result = client._send("tools/call", {
-        "name": name,
-        "arguments": args,
+        "name": "hub_manage_virtual_device",
+        "arguments": {"action": "create", "deviceType": "Virtual Switch", "confirm": True},
+        "requestState": "state-live",
     })
 
     assert result == {"resultType": "input_required", "requestState": "state-live"}
@@ -1298,6 +1375,31 @@ def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():
         (2.1, 200, True),
         (9.8, 504, False),
     ]
+
+
+def test_failure_diagnostic_retains_transport_operation_after_successful_cleanup():
+    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
+    failure = et.RelayLostResponseError("504 Gateway Timeout on tools/call")
+
+    def send(method, params=None, **_kwargs):
+        if params["name"] == "hub_get_source":
+            raise failure
+        assert params["name"] == "hub_delete_file"
+        return _raw_tool_body({"success": True})
+
+    client._send = send
+    with pytest.raises(et.RelayLostResponseError) as caught:
+        try:
+            client.call_tool("hub_get_source", {"type": "library", "id": "42"}, flat=True)
+        finally:
+            client.call_tool("hub_delete_file", {"fileName": "owned-backup", "confirm": True}, flat=True)
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    assert caught.value is failure
+    assert client._last_op[0] == "hub_delete_file"
+    assert runner._last_op_str(caught.value).startswith("hub_get_source ")
+    assert runner._last_op_str(caught.value).endswith(" [err]")
 
 
 def test_call_tool_paces_ten_same_state_contention_rounds_and_still_completes(monkeypatch):
@@ -2191,6 +2293,21 @@ def test_export_bundle_uses_logical_writes_filtered_verification_and_exact_backu
     ]
 
 
+def test_bundle_fixture_contains_only_unused_app_code():
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    source_name = "mcptest.E2eThrowawayApp.groovy"
+    with zipfile.ZipFile(fixtures / "mcp-e2e-throwaway-bundle.zip") as bundle:
+        assert bundle.namelist() == [source_name, "install.txt", "update.txt"]
+        for manifest_name in ("install.txt", "update.txt"):
+            assert bundle.read(manifest_name).decode("utf-8").splitlines() == [
+                "mcptest", "mcptest_e2e_throwaway", f"app {source_name}",
+            ]
+        source = bundle.read(source_name).decode("utf-8")
+        assert source == (fixtures / "e2e-throwaway-app.groovy").read_text(encoding="utf-8")
+        assert 'name: "Deadman Test Target Bundle"' in source
+        assert 'namespace: "mcptest"' in source
+
+
 def test_delete_bundle_uses_logical_write_helper(monkeypatch):
     monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
     monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
@@ -2254,3 +2371,77 @@ def test_build_capacity_recovery_is_the_conformance_bounce_seam(monkeypatch):
     assert bounce.__func__ is et.TestRunner._clear_load_throttle
     assert sch.CAPACITY_RECOVERY_CONFIG_KEY == "clear_load_throttle"
     assert bounce("interface pin") is False
+
+
+@pytest.mark.parametrize("initial", ["on", "off"])
+@pytest.mark.parametrize("matches", [True, False])
+def test_poll_wall_clock_scenarios_use_observed_state_without_device_commands(monkeypatch, initial, matches):
+    clock = [0.0]
+    monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
+    calls = []
+
+    def call_tool(name, arguments):
+        assert name == "hub_get_device_attribute", "poll scenarios must not depend on command delivery"
+        calls.append(arguments.copy())
+        if "expectedValue" not in arguments:
+            return {"value": initial}
+        expected = initial if matches else ("off" if initial == "on" else "on")
+        assert arguments["expectedValue"] == expected
+        if not matches:
+            clock[0] += 2.0
+        return {"success": matches, "timedOut": not matches, "polledCount": 1 if matches else 11,
+                "finalValue": initial}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(call_tool=call_tool)
+    runner.get_test_switch_id = lambda: "owned-switch"
+    if matches:
+        runner.test_poll_immediate_match()
+    else:
+        runner.test_poll_timeout()
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("stays_stale,logs_fail", [(False, False), (True, False), (True, True)])
+def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observations(
+    monkeypatch, capsys, stays_stale, logs_fail,
+):
+    clock = [0.0]
+    monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(et.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    reads = []
+    log_reads = []
+
+    def call_tool(name, arguments):
+        if name == "hub_get_logs":
+            assert arguments == {"deviceId": "10", "level": "error", "limit": 10}
+            log_reads.append(arguments.copy())
+            runner.client._last_op = ("hub_get_logs", 0.2, not logs_fail)
+            if logs_fail:
+                raise et.McpToolError("hub_get_logs", "diagnostic unavailable")
+            return {"logs": [{"message": "fixture command rejected"}]}
+        assert name == "hub_get_device_attribute", "identity wait must not repeat the observer command"
+        runner.client._last_op = ("hub_get_device_attribute", 0.1, True)
+        assert arguments == {"deviceId": "10", "attribute": "nativeDeviceInfo"}
+        reads.append(arguments.copy())
+        native = {"nonce": "old", "deviceId": "other-fixture", "fixtureVersion": 2}
+        if not stays_stale and len(reads) > 1:
+            native.update(nonce="123", deviceId="10")
+        return {"value": json.dumps(native)}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(call_tool=call_tool)
+    if stays_stale:
+        with pytest.raises(AssertionError, match="observer did not complete for device 10, nonce 123") as failure:
+            runner._wait_configuration_fixture_identity("10", "123")
+        assert failure.value._mcp_failed_op == ("hub_get_device_attribute", 0.1, True)
+        assert clock[0] == 10.0
+        assert len(log_reads) == 1
+        output = capsys.readouterr().out
+        assert "CONFIGURATION_OBSERVER_LOGS device 10" in output
+        assert ("diagnostic unavailable" if logs_fail else "fixture command rejected") in output
+    else:
+        result = runner._wait_configuration_fixture_identity("10", "123")
+        assert result["nonce"] == "123" and result["deviceId"] == "10"
+        assert len(reads) == 2
+        assert not log_reads

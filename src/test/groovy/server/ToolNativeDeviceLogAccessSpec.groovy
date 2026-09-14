@@ -121,7 +121,7 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_logs', [deviceId: deviceId])
 
         then:
-        response.error.code == -32602
+        response.result.isError == true
         hubGet.calls.empty
 
         where:

@@ -240,6 +240,28 @@ class McpResourcesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "context groups devices under the literal room name #roomName"() {
+        given:
+        settingsMap.selectedDevices = [
+            new TestDevice(id: 7, label: 'First', roomName: roomName),
+            new TestDevice(id: 8, label: 'Second', roomName: roomName)
+        ]
+
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 8, method: 'resources/read',
+                                 params: [uri: 'hubitat://context']])
+
+        then:
+        response.error == null
+        def ctx = new groovy.json.JsonSlurper().parseText(response.result.contents[0].text)
+        ctx.rooms == [[name: roomName, deviceIds: ['7', '8']]]
+        ctx.deviceCount == 2
+
+        where:
+        roomName << ['fields', 'class', 'metaClass', 'properties']
+    }
+
+    @spock.lang.Unroll
     def "resources/read of #uri is refused with -32002 when the Read master is off"() {
         given:
         settingsMap.enableRead = false

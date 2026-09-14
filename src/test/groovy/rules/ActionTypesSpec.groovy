@@ -536,14 +536,32 @@ class ActionTypesSpec extends RuleHarnessSpec {
         atomicStateMap.cancelledDelayIds == [:]
     }
 
-    def "cancel_delayed with a specific id marks only that id as cancelled"() {
-        when:
-        script.executeAction([type: 'cancel_delayed', delayId: 'delay_abc'])
+    def "cancel_delayed marks and consumes only the selected data key #delayId"() {
+        given:
+        def target = Spy(TestDevice) { getId() >> 102 }
+        parent = new ActionParent(devices: [102L: target])
+        atomicStateMap.actions = [[type: 'device_command', deviceId: 102L, command: 'on']]
+        atomicStateMap.cancelledDelayIds = [sibling: true]
 
-        then: 'unschedule is NOT called — only the cancelled set is updated'
+        when:
+        script.executeAction([type: 'cancel_delayed', delayId: delayId])
+
+        then: 'only the selected marker is added, preserving the sibling'
         unscheduleCalls == []
         unscheduleAllCount == 0
-        atomicStateMap.cancelledDelayIds == [delay_abc: true]
+        atomicStateMap.cancelledDelayIds.size() == 2
+        atomicStateMap.cancelledDelayIds.get(delayId) == true
+        atomicStateMap.cancelledDelayIds.get('sibling') == true
+
+        when: 'the matching scheduled continuation arrives'
+        script.resumeDelayedActions([nextIndex: 0, delayId: delayId])
+
+        then: 'the action is skipped and only its cancellation marker is consumed'
+        0 * target.on()
+        atomicStateMap.cancelledDelayIds == [sibling: true]
+
+        where:
+        delayId << ['delay_abc', 'fields', 'class', 'metaClass', 'Fields', 'getClass']
     }
 
     def "resumeDelayedActions executes actions from nextIndex with a reconstructed pseudo-event"() {

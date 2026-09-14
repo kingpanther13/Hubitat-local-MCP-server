@@ -1534,7 +1534,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_device', [deviceId: UNLISTED_ID])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("Device not found: ${UNLISTED_ID}")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("Device not found: ${UNLISTED_ID}")
     }
 }

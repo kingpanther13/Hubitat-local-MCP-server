@@ -59,3 +59,6 @@ tests/diag_*.py
 # JVM crash/replay dumps (from local test OOM)
 replay_pid*.log
 hs_err_pid*.log
+
+# local e2e run capture
+.e2e.log

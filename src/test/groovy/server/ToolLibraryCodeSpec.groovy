@@ -72,7 +72,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "get_library_source via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "get_library_source via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -81,8 +81,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '42'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -101,7 +102,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "get_library_source via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
+    def "get_library_source via dispatch returns isError validation result envelope when libraryId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableRead()
@@ -110,8 +111,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_get_source', [type: 'library'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('libraryId is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('libraryId is required')
 
         where:
         useGateways << [true, false]
@@ -357,7 +358,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_create_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -366,8 +367,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -386,7 +388,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_create_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns isError validation result envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -395,8 +397,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
 
         where:
         useGateways << [true, false]
@@ -416,7 +418,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_create_library via dispatch returns -32602 envelope when neither source nor sourceFile supplied (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns isError validation result envelope when neither source nor sourceFile supplied (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -425,9 +427,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_create_library', [confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('source')
-        response.error.message.contains('sourceFile')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('source')
+        mcpDriver.parseInner(response).error.contains('sourceFile')
 
         where:
         useGateways << [true, false]
@@ -446,7 +448,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_create_library via dispatch returns -32602 envelope when both source and sourceFile supplied (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns isError validation result envelope when both source and sourceFile supplied (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -455,8 +457,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('exactly one')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('exactly one')
 
         where:
         useGateways << [true, false]
@@ -596,7 +598,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_create_library via dispatch returns -32602 envelope when sourceFile not found in File Manager (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns isError validation result envelope when sourceFile not found in File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -606,8 +608,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_create_library', [sourceFile: 'missing.groovy', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('not found in File Manager')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('not found in File Manager')
 
         where:
         useGateways << [true, false]
@@ -992,7 +994,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -1001,8 +1003,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -1021,7 +1024,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns isError validation result envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1030,8 +1033,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
 
         where:
         useGateways << [true, false]
@@ -1050,7 +1053,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns isError validation result envelope when libraryId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1059,8 +1062,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('libraryId is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('libraryId is required')
 
         where:
         useGateways << [true, false]
@@ -1079,7 +1082,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope when none of source/sourceFile/resave (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns isError validation result envelope when none of source/sourceFile/resave (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1088,8 +1091,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("'source'")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("'source'")
 
         where:
         useGateways << [true, false]
@@ -1189,13 +1192,15 @@ def helperMethod() { return "ok" }
                 sourceLength: SAMPLE_SOURCE.length()
             ]
         ]
-        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON.replace('"version":1', '"version":7') }
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content ->
             uploads << name
         }
+        def sentVersions = []
         script.metaClass.hubInternalPostJson = { String path, String body ->
-            [success: true, message: '', id: 42, version: 2]
+            sentVersions << new groovy.json.JsonSlurper().parseText(body).version
+            [success: true, message: '', id: 42, version: 8]
         }
 
         when:
@@ -1203,6 +1208,9 @@ def helperMethod() { return "ok" }
 
         then: 'no new backup upload occurred (dedup window held)'
         uploads == []
+        sentVersions == [7]
+        hubGet.calls.count { it.path == '/library/list/single/data/42' } == 1
+        atomicStateMap.itemBackupManifest.get('library_42').version == 1
 
         and: 'existing manifest entry was preserved (fileName + original timestamp unchanged)'
         atomicStateMap.itemBackupManifest['library_42'].fileName == 'mcp-backup-library-42.groovy'
@@ -1211,7 +1219,7 @@ def helperMethod() { return "ok" }
         and: 'update itself still succeeded'
         result.success == true
         result.libraryId == '42'
-        result.newVersion == 2
+        result.newVersion == 8
     }
 
     @spock.lang.Unroll
@@ -1228,11 +1236,13 @@ def helperMethod() { return "ok" }
                 sourceLength: SAMPLE_SOURCE.length()
             ]
         ]
-        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON.replace('"version":1', '"version":7') }
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        def sentVersions = []
         script.metaClass.hubInternalPostJson = { String path, String body ->
-            [success: true, message: '', id: 42, version: 2]
+            sentVersions << new groovy.json.JsonSlurper().parseText(body).version
+            [success: true, message: '', id: 42, version: 8]
         }
 
         when:
@@ -1240,6 +1250,9 @@ def helperMethod() { return "ok" }
 
         then:
         uploads == []
+        sentVersions == [7]
+        hubGet.calls.count { it.path == '/library/list/single/data/42' } == 1
+        atomicStateMap.itemBackupManifest.get('library_42').version == 1
         atomicStateMap.itemBackupManifest['library_42'].fileName == 'mcp-backup-library-42.groovy'
         atomicStateMap.itemBackupManifest['library_42'].timestamp == (1234567890000L - 60_000L)
         response.error == null
@@ -1247,7 +1260,7 @@ def helperMethod() { return "ok" }
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.libraryId == '42'
-        inner.newVersion == 2
+        inner.newVersion == 8
 
         where:
         useGateways << [true, false]
@@ -1323,7 +1336,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope when sourceFile absent (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns isError validation result envelope when sourceFile absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1333,8 +1346,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', sourceFile: 'missing.groovy', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('not found in File Manager')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('not found in File Manager')
 
         where:
         useGateways << [true, false]
@@ -1404,7 +1417,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope when resave mode cannot fetch library (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns isError validation result envelope when resave mode cannot fetch library (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1414,8 +1427,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '999', resave: true, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('not found')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('not found')
 
         where:
         useGateways << [true, false]
@@ -1492,8 +1505,9 @@ def helperMethod() { return "ok" }
         when:
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
-        then: 'any thrown exception must surface as either -32602 (IAE) or isError envelope (RuntimeException)'
-        response.error?.code == -32602 || response.result?.isError == true
+        then: 'any thrown exception must surface as either isError validation result (IAE) or isError envelope (RuntimeException)'
+        response.error == null
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]
@@ -1514,7 +1528,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
+    def "delete_library via dispatch returns an isError validation result when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -1523,8 +1537,9 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -1543,7 +1558,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "delete_library via dispatch returns isError validation result envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1552,8 +1567,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
 
         where:
         useGateways << [true, false]
@@ -1572,7 +1587,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
+    def "delete_library via dispatch returns isError validation result envelope when libraryId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1581,8 +1596,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('libraryId is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('libraryId is required')
 
         where:
         useGateways << [true, false]
@@ -1665,6 +1680,12 @@ def helperMethod() { return "ok" }
 
         then: 'no new backup upload occurred (dedup window held)'
         uploads == []
+        !hubGet.calls.any { it.path == '/library/list/single/data/42' }
+
+        and: 'the original baseline remains addressable by its public String key'
+        atomicStateMap.itemBackupManifest.keySet() == ['library_42'] as Set
+        atomicStateMap.itemBackupManifest.get('library_42').timestamp == 1234567890000L - 60_000L
+        atomicStateMap.itemBackupManifest.get('library_42').version == 1
 
         and: 'response still references the existing backup file'
         result.success == true
@@ -1697,6 +1718,10 @@ def helperMethod() { return "ok" }
 
         then:
         uploads == []
+        !hubGet.calls.any { it.path == '/library/list/single/data/42' }
+        atomicStateMap.itemBackupManifest.keySet() == ['library_42'] as Set
+        atomicStateMap.itemBackupManifest.get('library_42').timestamp == 1234567890000L - 60_000L
+        atomicStateMap.itemBackupManifest.get('library_42').version == 1
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -1963,7 +1988,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "get_library_source via dispatch returns -32602 envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
+    def "get_library_source via dispatch returns isError validation result envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableRead()
@@ -1972,8 +1997,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: badId])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('positive integer')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('positive integer')
 
         where:
         useGateways | badId
@@ -2008,7 +2033,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns isError validation result envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -2017,8 +2042,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: badId, source: SAMPLE_SOURCE, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('positive integer')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('positive integer')
 
         where:
         useGateways | badId
@@ -2053,7 +2078,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch returns -32602 envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
+    def "delete_library via dispatch returns isError validation result envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -2062,8 +2087,8 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: badId, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('positive integer')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('positive integer')
 
         where:
         useGateways | badId

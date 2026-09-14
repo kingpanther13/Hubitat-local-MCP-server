@@ -436,11 +436,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains("'never_set'")
     }
 
-    def "hub_delete_variable reassigns the top-level state.ruleVariables map (Hubitat persistence quirk)"() {
-        // Hubitat's state Map serialization only catches mutations when the top-level
-        // key is reassigned — a bare .remove() on the nested Map silently fails to
-        // persist across hub reboot / app restart. Asserts that toolDeleteHubVariable
-        // emits a NEW Map object on stateMap.ruleVariables (not just mutates in place).
+    def "hub_delete_variable replaces state.ruleVariables with a filtered copy preserving siblings"() {
+        // Pin the filtered-copy implementation; map identity does not establish
+        // whether Hubitat persists state at the end of an execution.
         given:
         enableWrite()
         stateMap.ruleVariables = [target_var: 'will-go', sibling: 'stays']
@@ -452,7 +450,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then: 'sibling is preserved'
         stateMap.ruleVariables == [sibling: 'stays']
 
-        and: 'state.ruleVariables points to a NEW map instance — the read-modify-write pattern Hubitat needs to persist'
+        and: 'state.ruleVariables points to the filtered replacement map'
         !stateMap.ruleVariables.is(originalMapRef)
     }
 
@@ -1372,7 +1370,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- Dispatch-envelope counterparts (#187, #121) --------
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
-    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // routing toggles, and error mapping (IAE -> isError validation result, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above. Tools
     // live in the hub_manage_variables gateway; dispatched directly by snake-
     // case name through executeTool() in hubitat-mcp-server.groovy.
@@ -1448,7 +1446,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_variable via dispatch maps unknown to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_variable via dispatch maps unknown to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.getGlobalVar = { String n -> null }
@@ -1458,9 +1456,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_variable', [name: 'nonexistent'])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('Variable not found')
-        response.error.message.contains('nonexistent')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('Variable not found')
+        mcpDriver.parseInner(response).error.contains('nonexistent')
 
         where:
         useGateways << [true, false]
@@ -1540,7 +1538,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_variable via dispatch maps missing-confirm to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1550,7 +1548,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_variable', [name: 'scratch_var'])
 
         then:
-        response.error?.code == -32602
+        response.result?.isError == true
         stateMap.ruleVariables == [scratch_var: 'value']
 
         where:
@@ -1558,7 +1556,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_variable via dispatch maps missing-name to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_variable via dispatch maps missing-name to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1567,15 +1565,15 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_variable', [confirm: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('name is required')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('name is required')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_delete_variable via dispatch maps unknown var to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_variable via dispatch maps unknown var to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1586,8 +1584,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_variable', [name: 'nonexistent', confirm: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains("'nonexistent'")
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains("'nonexistent'")
 
         where:
         useGateways << [true, false]
@@ -1611,9 +1609,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_variable', [name: 'shared_var', confirm: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains("'shared_var'")
-        response.error.message.contains('force=true')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains("'shared_var'")
+        mcpDriver.parseInner(response).error.contains('force=true')
         stateMap.ruleVariables == [shared_var: 'in-use']
 
         where:
@@ -1621,7 +1619,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_variable via dispatch maps forbidden-character to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch maps forbidden-character to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1630,15 +1628,15 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_variable', [name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('forbidden character')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('forbidden character')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_create_variable via dispatch maps unknown-type to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch maps unknown-type to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1647,15 +1645,15 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_variable', [name: 'goodName', type: 'NotAType', value: 'x', confirm: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('NotAType')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('NotAType')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_create_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch maps missing-confirm to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -1663,14 +1661,14 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_variable', [name: 'goodName', type: 'String', value: 'x'])
 
         then:
-        response.error?.code == -32602
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_create_variable via dispatch maps existing hub var to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch maps existing hub var to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1682,8 +1680,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_variable', [name: 'taken', type: 'String', value: 'new', confirm: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('already exists')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('already exists')
 
         where:
         useGateways << [true, false]

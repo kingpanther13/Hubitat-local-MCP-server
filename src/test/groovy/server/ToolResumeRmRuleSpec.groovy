@@ -36,7 +36,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_paused (resume) via dispatch returns -32602 envelope when Write master is disabled (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused (resume) via dispatch returns an isError validation result when Write master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -45,8 +45,9 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 1, paused: false])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -62,7 +63,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_paused (resume) via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused (resume) via dispatch returns isError validation result envelope when ruleId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -70,8 +71,8 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_paused', [paused: false])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('ruleid is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('ruleid is required')
 
         where:
         useGateways << [true, false]
@@ -147,7 +148,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_paused (resume) via dispatch returns -32602 envelope on non-numeric ruleId (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused (resume) via dispatch returns isError validation result envelope on non-numeric ruleId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -155,8 +156,8 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 'xyz', paused: false])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('integer')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('integer')
 
         where:
         useGateways << [true, false]

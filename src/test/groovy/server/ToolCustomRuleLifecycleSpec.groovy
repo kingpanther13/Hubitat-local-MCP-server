@@ -182,7 +182,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
 
     // ---- Dispatch-envelope counterparts (#187, #121) -------------------------
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
-    // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
+    // routing toggles, and error mapping (IAE -> isError validation result, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above.
 
     @spock.lang.Unroll
@@ -215,7 +215,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_custom_rule via dispatch maps missing rule name to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_custom_rule via dispatch maps missing rule name to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
@@ -227,15 +227,15 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('Rule name is required')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('Rule name is required')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_create_custom_rule via dispatch maps empty triggers to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_custom_rule via dispatch maps empty triggers to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
@@ -248,15 +248,15 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('At least one trigger is required')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('At least one trigger is required')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_create_custom_rule via dispatch maps empty actions to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_custom_rule via dispatch maps empty actions to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
@@ -269,8 +269,8 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('At least one action is required')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('At least one action is required')
 
         where:
         useGateways << [true, false]
@@ -304,7 +304,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_custom_rule via dispatch maps unknown ruleId to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_custom_rule via dispatch maps unknown ruleId to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
@@ -316,8 +316,8 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('Rule not found: 999')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('Rule not found: 999')
 
         where:
         useGateways << [true, false]
@@ -326,7 +326,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     // ---- hub_get_custom_rule list / single / detailed-guard dispatch ---------
     // ruleId omitted -> toolListRules (list summary). ruleId present (no detailed)
     // -> toolGetRule (single rule data). detailed=true without ruleId -> IAE
-    // ("detailed=true requires a ruleId") mapped to -32602 by handleToolsCall.
+    // ("detailed=true requires a ruleId") mapped to isError validation result by handleToolsCall.
     // hub_get_custom_rule isn't gated by the custom_* engine dispatch check (name
     // doesn't startWith "custom_"); enableCustomRuleEngine is set for parity with
     // the other custom-rule dispatch tests.
@@ -395,7 +395,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_custom_rule via dispatch maps detailed=true without ruleId to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_custom_rule via dispatch maps detailed=true without ruleId to isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
@@ -404,8 +404,8 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_custom_rule', [detailed: true])
 
         then:
-        response.error?.code == -32602
-        response.error.message.contains('detailed=true requires a ruleId')
+        response.result?.isError == true
+        mcpDriver.parseInner(response).error.contains('detailed=true requires a ruleId')
 
         where:
         useGateways << [true, false]

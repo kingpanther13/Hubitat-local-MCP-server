@@ -962,7 +962,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute with bad comparator returns -32602 (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute with bad comparator returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(id: 1101, label: 'Dispatch Bad Cmp', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '73'])
@@ -972,15 +972,15 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_device_attribute', [deviceId: '1101', attribute: 'temperature', comparator: 'approx', expectedValue: '72'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('approx')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('approx')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute with only stableForMs (no expectedValue) routes to poll mode and is rejected -32602 (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute with only stableForMs (no expectedValue) routes to poll mode and is rejected isError validation result (useGateways=#useGateways)"() {
         given: 'stableForMs alone enters poll mode; the engine then rejects the missing expectedValue'
         settingsMap.useGateways = useGateways
         def device = new TestDevice(id: 1102, label: 'Dispatch Stable Only', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
@@ -990,8 +990,8 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_device_attribute', [deviceId: '1102', attribute: 'switch', stableForMs: 100])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('expectedvalue')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('expectedvalue')
 
         where:
         useGateways << [true, false]
@@ -1454,10 +1454,10 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_get_device_attribute', [deviceId: '745', deviceIds: null, attribute: 'switch'])
 
-        then: 'reaches the engine -> deviceIds must not be null IAE -> -32602 (not a silent value read)'
-        response.error.code == -32602
-        response.error.message.contains('deviceIds')
-        response.error.message.toLowerCase().contains('null')
+        then: 'reaches the engine -> deviceIds must not be null IAE -> isError validation result (not a silent value read)'
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('deviceIds')
+        mcpDriver.parseInner(response).error.toLowerCase().contains('null')
     }
 
     def "deviceId with a present-but-null mode -> engine IAE, not a silent one-shot read"() {
@@ -1468,10 +1468,10 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_get_device_attribute', [deviceId: '746', mode: null, attribute: 'switch'])
 
-        then: 'present-but-null mode reaches the engine -> mode must not be null IAE -> -32602'
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('mode')
-        response.error.message.toLowerCase().contains('null')
+        then: 'present-but-null mode reaches the engine -> mode must not be null IAE -> isError validation result'
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('mode')
+        mcpDriver.parseInner(response).error.toLowerCase().contains('null')
     }
 
     @spock.lang.Unroll
@@ -1531,9 +1531,9 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_device_attribute', [attribute: 'switch'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('deviceId is required')
-        response.error.message.contains('deviceIds')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('deviceId is required')
+        mcpDriver.parseInner(response).error.contains('deviceIds')
     }
 
     def "a one-shot call with an empty-string deviceId -> actionable IAE (not 'Device not found: ')"() {
@@ -1545,9 +1545,9 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_device_attribute', [deviceId: '', attribute: 'switch'])
 
         then: 'empty/blank is rejected with the same actionable message, not slipped to a blank-id miss'
-        response.error.code == -32602
-        response.error.message.contains('deviceId is required')
-        response.error.message.contains('deviceIds')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('deviceId is required')
+        mcpDriver.parseInner(response).error.contains('deviceIds')
     }
 
     // =========================================================================

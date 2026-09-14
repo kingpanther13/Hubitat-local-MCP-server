@@ -40,7 +40,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when Write master is disabled (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch returns an isError validation result when Write master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = false
@@ -49,8 +49,9 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 1, value: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Write tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -66,7 +67,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch returns isError validation result envelope when ruleId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -74,8 +75,8 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [value: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('ruleid is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('ruleid is required')
 
         where:
         useGateways << [true, false]
@@ -91,7 +92,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when value is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch returns isError validation result envelope when value is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -99,8 +100,8 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 1])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('value')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('value')
 
         where:
         useGateways << [true, false]
@@ -231,7 +232,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_private_boolean via dispatch rejects capitalized boolean string '#value' with -32602 (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch rejects capitalized boolean string '#value' with isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -239,8 +240,8 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('value must be boolean')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('value must be boolean')
 
         where:
         useGateways | value
@@ -267,7 +268,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_private_boolean via dispatch rejects truthy-looking string '#value' with -32602 (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch rejects truthy-looking string '#value' with isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -275,8 +276,8 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('value must be boolean')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('value must be boolean')
 
         where:
         useGateways | value
@@ -303,7 +304,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_private_boolean via dispatch rejects integer value #value with -32602 (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch rejects integer value #value with isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -311,8 +312,8 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('value must be boolean')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('value must be boolean')
 
         where:
         useGateways | value

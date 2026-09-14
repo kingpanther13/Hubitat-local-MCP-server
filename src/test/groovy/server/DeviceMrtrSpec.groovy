@@ -190,7 +190,8 @@ class DeviceMrtrSpec extends ToolSpecBase {
         def denied = call('hub_get_device', args, token)
 
         then:
-        denied.error != null || denied.result.isError == true
+        denied.error == null
+        denied.result.isError == true
         !groovy.json.JsonOutput.toJson(denied).contains('private-device-profile')
     }
 
@@ -230,7 +231,8 @@ class DeviceMrtrSpec extends ToolSpecBase {
         def failed = call('hub_get_device', [deviceId: '88'])
 
         then:
-        failed.error != null || failed.result.isError == true
+        failed.error == null
+        failed.result.isError == true
         reads == 0
         script._activeWrites().isEmpty()
     }
@@ -248,7 +250,8 @@ class DeviceMrtrSpec extends ToolSpecBase {
         finish(runInMillisCalls[0])
 
         then:
-        failed.error.code == -32602
+        failed.error == null
+        failed.result.isError == true
         reads == 0
         runInMillisCalls.size() == 1
     }
@@ -271,9 +274,10 @@ class DeviceMrtrSpec extends ToolSpecBase {
         def replay = call('hub_manage_virtual_device', args, token)
 
         then:
-        failed.error.code == -32602
-        failed.error.message.contains('No MCP-managed virtual device found')
-        failed.error.message.contains('virtual_devices')
+        failed.error == null
+        failed.result.isError == true
+        mcpDriver.parseInner(failed).error.contains('No MCP-managed virtual device found')
+        mcpDriver.parseInner(failed).error.contains('virtual_devices')
         replay.error == failed.error
         attempts == 1
         script.getDebugLogEntries().any {

@@ -1998,6 +1998,7 @@ class WatchdogV2Spec extends Specification {
     def "two overlapping wedge checks issue exactly one reboot POST"() {
         given: "a wedged hub whose reboot POST is slow enough for the second check to overlap"
         def posts = new java.util.concurrent.atomic.AtomicInteger(0)
+        def pool = java.util.concurrent.Executors.newFixedThreadPool(2)
         script.metaClass.readFlag = { -> null }
         script.metaClass.probeLoopbackAlive = { -> false }
         script.metaClass.hubPostForm = { String p, Map b -> posts.incrementAndGet(); Thread.sleep(300); [status: 200, data: 'ok'] }
@@ -2005,12 +2006,16 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
 
         when: "the scheduled tick and a kick arrive together"
-        def threads = (1..2).collect { Thread.start { script.checkDeadman() } }
-        threads*.join()
+        def futures = (1..2).collect { pool.submit({ script.checkDeadman() } as Runnable) }
+        futures.each { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
 
         then: "the second decision saw the first's timestamp"
         posts.get() == 1
         atomicStateMap.lastAutoRebootAt != null
+
+        cleanup:
+        pool.shutdownNow()
+        pool.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
     }
 
     def "a failed reboot leaves a NEWER downtime window alone"() {

@@ -57,7 +57,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     // ---- cursor pagination tests (#174) --------------------------------
 
     def "cursor='' returns the first 50 devices + nextCursor (regression guard for the documented opt-in)"() {
-        // Pre-fix, the inline cursor parser called ''.toInteger() and threw -32602
+        // Pre-fix, the inline cursor parser called ''.toInteger() and threw isError validation result
         // for the documented "pass '' for the first page" pattern.
         given:
         settingsMap.selectedDevices = (0..<120).collect { i -> makeDevice(id: i + 1, name: "D${i}", label: "Device-${String.format('%03d', i)}") }
@@ -613,7 +613,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: fields projection unknown field name returns -32602 listing the bad name (useGateways=#useGateways)"() {
+    def "via dispatch: fields projection unknown field name returns isError validation result listing the bad name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def d1 = makeDevice(id: 42, label: 'My Device')
@@ -623,9 +623,9 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'lable', 'label']])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('lable')
-        response.error.message.contains('label')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('lable')
+        mcpDriver.parseInner(response).error.contains('label')
 
         where:
         useGateways << [true, false]
@@ -697,7 +697,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: format=xml returns -32602 with valid values listed (useGateways=#useGateways)"() {
+    def "via dispatch: format=xml returns isError validation result with valid values listed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def d1 = makeDevice(id: 1, label: 'Device A')
@@ -707,11 +707,11 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [format: 'xml'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('xml')
-        response.error.message.contains('summary')
-        response.error.message.contains('detailed')
-        response.error.message.contains('ids')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('xml')
+        mcpDriver.parseInner(response).error.contains('summary')
+        mcpDriver.parseInner(response).error.contains('detailed')
+        mcpDriver.parseInner(response).error.contains('ids')
 
         where:
         useGateways << [true, false]
@@ -1001,7 +1001,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: invalid format with offset overshoot returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: invalid format with offset overshoot returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def d1 = makeDevice(id: 1, label: 'Device A')
@@ -1011,9 +1011,9 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [offset: 999, format: 'xml'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('xml')
-        response.error.message.contains('summary')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('xml')
+        mcpDriver.parseInner(response).error.contains('summary')
 
         where:
         useGateways << [true, false]
@@ -1166,7 +1166,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: fields projection with all-unknown names returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: fields projection with all-unknown names returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def d1 = makeDevice(id: 1, label: 'My Device')
@@ -1176,8 +1176,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [fields: ['nope']])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('nope')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('nope')
 
         where:
         useGateways << [true, false]
@@ -1280,7 +1280,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: capabilityFilter passing a List instead of String returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: capabilityFilter passing a List instead of String returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def d1 = makeDevice(id: 1, label: 'Device A')
@@ -1290,8 +1290,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: ['Switch']])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('capabilityFilter')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('capabilityFilter')
 
         where:
         useGateways << [true, false]
@@ -1311,7 +1311,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: labelFilter passing a List instead of String returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: labelFilter passing a List instead of String returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def d1 = makeDevice(id: 1, label: 'Device A')
@@ -1321,8 +1321,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [labelFilter: ['kitchen']])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('labelFilter')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('labelFilter')
 
         where:
         useGateways << [true, false]
@@ -1342,7 +1342,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: fields passing a String instead of List returns -32602 (useGateways=#useGateways)"() {
+    def "via dispatch: fields passing a String instead of List returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def d1 = makeDevice(id: 1, label: 'Device A')
@@ -1352,8 +1352,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [fields: 'id,label'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('fields')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('fields')
 
         where:
         useGateways << [true, false]
@@ -1742,7 +1742,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         result.changedSince == new Date(3000000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
     }
 
-    def "changedSince accepts ISO-8601 and rejects an unparseable value with -32602 guidance"() {
+    def "changedSince accepts ISO-8601 and rejects an unparseable value with isError validation result guidance"() {
         given:
         settingsMap.selectedDevices = [
             makeDevice(id: 1, label: 'Fresh', lastActivity: Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", '2026-06-23T12:00:00+0000'))
@@ -1945,7 +1945,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
     def "bad arguments are rejected even when no devices are authorized"() {
         // The type/format validations run BEFORE the empty-inventory early return, so an
-        // empty hub answers a bad call with -32602 instead of a success envelope.
+        // empty hub answers a bad call with isError validation result instead of a success envelope.
         given:
         settingsMap.selectedDevices = []
 
@@ -2065,8 +2065,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'] + extra)
 
         then:
-        response.error?.code == -32602
-        response.error?.message?.contains("filter='virtual'")
+        response.result?.isError == true
+        mcpDriver.parseInner(response)?.error?.contains("filter='virtual'")
 
         where:
         label                | extra
@@ -2088,8 +2088,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: 'true'])
 
         then:
-        response.error?.code == -32602
-        response.error?.message?.contains('boolean')
+        response.result?.isError == true
+        mcpDriver.parseInner(response)?.error?.contains('boolean')
     }
 
     def "via dispatch: filter='virtual' tolerates the documented no-op values"() {

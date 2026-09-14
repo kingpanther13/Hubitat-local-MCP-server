@@ -1069,7 +1069,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         hubGet.register('/installedapp/configure/json/200') { params -> ruleConfigJson(200, "to-delete") }
         hubGet.register('/installedapp/statusJson/200') { params -> statusJson(200) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def files = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files.put(fn, b) }
+        script.metaClass.downloadHubFile = { String fn -> files.get(fn) }
 
         def rawCalls = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
@@ -1089,6 +1091,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "the snapshot is registered in the unified item-backup manifest so hub_list_backups picks it up"
         atomicStateMap.itemBackupManifest?.values()?.any { it.type == "rm-rule" && it.ruleId == 200 }
+
+        when: "a client reads the generated handle as a JSON String"
+        def backup = script.toolGetItemBackup([backupKey: result.backup.backupKey.toString()])
+
+        then:
+        backup.error == null
+        backup.type == 'rm-rule'
+        backup.howToRestore.contains('hub_restore_backup')
+        backup.howToRestore.contains(result.backup.backupKey.toString())
+        !backup.howToRestore.contains('Drivers Code')
+        def snapshot = new JsonSlurper().parseText(backup.source)
+        snapshot.appId == 200
+        snapshot.appLabel == 'to-delete'
     }
 
     def "delete_rm_rule soft-delete surfaces hubMessage on refusal"() {
@@ -1483,7 +1498,55 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsPost.body["tDev0.multiple"] == "true"
     }
 
-    def "hub_restore_backup recreates the rule with a fresh id when the original was deleted"() {
+    @Unroll
+    def "restore refuses recreation after a failed config read with #inventoryCase inventory"() {
+        given:
+        enableWrite()
+        def snapshot = [schemaVersion: 1, ruleId: 400, appLabel: 'existing rule',
+                        configJson: [settings: [origLabel: 'existing rule']], statusJson: [:]]
+        atomicStateMap.itemBackupManifest = [
+            'rm-rule_400_x': [type: 'rm-rule', id: 400, ruleId: 400, fileName: 'snapshot.json']
+        ]
+        script.metaClass.downloadHubFile = { String name -> JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        hubGet.register('/installedapp/configure/json/400') { params -> throw new IOException('temporary config failure') }
+        hubGet.register('/hub2/appsList') { params -> inventory }
+        hubGet.register('/installedapp/configure/json/401') { params -> ruleConfigJson(401) }
+        hubGet.register('/installedapp/statusJson/401') { params -> statusJson(401) }
+        def mutations = []
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, Integer timeout = 30 ->
+            mutations << path
+            [status: 302, location: '/installedapp/configure/401', data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            mutations << path
+            [status: 200, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'rm-rule_400_x', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('400')
+        result.note.contains('No replacement')
+        mutations.isEmpty()
+
+        where:
+        inventoryCase        | inventory
+        'existing target'    | '{"apps":[{"data":{"id":21},"children":[{"data":{"id":400}}]}]}'
+        'nested target'      | '{"apps":[{"children":[{"data":{"id":21},"children":[{"data":{"id":400}}]}]}]}'
+        'empty response'     | ''
+        'invalid JSON'       | 'not JSON'
+        'missing apps'       | '{}'
+        'non-list apps'      | '{"apps":{}}'
+        'malformed node'     | '{"apps":[{"data":{"id":21},"children":[null]}]}'
+        'missing node id'    | '{"apps":[{"data":{"id":21},"children":[{"data":{"name":"unknown"}}]}]}'
+        'invalid node id'    | '{"apps":[{"data":{"id":21},"children":[{"data":{"id":"unknown"}}]}]}'
+        'non-list children'  | '{"apps":[{"data":{"id":21},"children":{}}]}'
+    }
+
+    @Unroll
+    def "hub_restore_backup recreates a deleted rule with a fresh id (structuralContainer=#structuralContainer)"() {
         given:
         enableWrite()
         def snapshot = [
@@ -1507,7 +1570,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                               appLabel: "gone-rule", timestamp: 1000, sourceLength: snapshotBytes.length]
         ]
         script.metaClass.downloadHubFile = { String fn -> snapshotBytes }
-        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        hubGet.register('/hub2/appsList') { params ->
+            structuralContainer ? JsonOutput.toJson([apps: [[children: new JsonSlurper().parseText(appsListJson(21)).apps]]]) : appsListJson(21)
+        }
         hubGet.register('/installedapp/configure/json/400') { params ->
             throw new RuntimeException("404 — rule gone")
         }
@@ -1531,6 +1596,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.recreated == true
         result.ruleId == 401
         result.originalRuleId == 400
+
+        where:
+        structuralContainer << [false, true]
     }
 
     def "hub_restore_backup uses rule_machine default when snapshot has no appType field (legacy snapshot)"() {
@@ -7085,11 +7153,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         } == 0
     }
 
-    // S2-fullform-hub-400-surfaces-as-error: a >=400 from the full-form submit
-    // throws and surfaces as success:false with the status + body preview in the
-    // error, and is NOT promoted to the asyncCommitLikely envelope -- a rejected
-    // submit committed nothing, so it must not read as a delayed/partial success.
-    def "clearActions hub-400 on the full-form submit surfaces success:false (not asyncCommitLikely)"() {
+    @Unroll
+    def "clearActions failed full-form submit preserves uncertainty (status=#rejectionStatus recoveryFails=#recoveryFails)"() {
         given:
         enableWrite()
         def selectActionsSchema = [
@@ -7111,11 +7176,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson(100, [[name: "actType.1", value: "switchActs"]])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def cancelAttempts = 0
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            // The trashActs full-form submit is rejected by the hub (e.g. stale
-            // version token). Other POSTs (the cancelTrash hard-fail backout) succeed.
             if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
-                return [status: 400, location: null, data: '{"error":"stale version token"}']
+                return [status: rejectionStatus, location: null, data: '{"error":"stale version token"}']
+            }
+            if (path == "/installedapp/btn" && body?.name == "cancelTrash") {
+                cancelAttempts++
+                if (recoveryFails) throw new IOException('cancelTrash unavailable')
             }
             [status: 200, location: null, data: '']
         }
@@ -7129,11 +7197,25 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.stage == null
 
         and: "the error surfaces the rejecting status and the truncated body preview"
-        result.error?.contains("status=400")
+        result.error?.contains("status=${rejectionStatus}")
         result.error?.contains("stale version token")
+        result.error?.contains("outcome has not been verified")
+        result.error?.contains("best-effort")
+        result.error?.contains("hub_get_app_config(appId=100)")
+        !result.error?.contains("nothing was committed")
+        !result.error?.contains("automatically via cancelTrash")
+        !result.error?.contains("Do NOT treat this as a partial delete")
+        cancelAttempts >= 1
 
         and: "the internal marker is not leaked into the error"
         !result.error?.contains("[asyncCommitLikely]")
+
+        where:
+        rejectionStatus | recoveryFails
+        400             | false
+        400             | true
+        500             | false
+        500             | true
     }
 
     // S2-fullform-version-token-absent: when the selectActions configPage carries
@@ -15030,7 +15112,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // backup-and-catch envelope in toolSetRule and surfaced as a
         // structured success=false map (consistent with the sibling
         // compareToDevice missing-comparator guard on this same addTrigger
-        // path), NOT a propagated -32602. The validation still fires before the
+        // path), NOT a propagated isError validation result. The validation still fires before the
         // trigger editor opens, so no wizard write POST is sent.
         given:
         enableWrite()
@@ -24782,7 +24864,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // coverage rather than full one-for-one parity. The coverage
     // matrix: one happy path per native_app tool (create / update /
     // delete / clone / export / import / hub_get_rule_health), plus
-    // representative IAE (-32602) and runtime-exception (isError)
+    // representative IAE (isError validation result) and runtime-exception (isError)
     // envelope shapes. The full per-tool internals are covered by
     // the direct-call features above; this block guards the
     // production envelope (handleMcpRequest -> handleToolsCall ->
@@ -24792,7 +24874,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- hub_set_rule dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_set_rule via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch returns isError validation result envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -24801,15 +24883,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule', [name: "BAT-RM-demo"])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("SAFETY CHECK FAILED")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("SAFETY CHECK FAILED")
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule via dispatch returns -32602 envelope when name is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch returns isError validation result envelope when name is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -24818,8 +24900,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule', [confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("name is required")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("name is required")
 
         where:
         useGateways << [true, false]
@@ -24863,7 +24945,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- hub_set_rule dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_set_rule via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch returns isError validation result envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -24872,8 +24954,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [a: 1]])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains("SAFETY CHECK FAILED")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("SAFETY CHECK FAILED")
 
         where:
         useGateways << [true, false]
@@ -24976,7 +25058,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- hub_clone_native_app dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_clone_native_app via dispatch returns -32602 envelope when sourceAppId is missing (useGateways=#useGateways)"() {
+    def "hub_clone_native_app via dispatch returns isError validation result envelope when sourceAppId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -24985,8 +25067,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_clone_native_app', [confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains("sourceappid")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains("sourceappid")
 
         where:
         useGateways << [true, false]
@@ -25079,7 +25161,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- hub_import_native_app dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_import_native_app via dispatch returns -32602 envelope on non-JSON content (useGateways=#useGateways)"() {
+    def "hub_import_native_app via dispatch returns isError validation result envelope on non-JSON content (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -25088,16 +25170,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_import_native_app', [jsonContent: 'not-json', parentHintAppId: 100, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains("not valid json") ||
-            response.error.message.toLowerCase().contains("appreplacements")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains("not valid json") ||
+            mcpDriver.parseInner(response).error.toLowerCase().contains("appreplacements")
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_import_native_app via dispatch returns -32602 envelope on JSON without appReplacements (useGateways=#useGateways)"() {
+    def "hub_import_native_app via dispatch returns isError validation result envelope on JSON without appReplacements (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -25106,8 +25188,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_import_native_app', [jsonContent: '{"foo":"bar"}', parentHintAppId: 100, confirm: true])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains("appreplacements")
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains("appreplacements")
 
         where:
         useGateways << [true, false]
@@ -29293,7 +29375,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
     }
 
-    def "addAction setLocalVariable constant form validates against locals and writes getSetVariable fields"() {
+    @spock.lang.Unroll
+    def "addAction setLocalVariable #localName writes constant #constantValue through getSetVariable"() {
         given:
         enableWrite()
         def fetchSeq = 0
@@ -29306,7 +29389,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // A hub global named "counter" exists too -- proving setLocalVariable does NOT
-        // consult getAllGlobalVars: the local "loopCount" is the only valid target here.
+        // consult getAllGlobalVars: only the local name is a valid target here.
         script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -29316,28 +29399,36 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             modeActsDoActPageJson(100, [
-                [name: "xVarV.1", type: "enum", options: ["loopCount": "loopCount"]],
+                [name: "xVarV.1", type: "enum", options: [(localName): localName]],
                 [name: "numOp.1", type: "enum", options: ["number": "Number"]],
                 [name: "valNumber.1", type: "number"]
             ], { ++fetchSeq })
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [loopCount: [type: "integer", value: 0]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [(localName): [type: "integer", value: 0]]) }
 
         when:
         def result = script.toolSetRule([
             appId: 100,
-            addAction: [capability: "setLocalVariable", variable: "loopCount", value: 42],
+            addAction: [capability: "setLocalVariable", variable: localName, value: constantValue],
             confirm: true
         ])
 
         then: "routes to the same getSetVariable subtype + writes the variable-path fields"
         writtenFields["actType.1"] == "modeActs"
         writtenFields["actSubType.1"] == "getSetVariable"
-        writtenFields["xVarV.1"] == "loopCount"
+        writtenFields["xVarV.1"] == localName
         writtenFields["numOp.1"] == "number"
-        writtenFields["valNumber.1"].toString() == "42"
+        writtenFields["valNumber.1"].toString() == constantValue.toString()
         result.success == true
+
+        where:
+        localName    | constantValue
+        'loopCount'  | 42
+        'fields'     | 0
+        'class'      | 0
+        'metaClass'  | 0
+        'properties' | 0
     }
 
     def "addAction setLocalVariable rejects a target that is not a local variable (and names locals, not globals)"() {
@@ -30322,7 +30413,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "rejected as an invalid name (the IAE maps to a -32602-style error envelope)"
+        then: "rejected as an invalid name (the IAE maps to a isError validation result-style error envelope)"
         result.success == false
         result.error?.toString()?.contains("not valid")
 
@@ -37847,7 +37938,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- runtime-exception envelope (isError) coverage ----------
 
     @spock.lang.Unroll
-    def "hub_clone_native_app via dispatch returns -32602 when source config fetch returns empty (useGateways=#useGateways)"() {
+    def "hub_clone_native_app via dispatch returns isError validation result when source config fetch returns empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -37856,10 +37947,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_clone_native_app', [sourceAppId: 999, confirm: true])
 
-        then: "empty config fetch surfaces as -32602 IAE (matches the direct-call test's IllegalArgumentException)"
-        response.error.code == -32602
-        response.error.message.contains("999")
-        response.error.message.toLowerCase().contains("not found")
+        then: "empty config fetch surfaces as isError validation result IAE (matches the direct-call test's IllegalArgumentException)"
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("999")
+        mcpDriver.parseInner(response).error.toLowerCase().contains("not found")
 
         where:
         useGateways << [true, false]

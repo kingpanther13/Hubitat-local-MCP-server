@@ -634,7 +634,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         Exception ex = null
         try { script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [:]) } catch (Exception e) { ex = e }
 
-        then: 'pre-validation throws the missing-param error (#319: same -32602 shape as flat)'
+        then: 'pre-validation throws the missing-param error (#319: same isError validation result shape as flat)'
         ex instanceof IllegalArgumentException
         ex.message.contains('Missing required parameter')
 

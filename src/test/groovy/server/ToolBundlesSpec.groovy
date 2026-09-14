@@ -259,7 +259,7 @@ class ToolBundlesSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_delete_bundle via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_delete_bundle via dispatch returns isError validation result envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -268,8 +268,8 @@ class ToolBundlesSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_delete_bundle', [bundleId: "4"])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
 
         where:
         useGateways << [true, false]

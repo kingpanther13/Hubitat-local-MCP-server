@@ -2,7 +2,7 @@ library(name: "McpSelfAdminLib", namespace: "mcp", author: "kingpanther13", desc
 
 def toolUpdateMcpSettings(args) {
     // IllegalArgumentException (not IllegalStateException) so the dispatcher routes this
-    // through the clean -32602 Invalid params branch in handleToolsCall — same exception
+    // through handleToolsCall's IllegalArgumentException branch (an isError validation result) — same exception
     // type the other gates throw (requireDestructiveConfirm, the central master gate).
     // Toggle-off is a config refusal, not an unexpected runtime error worth a stack trace.
     if (!settings.enableDeveloperMode) {
@@ -138,7 +138,7 @@ def toolUpdateMcpSettings(args) {
     }
 
     // Apply each scalar update via app.updateSetting() — the documented Hubitat sandbox API for
-    // self-modifying app settings. mcpLogLevel needs special handling because the runtime
+    // self-modifying app settings. mcpLogLevel needs special handling:
     // The small logging config and JVM threshold mirror are updated together.
     //
     // Apply order is intentional: app.updateSetting calls first, then mcpLogLevel last via
@@ -150,7 +150,7 @@ def toolUpdateMcpSettings(args) {
             // Delegate to existing helper — it updates both state cache + setting
             toolSetLogLevel([level: value.toString()])
         } else {
-            app.updateSetting(key, [type: allowedSettings[key], value: value])
+            app.updateSetting(key, [type: allowedSettings.get(key), value: value])
         }
     }
 

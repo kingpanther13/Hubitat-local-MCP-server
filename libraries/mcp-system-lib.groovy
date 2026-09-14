@@ -235,6 +235,8 @@ def toolGetHubInfo(args = null) {
         }
     }
 
+    // A client that saw only a generic error for a write can learn here whether it ran.
+    info.recentWrites = _mrtrRecentOperations()
     return info
 }
 
@@ -265,7 +267,7 @@ def toolGetHubInfo(args = null) {
 //                         error with `applied` listing what already succeeded -- partial-apply is possible
 //                         (these are independent GETs, not one atomic POST).
 // A timeZone change REBOOTS the hub, and any network change can disconnect it, so both are confirm-gated
-// (requireDestructiveConfirm). Arg validation throws (-> -32602); hub-call failures return the structured
+// (requireDestructiveConfirm). Arg validation throws (-> isError validation result); hub-call failures return the structured
 // runtime-error envelope -- never thrown.
 def toolSetSystemSettings(args) {
     args = args ?: [:]
@@ -283,7 +285,7 @@ def toolSetSystemSettings(args) {
     _validateCoordinate("latitude", args, -90, 90)
     _validateCoordinate("longitude", args, -180, 180)
 
-    // Validate the network object's shape up front (-> -32602) so a malformed request never reaches the hub.
+    // Validate the network object's shape up front (-> isError validation result) so a malformed request never reaches the hub.
     if (args.containsKey("network")) _validateNetworkArgs(args.network)
 
     // A timeZone change reboots the hub, and any network change can disconnect it -- confirm-gate both.
@@ -370,7 +372,7 @@ def toolSetSystemSettings(args) {
                   (args.containsKey("network") ? " A network change can briefly disconnect the hub." : "")]
 }
 
-// Validate the network arg shape BEFORE any hub call (-> -32602). Static IP requires address+netmask+
+// Validate the network arg shape BEFORE any hub call (-> isError validation result). Static IP requires address+netmask+
 // gateway together; ipMode is dhcp|static when present. Leaves the actual application to _applyNetworkConfig.
 private _validateNetworkArgs(network) {
     if (!(network instanceof Map)) {
@@ -388,7 +390,7 @@ private _validateNetworkArgs(network) {
             throw new IllegalArgumentException("network.ipMode must be 'dhcp' or 'static', got: ${network.ipMode}")
         }
         if (mode == "static") {
-            def missing = ["address", "netmask", "gateway"].findAll { !network[it] }
+            def missing = ["address", "netmask", "gateway"].findAll { !network.get(it) }
             if (missing) throw new IllegalArgumentException("network.ipMode='static' requires ${missing.join(', ')} (address, netmask, gateway are all required for a static IP).")
         }
     }
@@ -470,7 +472,7 @@ private _applyNetworkConfig(network, List applied) {
     return null
 }
 
-// Validate an optional lat/long arg: coerce a string to a number and bound the range (-> -32602 on a
+// Validate an optional lat/long arg: coerce a string to a number and bound the range (-> isError validation result on a
 // bad value), so an out-of-range coordinate is rejected before it reaches the hub.
 private _validateCoordinate(String key, Map args, Number lo, Number hi) {
     if (!args.containsKey(key)) return
@@ -618,7 +620,7 @@ def toolSetModeManager(args) {
     def result = [success: true]
     if (manager) {
         def wireByKey = [builtin: "builtIn", legacy: "legacy", app: "app"]
-        def wire = wireByKey[manager]
+        def wire = wireByKey.get(manager)
         if (!wire) throw new IllegalArgumentException("manager must be one of builtIn, legacy, app")
         try {
             def raw = hubInternalGet("/modes/setModeManager/${wire}")

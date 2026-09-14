@@ -854,10 +854,8 @@ def toolDeleteHubVariable(args) {
         ]
     }
 
-    // rule_engine fallback (legacy MCP-managed rule variables). Same
-    // top-level reassignment pattern: nested-map mutations on state silently
-    // fail to persist across hub reboot / app restart unless the top-level
-    // key is reassigned. Read-modify-write the whole map.
+    // rule_engine fallback (legacy MCP-managed rule variables): replace the map
+    // with a filtered copy so sibling variables are preserved.
     def previousValue = state.ruleVariables.get(varName)
     def updated = state.ruleVariables.findAll { k, v -> k != varName }
     state.ruleVariables = updated

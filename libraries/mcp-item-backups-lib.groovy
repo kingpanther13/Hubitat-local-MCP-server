@@ -77,7 +77,7 @@ private _listSourceItemBackups(args) {
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
     if (backupList.any { it.deletePending }) {
-        result.deletePendingNote = "Entries with deletePending=true are leftover markers whose file was already deleted; they cannot be restored or reused as baselines and are purged by the next backup publication."
+        result.deletePendingNote = "Entries with deletePending=true record an incomplete deletion. If the file is still readable, hub_get_backup or hub_restore_backup can clear the marker and recover the backup. Otherwise it remains unavailable; the next backup publication purges unrecovered markers. Pending entries cannot be reused as baselines."
     }
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
@@ -109,7 +109,7 @@ def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
 
     def manifest = _itemBackupManifest()
-    def entry = manifest[args.backupKey]
+    def entry = manifest.get(args.backupKey)
 
     if (!entry) {
         mcpLog("debug", "hub-admin", "Backup key '${args.backupKey}' not found in manifest")
@@ -122,9 +122,9 @@ def toolGetItemBackup(args) {
     }
     if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
         return [
-            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' is no longer in File Manager.",
+            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be read and verified.",
             backupKey: args.backupKey,
-            hint: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletePending=false); the marker is purged by the next backup publication."
+            hint: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. The next backup publication purges unrecovered markers."
         ]
     }
 
@@ -168,6 +168,8 @@ def toolGetItemBackup(args) {
 
     if (entry.type == "app") {
         result.howToRestore = "To restore via MCP: call 'hub_restore_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
+    } else if (entry.type == "rm-rule") {
+        result.howToRestore = "To restore this rule snapshot via MCP: call 'hub_restore_backup' with backupKey='${args.backupKey}' and confirm=true. The restore reapplies the saved rule configuration."
     } else if (entry.type == "library") {
         result.howToRestore = "Library backups cannot be restored via hub_restore_backup. To restore: call 'hub_update_library' with libraryId='${entry.id}' and sourceFile='${entry.fileName}' (confirm=true). To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > FOR DEVELOPERS > Libraries code > library ID ${entry.id} > paste source > Save."
     } else {
@@ -202,7 +204,7 @@ private Map _toolRestoreSourceBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
 
     def manifest = _itemBackupManifest()
-    def entry = manifest[args.backupKey]
+    def entry = manifest.get(args.backupKey)
 
     if (!entry) {
         mcpLog("debug", "hub-admin", "Restore: backup key '${args.backupKey}' not found in manifest")
@@ -216,9 +218,9 @@ private Map _toolRestoreSourceBackup(args) {
     if (entry.deletePending == true && !_healPendingItemBackup(args.backupKey.toString(), entry)) {
         return [
             success: false,
-            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' is no longer in File Manager. Nothing was restored.",
+            error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be read and verified. Nothing was restored.",
             backupKey: args.backupKey,
-            note: "This entry is a leftover marker, not a usable backup. Pick another key from 'hub_list_backups' (entries with deletePending=false); the marker is purged by the next backup publication."
+            note: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. The next backup publication purges unrecovered markers."
         ]
     }
 
@@ -275,43 +277,72 @@ private Map _toolRestoreSourceBackup(args) {
 
     mcpLog("info", "hub-admin", "Restoring ${entry.type} ID ${entry.id} from backup file ${entry.fileName} (version ${entry.version}, ${formatTimestamp(entry.timestamp)})")
 
-    // Keep the current source under a separate undo key and preserve the requested
-    // restore target when enforcing the shared retention cap. Only this capture
-    // needs the backup monitor; the save below runs outside it.
+    // Capture and publish under the backup monitor; the actual source save stays
+    // outside it. Retention must protect both the restore target and its undo.
     String preRestoreBackupKey = "prerestore_${entry.type}_${entry.id}"
-    // The undo point actually on file after this block; null when none exists.
-    Map undo = null
+    String preRestoreFileName = null
+    boolean undoAvailable = false
+    String undoWarning = null
     try {
         _withBackupLock("restore ${args.backupKey}") {
+            String restoreSourceHash = _mrtrSha256(source)
             def ajaxPath = (entry.type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
             def responseText = hubInternalGet(ajaxPath, [id: entry.id])
-            if (!responseText) throw new IllegalStateException("Current source could not be read")
+            if (!responseText) throw new IllegalStateException("Current source fetch returned an empty response")
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            if (!(parsed instanceof Map) || !(parsed.source instanceof String) || !parsed.source) {
+                throw new IllegalStateException("Current source fetch did not return source code")
+            }
             if (parsed.source == source) {
-                // The live source already equals the backup being restored (a retry
-                // after a dropped response): capturing it now would overwrite the
-                // real pre-restore undo with the just-restored content, silently
-                // destroying the only undo point. Keep the existing undo file.
-                mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
-                def existingUndo = _itemBackupManifest()[preRestoreBackupKey]
-                if (existingUndo?.fileName && !existingUndo.deletePending) undo = [key: preRestoreBackupKey, fileName: existingUndo.fileName.toString()]
-            } else if (parsed.source) {
-                String preRestoreFileName = _itemBackupFileName("mcp-prerestore-${entry.type}-${entry.id}.groovy")
+                // A retry must not replace its original undo with already-restored
+                // content. Missing undo is a warning when the source already matches.
+                try {
+                    def undo = _itemBackupManifest().get(preRestoreBackupKey)
+                    if (!(undo instanceof Map) || undo.deletePending || undo.type != entry.type
+                            || undo.id?.toString() != entry.id?.toString() || !undo.fileName
+                            || undo.undoForBackupKey != args.backupKey.toString()
+                            || undo.undoForSourceHash != restoreSourceHash || !undo.sourceHash) {
+                        throw new IllegalStateException("Current source already matches this backup, but no matching pre-restore undo is recorded")
+                    }
+                    preRestoreFileName = undo.fileName.toString()
+                    def undoBytes = downloadHubFile(preRestoreFileName)
+                    if (undoBytes == null || _mrtrSha256(new String(undoBytes, "UTF-8")) != undo.sourceHash) {
+                        throw new IllegalStateException("The recorded pre-restore undo file is missing or has changed")
+                    }
+                    undoAvailable = true
+                    mcpLog("info", "hub-admin", "Current source already matches this backup -- preserving its verified pre-restore undo")
+                } catch (Exception undoError) {
+                    undoWarning = "No verified undo backup is available: ${undoError.message}. The live source already matches this backup; do not rely on an older pre-restore backup to undo it.".toString()
+                    mcpLog("warn", "hub-admin", undoWarning)
+                }
+            } else {
+                preRestoreFileName = _itemBackupFileName("mcp-prerestore-${entry.type}-${entry.id}.groovy")
                 uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
+                String undoSourceHash = _mrtrSha256(parsed.source)
+                try {
+                    def undoBytes = downloadHubFile(preRestoreFileName)
+                    if (undoBytes == null || _mrtrSha256(new String(undoBytes, "UTF-8")) != undoSourceHash) {
+                        throw new IllegalStateException("Pre-restore backup upload could not be verified by reading the file back")
+                    }
+                } catch (Exception verificationError) {
+                    try { deleteHubFile(preRestoreFileName) }
+                    catch (Exception cleanupError) { mcpLog("error", "hub-admin", "Unverified undo file '${preRestoreFileName}' could not be removed: ${cleanupError.message}") }
+                    throw verificationError
+                }
                 _publishUploadedItemBackup(preRestoreBackupKey, [
                     type: entry.type, id: entry.id, fileName: preRestoreFileName,
-                    version: parsed.version, timestamp: now(), sourceLength: parsed.source.length()
+                    version: parsed.version, timestamp: now(), sourceLength: parsed.source.length(),
+                    undoForBackupKey: args.backupKey.toString(), undoForSourceHash: restoreSourceHash,
+                    sourceHash: undoSourceHash
                 ], args.backupKey.toString())
+                undoAvailable = true
                 mcpLog("info", "hub-admin", "Pre-restore backup saved: ${preRestoreFileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
-                undo = [key: preRestoreBackupKey, fileName: preRestoreFileName]
-            } else {
-                throw new IllegalStateException("Current source is missing from the hub response")
             }
         }
     } catch (Exception preBackupErr) {
         mcpLogError("hub-admin", "Pre-restore backup failed for ${entry.type} ${entry.id} (backupKey ${args.backupKey}); restore aborted", preBackupErr)
         return [
-            success: false,
+            success: false, undoAvailable: false,
             error: "Could not create pre-restore backup: ${preBackupErr.message}. Nothing was restored.",
             backupKey: args.backupKey,
             note: "The current source was left untouched, so nothing needs undoing. Confirm ${entry.type} ID ${entry.id} still exists and that File Manager accepts writes, then retry. To restore without an undo point, fetch the source with hub_get_backup and apply it with hub_update_app or hub_update_driver."
@@ -394,14 +425,15 @@ private Map _toolRestoreSourceBackup(args) {
                 message: "Restored ${entry.type} ID ${entry.id} to version ${entry.version} (backup from ${formatTimestamp(entry.timestamp)})",
                 type: entry.type,
                 id: entry.id,
-                restoredVersion: entry.version
+                restoredVersion: entry.version,
+                undoAvailable: undoAvailable
             ]
-            if (undo) {
-                restoreResult.preRestoreBackup = undo.key
-                restoreResult.preRestoreFile = undo.fileName
-                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${undo.key}'"
+            if (undoAvailable) {
+                restoreResult.preRestoreBackup = preRestoreBackupKey
+                restoreResult.preRestoreFile = preRestoreFileName
+                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
             } else {
-                restoreResult.undoHint = "No pre-restore undo point exists: the live source already matched this backup, so nothing was captured."
+                restoreResult.warning = undoWarning
             }
             if (isSelfRestore && parsed == null) {
                 restoreResult.assumed = true

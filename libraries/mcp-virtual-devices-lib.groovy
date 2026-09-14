@@ -402,7 +402,7 @@ action="delete": provide the target deviceNetworkId.
                 ],
                 required: ["action", "confirm"]
                 // deviceType/customDriver XOR is enforced at runtime in toolManageVirtualDevice
-                // (IllegalArgumentException -> -32602), NOT in the schema: this is an
+                // (IllegalArgumentException -> isError validation result), NOT in the schema: this is an
                 // action-discriminated tool and a top-level oneOf would also reject valid delete
                 // calls (which carry neither field). Consistent with every other manage_* tool,
                 // which enforce action-conditional args at runtime.

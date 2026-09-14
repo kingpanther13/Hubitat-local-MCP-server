@@ -147,7 +147,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         ex.message.contains('Developer Mode tools are disabled')
     }
 
-    def "via dispatch (flat) returns -32602 envelope when Developer Mode is off"() {
+    def "via dispatch (flat) returns isError validation result envelope when Developer Mode is off"() {
         given:
         settingsMap.useGateways = false
         settingsMap.remove('enableDeveloperMode')
@@ -156,8 +156,9 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_update_package', [ref: 'main', dryRun: true])
 
         then:
-        response.error != null
-        response.result == null
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Developer Mode tools are disabled')
     }
 
     // -------- arg validation --------

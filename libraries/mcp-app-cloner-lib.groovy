@@ -546,7 +546,7 @@ def toolImportNativeApp(args) {
     } catch (Exception e) {
         throw new IllegalArgumentException("Could not extract original source id from appReplacements: ${e.message}")
     }
-    def originalLabel = appReplacements[originalSourceId.toString()]?.appLabel?.toString()
+    def originalLabel = appReplacements.get(originalSourceId.toString())?.appLabel?.toString()
 
     // Snapshot pre-import children of the target parent.
     def parentHintCfg
@@ -797,7 +797,19 @@ private Map _rmRestoreFromBackup(Map entry) {
     }
 
     def exists = true
-    try { _rmFetchConfigJson(savedId) } catch (Exception e) { exists = false }
+    try {
+        _rmFetchConfigJson(savedId)
+    } catch (Exception e) {
+        def liveApps = _collectLiveApps()
+        if (liveApps == null || liveApps.containsKey(savedId)) {
+            String detail = liveApps == null ? "the app inventory could not confirm its absence" : "it is still present in the app inventory"
+            mcpLog("warn", "rm-native", "Restore target ${savedId} could not be inspected (${e.message}); ${detail}")
+            return [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId,
+                    error: "Cannot restore rule ${savedId}: its configuration could not be read and ${detail}.",
+                    note: "No replacement was created and no settings were changed. Inspect hub_list_apps and hub_get_app_config(appId=${savedId}), then retry when the rule is readable or its deletion is confirmed."]
+        }
+        exists = false
+    }
     def reg = _appTypeRegistry()[savedAppType]
     if (!reg) {
         throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
@@ -1117,7 +1129,7 @@ private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
         Integer originalSourceId
         try { originalSourceId = ((replacements.keySet() as List)[0]).toString() as Integer }
         catch (Exception e) { throw new IllegalArgumentException("Could not extract original source id from appReplacements: ${e.message}") }
-        String originalLabel = replacements[originalSourceId.toString()]?.appLabel?.toString()
+        String originalLabel = replacements.get(originalSourceId.toString())?.appLabel?.toString()
         def hintCfg
         try { hintCfg = _rmFetchConfigJson(parentHintAppId) }
         catch (Exception hintErr) {

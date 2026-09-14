@@ -74,14 +74,10 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         def items = specs(field)
         def edit = [confirm: true, (field): items]
         def args = gateway ? [tool: leaf, args: edit] : edit
-        String stateId = modernCall(outer, args).result.requestState
 
-        expect:
-        saves.isEmpty()
-        runInMillisCalls.isEmpty()
-
-        when:
-        def paused = modernCall(outer, args, stateId)
+        when: 'the first request runs the first item and pauses at the worker target'
+        def paused = modernCall(outer, args)
+        String stateId = paused.result.requestState
         Map record = atomicStateMap.mrtrRequests[stateId] as Map
         Map remainingArgs = gateway ? record.nextArguments?.args : record.nextArguments
 
@@ -136,10 +132,10 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
             items[2].expectedVersion = 2
         }
         def args = [confirm: true, (field): items]
-        String stateId = modernCall(leaf, args).result.requestState
 
         when:
-        def paused = modernCall(leaf, args, stateId)
+        def paused = modernCall(leaf, args)
+        String stateId = paused.result.requestState
 
         then: 'failure does not disable the safe boundary or retry the failed item'
         paused.result.resultType == 'input_required'
@@ -170,10 +166,10 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         items[1].expectedVersion = 999
         items[2].expectedVersion = 2
         def args = [confirm: true, updates: items]
-        String stateId = modernCall('hub_update_driver', args).result.requestState
 
         when:
-        def paused = modernCall('hub_update_driver', args, stateId)
+        def paused = modernCall('hub_update_driver', args)
+        String stateId = paused.result.requestState
 
         then:
         paused.result.resultType == 'input_required'
@@ -203,13 +199,13 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         String remainingField = field + 'Remaining'
         def items = specs(field, 10)
         def args = [confirm: true, (field): items]
-        String stateId = modernCall(leaf, args).result.requestState
 
-        when:
-        Map response
-        for (int slice = 1; slice <= 8; slice++) {
+        when: 'the first request is slice one; seven continuations reach the cap'
+        Map response = modernCall(leaf, args)
+        String stateId = response.result.requestState
+        for (int slice = 2; slice <= 8; slice++) {
+            assert response.result.resultType == 'input_required'
             response = modernCall(leaf, args, stateId)
-            if (slice < 8) assert response.result.resultType == 'input_required'
         }
         def terminal = mcpDriver.parseInner(response)
 
@@ -227,7 +223,6 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         when:
         def followup = [confirm: true, (field): terminal[remainingField]]
         String nextId = modernCall(leaf, followup).result.requestState
-        modernCall(leaf, followup, nextId)
         def finished = modernCall(leaf, followup, nextId)
 
         then:

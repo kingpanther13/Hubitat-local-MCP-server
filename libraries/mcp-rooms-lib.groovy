@@ -92,7 +92,7 @@ def toolCreateRoom(args) {
     }
 
     // Build device IDs list. Validate each element before coercing so a non-numeric id is a clean
-    // IllegalArgumentException (-32602) naming the offending value, not an opaque NumberFormatException.
+    // IllegalArgumentException (an isError validation result) naming the offending value, not an opaque NumberFormatException.
     def deviceIds = (args.deviceIds ?: []).collect {
         def s = it?.toString()?.trim()
         if (!(s ==~ /\d+/)) {

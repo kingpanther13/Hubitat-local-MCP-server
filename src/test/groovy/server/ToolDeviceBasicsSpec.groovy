@@ -187,7 +187,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: hub_get_device returns -32602 when device is not found (useGateways=#useGateways)"() {
+    def "via dispatch: hub_get_device returns isError validation result when device is not found (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         childDevicesList.clear()
@@ -197,8 +197,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_device', [deviceId: '999'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Device not found: 999')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Device not found: 999')
 
         where:
         useGateways << [true, false]
@@ -1316,7 +1316,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: hub_call_device_command returns -32602 when device is not found (useGateways=#useGateways)"() {
+    def "via dispatch: hub_call_device_command returns isError validation result when device is not found (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         childDevicesList.clear()
@@ -1325,8 +1325,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '999', command: 'on', parameters: []])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Device not found: 999')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Device not found: 999')
 
         where:
         useGateways << [true, false]
@@ -1888,7 +1888,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: hub_call_device_command with commands returns -32602 on a malformed batch (useGateways=#useGateways)"() {
+    def "via dispatch: hub_call_device_command with commands returns isError validation result on a malformed batch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -1896,8 +1896,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_call_device_command', [commands: [[command: 'on']]])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('deviceId is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('deviceId is required')
 
         where:
         useGateways << [true, false]
@@ -1914,8 +1914,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_manage_devices', [tool: 'hub_call_device_command', args: [:]])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('deviceId is required (or pass a commands array')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('deviceId is required (or pass a commands array')
     }
 
     @spock.lang.Unroll

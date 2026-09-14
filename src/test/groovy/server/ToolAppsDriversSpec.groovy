@@ -49,7 +49,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_apps via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "hub_list_apps via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -58,8 +58,9 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_apps', [scope: 'types'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -196,7 +197,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_drivers via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "hub_list_drivers via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -205,8 +206,9 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_list_drivers', [:])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -559,7 +561,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_source app via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
+    def "hub_get_source app via dispatch returns an isError validation result when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = false
@@ -568,8 +570,9 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_source', [type: 'app', id: '1'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('Read tools are disabled')
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -595,13 +598,14 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
         when:
         // type present, id omitted: toolGetSource resolves id from args.appId (null) and
-        // toolGetItemSource throws 'appId is required' -> -32602. The ||-isError disjunct
+        // toolGetItemSource throws 'appId is required' -> isError validation result. The ||-isError disjunct
         // tolerates the gateway-name required-param pre-validation path too, matching the
         // PR's established dispatch idiom.
         def response = mcpDriver.callTool('hub_get_source', [type: 'app'])
 
         then:
-        response.error?.code == -32602 || response.result?.isError == true
+        response.error == null
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]
@@ -830,12 +834,13 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
         when:
         // type present, id omitted: toolGetSource resolves id from args.driverId (null) and
-        // toolGetItemSource throws 'driverId is required' -> -32602. The ||-isError disjunct
+        // toolGetItemSource throws 'driverId is required' -> isError validation result. The ||-isError disjunct
         // tolerates the gateway-name required-param pre-validation path too.
         def response = mcpDriver.callTool('hub_get_source', [type: 'driver'])
 
         then:
-        response.error?.code == -32602 || response.result?.isError == true
+        response.error == null
+        response.result?.isError == true
 
         where:
         useGateways << [true, false]
@@ -937,7 +942,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_backup via dispatch returns -32602 envelope when backupKey is missing (useGateways=#useGateways)"() {
+    def "hub_get_backup via dispatch returns isError validation result envelope when backupKey is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
@@ -945,8 +950,8 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_backup', [:])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('backupKey is required')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('backupKey is required')
 
         where:
         useGateways << [true, false]
@@ -1229,28 +1234,43 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.success == true
         uploads.isEmpty()
         (atomicStateMap.itemBackupManifest ?: [:]).prerestore_app_228 == null
-
-        and: 'no undo point is advertised because none exists'
-        result.preRestoreBackup == null
-        result.preRestoreFile == null
-        result.undoHint.contains('No pre-restore undo point')
+        result.undoAvailable == false
+        result.warning
+        !result.containsKey('preRestoreBackup')
+        !result.containsKey('preRestoreFile')
+        !result.containsKey('undoHint')
     }
 
-    def "hub_restore_backup retry advertises the undo point already on file"() {
-        given: 'a prior pre-restore undo whose file name carries a collision suffix'
+    @spock.lang.Unroll
+    def "restore aborts without writing after pre-restore capture fails at #failure"() {
+        given:
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [
-            app_228: [type: 'app', id: '228', fileName: 'mcp-backup-app-228.groovy', version: 5, timestamp: 1234567880000L, sourceLength: 9],
-            prerestore_app_228: [type: 'app', id: '228', fileName: 'mcp-prerestore-app-228-abc.groovy', version: 6, timestamp: 1234567885000L, sourceLength: 9]
+            app_228: [type: 'app', id: '228', fileName: 'backup.groovy', version: 5, timestamp: 1L],
+            prerestore_app_228: [type: 'app', id: '228', fileName: 'mcp-prerestore-app-228.groovy', version: 2, timestamp: 1L]
         ]
-        script.metaClass.downloadHubFile = { String name ->
-            name == 'mcp-backup-app-228.groovy' ? 'BACKUPSRC'.getBytes('UTF-8') : null
+        def files = ['backup.groovy': 'BACKUPSRC'.getBytes('UTF-8'),
+                     'mcp-prerestore-app-228.groovy': 'UNRELATED OLD UNDO'.getBytes('UTF-8')]
+        script.metaClass.downloadHubFile = { String name -> files.get(name) }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes ->
+            if (failure == 'upload') throw new IOException('File Manager unavailable')
+            if (failure != 'readback') files.put(name, bytes)
         }
-        def uploads = []
-        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
-        script.metaClass.hubInternalGet = { String path, Map params = null -> '{"source":"BACKUPSRC","version":7}' }
-        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+        def reads = 0
+        script.metaClass.hubInternalGet = { String path, Map params = null ->
+            reads++
+            if (reads == 1) {
+                if (failure == 'fetch') throw new IOException('temporary fetch failure')
+                if (failure == 'empty') return ''
+                if (failure == 'parse') return 'not JSON'
+                if (failure == 'missing source') return '{"version":7}'
+            }
+            return '{"source":"CURRENT SOURCE","version":7}'
+        }
+        def saved = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420, boolean isRetry = false ->
+            saved << new groovy.json.JsonSlurper().parseText(body).source
             [success: true, id: 228]
         }
 
@@ -1258,10 +1278,87 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def result = script.toolRestoreItemBackup([backupKey: 'app_228', confirm: true])
 
         then:
+        result.success == false
+        saved.isEmpty()
+        result.undoAvailable == false
+        result.error.contains('Nothing was restored')
+        !result.containsKey('preRestoreBackup')
+        !result.containsKey('preRestoreFile')
+        !result.containsKey('undoHint')
+
+        where:
+        failure << ['fetch', 'empty', 'parse', 'missing source', 'upload', 'readback']
+    }
+
+    @spock.lang.Unroll
+    def "restore retry advertises only its verified undo when #undoState"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [
+            app_228: [type: 'app', id: '228', fileName: 'backup.groovy', version: 5, timestamp: 1L],
+            prerestore_app_228: [type: 'app', id: '228', fileName: 'mcp-prerestore-app-228.groovy', version: 2, timestamp: 1L]
+        ]
+        def files = ['backup.groovy': 'BACKUPSRC'.getBytes('UTF-8')]
+        def liveSource = 'CURRENT SOURCE'
+        def uploads = []
+        def downloads = []
+        script.metaClass.downloadHubFile = { String name -> downloads << name; files.get(name) }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads << name; files.put(name, bytes) }
+        script.metaClass.hubInternalGet = { String path, Map params = null ->
+            groovy.json.JsonOutput.toJson([source: liveSource, version: 7])
+        }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420, boolean isRetry = false ->
+            liveSource = new groovy.json.JsonSlurper().parseText(body).source
+            [success: true, id: 228]
+        }
+
+        when:
+        def first = script.toolRestoreItemBackup([backupKey: 'app_228', confirm: true])
+
+        then:
+        first.success == true
+        first.undoAvailable == true
+        new String(files.get(first.preRestoreFile.toString()), 'UTF-8') == 'CURRENT SOURCE'
+
+        when:
+        def undoFile = first.preRestoreFile.toString()
+        if (undoState == 'file missing') files.remove(undoFile)
+        if (undoState == 'file changed') files.put(undoFile, 'OTHER UNDO'.getBytes('UTF-8'))
+        if (undoState == 'different backup key') {
+            script._publishItemBackup('app_alias', script._itemBackupManifest().get('app_228'))
+        }
+        if (undoState == 'different backup contents') {
+            files.put('backup.groovy', 'DIFFERENT SNAPSHOT'.getBytes('UTF-8'))
+            liveSource = 'DIFFERENT SNAPSHOT'
+        }
+        def result = script.toolRestoreItemBackup([
+            backupKey: undoState == 'different backup key' ? 'app_alias' : 'app_228', confirm: true])
+
+        then:
         result.success == true
-        uploads.isEmpty()
-        result.preRestoreBackup == 'prerestore_app_228'
-        result.preRestoreFile == 'mcp-prerestore-app-228-abc.groovy'
-        result.undoHint.contains('prerestore_app_228')
+        uploads == [first.preRestoreFile]
+        first.preRestoreFile ==~ /mcp-prerestore-app-228-[a-f0-9-]+\.groovy/
+        downloads.count(first.preRestoreFile) == (undoState in ['different backup key', 'different backup contents'] ? 1 : 2)
+        result.undoAvailable == expectedUndo
+        if (expectedUndo) {
+            assert result.preRestoreBackup == first.preRestoreBackup
+            assert result.preRestoreFile == first.preRestoreFile
+            assert result.undoHint
+            assert !result.warning
+        } else {
+            assert result.warning
+            assert !result.containsKey('preRestoreBackup')
+            assert !result.containsKey('preRestoreFile')
+            assert !result.containsKey('undoHint')
+        }
+
+        where:
+        undoState                    | expectedUndo
+        'unchanged'                  | true
+        'file missing'               | false
+        'file changed'               | false
+        'different backup key'       | false
+        'different backup contents'  | false
     }
 }

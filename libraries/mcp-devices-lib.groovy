@@ -33,7 +33,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (format == "context" && (!limit || limit <= 0)) limit = 50
     // Type/format validity for the state-filter args, BEFORE the scope='all' route below
     // (and called by the filter='virtual' route in the dispatch case): a malformed value
-    // must be a -32602 on every path, never silently carried into a specialized listing.
+    // must be a validation refusal on every path, never silently carried into a specialized listing.
     _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attributeNames, format)
     // scope='all' lists EVERY hub device (not just MCP-authorized), tagging each mcpAuthorized
     // true/false so a caller who can't control a device sees it must be added to the MCP list.
@@ -61,9 +61,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def childDevs = getChildDevices() ?: []
 
     // Remaining validation for the classic args, BEFORE the empty-inventory early return
-    // so a bad argument is a -32602 even on a hub with no authorized devices. Groovy
+    // so a bad argument is a validation refusal even on a hub with no authorized devices. Groovy
     // coercion would otherwise surface as MissingMethodException deep in the filter
-    // logic rather than a clear -32602 error. (The state-filter arg types were already
+    // logic rather than a clear validation error. (The state-filter arg types were already
     // validated above, before the scope='all' route.)
     if (labelFilter != null && !(labelFilter instanceof String)) {
         throw new IllegalArgumentException("labelFilter must be a string")
@@ -370,7 +370,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 
     // Validate field names against the documented whitelist. Unknown names would silently
     // produce empty device objects (a typo gives {id: '1'} instead of {id: '1', label: 'X'})
-    // -- catching it here gives the caller a recoverable -32602 instead of bad data.
+    // -- catching it here gives the caller a recoverable validation error instead of bad data.
     if (fieldSet) {
         def validFieldNames = ["id", "name", "label", "room", "disabled", "deviceNetworkId",
             "lastActivity", "parentDeviceId", "mcpManaged", "currentStates",
@@ -528,7 +528,7 @@ private String formatLastActivity(Date d) {
 
 // Type/format validity for the issue-#366 state-filter args, shared by toolListDevices
 // (before its scope='all' route) and the filter='virtual' route in the dispatch case --
-// every path must reject a malformed value with -32602 instead of silently ignoring it.
+// every path must reject a malformed value with a validation refusal instead of silently ignoring it.
 def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attributeNames, format) {
     if (roomFilter != null && !(roomFilter instanceof String)) {
         throw new IllegalArgumentException("roomFilter must be a string")
@@ -840,8 +840,8 @@ def _buildContextJson() {
     allDevices.each { d ->
         // A null key keeps unknown membership distinct even from a room named "Room unavailable".
         def r = d._nativeRoomUnavailable ? null : (d.roomName?.toString() ?: "No room")
-        if (!roomIndex.containsKey(r)) roomIndex[r] = []
-        roomIndex[r] << d.id.toString()
+        if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
+        roomIndex.get(r) << d.id.toString()
     }
     // The rooms index scales with the inventory too, so it gets its own cap (half the
     // budget) -- on an extreme fleet it could exceed the whole budget by itself, and no
@@ -1382,7 +1382,7 @@ private List _unavailableNativeDeviceCollections(Map fullJson, List required = [
     def values = [currentStates: fullJson?.device?.currentStates,
                   capabilities: fullJson?.device?.capabilities, commands: fullJson?.commands]
     return required.findAll { key ->
-        key == 'currentStates' ? !(values[key] instanceof Map) : !(values[key] instanceof List)
+        key == 'currentStates' ? !(values.get(key) instanceof Map) : !(values.get(key) instanceof List)
     }
 }
 
@@ -2853,7 +2853,8 @@ def toolPollUntilAttribute(args) {
     // (tens of ms each, sequential, from one app thread), so per-tick work scales with the
     // device count -- bound it to keep a blocking poll cheap. The tick sleep subtracts the
     // reads' latency down to a floor of half the interval (_pollSleepMs): fast reads keep the
-    // requested cadence, slow reads space ticks by the reads plus that floor.
+    // requested cadence, slow reads space ticks by the reads plus that floor. The floor is not
+    // a guarantee on the final tick: the end-of-window clamp still wins there (see _pollSleepMs).
     def MAX_POLL_DEVICES = 20
     def deviceIdList
     if (multiDevice) {
@@ -3250,6 +3251,9 @@ def toolPollUntilAttribute(args) {
 // FLOOR: reads slower than the interval must not turn the poll into back-to-back native reads
 // (a slow hub would then be sampled HARDER than a fast one), so the sleep never drops below half
 // the requested interval -- ticks are then spaced by the reads plus that half-interval.
+// WINDOW CLAMP: the final tick is the exception. Math.min(interval, remaining) can return LESS
+// than the floor when less than the floor remains in the poll window, because the window has
+// to win -- the floor bounds cadence between ticks, not how long the last sleep is.
 private Integer _pollSleepMs(pollIntervalMs, remainingMs, tickElapsedMs) {
     long requested = pollIntervalMs as Long
     long floor = (long) Math.ceil(requested / 2.0d)
@@ -5221,7 +5225,7 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
                     comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
                     stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger. Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger. Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
                 ],
                 required: ["attribute"]
             ]
@@ -5265,7 +5269,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator, as on hub_get_device_attribute. Default eq.", default: "eq"],
                         stableForMs: [type: "integer", description: "Debounce ms; match must hold this long before converging. Default 0, < timeoutMs.", default: 0, minimum: 0],
                         timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. BLOCKS a hub thread for the full timeout, so keep it tight.", default: 5000, minimum: 100, maximum: 30000],
-                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger. Target cadence: read latency is subtracted from the sleep down to a floor of half the interval.", default: 250, minimum: 50, maximum: 5000]
+                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger. Target cadence: read latency is subtracted from the sleep down to a floor of half the interval; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.", default: 250, minimum: 50, maximum: 5000]
                     ], required: ["attribute"]]
                 ]
 

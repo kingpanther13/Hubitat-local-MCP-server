@@ -49,7 +49,6 @@ def toolSearchTools(args) {
     // so the catalog and the search corpus cannot drift (this also closes the
     // pre-#113 gap where built-in-app-gated tools leaked into search).
     def searchHideByName = getHiddenToolNames()
-    def searchHideGwSubTools = [:].withDefault { [] as Set }
     // Filter corpus to only tools the current toggle state allows. Co-filter the cached
     // full-corpus tokens in the SAME pass so docTokens[k] stays aligned with visibleCorpus[k]
     // (docTokensAll[i] is the tokenization of corpus[i]; selecting both by the same surviving
@@ -59,10 +58,6 @@ def toolSearchTools(args) {
     def docTokens = []
     corpus.eachWithIndex { entry, i ->
         if (searchHideByName.contains(entry.name)) return
-        if (entry.gateway) {
-            def hiddenInGw = searchHideGwSubTools[entry.gateway]
-            if (hiddenInGw && hiddenInGw.contains(entry.name)) return
-        }
         visibleCorpus << entry
         docTokens << docTokensAll[i]
     }
@@ -245,11 +240,8 @@ private bm25Tokenize(String text) {
 
 // BM25 Okapi scoring
 private String _bm25Key(String token) {
-    // The ONLY way a corpus token becomes a map key in bm25Score. Every df/tf/query subscript goes
-    // through here so the namespacing cannot be dropped at one site and kept at another --
-    // tests/sandbox_lint.py checks that bm25Score's body has no bare df[...] / tf[...] subscript.
-    // The prefix exists because the platform's SandboxSubscriptGuard rejects a COMPUTED map key that
-    // collides with a reflection-ish property name, and one real corpus token ("fields") does.
+    // Keep document, term, and query keys in the same namespace. This prefix
+    // predates Map.get/put and preserves the existing token representation.
     return "t_${token}".toString()
 }
 
@@ -265,17 +257,13 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     def avgDl = docLengths.sum() / (double) n
     if (avgDl == 0) return new double[n] as List
 
-    // Document frequency: how many docs contain each token.
-    // Keys are namespaced because these maps are subscripted with a COMPUTED key --
-    // a corpus token -- and the platform's sandbox rejects a computed key that
-    // collides with a reflection-ish property name. One real token does collide:
-    // hub_list_devices' `fields` parameter joins the corpus text, so a raw-token
-    // key made every search throw SecurityException. The prefix cannot collide.
+    // Document frequency: how many docs contain each token. Preserve the token
+    // namespace while using Map methods to avoid sandbox property resolution.
     def df = [:]
     docTokens.each { tokens ->
         tokens.toSet().each { token ->
             def k = _bm25Key(token)
-            df[k] = (df[k] ?: 0) + 1
+            df.put(k, (df.get(k) ?: 0) + 1)
         }
     }
 
@@ -284,16 +272,16 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     docTokens.eachWithIndex { tokens, docIdx ->
         // Term frequency for this doc
         def tf = [:]
-        tokens.each { t -> def k = _bm25Key(t); tf[k] = (tf[k] ?: 0) + 1 }
+        tokens.each { t -> def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) }
 
         def dl = docLengths[docIdx]
         double score = 0.0
 
         queryTokens.each { rawQt ->
             def qt = _bm25Key(rawQt)
-            def termFreq = tf[qt] ?: 0
+            def termFreq = tf.get(qt) ?: 0
             if (termFreq > 0) {
-                def docFreq = df[qt] ?: 0
+                def docFreq = df.get(qt) ?: 0
                 def idf = Math.log((n - docFreq + 0.5) / (docFreq + 0.5) + 1.0)
                 def num = termFreq * (k1 + 1)
                 def den = termFreq + k1 * (1 - b + b * dl / avgDl)

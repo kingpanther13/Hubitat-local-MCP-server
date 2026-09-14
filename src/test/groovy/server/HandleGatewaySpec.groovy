@@ -7,7 +7,7 @@ import support.ToolSpecBase
  *
  * Covers catalog mode (no toolName), unknown-gateway and unknown-tool
  * errors, the effective rejection of gateway-as-tool, the Option D
- * required-param pre-check (throws -> -32602 with the full param list, the
+ * required-param pre-check (throws -> isError validation result with the full param list, the
  * SAME shape flat dispatch gives -- issue #319), valid dispatch delegating
  * to executeTool, and the defensive JSON-string parse for inner {@code args}
  * (some MCP clients, e.g. Sonnet subagents, serialize {@code args} as a
@@ -83,13 +83,13 @@ class HandleGatewaySpec extends ToolSpecBase {
         ex.message.contains('Available:')
     }
 
-    def "missing required param throws -32602 with the full param list (same shape as flat; #319)"() {
+    def "missing required param throws isError validation result with the full param list (same shape as flat; #319)"() {
         when:
         // hub_get_room requires `room`; omit it. The pre-check throws (not a soft return)
-        // so a missing-arg error has the SAME shape gateway and flat (both -> -32602).
+        // so a missing-arg error has the SAME shape gateway and flat (both -> isError validation result).
         script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
 
-        then: 'thrown IllegalArgumentException -> handleToolsCall maps it to -32602'
+        then: 'thrown IllegalArgumentException -> handleToolsCall maps it to isError validation result'
         def e = thrown(IllegalArgumentException)
         // Singular form (W-missingRequired-singular): a regression dropping the count-aware
         // ternary would emit "parameters" for 1 missing arg.
@@ -100,9 +100,9 @@ class HandleGatewaySpec extends ToolSpecBase {
         e.message.contains('All parameters:')
     }
 
-    def "missing-param error is the SAME SHAPE gateway and flat (both -32602; #319)"() {
+    def "missing-param error is the SAME SHAPE gateway and flat (both isError validation result; #319)"() {
         // The user-facing #319 fix: the same mistake yields the same error CATEGORY both
-        // ways. flat's handler validation throws (-> -32602); the gateway pre-check now
+        // ways. flat's handler validation throws (-> isError validation result); the gateway pre-check now
         // throws too (was a soft isError envelope). The gateway TEXT is additionally
         // richer (lists every param), never poorer -- no information is dropped.
         when: 'flat: executeTool by leaf name -> the handler throws its own message'
@@ -113,7 +113,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         def gwEx = null
         try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception ex) { gwEx = ex }
 
-        then: 'both throw IllegalArgumentException (same JSON-RPC -32602 category)'
+        then: 'both throw IllegalArgumentException (same JSON-RPC isError validation result category)'
         flatEx instanceof IllegalArgumentException
         gwEx instanceof IllegalArgumentException
 

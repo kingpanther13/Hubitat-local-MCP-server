@@ -1383,9 +1383,9 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     // outcome class. We cover one feature per distinct envelope:
     //   - success-immediate (success envelope with result body)
     //   - timeout (success envelope, success=false/timedOut=true)
-    //   - IAE validation -> -32602 (device not found)
-    //   - IAE validation -> -32602 (missing both expectedValue/expectedValues)
-    //   - IAE validation -> -32602 (unknown arg / typo hint)
+    //   - IAE validation -> isError validation result (device not found)
+    //   - IAE validation -> isError validation result (missing both expectedValue/expectedValues)
+    //   - IAE validation -> isError validation result (unknown arg / typo hint)
     //   - InterruptedException -> success envelope with interrupted=true
     //   - non-IAE RuntimeException -> isError success envelope (MCP spec)
     // ---------------------------------------------------------------------------
@@ -1458,7 +1458,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns -32602 when device is not found (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns isError validation result when device is not found (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         childDevicesList.clear()
@@ -1472,15 +1472,15 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('9999')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('9999')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns -32602 when neither expectedValue nor expectedValues provided (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns isError validation result when neither expectedValue nor expectedValues provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1499,15 +1499,15 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.toLowerCase().contains('expectedvalue')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.toLowerCase().contains('expectedvalue')
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "hub_get_device_attribute poll-mode via dispatch returns -32602 when unknown arg is passed (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns isError validation result when unknown arg is passed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1527,9 +1527,9 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         ])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('timeoutSeconds')
-        response.error.message.contains('timeoutMs')
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('timeoutSeconds')
+        mcpDriver.parseInner(response).error.contains('timeoutMs')
 
         where:
         useGateways << [true, false]
