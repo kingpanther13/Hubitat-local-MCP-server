@@ -1,0 +1,44 @@
+name: TMP fork-bundle check (throwaway, no hub)
+on:
+  push:
+    branches: [tmp/fork-bundle-check]
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint hub-e2e.yml
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -shellcheck= .github/workflows/hub-e2e.yml
+
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - name: Fork PR 426 -> publish shas/<sha>/
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REPO: ${{ github.repository }}
+          EVENT_NAME: workflow_dispatch
+          PR_INPUT: '426'
+        run: bash .github/scripts/publish_fork_bundle.sh
+      - name: Same-repo PR -> no-op
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REPO: ${{ github.repository }}
+          EVENT_NAME: workflow_dispatch
+        run: |
+          PR_INPUT=$(gh pr list -R "$BASE_REPO" --state merged -L 30 --json number,isCrossRepository --jq '[.[]|select(.isCrossRepository|not)][0].number')
+          export PR_INPUT
+          out=$(bash .github/scripts/publish_fork_bundle.sh)
+          echo "$out"
+          echo "$out" | grep -q "Same-repo PR" || { echo "::error::same-repo PR did not no-op"; exit 1; }
