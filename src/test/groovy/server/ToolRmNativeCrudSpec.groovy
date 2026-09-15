@@ -10486,6 +10486,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         rereads == 0
         !(result.opResult?.containsKey("navRetried"))
         result.after?.inputs == []
+        result.success == false
+        result.partial == true
+        result.healthUnverified == true
+        result.repairHints?.any { it.contains("do not re-run") }
     }
 
     def "a non-walker navigate (the commit-only callers) never re-reads an empty render"() {
@@ -35034,6 +35038,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         persistent.steps[0].error?.contains("multiple=true flag flipped")
         persistent.steps[0].error?.contains("Automatic recovery was already attempted")
         persistent.steps[0].error?.contains("do not resend it")
+        !persistent.steps[0].error?.contains("Caller should re-POST")
         persistent.repairHints?.any { it.contains("Do not re-run that step") }
         !persistent.repairHints?.any { it.contains("re-run the drive from that step") }
         posts.count { p -> p.body?.keySet()?.any { it.toString().contains("tDev1") } } == 2
@@ -35046,6 +35051,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsResult.success == false
         settingsResult.error?.contains("multiple=true flag flipped")
         settingsResult.error?.contains("Automatic recovery was already attempted")
+        !settingsResult.error?.contains("Caller should re-POST")
         settingsResult.backup?.backupKey != null
         settingsResult.restoreHint?.contains(settingsResult.backup.backupKey)
     }
@@ -35079,6 +35085,54 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.settingsNotLanded[0].reason == "silent_rejection"
         result.partial == true
         !clicks.contains("updateRule")
+    }
+
+    def "walkStep standalone #operation with an exhausted health budget reports mutation verification honestly"() {
+        given:
+        enableWrite()
+        def healthCalls = 0
+        def value = "before"
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+            healthCalls++
+            [ok: false, structuralIssues: ["missing End-Repeat"]]
+        }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionDone", type: "button"], [name: "probe", type: "text"]], null, [probe: value])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "probe", type: "text", value: value]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << body
+            if (body.containsKey("settings[probe]")) value = body["settings[probe]"]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true,
+            walkStep: [page: "doActPage", operation: operation, click: [name: "actionDone"], write: [probe: "after"]]])
+
+        then:
+        result.success == !mutating
+        (result.healthUnverified == true) == mutating
+        (result.partial == true) == mutating
+        result.health.skipped == true
+        result.status != "in_progress"
+        healthCalls == 0
+        !mutating || result.error?.contains("unverified")
+        !mutating || result.repairHints?.any { it.contains("hub_get_rule_health") && it.contains("do not re-run") }
+        posts.size() == expectedPosts
+        operation != "write" || (result.valueEcho?.match == true && value == "after")
+
+        where:
+        operation    | mutating | expectedPosts
+        "click"      | true     | 1
+        "write"      | true     | 1
+        "done"       | true     | 3
+        "introspect" | false    | 0
     }
 
     def "walkStep drive: a finished drive whose final health check the time budget shed reports itself unverified"() {
@@ -41655,9 +41709,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (device-relative RHS lands) but never exposes state_1 (the offset slot), so
         // the requested offset degrades with a sentinel and the inner addRE returns
         // partial:true. Wrap it in patches: [[addRequiredExpression: {...}]] so the same
-        // partial:true propagates to result.patches[0] and the new clause surfaces it on
-        // the outer envelope.
-        // Both-ways pending (orchestrator).
+        // partial:true propagates to result.patches[0] and the outer stop envelope.
         given:
         enableWrite()
         def updateRuleClicked = false

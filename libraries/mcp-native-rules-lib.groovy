@@ -165,7 +165,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     walkStep: [
                         type: "object",
-                        description: """Raw wizard walker — LAST RESORT, one call per wizard step (token-heavy): use ONLY when the structured shortcuts can't represent the change (Periodic sub-pages, conditional-trigger binding, later-firmware features). operation='drive' runs a whole steps=[...] loop in ONE call (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section='set_rule_reference_walkstep')."""
+                        description: """Raw wizard walker — LAST RESORT, one call per wizard step (token-heavy): use ONLY when the structured shortcuts can't represent the change (Periodic sub-pages, conditional-trigger binding, later-firmware features). operation='drive' runs a whole steps=[...] loop in ONE call (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken; a standalone mutation with budget-skipped health returns success:false, partial:true, healthUnverified:true -- verify health before continuing, do not replay the committed step). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section='set_rule_reference_walkstep')."""
                     ],
                     addAction: [
                         type: "object",
@@ -4392,7 +4392,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     def entry = reverse.get(actSubType)
     def actType = committedSettings["actType.${actionIdx}".toString()]?.toString()
     if (actType != "rulesActs" || entry == null) {
-        throw new IllegalArgumentException("modifyAction currently supports only rule-targeting actions (runRule, cancelTimers, pauseRule, privateBoolean). Action ${actionIdx} is actType='${actType}' actSubType='${actSubType}'. Rebuild other action shapes with removeAction + addAction (one patches call keeps it atomic). RM is not touched.")
+        throw new IllegalArgumentException("modifyAction currently supports only rule-targeting actions (runRule, cancelTimers, pauseRule, privateBoolean). Action ${actionIdx} is actType='${actType}' actSubType='${actSubType}'. Rebuild other action shapes with removeAction + addAction in an ordered patches call; earlier edits remain if a later edit fails. RM is not touched.")
     }
     def allowedMods = ["ruleIds"]
     if (actSubType == "getPauseResumeRules") allowedMods << "action"
@@ -8841,12 +8841,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
         }
     }
 
-    // Trailing health probe: advisory freight on an ALREADY-COMMITTED op. Shed it
-    // when the transport time budget is spent -- returning under the ceiling beats
-    // carrying diagnostics into a severed response (the 504 whose recovery then
-    // replays a needlessly failed envelope). And an UNREADABLE probe (a transient
-    // fetch failure -- no evidence of breakage either way) must never fail the
-    // committed work; only positive evidence may.
+    // Shed the trailing probe after the transport budget is spent, then report standalone
+    // mutations as unverified below. An unreadable probe retains its separate advisory result.
     // Inside a drive, defer the probe for every mutating step to the drive's final health
     // check. The probe renders other rule pages, which resets RM's in-flight wizard (doActPage and STPage
     // condition builders alike); gating on the step's operation, not its page, also covers `done`.
@@ -8896,6 +8892,16 @@ Map _rmWalkStep(Integer appId, Map spec) {
     if (health.unreadable == true) {
         result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); the operation itself committed. Verify via hub_get_rule_health(${appId}).".toString()]
     }
+    // A standalone mutation has no drive-level check waiting to verify its committed work.
+    // Preserve explicit page/echo failures; only replace an otherwise-clean, unverified success.
+    if (walkCache == null && operation in ["write", "click", "navigate", "done"] &&
+            health.skipped == true && result.success == true) {
+        result.success = false
+        result.partial = true
+        result.healthUnverified = true
+        result.error = "walkStep ${operation} committed but its health check was skipped because the time budget ran out, so the rule's state is unverified".toString()
+        result.repairHints = (result.repairHints ?: []) + ["The operation committed, so do not re-run it. Check hub_get_rule_health(appId=${appId}) and address any reported issue before continuing or treating the rule as complete.".toString()]
+    }
     return result
 }
 
@@ -8918,7 +8924,7 @@ private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map s
         if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
         _rmPostSettings(appId, body, cache)
         try {
-            _rmVerifyMultipleFlags(appId, schema, touched)
+            _rmVerifyMultipleFlags(appId, schema, touched, false)
         } catch (IllegalStateException persistent) {
             // The shared verifier's advice is to re-POST the group, which this helper has just done.
             throw new IllegalStateException("${persistent.message} Automatic recovery was already attempted: one full-group re-POST with page context on page '${pageName}' did not restore the flag. The write may already be committed, so do not resend it; check hub_get_rule_health(appId=${appId}) and restore the pre-write backup if the rule is damaged.".toString())
@@ -13680,7 +13686,8 @@ private Map _bulkPauseResult(Integer appId, Map backup, List triggerResults, Lis
 // bulk addTriggers/addActions sub-op) mid-op, so a single patch op carrying a large inner list
 // can no longer exhaust the time budget un-paused. As with the bulk pause, a failed or partial op
 // or inner item stops the batch before any checkpoint, so a pause only ever hands back work after a
-// clean prefix; the success/partial roll-up is a defensive guard. patchesRemaining is the
+// clean prefix. A clean mid-op checkpoint still marks its unfinished patch partial:true;
+// this is resumable work, not a failed item. patchesRemaining is the
 // un-processed work the caller re-issues -- for a mid-op pause the caller prepends the current op
 // rewritten to only its un-processed inner items.
 private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, List patchesRemaining) {
@@ -13864,7 +13871,7 @@ def _applyNativeAppEdit(args) {
     // group count alone would miss addTrigger+addTriggers (and addAction+addActions).
     if ((editOpGroups.size() >= 2 && !allowedBulkPair) || triggerOpNames.size() > 1 || actionOpNames.size() > 1) {
         def opNames = editOpGroups.collectMany { it }
-        throw new IllegalArgumentException("hub_set_rule / hub_set_native_app received multiple operations in one call (${opNames.join(', ')}). Multi-op calls are refused: depending on the combination the extras would either be silently dropped or run in a fixed internal order you did not choose. Use patches:[...] for an ordered atomic edit, or issue one call per operation. See hub_get_tool_guide(section='set_rule_reference').")
+        throw new IllegalArgumentException("hub_set_rule / hub_set_native_app received multiple operations in one call (${opNames.join(', ')}). Multi-op calls are refused: depending on the combination the extras would either be silently dropped or run in a fixed internal order you did not choose. Use patches:[...] for ordered edits (earlier writes remain if a later edit fails), or issue one call per operation. See hub_get_tool_guide(section='set_rule_reference').")
     }
 
     if (settingsMap) {
@@ -15089,14 +15096,17 @@ def _applyNativeAppEdit(args) {
                     // requiredExpressionReplaced:false (the committed flag is now untrue -- the RE
                     // was rolled back) so the entry does not carry both replaced:true AND
                     // restored:true, and the restore note replaces the stale "deferred" note.
+                    def restored = restoreOutcome.requiredExpressionRestored == true
                     patchResults[idx] = (patchResults[idx] as Map) + restoreOutcome + [
                         success: false, partial: true, requiredExpressionReplaced: false,
-                        note: "Required Expression replace ROLLED BACK in batch: ${why}; the original was restored."]
+                        note: (restored ?
+                            "Required Expression replace ROLLED BACK in batch: ${why}; the original was restored and confirmed." :
+                            "Required Expression replace rollback was attempted in batch: ${why}; the original could not be confirmed restored. See error for the recovery outcome.").toString()]
                     anyRestored = true
                     // The rollback lives in patches[idx]; name it at the top level too so callers see the recovery outcome.
-                    deferredRestoreHints << (restoreOutcome.requiredExpressionRestored == true ?
+                    deferredRestoreHints << (restored ?
                         "patches[${idx}] replaceRequiredExpression was rolled back because ${why}; the original Required Expression was restored and confirmed. See patches[${idx}] for details." :
-                        "patches[${idx}] replaceRequiredExpression was rolled back because ${why}, but the original Required Expression could not be confirmed restored: ${restoreOutcome.error ?: 'see patches[' + idx + ']'}").toString()
+                        "patches[${idx}] replaceRequiredExpression rollback was attempted because ${why}, but the original Required Expression could not be confirmed restored: ${restoreOutcome.error ?: 'see patches[' + idx + ']'}").toString()
                 }
             }
             // Recompute the success rollup after any deferred-restore reclassification above.
