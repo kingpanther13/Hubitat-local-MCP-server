@@ -3020,6 +3020,7 @@ DEVICE_GATE_EXEMPT = {
     "toolDeleteVirtualDevice": "MCP-child ownership scoped",
     "toolGetHubLogs": "hub-wide diagnostics by design; deviceId is a log filter and the identity probe returns a boolean only",
     "toolListHubDrivers": "/device/drivers is the driver catalog, not a device",
+    "toolUpdateHubMesh": "the /device/ Hub Mesh endpoints (setHubMeshFullRefreshInterval, followModes, setHubMeshToken) configure HUB-WIDE mesh settings; no caller-supplied device id is involved",
 }
 
 

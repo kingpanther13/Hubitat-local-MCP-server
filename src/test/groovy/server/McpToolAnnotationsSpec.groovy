@@ -77,7 +77,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         name << [
             'hub_list_devices', 'hub_get_device', 'hub_get_device_attribute',
             'hub_get_custom_rule', 'hub_test_custom_rule',
-            'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status',
+            'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status', 'hub_get_hub_mesh',
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
             'hub_report_issue',
@@ -122,7 +122,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_set_variable', 'hub_create_variable', 'hub_delete_variable',
             'hub_create_connector', 'hub_delete_connector',
             'hub_set_hsm', 'hub_set_log_level',
-            'hub_set_system_settings',
+            'hub_set_system_settings', 'hub_update_hub_mesh',
             'hub_update_mcp_settings',
             'hub_delete_captured_state',
             'hub_delete_debug_logs',
@@ -321,7 +321,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         def expectedIdempotent = [
             'hub_update_custom_rule', 'hub_delete_custom_rule',
-            'hub_set_hsm', 'hub_set_mode_manager',
+            'hub_set_hsm', 'hub_set_mode_manager', 'hub_update_hub_mesh',
             'hub_set_variable', 'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
             'hub_update_mcp_settings', 'hub_set_log_level', 'hub_delete_debug_logs',
             'hub_delete_captured_state',
@@ -490,7 +490,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_devices', 'hub_get_device', 'hub_get_device_attribute', 'hub_list_device_events',
             'hub_get_compatible_devices',
             'hub_get_custom_rule', 'hub_test_custom_rule',
-            'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status',
+            'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status', 'hub_get_hub_mesh',
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
             'hub_report_issue',
@@ -520,7 +520,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_connector', 'hub_delete_connector',
             'hub_update_mcp_settings',
             'hub_set_hsm',
-            'hub_set_system_settings',
+            'hub_set_system_settings', 'hub_update_hub_mesh',
             'hub_delete_captured_state',
             'hub_delete_debug_logs', 'hub_set_log_level',
             'hub_create_backup',
@@ -567,7 +567,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 116
+        names.size() == 118
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
