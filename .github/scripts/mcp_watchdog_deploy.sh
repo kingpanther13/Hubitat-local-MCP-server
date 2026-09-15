@@ -322,10 +322,10 @@ else
       # No matching artifact: HARD error with the remedy. The hub can only install a bundle by
       # FETCHING a URL (the HPM way); without an artifact there is no URL anywhere that serves
       # this SHA's libraries (the zip committed at the SHA is stale by design now). Same-repo
-      # branches get an artifact automatically on push (publish-bundle-artifact.yml); a fork PR
-      # that changes libraries needs the branch pushed to the base repo by a maintainer.
+      # branches get an artifact automatically on push (publish-bundle-artifact.yml); fork PRs get
+      # one from hub-e2e.yml's fork-bundle job (publish_fork_bundle.sh) before this job starts.
       if [ -z "$BUNDLE_URL" ]; then
-        echo "::error::no bundle-artifacts zip for SHA ${PR_HEAD_SHA_RESOLVED} (looked at ${ART_URL}) and the PR's libraries differ from main -- there is no URL serving this PR's bundle. Same-repo branches publish one automatically on push (publish-bundle-artifact.yml; re-run if this run raced the publish). For a fork PR, push the branch to the base repo."
+        echo "::error::no bundle-artifacts zip for SHA ${PR_HEAD_SHA_RESOLVED} (looked at ${ART_URL}) and the PR's libraries differ from main -- there is no URL serving this PR's bundle. Same-repo branches publish one automatically on push (publish-bundle-artifact.yml; re-run if this run raced the publish). Fork PRs get one from the fork-bundle job in this workflow run -- check its log."
         exit 1
       fi
     fi
