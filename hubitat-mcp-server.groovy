@@ -4515,21 +4515,23 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_devices: [
-            description: "Read-only device inspection: list devices with current states; inspect one device in summary, configuration, or sectioned details mode; read or block-poll an attribute; read device/location event history; and search Hubitat's compatible-device catalog. All operations are read-only; device commands and updates live in hub_manage_devices.",
-            tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices"],
+            description: "Read-only device inspection: list devices with current states; inspect one device in summary, configuration, or sectioned details mode; read or block-poll an attribute; read device/location event history; search Hubitat's compatible-device catalog; and read Hub Mesh (hub-to-hub device/variable sharing between Hubitat hubs on the LAN). All operations are read-only; device commands, updates, and Hub Mesh writes live in hub_manage_devices.",
+            tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices", "hub_get_hub_mesh"],
             summaries: [
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?",
-                hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?"
+                hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?",
+                hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
             ],
             searchHints: [
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch",
-                hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan"
+                hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan",
+                hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub"
             ]
         ],
         hub_read_rooms: [
@@ -4571,8 +4573,8 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_devices: [
-            description: "Control and inspect devices: send commands; inspect configuration before changing identity, preferences, native properties, integration assignments, or driver; create a device from a driver type; and swap/replace a device across all referencing apps. Device reads are also in hub_read_devices.",
-            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
+            description: "Control and inspect devices: send commands; inspect configuration before changing identity, preferences, native properties, integration assignments, or driver; create a device from a driver type; and swap/replace a device across all referencing apps; plus Hub Mesh read+write (hub-to-hub device/variable sharing between Hubitat hubs on the LAN — enable/disable, sync interval, follow a peer's modes, peer mesh token). Device and Hub Mesh reads are also in hub_read_devices.",
+            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_hub_mesh", "hub_update_hub_mesh"],
             summaries: [
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
@@ -4582,7 +4584,9 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?"
+                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?",
+                hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
+                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
@@ -4593,7 +4597,9 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch"
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch",
+                hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub",
+                hub_update_hub_mesh: "enable disable hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval full refresh linked device hub to hub"
             ]
         ],
         hub_manage_rule_machine: [
@@ -5590,6 +5596,8 @@ def executeTool(toolName, args) {
         case "hub_get_hsm_status": return toolGetHsmStatus()
         case "hub_set_hsm": return toolSetHsm(args.armCommand)
         case "hub_set_system_settings": return toolSetSystemSettings(args)
+        case "hub_get_hub_mesh": return toolGetHubMesh(args)
+        case "hub_update_hub_mesh": return toolUpdateHubMesh(args)
 
         // Captured State Management
         case "hub_list_captured_states": return toolListCapturedStates(args)
@@ -9567,6 +9575,30 @@ For replace/add every id is validated against the full hub device list (discover
 
 **Schema refresh / reconnect.** Changing an `enable*` toggle or `useGateways` reshapes `tools/list`; changing `selectedDevices` changes which devices are visible. So MCP clients may need to reconnect to refresh cached schemas / device visibility.
 
+### hub_get_hub_mesh
+
+Reads `/hub2/hubMeshJson` — Hub Mesh is Hubitat's hub-to-hub DEVICE/VARIABLE sharing between hubs on the same LAN, NOT the Z-Wave/Zigbee radio mesh (that is `hub_get_radio_details`). Fields returned:
+
+- `hubMeshEnabled` (boolean; null when the firmware did not report it), `fullRefreshInterval` (seconds: 0 = never, 120, 300, 3600).
+- `peers` — the auto-discovered peer hubs, as the hub reports them (`name`, `ipAddress`, `hubId`, plus `warning` when the hub flags one, e.g. a missing mesh token).
+- `modeHubId` — the peer whose location modes this hub follows; `'none'` = this hub uses its own local modes. Round-trips straight into `hub_update_hub_mesh(mode_hub_id)`.
+- `sharedDevices` (this hub's devices shared INTO the mesh: id, name, childCount), `localLinkedDevices` (remote devices linked ONTO this hub: id, name, childCount, appsUsing), `availableLinkedDevices` (remote shared devices not yet linked here: hubId, hubName, deviceId, deviceDisplayName), and the hub-variable analogues `sharedHubVariables` / `localLinkedHubVariables` / `availableLinkedHubVariables`.
+- `privateDeviceCount` / `localHubVariableCount` — COUNTS only: the unshared-device list can be hundreds of entries and local variables duplicate `hub_list_variables`; read the full lists there.
+- `hubMeshToken` — this hub's own mesh auth token, returned ONLY with `include_token: true` (it is a credential, needed by peers when this hub has UI login security).
+
+On firmware without Hub Mesh the call returns the structured `success:false` error instead of throwing.
+
+### hub_update_hub_mesh
+
+PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, validation fires before any hub call, and each applied field is echoed in `applied` (a mid-way leg failure returns `success:false` with `applied` carrying what already committed). Legs, in apply order:
+
+- `enabled` → `/hub/advanced/enableHubMesh|disableHubMesh`. ⚠️ Takes effect only after a hub REBOOT (`hub_reboot`); the tool never reboots on its own.
+- `full_refresh_interval` → `/device/setHubMeshFullRefreshInterval/<s>`; only 0 (never), 120, 300, or 3600 — the values the hub's own picker offers.
+- `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
+- `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
+
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool.
+
 ### hub_update_package
 
 Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response, #237). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
@@ -10752,7 +10784,8 @@ def getToolGuideSubSections() {
             hub_admin_write_code: ["hub_update_app", "hub_create_app", "hub_update_package"],
             hub_admin_write_system: ["hub_get_info", "hub_list_modes", "hub_manage_mode",
                                      "hub_set_mode_manager", "hub_get_hsm_status",
-                                     "hub_set_system_settings", "hub_update_mcp_settings"]
+                                     "hub_set_system_settings", "hub_update_mcp_settings",
+                                     "hub_get_hub_mesh", "hub_update_hub_mesh"]
         ],
         performance: [
             performance_overview: [],

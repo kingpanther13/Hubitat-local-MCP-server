@@ -885,7 +885,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
 
 Gated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].
 
-A real deploy is accepted quickly with `status: "in_progress"`, then runs in Hubitat's background scheduler so neither the cloud relay nor the MCP client's request timeout has to stay open for the minutes-long repair. Do NOT submit it again: a concurrent second deploy is refused while one is in flight.[[FLAT_TRIM]] Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record's `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]
+A real deploy is accepted quickly with `status: "in_progress"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] It runs in Hubitat's background scheduler so neither the cloud relay nor the MCP client's request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record's `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
