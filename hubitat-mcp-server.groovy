@@ -9117,7 +9117,7 @@ private Map _rmLiveSettingsFromStatus(Map status) {
  * Throws IllegalStateException (sandbox-friendly alias for the divergence
  * condition) with a specific message listing the poisoned setting names.
  */
-private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touchedNames) {
+private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touchedNames, boolean includeRecoveryAdvice = true) {
     def status = _rmFetchStatusJson(appId)
     def live = (status?.appSettings ?: []).collectEntries { s ->
         [(s?.name?.toString()): s]
@@ -9136,8 +9136,8 @@ private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touc
         def settingWord = (poisoned.size() == 1) ? "setting" : "settings"
         throw new IllegalStateException(
             "MarshalFlagDivergenceException: multiple=true flag flipped to false on ${settingWord} ${poisoned} " +
-            "for app ${appId}. This corrupts RM's device-list rendering. Caller should re-POST with the full " +
-            "3-field group (settings[name], name.type, name.multiple=true) to recover.")
+            "for app ${appId}. This corrupts RM's device-list rendering." +
+            (includeRecoveryAdvice ? " Caller should re-POST with the full 3-field group (settings[name], name.type, name.multiple=true) to recover." : ""))
     }
 }
 
@@ -10445,6 +10445,8 @@ hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'click', click:{name:'hasAll'}},
   {page:'selectTriggers', operation:'done'}]})
 ```
+
+A standalone mutating `walkStep` (`write`, `click`, `navigate`, or `done`) whose time budget skips the health probe also returns `success:false`, `partial:true`, and `healthUnverified:true` when the operation otherwise succeeded. This is a terminal request with committed work, not a checkpoint to replay: call `hub_get_rule_health(appId=...)` and address any issue before continuing or treating the rule as complete. Read-only `introspect` and the deliberately deferred per-step health inside an unfinished drive do not acquire that failure flag. Modern detached writes discard the request clock and check health normally; the budget case primarily affects legacy requests. An unreadable probe remains separately identified by `health.unreadable` and its verification hint.
 
 ### Raw `settings`/`button` mode (manual wizard flow)
 

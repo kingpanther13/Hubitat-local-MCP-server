@@ -1275,6 +1275,29 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         result.repairHints?.any { it.contains("patches[0] replaceRequiredExpression was rolled back") && it.contains("restored and confirmed") }
     }
 
+    def "a failed deferred restore never claims the original Required Expression was restored"() {
+        given:
+        def phase = [0]
+        def stSeq = [0]
+        def restored = [false]
+        registerSuccessWalkPages(phase, stSeq, null, null, restored)
+        cancelStPhaseMachine(phase, { Map body -> throw new RuntimeException("updateRule rejected") })
+        script.metaClass.downloadHubFile = { String name -> throw new RuntimeException("restore unavailable") }
+
+        when:
+        def result = script.toolSetRule([appId: 100,
+            patches: [[replaceRequiredExpression: singleSwitchSpec()]], confirm: true])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.patches[0].requiredExpressionRestored == false
+        !result.patches[0].note.contains("the original was restored")
+        result.patches[0].note.contains("could not be confirmed")
+        result.repairHints.any { it.contains("restore unavailable") && it.contains("rollback was attempted") }
+        !result.repairHints.any { it.contains("was rolled back") }
+    }
+
     def "BUG-8-batch: a MULTI-op batch with an UNCHANGED pre-existing **Broken Condition** does NOT restore the replace"() {
         given:
         // Companion no-restore guard, MULTI-op. The SAME pre-existing **Broken Condition** (one

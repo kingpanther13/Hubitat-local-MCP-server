@@ -14733,6 +14733,30 @@ class TestRunner:
             page = self._rule_page_text(app_id)
             assert kept in page and skipped not in page, \
                 f"the legacy stop must keep the clean prefix and never write the tail: {page}"
+
+            # Exercise the budget boundary without changing hub-wide timeout settings or adding
+            # another rule. The gateway preserves the supplied leaf clock for legacy calls;
+            # the modern detached worker removes it and checks health normally.
+            done_args = {"appId": app_id, "confirm": True, "__reqT0": 1,
+                         "walkStep": {"page": "selectActions", "operation": "done"}}
+            unverified = legacy.call_tool("hub_manage_rule_machine",
+                                         {"tool": "hub_set_rule", "args": done_args})
+            assert unverified.get("success") is False and unverified.get("partial") is True \
+                and unverified.get("healthUnverified") is True \
+                and (unverified.get("health") or {}).get("skipped") is True, \
+                f"a committed standalone legacy Done with skipped health must report unverified: {unverified}"
+            assert unverified.get("status") != "in_progress" \
+                and "unverified" in str(unverified.get("error") or "") \
+                and any("do not re-run" in str(hint) for hint in unverified.get("repairHints") or []), \
+                f"the result must direct verification, never replay a committed step: {unverified}"
+            checked = self.client.call_tool("hub_manage_rule_machine",
+                                            {"tool": "hub_set_rule", "args": done_args})
+            assert checked.get("success") is True and checked.get("healthUnverified") is not True \
+                and (checked.get("health") or {}).get("ok") is True \
+                and (checked.get("health") or {}).get("skipped") is not True, \
+                f"modern Done must discard the stale clock and verify the committed rule: {checked}"
+            self._last_write_health = None
+            self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
 
