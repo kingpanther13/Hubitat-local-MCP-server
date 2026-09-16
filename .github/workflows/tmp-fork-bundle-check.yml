@@ -15,6 +15,23 @@ jobs:
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -shellcheck= -ignore 'unexpected key "queue"' .github/workflows/hub-e2e.yml
 
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - name: Dry-run the fork scan against PR 426
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REPO: ${{ github.repository }}
+          PR_NUMBER: '426'
+          SCAN_DRY_RUN: '1'
+        run: python .github/scripts/fork_pr_scan.py
+
   publish:
     runs-on: ubuntu-latest
     steps:
