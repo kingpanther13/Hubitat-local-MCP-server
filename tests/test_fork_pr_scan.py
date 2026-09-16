@@ -35,9 +35,26 @@ def test_reports_network_and_env_reads_in_executed_paths():
         _file(".github/scripts/mcp_watchdog_deploy.sh", '@@ -1,0 +9,1 @@\n+  curl -s "$WATCHDOG_URL" >/dev/null\n'),
     ])
     assert not blocking
-    assert "tests/e2e_test.py` | 5 |" in body
-    assert ".github/scripts/mcp_watchdog_deploy.sh` | 9 |" in body
-    assert "network" in body and "env read" in body
+    # One line doing both must carry BOTH kinds -- reporting only the first hides half of it.
+    assert "tests/e2e_test.py` | 5 | env read + network |" in body
+    assert ".github/scripts/mcp_watchdog_deploy.sh` | 9 | env read + network |" in body
+
+
+def test_naming_a_library_in_an_except_clause_is_not_a_network_call():
+    body, _ = scan.build_report([
+        _file("tests/e2e_test.py", "@@ -1,0 +7,1 @@\n+        except (McpError, requests.HTTPError) as exc:\n"),
+    ])
+    assert "No network calls, environment reads, or dependency changes" in body, (
+        "an exception clause that merely names requests is noise; the list has to stay worth reading"
+    )
+
+
+def test_real_request_calls_and_imports_are_still_reported():
+    body, _ = scan.build_report([
+        _file("tests/e2e_test.py", '@@ -1,0 +3,2 @@\n+import socket\n+    httpx.post(url, json=payload)\n'),
+    ])
+    assert "| 3 | network |" in body
+    assert "| 4 | network |" in body
 
 
 def test_ignores_paths_the_e2e_job_does_not_execute():

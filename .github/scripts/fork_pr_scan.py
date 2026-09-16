@@ -38,7 +38,11 @@ WATCHED = (".github/scripts/", "tests/")
 PATTERNS: list[tuple[str, str]] = [
     ("network", r"\b(curl|wget|nc|ncat|socat|ssh|scp)\b"),
     ("network", r"https?://"),
-    ("network", r"\b(requests|httpx|urllib|urllib2|urllib3|http\.client|socket|aiohttp)\b"),
+    # Call-ish use only: naming a library in an `except requests.HTTPError` is not a network call,
+    # and that noise is what makes a reviewer stop reading the list.
+    ("network", r"\b(requests|httpx|session)\.(get|post|put|patch|delete|head|request|Session)\b"),
+    ("network", r"\b(urllib|urllib2|urllib3|http\.client|socket|aiohttp|ftplib|smtplib|telnetlib)\."),
+    ("network", r"^\s*(import|from)\s+(requests|httpx|urllib|socket|aiohttp|ftplib|smtplib)\b"),
     ("network", r"\bwebhook\b"),
     ("env read", r"\$\{?(MCP_URL|WATCHDOG_URL|GH_TOKEN|GITHUB_TOKEN|HUBITAT_[A-Z_]+)\b"),
     ("env read", r"\bos\.(environ|getenv)\b"),
@@ -95,10 +99,11 @@ def build_report(files: list[dict]) -> tuple[str, bool]:
             stripped = text.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-            for label, rx in COMPILED:
-                if rx.search(text):
-                    findings.append((path, lineno, label, stripped[:200]))
-                    break
+            # ALL matching kinds, not the first: an exfiltration line reads the environment AND
+            # calls the network, and a reviewer needs to see both against that one line.
+            kinds = sorted({label for label, rx in COMPILED if rx.search(text)})
+            if kinds:
+                findings.append((path, lineno, " + ".join(kinds), stripped[:200]))
 
     lines = [MARKER, "## Fork PR pre-approval scan", ""]
     if not scanned:
