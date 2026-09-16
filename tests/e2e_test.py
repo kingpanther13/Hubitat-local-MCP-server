@@ -11735,6 +11735,71 @@ class TestRunner:
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
 
     @test("system_tools")
+    def test_hub_mesh_read(self) -> None:
+        # Hub Mesh is Hubitat's hub-to-hub device/variable sharing between hubs on the same LAN --
+        # NOT the Z-Wave/Zigbee radio mesh (that is hub_get_radio_details). READ-ONLY coverage: the
+        # e2e hub is shared CI infrastructure, so nothing in this file ever enables/disables mesh,
+        # retargets mode-following, or stores a peer token (see test_hub_mesh_update_validation).
+        res = self.client.call_tool("hub_get_hub_mesh")
+        assert isinstance(res, dict), f"hub_get_hub_mesh returned {type(res).__name__}"
+        assert isinstance(res.get("success"), bool), \
+            f"hub_get_hub_mesh did not return a boolean success: {sorted(res)}"
+
+        if not res["success"]:
+            # Firmware that predates Hub Mesh (or an unreachable endpoint) must degrade to the
+            # structured runtime-error contract, never a bare failure.
+            assert res.get("error"), f"success=false without an error: {sorted(res)}"
+            assert res.get("note"), f"success=false without an actionable note: {sorted(res)}"
+            print("    [E2E-GAP] this hub did not serve /hub2/hubMeshJson -- only the structured "
+                  f"success:false contract was exercised: {res.get('error')}")
+            return
+
+        for k in ("hubMeshEnabled", "fullRefreshInterval", "modeHubId", "peers",
+                  "privateDeviceCount", "localHubVariableCount", "note"):
+            assert k in res, f"hub_get_hub_mesh missing '{k}': {sorted(res)}"
+        for k in ("peers", "sharedDevices", "localLinkedDevices", "availableLinkedDevices",
+                  "sharedHubVariables", "localLinkedHubVariables", "availableLinkedHubVariables"):
+            assert isinstance(res.get(k), list), f"{k} is not a list: {res.get(k)!r}"
+        assert isinstance(res["modeHubId"], str), f"modeHubId is not a string: {res['modeHubId']!r}"
+
+        # The unshared-device set and the local hub variables come back as COUNTS only -- the full
+        # lists live in hub_list_devices / hub_list_variables and would blow the response budget.
+        assert isinstance(res["privateDeviceCount"], int), \
+            f"privateDeviceCount is not an int: {res['privateDeviceCount']!r}"
+        assert isinstance(res["localHubVariableCount"], int), \
+            f"localHubVariableCount is not an int: {res['localHubVariableCount']!r}"
+        assert "privateDevices" not in res, "privateDevices must be a count only, not the full list"
+        assert "localHubVariables" not in res, "localHubVariables must be a count only, not the full list"
+
+        # The mesh token is a credential: absent entirely unless include_token=true was asked for.
+        assert "hubMeshToken" not in res, \
+            "hub_get_hub_mesh returned hubMeshToken without include_token=true"
+
+    @test("system_tools")
+    def test_hub_mesh_update_validation(self) -> None:
+        # NO state-changing Hub Mesh write is ever made against the shared CI hub: enable/disable
+        # needs a hub reboot, and follow-modes / peer tokens are hub-wide settings other tests would
+        # inherit. What IS proven live is the validation contract -- every rejection fires BEFORE
+        # any hub call and surfaces as an isError validation result, so a caller can correct and
+        # retry safely.
+        print("    [E2E-GAP] hub_update_hub_mesh state changes (enable/disable, sync interval, "
+              "follow-modes, peer token) are intentionally NOT e2e-tested -- they mutate shared hub "
+              "state and enable/disable needs a reboot; ToolHubMeshSpec covers them against a mocked hub.")
+        for args, needle, label in (
+            ({}, "at least one field", "no settable field"),
+            ({"full_refresh_interval": 42}, "full_refresh_interval", "out-of-set interval"),
+            ({"peer_hub_id": "12"}, "peer_", "peer_hub_id without peer_token"),
+        ):
+            try:
+                detail = self.client.call_tool("hub_update_hub_mesh", args)
+            except McpError as exc:  # McpToolError (subclass): the isError validation envelope
+                assert needle.lower() in str(exc).lower(), \
+                    f"{label}: expected '{needle}' in the rejection, got: {exc}"
+                continue
+            raise AssertionError(
+                f"{label}: hub_update_hub_mesh({args}) must be rejected by validation, got: {detail}")
+
+    @test("system_tools")
     def test_set_system_settings(self) -> None:
         # hub_set_system_settings writes hub-GLOBAL location/identity settings via a read-merge of
         # GET /hub/details/json -> POST /location/update. To keep the sacrificial e2e hub usable

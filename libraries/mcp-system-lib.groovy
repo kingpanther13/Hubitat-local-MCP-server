@@ -489,6 +489,209 @@ private _validateCoordinate(String key, Map args, Number lo, Number hi) {
     return v
 }
 
+// ---------------------------------------------------------------------------
+// Hub Mesh (hub-to-hub device/variable sharing). Endpoints RE'd from the Vue
+// Hub Mesh page in resources/hub2-source/vue-hub2.min.js -- see that folder's
+// README endpoint inventory. NOT the Z-Wave/Zigbee radio mesh.
+// ---------------------------------------------------------------------------
+
+// Null-safe list passthrough: firmware variations omit whole sections of
+// /hub2/hubMeshJson, and a null would be indistinguishable from "none shared".
+private List _meshList(v) {
+    return (v instanceof List) ? v : []
+}
+
+// The allowed full-sync intervals the hub's own picker offers (seconds; 0 = Never).
+private List _meshRefreshIntervals() {
+    return [0, 120, 300, 3600]
+}
+
+def toolGetHubMesh(args = null) {
+    args = args ?: [:]
+    boolean includeToken = (args.include_token == true)
+
+    def parsed = null
+    try {
+        def raw = hubInternalGet("/hub2/hubMeshJson")
+        parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+    } catch (Exception e) {
+        // warn, not debug: the default log threshold is "error", so a debug line would be
+        // invisible -- and an unreachable/changed /hub2/hubMeshJson is exactly the cause an
+        // operator needs when the Hub Mesh read degrades.
+        mcpLog("warn", "server", "hub_get_hub_mesh /hub2/hubMeshJson read/parse failed: ${e.message}")
+        return [success: false,
+                error: "Could not read Hub Mesh config (/hub2/hubMeshJson): ${e.message}",
+                note: "The hub firmware may predate Hub Mesh, or the endpoint was unreachable. " +
+                      "Verify the hub responds and that this is a Hub Mesh-capable firmware; " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+    if (!(parsed instanceof Map)) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson returned an unrecognized shape")
+        return [success: false,
+                error: "Unexpected /hub2/hubMeshJson response; it did not parse as a JSON object.",
+                note: "The hub firmware may predate Hub Mesh, or the endpoint was unreachable. " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+
+    def enabled = (parsed.hubMeshEnabled instanceof Boolean) ? parsed.hubMeshEnabled : null
+    def interval = (parsed.fullRefreshInterval instanceof Number) ? parsed.fullRefreshInterval : null
+    // The UI maps an absent/null modeHubId to "none" (local modes); mirror that so the value
+    // round-trips straight back into hub_update_hub_mesh(mode_hub_id).
+    String modeHubId = parsed.modeHubId ? parsed.modeHubId.toString() : "none"
+
+    def privateDevices = _meshList(parsed.privateDevices)
+    def localHubVariables = _meshList(parsed.localHubVariables)
+
+    def result = [
+        success: true,
+        hubMeshEnabled: enabled,
+        fullRefreshInterval: interval,
+        modeHubId: modeHubId,
+        peers: _meshList(parsed.hubList),
+        sharedDevices: _meshList(parsed.sharedDevices),
+        localLinkedDevices: _meshList(parsed.localLinkedDevices),
+        availableLinkedDevices: _meshList(parsed.availableLinkedDevices),
+        sharedHubVariables: _meshList(parsed.sharedHubVariables),
+        localLinkedHubVariables: _meshList(parsed.localLinkedHubVariables),
+        availableLinkedHubVariables: _meshList(parsed.availableLinkedHubVariables),
+        // Counts only -- privateDevices is every UNshared device on the hub (hundreds on a
+        // real hub) and localHubVariables duplicates hub_list_variables; returning either in
+        // full would blow the response budget for no information the dedicated tools lack.
+        privateDeviceCount: privateDevices.size(),
+        localHubVariableCount: localHubVariables.size()
+    ]
+    // The mesh token authenticates a peer hub against THIS hub -- a credential, so it is
+    // opt-in rather than part of the default read.
+    if (includeToken) result.hubMeshToken = parsed.hubMeshToken?.toString()
+
+    String note = "privateDeviceCount/localHubVariableCount are counts only: use hub_list_devices " +
+                  "for the full device inventory and hub_list_variables for hub variables."
+    if (enabled == false) {
+        note = "Hub Mesh is DISABLED on this hub. Enable it with hub_update_hub_mesh(enabled=true), " +
+               "then reboot the hub (hub_reboot) for the change to take effect. " + note
+    }
+    result.note = note
+    return result
+}
+
+def toolUpdateHubMesh(args) {
+    args = args ?: [:]
+    def settable = ["enabled", "full_refresh_interval", "mode_hub_id", "peer_hub_id", "peer_token"]
+
+    // VALIDATION FIRST -- every check below runs before ANY hub call, so a -32602 rejection
+    // can be corrected and retried without having half-applied something.
+    if (!settable.any { args.containsKey(it) }) {
+        throw new IllegalArgumentException(
+            "Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes. " +
+            "Read the current config with hub_get_hub_mesh.")
+    }
+    if (args.containsKey("enabled") && !(args.enabled instanceof Boolean)) {
+        throw new IllegalArgumentException("enabled must be a boolean (true or false), got: ${args.enabled}")
+    }
+
+    Integer interval = null
+    if (args.containsKey("full_refresh_interval")) {
+        def raw = args.full_refresh_interval
+        if (raw instanceof Number) {
+            interval = raw.intValue()
+        } else if (raw != null && raw.toString().trim().isInteger()) {
+            interval = raw.toString().trim().toInteger()
+        }
+        if (!(interval in _meshRefreshIntervals())) {
+            throw new IllegalArgumentException(
+                "full_refresh_interval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
+                "(0 = never full-sync), got: ${args.full_refresh_interval}")
+        }
+    }
+
+    boolean hasPeerId = args.containsKey("peer_hub_id")
+    boolean hasPeerToken = args.containsKey("peer_token")
+    if (hasPeerId != hasPeerToken) {
+        throw new IllegalArgumentException(
+            "peer_hub_id and peer_token must be provided TOGETHER (they store one peer hub's mesh auth token). " +
+            "Got only ${hasPeerId ? 'peer_hub_id' : 'peer_token'}.")
+    }
+    String peerHubId = args.peer_hub_id?.toString()?.trim()
+    String peerToken = args.peer_token?.toString()?.trim()
+    if (hasPeerId && (!peerHubId || !peerToken)) {
+        throw new IllegalArgumentException(
+            "peer_hub_id and peer_token must both be non-empty. Read peer hub ids from hub_get_hub_mesh peers[].hubId.")
+    }
+
+    String modeHubId = args.mode_hub_id?.toString()?.trim()
+    if (args.containsKey("mode_hub_id") && !modeHubId) {
+        throw new IllegalArgumentException(
+            "mode_hub_id must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
+    }
+
+    def applied = []
+
+    // Each leg is its own independent hub call (NOT one atomic POST), so a failure part-way
+    // returns the structured error with `applied` carrying what already committed.
+    if (args.containsKey("enabled")) {
+        boolean on = (args.enabled == true)
+        try {
+            hubInternalGet(on ? "/hub/advanced/enableHubMesh" : "/hub/advanced/disableHubMesh")
+            applied << "enabled"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh enable/disable failed", e)
+            return [success: false, error: "Failed to ${on ? 'enable' : 'disable'} Hub Mesh: ${e.message}",
+                    applied: applied, note: "Nothing else was attempted. Read the current state with hub_get_hub_mesh."]
+        }
+    }
+
+    if (interval != null) {
+        try {
+            hubInternalGet("/device/setHubMeshFullRefreshInterval/${interval}")
+            applied << "full_refresh_interval"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh full-refresh interval failed", e)
+            return [success: false, error: "Failed to set the Hub Mesh full-refresh interval: ${e.message}",
+                    applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") +
+                          "The interval was not changed. Read the current state with hub_get_hub_mesh."]
+        }
+    }
+
+    if (modeHubId) {
+        try {
+            hubInternalGet("/device/followModes/${modeHubId}")
+            applied << "mode_hub_id"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh followModes failed", e)
+            return [success: false, error: "Failed to set the mode-following hub: ${e.message}",
+                    applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") +
+                          "Mode following was not changed. Valid values are a peer hubId from " +
+                          "hub_get_hub_mesh peers[].hubId, or 'none'."]
+        }
+    }
+
+    if (hasPeerId) {
+        // The Vue page posts the hubId as the NUMBER it read out of hubMeshJson, so preserve that
+        // type for an all-digits id -- a quoted string is a different JSON value to the hub.
+        def hubIdValue = peerHubId.matches(/\d+/) ? peerHubId.toLong() : peerHubId
+        try {
+            hubInternalPostJson("/device/setHubMeshToken",
+                groovy.json.JsonOutput.toJson([hubId: hubIdValue, token: peerToken]))
+            applied << "peer_token"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken failed", e)
+            return [success: false, error: "Failed to store the peer hub's mesh token: ${e.message}",
+                    applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") +
+                          "The peer token was not stored. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId."]
+        }
+    }
+
+    String note = "Read back the current values with hub_get_hub_mesh."
+    if (args.containsKey("enabled")) {
+        note += " Enabling/disabling Hub Mesh requires a hub REBOOT to take effect " +
+                "(hub_reboot in hub_manage_destructive_ops) -- the tool itself does not reboot."
+    }
+    return [success: true, applied: applied, note: note]
+}
+
 def toolGetModes() {
     def currentMode = location.mode
     def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
@@ -998,6 +1201,30 @@ def _getAllToolDefinitions_partSystem() {
             ]
         ],
         [
+            name: "hub_get_hub_mesh",
+            description: """Read Hub Mesh config: enabled state, peer hubs, sync interval, and shared/linked devices + hub variables (hub-to-hub sharing; NOT the Z-Wave/Zigbee radio mesh).[[FLAT_TRIM]] Radio topology is hub_get_radio_details instead. Peers are discovered automatically on the LAN, so there is no "add peer" operation. Unshared devices and local hub variables come back as counts only (privateDeviceCount / localHubVariableCount — hub_list_devices / hub_list_variables carry the full lists), and modeHubId 'none' means this hub uses its own local modes. Full field reference: hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    include_token: [type: "boolean", description: "Also return this hub's mesh auth token (a credential — omitted by default).[[FLAT_TRIM]] Needed when a peer hub has UI login security and must be given this hub's token.[[/FLAT_TRIM]]"]
+                ]
+            ]
+        ],
+        [
+            name: "hub_update_hub_mesh",
+            description: """Change Hub Mesh settings (hub-to-hub device/variable sharing; NOT the Z-Wave/Zigbee radios). All parameters optional — pass only what changes. ⚠️ An enabled change takes effect only after a hub REBOOT (hub_reboot).[[FLAT_TRIM]] This tool never reboots on its own. Each applied field is echoed in `applied`. Peer hubs are auto-discovered on the LAN so there is no "add peer" write, and per-DEVICE sharing is hub_update_device (meshEnabled / meshFullSync), not here. Read the current config and valid peer hubIds with hub_get_hub_mesh first; full write model in hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    enabled: [type: "boolean", description: "Hub Mesh on/off. ⚠️ Needs a hub reboot to take effect."],
+                    full_refresh_interval: [type: "integer", enum: [0, 120, 300, 3600], description: "Full-sync interval in seconds; 0 = never."],
+                    mode_hub_id: [type: "string", description: "Peer hubId whose modes this hub follows (hub_get_hub_mesh peers[].hubId), or 'none' for local modes."],
+                    peer_hub_id: [type: "string", description: "Peer hubId whose mesh auth token is stored here, e.g. 12. Send together with peer_token."],
+                    peer_token: [type: "string", description: "That peer's mesh token.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]] Send together with peer_hub_id."]
+                ]
+            ]
+        ],
+        [
             name: "hub_reboot",
             description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware. Requires Write master.[[FLAT_TRIM]]
 
@@ -1045,7 +1272,7 @@ def _readOnlyToolNames_partSystem() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Hub state reads
-        "hub_get_info", "hub_list_modes", "hub_get_hsm_status"
+        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_hub_mesh"
     ]
 }
 
@@ -1054,7 +1281,13 @@ def _idempotentWriteToolNames_partSystem() {
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
         // Hub state
-        "hub_set_hsm", "hub_set_mode_manager"
+        "hub_set_hsm", "hub_set_mode_manager",
+        // hub_update_hub_mesh: every leg assigns a value or flips a persistent flag
+        // (enable/disable, sync interval, mode-following hub, a peer's stored token), so an
+        // identical retry converges on the same state with no additional effect. The tool
+        // itself never reboots -- the reboot an `enabled` change needs is the caller's own
+        // separate hub_reboot -- so retrying it cannot re-trigger one.
+        "hub_update_hub_mesh"
         // hub_set_system_settings is deliberately OMITTED here (non-idempotent): its timeZone leg
         // reboots the hub, so a retry with the same args re-triggers the reboot -- not "no additional
         // effect" -- which is the conservative, accurate idempotentHint for this tool.
@@ -1083,6 +1316,9 @@ def _toolDisplayMeta_partSystem() {
         hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
         hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, location, zip, temperature scale, admin-UI dark mode, or network config."],
+        // Hub Mesh (hub-to-hub sharing; NOT the Z-Wave/Zigbee radio mesh)
+        hub_get_hub_mesh: [title: "Get Hub Mesh", summary: "Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."],
+        hub_update_hub_mesh: [title: "Update Hub Mesh", summary: "Enable/disable Hub Mesh, set the sync interval, follow a peer's modes, or store a peer's mesh token."],
         // Hub utilities
         hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],
         // Destructive hub ops
