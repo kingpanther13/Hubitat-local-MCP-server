@@ -8,10 +8,12 @@ into a short list: every ADDED line under the executed paths that makes a networ
 call, reads the environment, or changes an installed dependency.
 
 Advisory by design -- e2e tests legitimately call the network, so findings cannot
-block. The ONE exception is a change to the pinned conformance requirements: a
-poisoned dependency needs no knowledge of this project and looks like ordinary
-housekeeping in a diff, so this script EXITS NONZERO on it. A maintainer who
-wants that bump tested can dispatch hub-e2e.yml manually.
+block. Two things DO exit nonzero, because in both cases the reviewer would
+otherwise approve on a report that isn't one: a change to the pinned conformance
+requirements (a poisoned dependency needs no knowledge of this project and looks
+like housekeeping in a diff), and a watched file whose diff the API won't serve
+(oversized or binary), which leaves its added code unread. A maintainer who wants
+either case tested can dispatch hub-e2e.yml manually.
 
 Runs from the BASE checkout with no secrets and never executes PR code -- it only
 reads the PR's patch through the API.
@@ -88,14 +90,21 @@ def build_report(files: list[dict]) -> tuple[str, bool]:
     findings: list[tuple[str, int, str, str]] = []
     dep_changed = []
     scanned = []
+    unscannable = []
     for f in files:
         path = f["filename"]
         if not watched(path):
             continue
-        scanned.append(path)
         if path == HARD_FAIL_PATH:
             dep_changed.append(path)
-        for lineno, text in added_lines(f.get("patch") or ""):
+        patch = f.get("patch")
+        # The API omits `patch` for an oversized or binary diff. Reporting such a file as scanned
+        # would hand the reviewer a clean list over code nobody read, so it blocks instead.
+        if not patch and f.get("status") != "removed":
+            unscannable.append(path)
+            continue
+        scanned.append(path)
+        for lineno, text in added_lines(patch or ""):
             stripped = text.strip()
             if not stripped or stripped.startswith("#"):
                 continue
@@ -106,7 +115,7 @@ def build_report(files: list[dict]) -> tuple[str, bool]:
                 findings.append((path, lineno, " + ".join(kinds), stripped[:200]))
 
     lines = [MARKER, "## Fork PR pre-approval scan", ""]
-    if not scanned:
+    if not scanned and not unscannable:
         lines += [
             "No changes under `.github/scripts/`, `tests/`, or the pinned requirements file, "
             "so nothing the e2e job executes from this PR changed.",
@@ -116,7 +125,8 @@ def build_report(files: list[dict]) -> tuple[str, bool]:
             "The e2e job runs these files from the PR head with the test hub's MCP credentials "
             "in scope, so read the lines below before approving the run.",
             "",
-            "Files scanned: " + ", ".join(f"`{p}`" for p in sorted(scanned)),
+            "Files scanned: "
+            + (", ".join(f"`{p}`" for p in sorted(scanned)) if scanned else "none"),
             "",
         ]
         if findings:
@@ -138,8 +148,17 @@ def build_report(files: list[dict]) -> tuple[str, bool]:
             "installed code and needs no knowledge of this project, so e2e will not be offered for "
             "approval on this PR. Vet the pins, then run the workflow manually if the change is wanted.",
         ]
+    if unscannable:
+        lines += [
+            "",
+            "**Blocking: no diff available for "
+            + ", ".join(f"`{p}`" for p in sorted(unscannable))
+            + ".** GitHub omits the patch for an oversized or binary change, so this scan cannot "
+            "report what those files add. Read them at the PR head; e2e is not offered for approval "
+            "until they are scannable, and a manual workflow run is the way through.",
+        ]
 
-    return "\n".join(lines), bool(dep_changed)
+    return "\n".join(lines), bool(dep_changed or unscannable)
 
 
 def main() -> int:
@@ -167,7 +186,8 @@ def main() -> int:
         return 1
 
     if blocking:
-        print(f"::error::{HARD_FAIL_PATH} changed in a fork PR -- see the scan comment.")
+        print("::error::fork scan blocks approval (pinned-dependency change, or a file it could "
+              "not read) -- see the scan comment.")
         return 1
     return 0
 
