@@ -11,6 +11,13 @@
 # pull a runner file into a publicly served zip. Never writes branches/<name>/: a fork branch named
 # `main` would otherwise overwrite the bundle HPM users install.
 #
+# The control doing the most work is in the BUILDER, not here: tools/build-bundle.py has its twenty
+# library paths HARDCODED and only read_text -> CRLF-normalize -> deflate, with a verify() asserting
+# the entry set exactly. That is why a fork adding libraries/anything-else.groovy is ignored, and why
+# contents: write is safe in a job that reads fork content at all. The builder must never DISCOVER
+# its own inputs -- a glob over libraries/*.groovy would turn this into a code-delivery surface with
+# repo write, in a diff that reads like a cleanup (tests/test_build_bundle_inputs.py guards it).
+#
 # Env: GH_TOKEN (contents:write), BASE_REPO (owner/name), EVENT_NAME, and either
 #      PR_HEAD_REPO + PR_HEAD_SHA (pull_request_target) or PR_INPUT (workflow_dispatch pr_number).
 set -euo pipefail

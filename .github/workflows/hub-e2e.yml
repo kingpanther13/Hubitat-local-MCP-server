@@ -221,6 +221,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      statuses: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -231,6 +232,18 @@ jobs:
           BASE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python .github/scripts/fork_pr_scan.py
+      # A blocking scan skips approve AND e2e, so the e2e job's own gate post never runs and the
+      # required status would sit at "Expected -- waiting for status to be reported": not pending,
+      # not red, and indistinguishable from a live run. Report the block here instead.
+      - name: Post e2e gate status (scan blocked)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GATE_SHA: ${{ github.event.pull_request.head.sha }}
+          STATE: failure
+          DESC: 'fork pre-approval scan blocked e2e -- see the scan comment'
+        run: bash .github/scripts/post_e2e_gate.sh
 
   # Approval gate. The environment NAME is chosen from the PR author's relationship to
   # the repo:
@@ -279,6 +292,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      statuses: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -295,6 +309,18 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash .github/scripts/publish_fork_bundle.sh
+      # A failure here skips e2e, whose own gate post then never runs -- so the required status would
+      # never be reported at all (reads as "still going", not "broke"). The reachable triggers are
+      # ordinary: the CDN poll timing out on a fresh push, an API/fetch blip, or a deleted head repo.
+      - name: Post e2e gate status (bundle publish failed)
+        if: failure() && github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GATE_SHA: ${{ github.event.pull_request.head.sha }}
+          STATE: failure
+          DESC: 'fork bundle publish failed; e2e did not run -- re-run this workflow'
+        run: bash .github/scripts/post_e2e_gate.sh
 
   # Read-only hub inventory dump (dispatch with probe_only=true). Diagnoses test-hub
   # state -- devices, apps, rules, jobs, memory, watchdog flags -- without deploying or

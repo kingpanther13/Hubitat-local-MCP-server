@@ -82,6 +82,21 @@ def test_requirements_change_blocks_even_with_no_pattern_hit():
     assert "Blocking" in body
 
 
+def test_a_watched_file_without_a_patch_blocks_instead_of_reporting_clean():
+    # The API omits `patch` on an oversized or binary diff; a clean-looking report over code nobody
+    # read is worse than no report, so it must block.
+    body, blocking = scan.build_report([{"filename": "tests/e2e_test.py", "status": "modified"}])
+    assert blocking
+    assert "no diff available" in body
+    assert "No network calls, environment reads, or dependency changes" not in body
+
+
+def test_a_deleted_watched_file_does_not_block():
+    body, blocking = scan.build_report([{"filename": ".github/scripts/old.sh", "status": "removed"}])
+    assert not blocking
+    assert "no diff available" not in body
+
+
 def test_marker_is_present_so_the_comment_is_updated_in_place():
     body, _ = scan.build_report([])
     assert body.startswith(scan.MARKER)
