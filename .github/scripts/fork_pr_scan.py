@@ -120,13 +120,12 @@ def build_report(files: list[dict]) -> tuple[str, bool]:
             "No changes under `.github/scripts/`, `tests/`, or the pinned requirements file, "
             "so nothing the e2e job executes from this PR changed.",
         ]
-    else:
+    elif scanned:
         lines += [
             "The e2e job runs these files from the PR head with the test hub's MCP credentials "
             "in scope, so read the lines below before approving the run.",
             "",
-            "Files scanned: "
-            + (", ".join(f"`{p}`" for p in sorted(scanned)) if scanned else "none"),
+            "Files scanned: " + ", ".join(f"`{p}`" for p in sorted(scanned)),
             "",
         ]
         if findings:
@@ -135,6 +134,8 @@ def build_report(files: list[dict]) -> tuple[str, bool]:
                 cell = text.replace("|", "\\|").replace("`", "'")
                 lines.append(f"| `{path}` | {lineno} | {label} | `{cell}` |")
         else:
+            # Only ever said about files actually read -- next to an unreadable diff it would be
+            # the false assurance this scan exists to prevent.
             lines.append("No network calls, environment reads, or dependency changes in the added lines.")
         lines += [
             "",
