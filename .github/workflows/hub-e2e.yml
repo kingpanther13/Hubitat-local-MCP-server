@@ -206,6 +206,32 @@ jobs:
             sleep 5
           done
 
+  # Pre-approval scan of what a FORK PR makes the e2e job execute (.github/scripts/, tests/, the
+  # pinned pip requirements). The approval click IS the security boundary -- the e2e job runs those
+  # files from the PR head with the hub credentials in scope -- so this posts the reviewer a short
+  # list of the added lines that touch the network, the environment, or an installed dependency.
+  # Holds NO secrets and never executes PR code: it reads the patch through the API from a base
+  # checkout. Advisory except for tests/sdk-conformance-requirements.txt, where it FAILS and so
+  # never requests approval (see fork_pr_scan.py). Same-repo PRs and dispatches skip it.
+  fork-scan:
+    needs: [lane-gate]
+    if: needs.lane-gate.outputs.run == 'true' && github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Scan fork PR files the e2e job executes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python .github/scripts/fork_pr_scan.py
+
   # Approval gate. The environment NAME is chosen from the PR author's relationship to
   # the repo:
   #   - trusted (repo owner / org member / write-access collaborator, plus @level99 and
@@ -223,9 +249,15 @@ jobs:
   # FIFO group (hub-e2e-serialized), so an outside PR sitting unapproved can't stall the shared test
   # hub for trusted runs -- it's only in the workflow-level per-branch group, which is isolated per
   # branch. e2e starts only once this job succeeds (`needs`).
+  #
+  # Gated on fork-scan so the reviewer never sees the approval prompt before the scan comment is
+  # posted, and a scan hard-failure (a changed requirements pin) is never approvable. fork-scan is
+  # SKIPPED for same-repo PRs and dispatches, so its result is checked explicitly.
   approve:
-    needs: [lane-gate]
-    if: needs.lane-gate.outputs.run == 'true'
+    needs: [lane-gate, fork-scan]
+    if: >-
+      !cancelled() && needs.lane-gate.outputs.run == 'true'
+      && (needs.fork-scan.result == 'success' || needs.fork-scan.result == 'skipped')
     runs-on: ubuntu-latest
     environment:
       name: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request.author_association == 'OWNER' || github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'COLLABORATOR' || github.event.pull_request.user.login == 'level99' || github.event.pull_request.user.login == 'kingpanther13') && 'e2e-auto' || 'e2e-approval' }}
