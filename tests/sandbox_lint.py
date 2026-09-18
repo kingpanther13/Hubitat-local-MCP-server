@@ -562,6 +562,7 @@ PERSISTED_STATE_INVENTORY = {
         "hubSecurityCookie", "hubSecurityCookieExpiry", "itemBackupManifest",
         "debugLogGeneration", "parentAppIds", "inUseHubVars", "variableHistory",
         "hubVarsAppId", "predClearPending",
+        "mcpClientLastSeen", "mcpClientsRecent",
     },
 }
 # `(?<![.\w])` keeps a member chain such as node.state.x from reading as app state.

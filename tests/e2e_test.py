@@ -11817,6 +11817,22 @@ class TestRunner:
             assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
         assert "safeMode" in result, f"hub_get_info missing safeMode: {sorted(result)}"
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
+        # Client identity: the recorder runs before dispatch, so THIS call is already in the
+        # record it hands back. Shape only here -- the name/version capture is proved in the
+        # protocol group, which controls what the client declares.
+        client = result.get("mcpClient")
+        assert isinstance(client, dict), f"hub_get_info missing mcpClient: {sorted(result)}"
+        last = client.get("lastSeen")
+        assert isinstance(last, dict), f"mcpClient.lastSeen must name the caller: {client!r}"
+        assert last.get("era") == "modern", f"this suite speaks 2026-07-28: {last!r}"
+        assert last.get("protocolVersion") == MODERN_PROTOCOL_VERSION, \
+            f"lastSeen.protocolVersion must be the header version: {last!r}"
+        assert last.get("source") in {"cloud", "local"}, f"unexpected lastSeen.source: {last!r}"
+        assert isinstance(last.get("seenAt"), int) and last["seenAt"] > 0, \
+            f"lastSeen.seenAt must be an epoch-ms stamp: {last!r}"
+        recent = client.get("recent")
+        assert isinstance(recent, list) and len(recent) <= 5, \
+            f"mcpClient.recent must be a list capped at 5: {recent!r}"
 
     @test("system_tools")
     def test_set_system_settings(self) -> None:
@@ -14376,6 +14392,49 @@ class TestRunner:
             info = (result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
             assert info.get("name") == "hubitat-mcp-rule-server", \
                 f"modern {label} result missing the serverInfo _meta key: {result.get('_meta')!r}"
+
+    @test("protocol")
+    def test_modern_client_identity_recorded_from_meta(self) -> None:
+        """A modern request's `_meta` clientInfo is captured and read back on the SAME call:
+        the recorder runs before dispatch, so hub_get_info's own body names the client that
+        asked for it. Proves the modern `_meta` capture shape against real firmware, which
+        no unit harness can do -- the header value and the relay source both come from the
+        live request object."""
+        probe = f"e2e-client-probe-{int(time.time())}"
+        resp = self.client.raw_request({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "hub_get_info",
+                "arguments": {},
+                "_meta": {
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": probe, "version": "9.9.9", "title": "E2E Probe",
+                    },
+                    "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+                },
+            },
+        })
+        assert resp.status_code == 200, \
+            f"a modern tools/call carrying _meta clientInfo must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
+        result = resp.json().get("result", {})
+        assert not result.get("isError"), f"hub_get_info returned an error envelope: {str(result)[:300]}"
+        info = json.loads(result["content"][0]["text"])
+        client = info.get("mcpClient") or {}
+        last = client.get("lastSeen") or {}
+        assert last.get("name") == probe, f"the declared client name was not captured: {last!r}"
+        assert last.get("version") == "9.9.9", f"the declared client version was not captured: {last!r}"
+        assert last.get("title") == "E2E Probe", f"the declared client title was not captured: {last!r}"
+        assert last.get("era") == "modern", f"a 2026-07-28 request must record era 'modern': {last!r}"
+        assert last.get("protocolVersion") == MODERN_PROTOCOL_VERSION, \
+            f"lastSeen.protocolVersion must be the header version: {last!r}"
+        assert last.get("requestedProtocolVersion") is None, \
+            f"requestedProtocolVersion belongs to the initialize handshake only: {last!r}"
+        assert last.get("source") in {"cloud", "local"}, f"unexpected lastSeen.source: {last!r}"
+        recent = client.get("recent")
+        assert isinstance(recent, list) and len(recent) <= 5, \
+            f"mcpClient.recent must be a list capped at 5: {recent!r}"
+        assert any(isinstance(e, dict) and e.get("name") == probe for e in recent), \
+            f"the probe client is missing from mcpClient.recent: {recent!r}"
 
     @test("protocol")
     def test_modern_header_method_mismatch_rejected(self) -> None:

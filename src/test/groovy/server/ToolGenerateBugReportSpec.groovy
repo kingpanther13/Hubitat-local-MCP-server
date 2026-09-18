@@ -47,6 +47,25 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         return entry
     }
 
+
+    private Map clientRecord(Map overrides = [:]) {
+        return [
+            name                     : 'claude-ai',
+            version                  : '1.4.2',
+            title                    : 'Claude',
+            protocolVersion          : '2025-11-25',
+            requestedProtocolVersion : '2025-11-25',
+            era                      : 'legacy',
+            source                   : 'cloud',
+            seenAt                   : 1_700_000_000_000L,
+        ] + overrides
+    }
+
+    private void seedClient(Map record) {
+        atomicStateMap.mcpClientLastSeen = record
+        atomicStateMap.mcpClientsRecent = record == null ? [] : [record]
+    }
+
     // ---------- default invocation ----------
 
     def "default invocation returns success with split env counts and a [bug] title"() {
@@ -617,6 +636,402 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('shown_anyway_in_public_mode')
     }
 
+
+    // ---------- client identity + connection ----------
+
+    def "environment renders the client self-report and protocol version from the recorded identity"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord())
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Client (MCP self-report):** claude-ai 1.4.2 (Claude)')
+        result.report.contains('- **Protocol version:** 2025-11-25 (legacy)')
+    }
+
+    def "environment omits the parenthesised title when the client reported none"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord(title: null, version: '3.0', name: 'cursor', era: 'modern', protocolVersion: '2026-07-28'))
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Client (MCP self-report):** cursor 3.0')
+        !result.report.contains('cursor 3.0 (')
+        result.report.contains('- **Protocol version:** 2026-07-28 (modern)')
+    }
+
+    def "environment falls back to a not-reported marker when no identity was recorded"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Client (MCP self-report):** not reported by client')
+        result.report.contains('- **Protocol version:** not reported by client')
+    }
+
+    def "environment reports a local connection by default"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Connection:** local')
+    }
+
+    def "environment reports a cloud connection when the request arrived over the relay"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        script.metaClass._isCloudRequest = { -> true }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Connection:** cloud')
+    }
+
+    // ---------- MCP Server Settings section ----------
+
+    def "settings section renders configured values and marks unset ones as default"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.enableDeveloperMode = true
+        settingsMap.relayBudgetMs = 9000
+        settingsMap.bypassDeviceAllowlist = true
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('## MCP Server Settings')
+        result.report.contains('- **Developer mode:** true')
+        result.report.contains('- **Bypass device allowlist:** true')
+        result.report.contains('- **Cloud-relay budget (ms):** 9000')
+
+        and: 'unset settings show their shipped default'
+        result.report.contains('- **Read tools:** true (default)')
+        result.report.contains('- **Max concurrent writes:** 2 (default)')
+        result.report.contains('- **LAN budget (ms):** 0 (default)')
+        result.report.contains('- **Loop guard max executions:** 30 (default)')
+        result.report.contains('- **Loop guard window (sec):** 60 (default)')
+        result.report.contains('- **Max captured states:** 20 (default)')
+        result.report.contains('- **Disabled tools:** none (default)')
+        result.report.contains('- **Disabled gateways:** none (default)')
+    }
+
+    def "settings section reports hub security as a boolean and never leaks the credentials"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.hubSecurityEnabled = true
+        settingsMap.hubSecurityUser = 'hubadminlogin'
+        settingsMap.hubSecurityPassword = 'correcthorsebatterystaple'
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Hub security enabled:** true')
+        !result.report.contains('hubadminlogin')
+        !result.report.contains('correcthorsebatterystaple')
+        !result.report.toLowerCase().contains('password')
+    }
+
+    def "settings section names the disabled tools and gateways"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.disabled_tools = ['hub_list_devices', 'hub_get_info']
+        settingsMap.disabled_gateways = ['hub_manage_rooms']
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Disabled tools:** hub_list_devices, hub_get_info')
+        result.report.contains('- **Disabled gateways:** hub_manage_rooms')
+    }
+
+    def "settings section lists extra allowed origin hostnames in private mode"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.additionalAllowedOrigins = 'mcp.example.com, proxy.internal'
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Extra allowed origins:** mcp.example.com, proxy.internal')
+    }
+
+    def "settings section reduces extra allowed origins to a count in public mode"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.additionalAllowedOrigins = 'mcp.example.com, proxy.internal'
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([privacyMode: 'public']))
+
+        then:
+        result.report.contains('- **Extra allowed origins:** 2 configured')
+        !result.report.contains('mcp.example.com')
+        !result.report.contains('proxy.internal')
+    }
+
+    def "public mode keeps the client name and version"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord())
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([privacyMode: 'public']))
+
+        then: 'a client product name is not PII, so it survives the public-mode scrub'
+        result.report.contains('- **Client (MCP self-report):** claude-ai 1.4.2 (Claude)')
+        result.report.contains('<hub-name>')
+    }
+
+    // ---------- model / verbatim tool calls / client logs ----------
+
+    def "llmModel, verbatimToolCalls and clientLogs render in their own sections"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            llmClient         : 'Claude Code 2.1',
+            llmModel          : 'Claude Opus 5',
+            verbatimToolCalls : 'hub_set_rule({"ruleId":"7"}) -> HTTP 500 Internal error',
+            clientLogs        : '2026-09-18T10:00:01 ERROR mcp-server-hubitat: transport closed',
+        ]))
+
+        then:
+        result.report.contains('- **LLM / client:** Claude Code 2.1')
+        result.report.contains('- **Model:** Claude Opus 5')
+        result.report.contains('## Verbatim Tool Calls')
+        result.report.contains('hub_set_rule({"ruleId":"7"}) -> HTTP 500 Internal error')
+        result.report.contains('## Client-Side Logs')
+        result.report.contains('2026-09-18T10:00:01 ERROR mcp-server-hubitat: transport closed')
+        result.report.contains('```text')
+        result.missingContext*.field == []
+    }
+
+    def "a bug report marks the missing verbatim and client-log sections as not provided"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('## Verbatim Tool Calls')
+        result.report.contains('## Client-Side Logs')
+        result.report.count('_Not provided_') == 2
+        result.report.contains('- **Model:** Not provided')
+    }
+
+    def "an enhancement omits the verbatim and client-log sections entirely"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([issueType: 'enhancement']))
+
+        then:
+        !result.report.contains('## Verbatim Tool Calls')
+        !result.report.contains('## Client-Side Logs')
+        !result.report.contains('_Not provided_')
+    }
+
+    // ---------- word wrap ----------
+
+    def "_bugReportWrap breaks a long line at word boundaries without exceeding the width"() {
+        given:
+        def line = ('word ' * 60).trim()
+
+        when:
+        def wrapped = script._bugReportWrap(line)
+
+        then:
+        line.length() > 290
+        wrapped.split('\n').size() > 2
+        wrapped.split('\n').every { it.length() <= 100 }
+
+        and: 'wrapping only replaces the chosen spaces, so no text is lost'
+        wrapped.replaceAll('\n', ' ') == line
+    }
+
+    def "_bugReportWrap preserves blank lines and existing line breaks"() {
+        expect:
+        script._bugReportWrap('first\n\nsecond') == 'first\n\nsecond'
+        script._bugReportWrap('  indented short line') == '  indented short line'
+        script._bugReportWrap(null) == null
+    }
+
+    def "_bugReportWrap never breaks a single word longer than the width"() {
+        given:
+        def word = 'z' * 150
+
+        expect:
+        script._bugReportWrap(word) == word
+    }
+
+    def "_bugReportWrap leaves lines inside a fenced block untouched"() {
+        given:
+        def fenced = '```\n' + ('x' * 300) + '\n```'
+
+        expect:
+        script._bugReportWrap(fenced) == fenced
+    }
+
+    def "report wraps expected, actual and stepsToReproduce but not the title"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def longTitle = 'T' * 130
+        def longProse = ('alpha ' * 60).trim()
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            title            : longTitle,
+            expected         : longProse,
+            actual           : longProse,
+            stepsToReproduce : longProse,
+        ]))
+
+        then: 'the title stays on one line; the prose fields are wrapped'
+        result.report.contains('# Bug Report: ' + longTitle)
+        !result.report.contains(longProse)
+        result.report.split('\n').findAll { it.startsWith('alpha ') }.every { it.length() <= 100 }
+    }
+
+    // ---------- missingContext / preflight ----------
+
+    def "missingContext asks for every absent field on a bug report"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.missingContext*.field == ['llmClient', 'llmModel', 'stepsToReproduce', 'verbatimToolCalls', 'clientLogs']
+        result.missingContext.every { it.ask?.trim() }
+        result.missingContext.find { it.field == 'llmClient' }.ask.contains('llmClient')
+    }
+
+    def "missingContext on an enhancement asks only for the client and model"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([issueType: 'enhancement']))
+
+        then:
+        result.missingContext*.field == ['llmClient', 'llmModel']
+    }
+
+    def "missingContext drops a supplied field and still flags a blank one"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            llmClient        : 'Claude Desktop',
+            llmModel         : '   ',
+            stepsToReproduce : 'Call hub_set_rule twice.',
+        ]))
+
+        then:
+        result.missingContext*.field == ['llmModel', 'verbatimToolCalls', 'clientLogs']
+    }
+
+    def "preflight tells the agent to raise the log level when it is not debug"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.preflight.size() == 3
+        result.preflight[0].startsWith('MCP log level is error.')
+        result.preflight[0].contains("hub_set_log_level(level='debug')")
+        result.preflight[1].contains("hub_get_logs(mode='hub')")
+        result.preflight[1].contains('clientLogs')
+        result.preflight[2].contains('verbatimToolCalls')
+    }
+
+    def "preflight omits the log-level step when the configured level is already debug"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.mcpLogLevel = 'debug'
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.preflight.size() == 2
+        !result.preflight.any { it.startsWith('MCP log level is') }
+    }
+
+    def "preflight is empty for a non-bug report"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([issueType: 'enhancement']))
+
+        then:
+        result.preflight == []
+    }
+
+    def "instructions lead with the preflight checklist and keep the privacy caveat"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.instructions.startsWith('1. Resolve every preflight step')
+        result.instructions.contains('submitUrl')
+        result.instructions.contains("'What happened'")
+        result.instructions.contains("'Agent report output'")
+        result.instructions.toLowerCase().contains('if you are an llm')
+        result.instructions.contains('MUST review')
+    }
+
     // ---------------------------------------------------------------------------
     // Dispatch-envelope counterparts (issue #187)
     //
@@ -766,6 +1181,31 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         inner.report.contains('**Rule ID:** 42')
         inner.report.contains('**Rule Name:** My Test Rule')
         inner.report.contains('**Execution Count:** 7')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "hub_report_issue via dispatch carries preflight, missingContext and the settings section (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord())
+
+        when:
+        def response = mcpDriver.callTool('hub_report_issue', baseArgs([llmClient: 'Claude Code 2.1']))
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.preflight.size() == 3
+        inner.missingContext*.field == ['llmModel', 'stepsToReproduce', 'verbatimToolCalls', 'clientLogs']
+        inner.report.contains('## MCP Server Settings')
+        inner.report.contains('- **Client (MCP self-report):** claude-ai 1.4.2 (Claude)')
+        inner.report.contains('- **Connection:** ')
 
         where:
         useGateways << [true, false]

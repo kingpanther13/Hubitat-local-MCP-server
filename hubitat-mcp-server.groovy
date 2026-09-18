@@ -1214,7 +1214,117 @@ def _decodeHeaderValue(String value) {
     }
 }
 
+// ==================== MCP CLIENT IDENTITY ====================
+
+// Who has been talking to this endpoint: the current client plus a short rolling history.
+// The stored maps are copied on the way out so a caller cannot edit persisted state.
+def mcpClientIdentity() {
+    def last = atomicState.mcpClientLastSeen
+    def recent = atomicState.mcpClientsRecent
+    return [
+        lastSeen: (last instanceof Map) ? ([:] + last) : null,
+        recent: (recent instanceof List) ? recent.findAll { it instanceof Map }.collect { [:] + it } : []
+    ]
+}
+
+// The fields that make a client distinct. seenAt is excluded deliberately -- it moves on every
+// request, and including it would make every request read as a different client.
+private List _mcpClientTupleKeys() {
+    return ["name", "version", "title", "protocolVersion", "requestedProtocolVersion", "era", "source"]
+}
+
+// Record who sent this message. MUST NOT throw or alter the response: losing an identity
+// record is a diagnostic gap, never a reason to fail a served request.
+def _recordMcpClient(msg) {
+    try {
+        if (!(msg instanceof Map) || msg.id == null) return
+        def stored = atomicState.mcpClientLastSeen
+        Map previous = (stored instanceof Map) ? ([:] + stored) : null
+        Map record = _mcpClientRecordFor(msg, previous)
+        boolean changed = previous == null || _mcpClientTupleKeys().any { record[it] != previous[it] }
+        long previousSeenAt = 0L
+        if (previous?.seenAt instanceof Number) previousSeenAt = (previous.seenAt as Number).longValue()
+        // Per-request atomicState writes are a known cost in this app, so persist only a real
+        // identity change or a timestamp old enough to have stopped meaning anything.
+        if (!changed && ((record.seenAt as Long) - previousSeenAt) < 600000L) return
+        atomicState.mcpClientLastSeen = record
+        _mcpClientPushRecent(record)
+        // initialize logs its own richer line in handleInitialize; logging unchanged repeats
+        // here would put one line on every request.
+        if (changed && msg.method != "initialize") {
+            mcpLog("info", "server", "MCP client ${record.name ?: 'unknown'} ${record.version ?: 'unknown'} on protocol ${record.protocolVersion ?: 'unknown'} (${record.era}, ${record.source})")
+        }
+    } catch (Exception e) {
+        mcpLog("debug", "server", "MCP client identity capture skipped: ${e.message}")
+    }
+}
+
+// Build this message's record, carrying forward whatever the message itself does not state:
+// a tools/call carries no clientInfo, so without carry-over it would erase the name the
+// initialize handshake just established.
+private Map _mcpClientRecordFor(msg, Map previous) {
+    String headerVersion = _requestHeader("MCP-Protocol-Version")
+    boolean modern = headerVersion == modernProtocolVersion()
+    def params = (msg.params instanceof Map) ? msg.params : [:]
+    def meta = (params["_meta"] instanceof Map) ? params["_meta"] : [:]
+    def info = meta["io.modelcontextprotocol/clientInfo"]
+    if (!(info instanceof Map)) info = params["clientInfo"]
+
+    Map record = [
+        name: previous?.name,
+        version: previous?.version,
+        title: previous?.title,
+        protocolVersion: previous?.protocolVersion,
+        requestedProtocolVersion: previous?.requestedProtocolVersion,
+        era: modern ? "modern" : "legacy",
+        source: _isCloudRequest() ? "cloud" : "local",
+        seenAt: now()
+    ]
+    // clientInfo is one unit: a present block describes the whole client, so a field it omits
+    // is genuinely absent rather than inherited from whoever connected before.
+    if (info instanceof Map) {
+        record.name = _mcpClientString(info["name"])
+        record.version = _mcpClientString(info["version"])
+        record.title = _mcpClientString(info["title"])
+    }
+    if (modern) {
+        record.protocolVersion = headerVersion
+        record.requestedProtocolVersion = null
+    } else if (msg.method == "initialize") {
+        def requested = params["protocolVersion"]
+        record.requestedProtocolVersion = _mcpClientString(requested)
+        record.protocolVersion = _mcpClientString(_negotiatedProtocolVersion(requested))
+    } else if (headerVersion != null) {
+        // A legacy client never re-requests after the handshake, so keep what it asked for then.
+        record.protocolVersion = headerVersion
+    }
+    return record
+}
+
+private String _mcpClientString(value) {
+    if (value == null) return null
+    String s = value.toString().trim()
+    return s.isEmpty() ? null : s
+}
+
+// Newest first, deduped on the client itself so a reconnecting client cannot fill the list
+// with copies of itself, and capped so the stored history stays bounded.
+private void _mcpClientPushRecent(Map record) {
+    def stored = atomicState.mcpClientsRecent
+    def recent = (stored instanceof List) ? stored : []
+    def kept = recent.findAll { entry ->
+        if (!(entry instanceof Map)) return false
+        return entry["name"] != record.name || entry["version"] != record.version ||
+               entry["era"] != record.era || entry["source"] != record.source
+    }
+    def updated = [record] + kept
+    if (updated.size() > 5) updated = updated[0..4]
+    atomicState.mcpClientsRecent = updated
+}
+
 def processJsonRpcMessage(msg) {
+    _recordMcpClient(msg)
+
     if (!msg) {
         return jsonRpcError(null, -32600, "Invalid Request: empty message")
     }
@@ -1336,6 +1446,12 @@ def initializeProtocolVersions() {
 // requests an unknown, or requests the modern) protocolVersion negotiates down to.
 def defaultProtocolVersion() { initializeProtocolVersions()[0] }
 
+// The version initialize answers with for a requested one. Named because the client-identity
+// record has to store the NEGOTIATED version, not the asked-for one.
+def _negotiatedProtocolVersion(requested) {
+    return initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
+}
+
 // Freshness hint for the cacheable list results (SEP-2549 CacheableResult:
 // tools/list and server/discover). Both payloads only shift when this app's
 // settings change (Read/Write masters, gateway mode, per-tool overrides) or the
@@ -1363,7 +1479,10 @@ def handleInitialize(msg) {
     // on the default -- see initializeProtocolVersions() for why the modern revision
     // is not negotiable through this legacy-era handshake.
     def requested = msg.params?.protocolVersion
-    def negotiated = initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
+    def negotiated = _negotiatedProtocolVersion(requested)
+    def info = msg.params?.clientInfo
+    String who = (info instanceof Map && info.name) ? "${info.name}${info.version ? ' ' + info.version : ''}" : "unknown client"
+    mcpLog("info", "server", "initialize from ${who}: requested protocolVersion ${requested}, negotiated ${negotiated} (${_isCloudRequest() ? 'cloud' : 'local'})")
     return jsonRpcResult(msg.id, [
         protocolVersion: negotiated,
         capabilities: serverCapabilities(),
@@ -9936,6 +10055,12 @@ Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable cle
 ### hub_report_issue
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
+
+**Before filing a bug.** The result carries `preflight` (bug reports only) and `missingContext`; resolve both before handing the user the link. Preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and call this tool again so the report carries debug entries; then to attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure, `mode='mcp'` (error/warn entries are already in the report), and the client host's own MCP log via `clientLogs`.
+
+**What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log).
+
+**What the report already carries.** The server records the MCP client's self-reported name/version and protocol version at dispatch (also visible in `hub_get_info.mcpClient`), whether the request came over the cloud relay or the LAN, and a snapshot of the app's toggles (read/write masters, developer mode, per-tool overrides, Origin enforcement, time budgets). Hub Security is reported as a boolean only. Long prose fields are word-wrapped; verbatim and log fields are not.
 
 
 ### hub_list_devices

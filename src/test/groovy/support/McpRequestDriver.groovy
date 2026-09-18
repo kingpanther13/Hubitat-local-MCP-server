@@ -123,6 +123,13 @@ class McpRequestDriver {
     Throwable throwingHeaders = null
 
     /**
+     * Backing store for {@code request.requestSource}, the mapped-endpoint property the
+     * hub sets to {@code "local"} or {@code "cloud"}. Default null reproduces firmware
+     * that does not expose it — production reads that as local.
+     */
+    String requestSource = null
+
+    /**
      * Proxy the harness wires into {@code injectedMappingHandlerData['request']}.
      * Its {@code getJSON()} dispatches dynamically at access time: if
      * {@link #throwingRequest} is set it throws, otherwise it returns the
@@ -210,6 +217,7 @@ class McpRequestDriver {
         headers.clear()
         nullHeaders = false
         throwingHeaders = null
+        requestSource = null
         lastRenderArgs = null
         throwingRequest = null
     }
@@ -360,6 +368,15 @@ class McpRequestDriver {
                 return null
             }
             return driver.headers
+        }
+
+        /**
+         * Called at each {@code request.requestSource} access — the hub's
+         * {@code "local"} / {@code "cloud"} relay marker. Reads the live driver field so a
+         * test's {@code given:} block can flip it without re-wiring.
+         */
+        Object getRequestSource() {
+            return driver.requestSource
         }
     }
 }

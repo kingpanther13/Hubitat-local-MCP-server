@@ -159,7 +159,9 @@ def toolGenerateBugReport(args) {
             relevantCount: scopedLogs.relevant.size(),
             otherRecentLogCount: scopedLogs.scoped && !scopedLogs.includedUnrelated ? scopedLogs.otherCount : 0
         ],
-        instructions: "Click submitUrl — the GitHub issue title is pre-filled. In the issue form, type a short description of what you were doing in the 'What happened' field, then paste the 'report' content into the 'Agent report output' field. If you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, and filenames with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting — public mode is a best-effort assist, not a guarantee."
+        missingContext: _bugReportMissingContext(args, issueType),
+        preflight: _bugReportPreflight(issueType),
+        instructions: "1. Resolve every preflight step and missingContext item first -- a report without them usually gets sent back with questions. 2. Open submitUrl; the GitHub issue title is pre-filled. 3. Type a short description of what you were doing in the 'What happened' field. 4. Paste the 'report' content into the 'Agent report output' field. Privacy: if you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, and filenames with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting -- public mode is a best-effort assist, not a guarantee."
     ]
     if (history.error) {
         result.logs.error = history.error
@@ -267,6 +269,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
     } catch (Throwable e) {
         mcpLog("warn", "bug-report", "_bugReportEnvironmentSummary: location access threw (${e.message}); env fields may be incomplete")
     }
+    def client = mcpClientIdentity()?.lastSeen
     return [
         version: currentVersion(),
         hubName: privacyMode == "public" ? "<hub-name>" : hubName,
@@ -281,8 +284,125 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         customMcpRuleCount: getChildApps()?.size() ?: 0,
         nativeRm: _bugReportNativeRmStatus(),
         deviceCount: selectedDevices?.size() ?: 0,
-        llmClient: args.llmClient?.toString() ?: "Not provided"
+        connection: _isCloudRequest() ? "cloud" : "local",
+        clientSelfReport: _bugReportClientLine(client),
+        protocolVersion: client?.protocolVersion ? "${client.protocolVersion} (${client.era ?: 'unknown'})" : "not reported by client",
+        llmClient: args.llmClient?.toString()?.trim() ?: "Not provided",
+        llmModel: args.llmModel?.toString()?.trim() ?: "Not provided",
+        settingsLines: _bugReportSettingsLines(privacyMode)
     ]
+}
+
+// The client's own initialize self-report, not the agent-supplied llmClient: the two
+// disagree often enough (a wrapper reports its transport, the user names the host app)
+// that a maintainer needs both.
+private String _bugReportClientLine(Map client) {
+    if (!client?.name) return "not reported by client"
+    def line = client.name.toString()
+    if (client.version) line = "${line} ${client.version}"
+    if (client.title) line = "${line} (${client.title})"
+    return line
+}
+
+private List _bugReportSettingsLines(String privacyMode) {
+    def eff = { raw, fallback -> raw == null ? "${fallback} (default)" : raw.toString() }
+    def nameList = { raw -> (raw ?: []).collect { it.toString() } }
+    def disabledGateways = nameList(settings.disabled_gateways)
+    def disabledTools = nameList(settings.disabled_tools)
+    def extraOrigins = _configuredExtraOriginHosts()
+    // Hub Security is reported as a BOOLEAN only -- the username and password stay out of
+    // every report, private mode included.
+    return [
+        "- **Read tools:** ${eff(settings.enableRead, true)}",
+        "- **Write tools:** ${eff(settings.enableWrite, true)}",
+        "- **Developer mode:** ${eff(settings.enableDeveloperMode, false)}",
+        "- **Best-practice ack required:** ${eff(settings.enableMandatoryBPS, true)}",
+        "- **Legacy custom rule engine:** ${eff(settings.enableCustomRuleEngine, false)}",
+        "- **Bypass device allowlist:** ${eff(settings.bypassDeviceAllowlist, false)}",
+        "- **Hub security enabled:** ${eff(settings.hubSecurityEnabled, false)}",
+        "- **Tool mode (useGateways):** ${settings.useGateways == null ? 'gateway (default)' : (settings.useGateways == false ? 'flat' : 'gateway')}",
+        "- **MCP log level (UI setting):** ${eff(settings.mcpLogLevel, 'error')}",
+        "- **Hubitat console logging:** ${eff(settings.debugLogging, false)}",
+        "- **Disabled gateways:** ${disabledGateways ? disabledGateways.join(', ') : 'none (default)'}",
+        "- **Disabled tools:** ${disabledTools ? disabledTools.join(', ') : 'none (default)'}",
+        "- **Enforce Origin validation:** ${eff(settings.enforceOriginValidation, false)}",
+        "- **Extra allowed origins:** ${privacyMode == 'public' ? "${extraOrigins.size()} configured" : (extraOrigins ? extraOrigins.join(', ') : 'none (default)')}",
+        "- **Max concurrent writes:** ${eff(settings.maxConcurrentWrites, 2)}",
+        "- **Cloud-relay budget (ms):** ${eff(settings.relayBudgetMs, 6000)}",
+        "- **LAN budget (ms):** ${eff(settings.lanBudgetMs, 0)}",
+        "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
+        "- **Max captured states:** ${eff(settings.maxCapturedStates, 20)}",
+        "- **Loop guard max executions:** ${eff(settings.loopGuardMax, 30)}",
+        "- **Loop guard window (sec):** ${eff(settings.loopGuardWindowSec, 60)}"
+    ]
+}
+
+// Wraps only the free-prose fields. Lines inside a ``` fence and any single word longer
+// than the width are left alone, so pasted payloads survive intact.
+private String _bugReportWrap(String text, int width = 100) {
+    if (text == null) return null
+    def limit = width > 0 ? width : 100
+    boolean inFence = false
+    def out = []
+    text.split("\n", -1).each { String line ->
+        if (line.trim().startsWith("```")) {
+            inFence = !inFence
+            out << line
+            return
+        }
+        if (inFence || line.length() <= limit) {
+            out << line
+            return
+        }
+        String current = null
+        line.split(" ").each { String word ->
+            if (current == null) {
+                current = word
+            } else if (current.length() + 1 + word.length() <= limit) {
+                current = "${current} ${word}".toString()
+            } else {
+                out << current
+                current = word
+            }
+        }
+        out << (current == null ? "" : current)
+    }
+    return out.join("\n")
+}
+
+private List _bugReportMissingContext(args, String issueType) {
+    def blank = { value -> !(value?.toString()?.trim()) }
+    def missing = []
+    if (blank(args.llmClient)) {
+        missing << [field: "llmClient", ask: "Ask the user which app they run (Claude Code, Claude Desktop, Claude.ai web, ChatGPT desktop, Cursor, ...) and pass it as llmClient."]
+    }
+    if (blank(args.llmModel)) {
+        missing << [field: "llmModel", ask: "Ask the user which model is in use (Claude Opus 5, Sonnet 5, GPT-5, ...) and pass it as llmModel."]
+    }
+    if (issueType == "bug") {
+        if (blank(args.stepsToReproduce)) {
+            missing << [field: "stepsToReproduce", ask: "Write the exact sequence that reproduces the failure and pass it as stepsToReproduce."]
+        }
+        if (blank(args.verbatimToolCalls)) {
+            missing << [field: "verbatimToolCalls", ask: "Copy the exact failing tool call(s) and the raw response text out of the transcript and pass them as verbatimToolCalls."]
+        }
+        if (blank(args.clientLogs)) {
+            missing << [field: "clientLogs", ask: "Collect the MCP client host's own log lines for the failure window and pass them as clientLogs."]
+        }
+    }
+    return missing
+}
+
+private List _bugReportPreflight(String issueType) {
+    if (issueType != "bug") return []
+    def steps = []
+    def level = getConfiguredLogLevel()
+    if (level != "debug") {
+        steps << "MCP log level is ${level}. Call hub_set_log_level(level='debug'), reproduce the failure, then call hub_report_issue again so the report carries debug entries.".toString()
+    }
+    steps << "Attach logs from every source: hub_get_logs(mode='hub') for native hub logs around the failure, mode='mcp' for MCP entries (error/warn already attached), and your client host's own MCP logs via clientLogs."
+    steps << "Paste the exact tool calls and raw responses in verbatimToolCalls -- do not paraphrase."
+    return steps
 }
 
 private Map _bugReportNativeRmStatus() {
@@ -392,7 +512,14 @@ private String _bugReportBuildMarkdown(Map params) {
     def otherLines = scopedLogs.includedUnrelated ? scopedLogs.other.collect { _bugReportFormatLogEntry(it) } : []
     def failingToolLine = args.failingTool ? "- **Failing tool:** ${args.failingTool}\n" : ""
     def nativeAppLine = args.nativeAppId ? "- **Native RM app id:** ${args.nativeAppId}\n" : ""
-    def reproSection = args.stepsToReproduce ? "\n### Steps to Reproduce\n${args.stepsToReproduce}\n" : ""
+    def reproSection = args.stepsToReproduce ? "\n### Steps to Reproduce\n${_bugReportWrap(args.stepsToReproduce.toString())}\n" : ""
+    def settingsSection = "## MCP Server Settings\n" + (env.settingsLines ?: []).join("\n") + "\n"
+    def verbatim = args.verbatimToolCalls?.toString()?.trim()
+    def clientLogText = args.clientLogs?.toString()?.trim()
+    // An absent field is rendered as a visible gap on a bug report so the reader can see the
+    // agent skipped it, rather than having to guess whether it had nothing to paste.
+    def verbatimSection = verbatim ? "\n## Verbatim Tool Calls\n```text\n${verbatim}\n```\n" : (issueType == "bug" ? "\n## Verbatim Tool Calls\n_Not provided_\n" : "")
+    def clientLogSection = clientLogText ? "\n## Client-Side Logs\n```text\n${clientLogText}\n```\n" : (issueType == "bug" ? "\n## Client-Side Logs\n_Not provided_\n" : "")
     def ruleSection
     if (!ruleInfo) {
         ruleSection = ""
@@ -447,21 +574,26 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Hub model:** ${env.hubModel}
 - **Hub firmware:** ${env.hubFirmware}
 - **Time zone:** ${env.timeZone}
+- **Connection:** ${env.connection}
+- **Client (MCP self-report):** ${env.clientSelfReport}
+- **Protocol version:** ${env.protocolVersion}
 - **MCP log level:** ${env.logLevel}
 - **Tool mode:** ${env.toolMode}
 - **Rules in legacy custom rule engine:** ${env.customMcpRuleCount}
 - ${env.nativeRm.installed == false ? "**Native Rule Machine:** not installed (Rule Machine not detected on this hub)" : "**Native Rule Machine rules:** ${env.nativeRm.count}${env.nativeRm.error ? ' (RMUtils partial failure — count may be inaccurate)' : ''}"}
 - **Devices exposed to MCP:** ${env.deviceCount}
 - **LLM / client:** ${env.llmClient}
+- **Model:** ${env.llmModel}
 ${failingToolLine}${nativeAppLine}
+${settingsSection}
 ${expectedActualHeader}
 
 ### Expected
-${args.expected}
+${_bugReportWrap(args.expected?.toString() ?: "")}
 
 ### Actual
-${args.actual}
-${reproSection}${ruleSection}
+${_bugReportWrap(args.actual?.toString() ?: "")}
+${reproSection}${verbatimSection}${clientLogSection}${ruleSection}
 ${logSection}
 
 ## Additional Context
@@ -497,19 +629,22 @@ def _getAllToolDefinitions_partDebugLogging() {
         ],
         [
             name: "hub_report_issue",
-            description: "File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post.",
+            description: "File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post. Paste real tool calls and client-host log lines rather than describing them; the result's preflight and missingContext name anything still missing.[[FLAT_TRIM]] A report without those two fields nearly always comes back with questions.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     title: [type: "string", description: "Short bug/issue narrative. Seeds GitHub title."],
                     expected: [type: "string", description: "What should have happened."],
                     actual: [type: "string", description: "What actually happened."],
-                    stepsToReproduce: [type: "string"],
+                    stepsToReproduce: [type: "string", description: "Exact sequence that reproduces the failure."],
                     issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
                     failingTool: [type: "string", description: "MCP tool that failed; scopes logs + titles issue."],
                     ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
                     nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
-                    llmClient: [type: "string", description: "Claude / ChatGPT / Gemini / etc."],
+                    llmClient: [type: "string", description: "Host app + version, e.g. 'Claude Code 2.1', 'Claude Desktop', 'Claude.ai web', 'ChatGPT desktop', 'Cursor'. 'Claude' alone is not enough -- ask the user."],
+                    llmModel: [type: "string", description: "Model in use, e.g. 'Claude Opus 5', 'Sonnet 5', 'Haiku 4.5', 'GPT-5'. Ask the user if unknown."],
+                    verbatimToolCalls: [type: "string", description: "The EXACT failing tool call(s) -- tool name and args JSON -- plus the EXACT raw response/error text, copied from the transcript.[[FLAT_TRIM]] Never paraphrase or summarize: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"],
+                    clientLogs: [type: "string", description: "Raw log lines from the MCP client host covering the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary.[[/FLAT_TRIM]]"],
                     privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name, suppresses raw logs."],
                     includeRawLogs: [type: "boolean", description: "Default: true private, false public."],
                     includeUnrelatedRecentLogs: [type: "boolean", description: "When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope; default false, no-op when unscoped."],
