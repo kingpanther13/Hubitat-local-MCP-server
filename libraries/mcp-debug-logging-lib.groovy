@@ -159,9 +159,9 @@ def toolGenerateBugReport(args) {
             relevantCount: scopedLogs.relevant.size(),
             otherRecentLogCount: scopedLogs.scoped && !scopedLogs.includedUnrelated ? scopedLogs.otherCount : 0
         ],
-        missingContext: _bugReportMissingContext(args, issueType),
+        missingContext: _bugReportMissingContext(args, issueType, mcpClientIdentity()?.lastSeen),
         preflight: _bugReportPreflight(issueType),
-        instructions: "1. Resolve every preflight step and missingContext item first -- a report without them usually gets sent back with questions. 2. Open submitUrl; the GitHub issue title is pre-filled. 3. Type a short description of what you were doing in the 'What happened' field. 4. Paste the 'report' content into the 'Agent report output' field. Privacy: if you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, and filenames with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting -- public mode is a best-effort assist, not a guarantee."
+        instructions: "1. Resolve every preflight step and missingContext item first -- a report without them usually gets sent back with questions. Never guess llmClient or llmModel -- ask the user. 2. Open submitUrl; the GitHub issue title is pre-filled. 3. Type a short description of what you were doing in the 'What happened' field. 4. Paste the 'report' content into the 'Agent report output' field. Privacy: if you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, and filenames with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting -- public mode is a best-effort assist, not a guarantee."
     ]
     if (history.error) {
         result.logs.error = history.error
@@ -301,7 +301,16 @@ private String _bugReportClientLine(Map client) {
     def line = client.name.toString()
     if (client.version) line = "${line} ${client.version}"
     if (client.title) line = "${line} (${client.title})"
+    if (_bugReportClientIsWrapper(client)) line = "${line} (transport wrapper -- host app unknown)"
     return line
+}
+
+// A transport wrapper self-reports ITS OWN name on initialize, never the host app behind it,
+// so a match here means the recorded identity cannot name the real client.
+private boolean _bugReportClientIsWrapper(Map client) {
+    def name = client?.name?.toString()?.toLowerCase()
+    if (!name) return false
+    return ["mcp-remote", "mcp-proxy", "supergateway"].any { name.contains(it) }
 }
 
 private List _bugReportSettingsLines(String privacyMode) {
@@ -370,14 +379,21 @@ private String _bugReportWrap(String text, int width = 100) {
     return out.join("\n")
 }
 
-private List _bugReportMissingContext(args, String issueType) {
+private List _bugReportMissingContext(args, String issueType, Map client = null) {
     def blank = { value -> !(value?.toString()?.trim()) }
     def missing = []
+    boolean wrapper = _bugReportClientIsWrapper(client)
+    boolean unidentified = !client?.name || wrapper
+    def why = wrapper ? "the client self-reports as '${client.name}', a transport wrapper, not the host app".toString() : "the client sent no self-report"
     if (blank(args.llmClient)) {
-        missing << [field: "llmClient", ask: "Ask the user which app they run (Claude Code, Claude Desktop, Claude.ai web, ChatGPT desktop, Cursor, ...) and pass it as llmClient."]
+        def ask = "Ask the user which app they run (Claude Code, Claude Desktop, Claude.ai web, ChatGPT desktop, Cursor, ...) and pass it as llmClient."
+        if (unidentified) ask = "${ask} The server could not identify the client (${why}): do NOT guess or infer it -- ask the user.".toString()
+        missing << [field: "llmClient", ask: ask]
+    } else if (unidentified) {
+        missing << [field: "llmClient", ask: "Confirm with the user that '${args.llmClient.toString().trim()}' is the host app they run: the server could not identify the client (${why}), so an inferred value must not stand.".toString()]
     }
     if (blank(args.llmModel)) {
-        missing << [field: "llmModel", ask: "Ask the user which model is in use (Claude Opus 5, Sonnet 5, GPT-5, ...) and pass it as llmModel."]
+        missing << [field: "llmModel", ask: "Ask the user which model is in use (Claude Opus 5, Sonnet 5, GPT-5, ...) and pass it as llmModel -- do not guess."]
     }
     if (issueType == "bug") {
         if (blank(args.stepsToReproduce)) {
@@ -641,7 +657,7 @@ def _getAllToolDefinitions_partDebugLogging() {
                     failingTool: [type: "string", description: "MCP tool that failed; scopes logs + titles issue."],
                     ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
                     nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
-                    llmClient: [type: "string", description: "Host app + version (Claude Code 2.1, Claude Desktop, Claude.ai web...); 'Claude' alone is not enough."],
+                    llmClient: [type: "string", description: "Host app + version (Claude Code 2.1, Claude Desktop, Claude.ai web...); 'Claude' alone is not enough; ask, never guess."],
                     llmModel: [type: "string", description: "Model in use (Opus 5, Sonnet 5, GPT-5...); ask if unknown."],
                     verbatimToolCalls: [type: "string", description: "EXACT failing call (tool + args JSON) and EXACT raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"],
                     clientLogs: [type: "string", description: "Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary.[[/FLAT_TRIM]]"],

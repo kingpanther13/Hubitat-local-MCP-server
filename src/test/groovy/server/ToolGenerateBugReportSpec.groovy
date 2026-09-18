@@ -817,6 +817,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
+        seedClient(clientRecord())
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([
@@ -943,6 +944,53 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.missingContext*.field == ['llmClient', 'llmModel', 'stepsToReproduce', 'verbatimToolCalls', 'clientLogs']
         result.missingContext.every { it.ask?.trim() }
         result.missingContext.find { it.field == 'llmClient' }.ask.contains('llmClient')
+        result.missingContext.find { it.field == 'llmModel' }.ask.endsWith('-- do not guess.')
+    }
+
+    def "an unidentified client turns the blank llmClient ask into an explicit do-not-guess"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        def ask = result.missingContext.find { it.field == 'llmClient' }.ask
+        ask.contains('do NOT guess or infer it')
+        ask.contains('the client sent no self-report')
+    }
+
+    def "a transport wrapper self-report asks the user to confirm the supplied llmClient"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord(name: 'mcp-remote', version: '0.1.29', title: null))
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
+
+        then:
+        def entry = result.missingContext.find { it.field == 'llmClient' }
+        entry != null
+        entry.ask.startsWith("Confirm with the user that 'Claude Desktop' is the host app")
+        entry.ask.contains('transport wrapper')
+
+        and: 'the environment line marks the wrapper so a maintainer does not read it as the host app'
+        result.report.contains('- **Client (MCP self-report):** mcp-remote 0.1.29 (transport wrapper -- host app unknown)')
+    }
+
+    def "a named non-wrapper client leaves a supplied llmClient unquestioned"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord(name: 'claude-ai', version: '1.4.0', title: null))
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude.ai web']))
+
+        then:
+        result.missingContext.every { it.field != 'llmClient' }
     }
 
     def "missingContext on an enhancement asks only for the client and model"() {
@@ -961,6 +1009,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
+        seedClient(clientRecord())
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([
@@ -1026,6 +1075,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
         then:
         result.instructions.startsWith('1. Resolve every preflight step')
+        result.instructions.contains('Never guess llmClient or llmModel -- ask the user.')
         result.instructions.contains('submitUrl')
         result.instructions.contains("'What happened'")
         result.instructions.contains("'Agent report output'")
