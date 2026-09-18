@@ -11817,8 +11817,9 @@ class TestRunner:
             assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
         assert "safeMode" in result, f"hub_get_info missing safeMode: {sorted(result)}"
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
-        # Client identity: the recorder runs before dispatch, so THIS call is already in the
-        # record it hands back. Shape only here -- the name/version capture is proved in the
+        # Client identity: the recorder runs before dispatch, but an identical repeat inside the
+        # ten-minute window deliberately keeps the earlier seenAt, so the record handed back may
+        # predate THIS call. Shape only here -- the name/version capture is proved in the
         # protocol group, which controls what the client declares.
         client = result.get("mcpClient")
         assert isinstance(client, dict), f"hub_get_info missing mcpClient: {sorted(result)}"
@@ -11833,6 +11834,82 @@ class TestRunner:
         recent = client.get("recent")
         assert isinstance(recent, list) and len(recent) <= 5, \
             f"mcpClient.recent must be a list capped at 5: {recent!r}"
+
+    @test("system_tools")
+    def test_report_issue_report_shape(self) -> None:
+        # hub_report_issue is read-only -- it renders a markdown report out of MCP log history plus
+        # the recorded client identity and writes nothing to the hub. It is an MRTR read tool, so a
+        # still-hydrating log buffer rides a requestState continuation the client follows itself.
+        def _report(args: dict) -> dict:
+            res = self.client.call_tool("hub_report_issue", args)
+            assert isinstance(res, dict), f"hub_report_issue returned {type(res)}"
+            return res
+
+        long_expected = (
+            "The trigger should have been created and the rule should then have started listening "
+            "for the switch event without any further interaction from the agent, because every "
+            "required field was supplied on the very first call."
+        )
+        assert len(long_expected) > 150, "the wrap assertion needs prose longer than the wrap width"
+        # A pasted payload that carries its own bare ``` line -- the rendered block must open on a
+        # LONGER backtick run, or the paste would close the block early.
+        verbatim = 'hub_set_rule({"appId": 1}) ->\n```\nHTTP 500 Internal error\n```'
+        result = _report({
+            "issueType": "bug",
+            "title": "E2E report-shape probe",
+            "expected": long_expected,
+            "actual": "addTrigger returned an error",
+            "stepsToReproduce": "1. call hub_set_rule with a switch trigger",
+            "llmClient": "hubitat-e2e-suite",
+            "llmModel": "n/a (automated suite)",
+            "verbatimToolCalls": verbatim,
+            "clientLogs": "2026-01-01T00:00:00 ERROR mcp-server-hubitat: transport closed",
+        })
+        assert result.get("success") is True, f"hub_report_issue failed: {result}"
+        # This suite's ordinary calls declare no clientInfo, so the server can never confirm the
+        # host app and always asks the user about llmClient. Everything actually supplied must be
+        # accepted, so no OTHER field may come back as missing.
+        missing = [entry.get("field") for entry in (result.get("missingContext") or [])]
+        assert [f for f in missing if f != "llmClient"] == [], \
+            f"a supplied field was reported missing: {result.get('missingContext')!r}"
+        assert isinstance(result.get("preflight"), list), f"preflight must be a list: {result!r}"
+        assert "submitUrl" in (result.get("instructions") or ""), \
+            f"instructions must point the agent at submitUrl: {result.get('instructions')!r}"
+        report = result.get("report") or ""
+        for marker in (
+            "## Environment",
+            "- **Connection:** ",
+            "- **Client (MCP self-report):** ",
+            "- **Protocol version:** ",
+            "- **Model:** ",
+            "## MCP Server Settings",
+            "## Verbatim Tool Calls",
+            "## Client-Side Logs",
+            "## Recent Error/Warning Logs",
+        ):
+            assert marker in report, f"report missing {marker!r}: {report[:800]!r}"
+        assert "## Verbatim Tool Calls\n````text\n" in report, \
+            f"verbatim fence did not escalate past the pasted ```: {report!r}"
+        expected_block = report.split("### Expected\n", 1)[1].split("\n### Actual", 1)[0]
+        too_long = [line for line in expected_block.split("\n") if len(line) > 100]
+        assert not too_long, f"expected prose was not wrapped at 100 chars: {too_long!r}"
+
+        # agent_behavior asks for the same evidence as a bug and renders the same sections.
+        agent = _report({
+            "issueType": "agent_behavior",
+            "title": "E2E agent-behavior probe",
+            "expected": "the agent picks the documented tool",
+            "actual": "the agent guessed a tool name",
+        })
+        assert agent.get("success") is True, f"agent_behavior report failed: {agent}"
+        agent_missing = [entry.get("field") for entry in (agent.get("missingContext") or [])]
+        assert "verbatimToolCalls" in agent_missing and "clientLogs" in agent_missing, \
+            f"agent_behavior must ask for the same evidence as a bug: {agent_missing!r}"
+        agent_preflight = agent.get("preflight") or []
+        assert len(agent_preflight) == 1 and "verbatimToolCalls" in agent_preflight[0], \
+            f"agent_behavior preflight must be the single verbatim step: {agent_preflight!r}"
+        assert "## Verbatim Tool Calls\n_Not provided_" in (agent.get("report") or ""), \
+            f"agent_behavior must render the missing-evidence gap: {agent.get('report')!r}"
 
     @test("system_tools")
     def test_set_system_settings(self) -> None:

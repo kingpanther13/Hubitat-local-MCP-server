@@ -189,20 +189,22 @@ class McpClientIdentitySpec extends ToolSpecBase {
         script.mcpClientIdentity().lastSeen.protocolVersion == '2025-06-18'
     }
 
-    def "a legacy follow-up carrying the protocol header keeps the handshake's requested version"() {
+    def "a legacy follow-up header replaces the negotiated version while the requested one stays"() {
         given:
         script.metaClass.getRooms = { -> [] }
         driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
         def logs = captureMcpLogs()
 
-        when: 'the mandatory header rides a plain tools/call, as every current client sends it'
-        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2025-06-18'])
+        when: 'the mandatory header rides a plain tools/call, naming a different supported revision'
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2025-03-26'])
         mcpDriver.callTool('hub_list_rooms', [:])
 
-        then: 'the protocol fields carry over, and a nameless request logs no identity line'
+        then: 'the header is what the client negotiated, so it replaces the stored value'
         def last = script.mcpClientIdentity().lastSeen
+        last.protocolVersion == '2025-03-26'
+
+        and: 'what the client asked for at the handshake is untouched, and a nameless request logs nothing'
         last.requestedProtocolVersion == '2025-06-18'
-        last.protocolVersion == '2025-06-18'
         logs.findAll { it.message.startsWith('MCP client ') }.isEmpty()
     }
 
@@ -223,6 +225,33 @@ class McpClientIdentitySpec extends ToolSpecBase {
 
         then: 'the tuple is unchanged, so the record was not rewritten'
         script.mcpClientIdentity().lastSeen.seenAt == firstSeenAt
+    }
+
+    def "two clients alternating request-by-request rewrite the record every time"() {
+        given:
+        def clock = new java.util.concurrent.atomic.AtomicLong(FIXED_NOW)
+        NOW_OVERRIDE.set({ -> clock.get() })
+
+        when:
+        driveLegacyInitialize([name: 'client-a', version: '1.0'])
+
+        then:
+        script.mcpClientIdentity().lastSeen.seenAt == FIXED_NOW
+
+        when: 'the other client takes a turn a second later'
+        clock.set(FIXED_NOW + 1000L)
+        driveLegacyInitialize([name: 'client-b', version: '2.0'])
+
+        then:
+        script.mcpClientIdentity().lastSeen.seenAt == FIXED_NOW + 1000L
+
+        when: 'and the first one comes back a second after that'
+        clock.set(FIXED_NOW + 2000L)
+        driveLegacyInitialize([name: 'client-a', version: '1.0'])
+
+        then: 'the tuple differs on every step, so the write gate suppresses nothing -- the accepted cost'
+        script.mcpClientIdentity().lastSeen.seenAt == FIXED_NOW + 2000L
+        script.mcpClientIdentity().lastSeen.name == 'client-a'
     }
 
     def "a repeat past the ten-minute window refreshes seenAt"() {
@@ -321,6 +350,52 @@ class McpClientIdentitySpec extends ToolSpecBase {
         script.mcpClientIdentity() == [lastSeen: null, recent: []]
     }
 
+    // ---- recorder failure ----
+
+    def "a recorder failure is reported and the request is still served"() {
+        given: 'a stored record that throws the moment the recorder copies it'
+        atomicStateMap.mcpClientLastSeen = new ExplodingRecord()
+        def logs = captureMcpLogs()
+
+        when:
+        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
+
+        then: 'losing an identity record is a diagnostic gap, never a reason to fail the handshake'
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.protocolVersion == '2025-06-18'
+
+        and:
+        logs.any {
+            it.level == 'warn' && it.component == 'server' &&
+            it.message.startsWith('MCP client identity capture failed: IllegalStateException')
+        }
+    }
+
+    def "a recorder failure whose own recovery log throws still serves the request"() {
+        given: 'only warn throws -- handleInitialize logs its own info line through the same method'
+        atomicStateMap.mcpClientLastSeen = new ExplodingRecord()
+        script.metaClass.mcpLog = { String level, String component, String message ->
+            if (level == 'warn') throw new RuntimeException('log down')
+        }
+
+        when:
+        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.protocolVersion == '2025-06-18'
+    }
+
+    def "an identity read of an unreadable record answers empty rather than throwing at the caller"() {
+        given:
+        atomicStateMap.mcpClientLastSeen = new ExplodingRecord()
+
+        expect:
+        script.mcpClientIdentity() == [lastSeen: null, recent: []]
+    }
+
     // ---- transport source ----
 
     def "a request over the cloud relay records source cloud"() {
@@ -415,5 +490,11 @@ class McpClientIdentitySpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    /** A stored record that throws the moment production copies it out of atomicState. */
+    static class ExplodingRecord extends LinkedHashMap {
+        @Override
+        Set entrySet() { throw new IllegalStateException('boom') }
     }
 }

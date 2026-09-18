@@ -752,6 +752,32 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('- **Disabled gateways:** none (default)')
     }
 
+    def "the UI log-level line says not set when mcpLogLevel is unset"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.remove('mcpLogLevel')
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'the effective level already has its own line, so naming a default here would mislead'
+        result.report.contains('- **MCP log level (UI setting):** not set (effective level above)')
+    }
+
+    def "the UI log-level line reports the configured level when mcpLogLevel is set"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.mcpLogLevel = 'debug'
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **MCP log level (UI setting):** debug')
+    }
+
     def "settings section reports hub security as a boolean and never leaks the credentials"() {
         given:
         sharedLocation.hub = new TestHub()
@@ -870,6 +896,21 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('- **Model:** Not provided')
     }
 
+    def "a verbatim paste carrying its own fence opens the block on a longer backtick run"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            verbatimToolCalls: 'hub_set_rule(...) ->\n```\nHTTP 500\n```',
+        ]))
+
+        then: 'a three-backtick opener would be closed early by the paste\'s own fence'
+        result.report.contains('## Verbatim Tool Calls\n````text\n')
+        result.report.contains('\nHTTP 500\n')
+    }
+
     def "an enhancement omits the verbatim and client-log sections entirely"() {
         given:
         sharedLocation.hub = new TestHub()
@@ -923,6 +964,20 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
         expect:
         script._bugReportWrap(fenced) == fenced
+    }
+
+    def "an indented preformatted line is left unwrapped"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def indented = '    ' + ('alpha ' * 24) + 'ab'
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([actual: indented]))
+
+        then: 'the words would wrap on their own; the leading indent is what marks it preformatted'
+        indented.length() == 150
+        result.report.contains(indented)
     }
 
     def "report wraps expected, actual and stepsToReproduce but not the title"() {
@@ -1015,6 +1070,68 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         '1.2.0' | false
     }
 
+    @Unroll
+    def "a client named '#clientName' is #verdict as a transport wrapper"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord(name: clientName, version: '1.0', title: null))
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
+
+        then:
+        (result.missingContext.find { it.field == 'llmClient' } != null) == wrapper
+        result.report.contains('(transport wrapper -- host app unknown)') == wrapper
+
+        where:
+        clientName       || wrapper
+        'mcp-proxy'      || true
+        'fastmcp-remote' || true
+        'supergateway'   || true
+        'MCP-Remote'     || true
+        'claude-ai'      || false
+
+        verdict = wrapper ? 'detected' : 'not detected'
+    }
+
+    def "a blank llmClient with an identified non-wrapper client gets the plain ask"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord(name: 'claude-ai', version: '1.4.0', title: null))
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'the server knows who it is talking to, so the do-not-guess escalation does not apply'
+        def ask = result.missingContext.find { it.field == 'llmClient' }.ask
+        ask == 'Ask the user which app they run (Claude Code, Claude Desktop, Claude.ai web, ChatGPT desktop, Cursor, ...) and pass it as llmClient.'
+        !ask.contains('do NOT guess or infer')
+    }
+
+    def "a wrapper seen on an earlier request is still called out when this one named nobody"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
+        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null)]
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
+
+        then:
+        def ask = result.missingContext.find { it.field == 'llmClient' }.ask
+        ask.contains('transport wrapper')
+        ask.contains('mcp-remote 0.1.29')
+
+        and: 'the environment line names the bridge and says the host app behind it is unknown'
+        def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
+        line.contains('mcp-remote 0.1.29 [')
+        line.contains('(transport wrapper)')
+        line.endsWith('-- host app unknown behind a transport wrapper')
+    }
+
     def "a named non-wrapper client leaves a supplied llmClient unquestioned"() {
         given:
         sharedLocation.hub = new TestHub()
@@ -1086,6 +1203,26 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         result.preflight.size() == 2
         !result.preflight.any { it.startsWith('MCP log level is') }
+    }
+
+    def "an agent_behavior report asks for the same evidence and renders the same gaps as a bug"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([issueType: 'agent_behavior']))
+
+        then:
+        result.missingContext*.field == ['llmClient', 'llmModel', 'stepsToReproduce', 'verbatimToolCalls', 'clientLogs']
+
+        and: 'the transcript is the whole evidence, so the server-side log-level step does not apply'
+        result.preflight == ['Paste the exact tool calls and raw responses in verbatimToolCalls -- do not paraphrase.']
+
+        and:
+        result.report.contains('## Verbatim Tool Calls')
+        result.report.contains('## Client-Side Logs')
+        result.report.count('_Not provided_') == 2
     }
 
     def "preflight is empty for a non-bug report"() {

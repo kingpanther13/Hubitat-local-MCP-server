@@ -132,6 +132,7 @@ def toolGenerateBugReport(args) {
     def allEntries = (history.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
     def anchor = _bugReportResolveAnchor(args, allEntries)
     def scopedLogs = _bugReportScopedLogs(args, allEntries, anchor, windowMs)
+    def identity = mcpClientIdentity()
     def env = _bugReportEnvironmentSummary(args, privacyMode)
     def ruleInfo = _bugReportRuleInfo(args)
     def suggestedTitle = _bugReportSuggestedTitle(args, issueType)
@@ -159,7 +160,7 @@ def toolGenerateBugReport(args) {
             relevantCount: scopedLogs.relevant.size(),
             otherRecentLogCount: scopedLogs.scoped && !scopedLogs.includedUnrelated ? scopedLogs.otherCount : 0
         ],
-        missingContext: _bugReportMissingContext(args, issueType, mcpClientIdentity()?.lastSeen),
+        missingContext: _bugReportMissingContext(args, issueType, identity?.lastSeen, identity?.recent),
         preflight: _bugReportPreflight(issueType),
         instructions: "1. Resolve every preflight step and missingContext item first -- a report without them usually gets sent back with questions. Never guess llmClient or llmModel -- ask the user. 2. Open submitUrl; the GitHub issue title is pre-filled. 3. Type a short description of what you were doing in the 'What happened' field. 4. Paste the 'report' content into the 'Agent report output' field. Privacy: if you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, and filenames with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting -- public mode is a best-effort assist, not a guarantee."
     ]
@@ -294,9 +295,9 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
     ]
 }
 
-// The client's own initialize self-report, not the agent-supplied llmClient: the two
-// disagree often enough (a wrapper reports its transport, the user names the host app)
-// that a maintainer needs both.
+// The client's own self-report (initialize, or the per-request _meta), not the agent-supplied
+// llmClient: the two disagree often enough (a wrapper reports its transport, the user names the
+// host app) that a maintainer needs both.
 private String _bugReportClientLine(Map client, List recent) {
     // A request that declared nothing still narrows the field: name whoever HAS spoken to this
     // install, so a maintainer sees the candidates instead of a dead end.
@@ -306,9 +307,14 @@ private String _bugReportClientLine(Map client, List recent) {
         def listed = named.take(5).collect { entry ->
             def item = entry["name"].toString()
             if (entry["version"]) item = "${item} ${entry['version']}".toString()
-            return "${item} [${entry['era'] ?: 'unknown'}, ${entry['source'] ?: 'unknown'}]".toString()
+            item = "${item} [${entry['era'] ?: 'unknown'}, ${entry['source'] ?: 'unknown'}]".toString()
+            return _bugReportClientIsWrapper(entry) ? "${item} (transport wrapper)".toString() : item
         }
-        return "not reported on this request (recent clients: ${listed.join(', ')})".toString()
+        def line = "not reported on this request (recent clients: ${listed.join(', ')})".toString()
+        if (_bugReportWrapperFrom(client, recent) != null) {
+            line = "${line} -- host app unknown behind a transport wrapper".toString()
+        }
+        return line
     }
     def line = client.name.toString()
     if (client.version) line = "${line} ${client.version}"
@@ -328,6 +334,13 @@ private boolean _bugReportClientIsWrapper(Map client) {
     return ["mcp-remote", "mcp-proxy", "fastmcp-remote", "supergateway"].any { name.contains(it) }
 }
 
+// The current request can be nameless while a bridge named itself on an earlier one, so a wrapper
+// anywhere in the recent history still stands between this server and the real host app.
+private Map _bugReportWrapperFrom(Map client, List recent) {
+    if (_bugReportClientIsWrapper(client)) return client
+    return (recent ?: []).find { it instanceof Map && it["name"] && _bugReportClientIsWrapper(it) }
+}
+
 private List _bugReportSettingsLines(String privacyMode) {
     def eff = { raw, fallback -> raw == null ? "${fallback} (default)" : raw.toString() }
     def nameList = { raw -> (raw ?: []).collect { it.toString() } }
@@ -345,7 +358,7 @@ private List _bugReportSettingsLines(String privacyMode) {
         "- **Bypass device allowlist:** ${eff(settings.bypassDeviceAllowlist, false)}",
         "- **Hub security enabled:** ${eff(settings.hubSecurityEnabled, false)}",
         "- **Tool mode (useGateways):** ${settings.useGateways == null ? 'gateway (default)' : (settings.useGateways == false ? 'flat' : 'gateway')}",
-        "- **MCP log level (UI setting):** ${eff(settings.mcpLogLevel, 'error')}",
+        "- **MCP log level (UI setting):** ${settings.mcpLogLevel == null ? 'not set (effective level above)' : settings.mcpLogLevel.toString()}",
         "- **Hubitat console logging:** ${eff(settings.debugLogging, false)}",
         "- **Disabled gateways:** ${disabledGateways ? disabledGateways.join(', ') : 'none (default)'}",
         "- **Disabled tools:** ${disabledTools ? disabledTools.join(', ') : 'none (default)'}",
@@ -361,6 +374,25 @@ private List _bugReportSettingsLines(String privacyMode) {
     ]
 }
 
+// A pasted payload can carry its own fence, so the block opens on a longer backtick run than
+// anything inside it -- otherwise the first inner fence closes the block early.
+private String _bugReportFence(String text) {
+    String source = text ?: ""
+    int longest = 0
+    int run = 0
+    for (int i = 0; i < source.length(); i++) {
+        if (source.substring(i, i + 1) == "`") {
+            run++
+            if (run > longest) longest = run
+        } else {
+            run = 0
+        }
+    }
+    String fence = "```"
+    while (fence.length() <= longest) fence = fence + "`"
+    return fence
+}
+
 // Wraps only the free-prose fields. Lines inside a ``` fence and any single word longer
 // than the width are left alone, so pasted payloads survive intact.
 private String _bugReportWrap(String text, int width = 100) {
@@ -374,7 +406,9 @@ private String _bugReportWrap(String text, int width = 100) {
             out << line
             return
         }
-        if (inFence || line.length() <= limit) {
+        // A line that opens with whitespace is preformatted (indented code), so re-wrapping it
+        // would destroy the layout it was indented to keep.
+        if (inFence || line.length() <= limit || line.startsWith(" ") || line.startsWith("\t")) {
             out << line
             return
         }
@@ -394,12 +428,13 @@ private String _bugReportWrap(String text, int width = 100) {
     return out.join("\n")
 }
 
-private List _bugReportMissingContext(args, String issueType, Map client = null) {
+private List _bugReportMissingContext(args, String issueType, Map client = null, List recent = null) {
     def blank = { value -> !(value?.toString()?.trim()) }
     def missing = []
-    boolean wrapper = _bugReportClientIsWrapper(client)
+    Map wrapperRecord = _bugReportWrapperFrom(client, recent)
+    boolean wrapper = wrapperRecord != null
     boolean unidentified = !client?.name || wrapper
-    def why = wrapper ? "the client self-reports as '${client.name}${client.version ? ' ' + client.version : ''}', a transport wrapper (stdio-to-HTTP bridge), not the host app".toString() : "the client sent no self-report on this request"
+    def why = wrapper ? "the client identifies as '${wrapperRecord.name}${wrapperRecord.version ? ' ' + wrapperRecord.version : ''}', a transport wrapper (stdio-to-HTTP bridge), not the host app".toString() : "the client sent no self-report on this request"
     if (blank(args.llmClient)) {
         def ask = "Ask the user which app they run (Claude Code, Claude Desktop, Claude.ai web, ChatGPT desktop, Cursor, ...) and pass it as llmClient."
         if (unidentified) ask = "${ask} The server could not identify the client (${why}): do NOT guess or infer it -- ask the user.".toString()
@@ -410,7 +445,9 @@ private List _bugReportMissingContext(args, String issueType, Map client = null)
     if (blank(args.llmModel)) {
         missing << [field: "llmModel", ask: "Ask the user which model is in use (Claude Opus 5, Sonnet 5, GPT-5, ...) and pass it as llmModel -- do not guess."]
     }
-    if (issueType == "bug") {
+    // An agent-behavior report is diagnosed from the same evidence as a bug: what was called,
+    // what came back, and what the client's own log said.
+    if (issueType in ["bug", "agent_behavior"]) {
         if (blank(args.stepsToReproduce)) {
             missing << [field: "stepsToReproduce", ask: "Write the exact sequence that reproduces the failure and pass it as stepsToReproduce."]
         }
@@ -425,6 +462,10 @@ private List _bugReportMissingContext(args, String issueType, Map client = null)
 }
 
 private List _bugReportPreflight(String issueType) {
+    def verbatimStep = "Paste the exact tool calls and raw responses in verbatimToolCalls -- do not paraphrase."
+    // An agent-behavior report is about what the agent did, so the transcript is the whole
+    // evidence; server-side log level changes nothing about it.
+    if (issueType == "agent_behavior") return [verbatimStep]
     if (issueType != "bug") return []
     def steps = []
     def level = getConfiguredLogLevel()
@@ -432,7 +473,7 @@ private List _bugReportPreflight(String issueType) {
         steps << "MCP log level is ${level}. Call hub_set_log_level(level='debug'), reproduce the failure, then call hub_report_issue again so the report carries debug entries.".toString()
     }
     steps << "Attach logs from every source: hub_get_logs(mode='hub') for native hub logs around the failure, mode='mcp' for MCP entries (error/warn already attached), and your client host's own MCP logs via clientLogs."
-    steps << "Paste the exact tool calls and raw responses in verbatimToolCalls -- do not paraphrase."
+    steps << verbatimStep
     return steps
 }
 
@@ -547,10 +588,13 @@ private String _bugReportBuildMarkdown(Map params) {
     def settingsSection = "## MCP Server Settings\n" + (env.settingsLines ?: []).join("\n") + "\n"
     def verbatim = args.verbatimToolCalls?.toString()?.trim()
     def clientLogText = args.clientLogs?.toString()?.trim()
-    // An absent field is rendered as a visible gap on a bug report so the reader can see the
-    // agent skipped it, rather than having to guess whether it had nothing to paste.
-    def verbatimSection = verbatim ? "\n## Verbatim Tool Calls\n```text\n${verbatim}\n```\n" : (issueType == "bug" ? "\n## Verbatim Tool Calls\n_Not provided_\n" : "")
-    def clientLogSection = clientLogText ? "\n## Client-Side Logs\n```text\n${clientLogText}\n```\n" : (issueType == "bug" ? "\n## Client-Side Logs\n_Not provided_\n" : "")
+    // An absent field is rendered as a visible gap on the reports that need it, so the reader can
+    // see the agent skipped it rather than guessing whether it had nothing to paste.
+    boolean needsEvidence = issueType in ["bug", "agent_behavior"]
+    def verbatimFence = _bugReportFence(verbatim)
+    def clientLogFence = _bugReportFence(clientLogText)
+    def verbatimSection = verbatim ? "\n## Verbatim Tool Calls\n${verbatimFence}text\n${verbatim}\n${verbatimFence}\n" : (needsEvidence ? "\n## Verbatim Tool Calls\n_Not provided_\n" : "")
+    def clientLogSection = clientLogText ? "\n## Client-Side Logs\n${clientLogFence}text\n${clientLogText}\n${clientLogFence}\n" : (needsEvidence ? "\n## Client-Side Logs\n_Not provided_\n" : "")
     def ruleSection
     if (!ruleInfo) {
         ruleSection = ""

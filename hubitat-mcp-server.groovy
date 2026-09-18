@@ -1216,15 +1216,25 @@ def _decodeHeaderValue(String value) {
 
 // ==================== MCP CLIENT IDENTITY ====================
 
-// lastSeen is what the most recent request itself declared; recent is the named clients seen.
+// lastSeen is the last RECORDED identity: name/version/title as that request declared them (null
+// when it declared none), protocol fields carried over from the handshake; a repeat inside the
+// ten-minute window keeps the earlier seenAt. recent lists the named clients seen.
 // The stored maps are copied on the way out so a caller cannot edit persisted state.
 def mcpClientIdentity() {
-    def last = atomicState.mcpClientLastSeen
-    def recent = atomicState.mcpClientsRecent
-    return [
-        lastSeen: (last instanceof Map) ? ([:] + last) : null,
-        recent: (recent instanceof List) ? recent.findAll { it instanceof Map }.collect { [:] + it } : []
-    ]
+    try {
+        def last = atomicState.mcpClientLastSeen
+        def recent = atomicState.mcpClientsRecent
+        return [
+            lastSeen: (last instanceof Map) ? ([:] + last) : null,
+            recent: (recent instanceof List) ? recent.findAll { it instanceof Map }.collect { [:] + it } : []
+        ]
+    } catch (Throwable e) {
+        try {
+            mcpLog("warn", "server", "MCP client identity read failed: ${e.class.simpleName}: ${e.message}")
+        } catch (Throwable ignored) {
+        }
+        return [lastSeen: null, recent: []]
+    }
 }
 
 // The fields that make a client distinct. seenAt is excluded deliberately -- it moves on every
@@ -1233,8 +1243,9 @@ private List _mcpClientTupleKeys() {
     return ["name", "version", "title", "protocolVersion", "requestedProtocolVersion", "era", "source"]
 }
 
-// Record who sent this message. MUST NOT throw or alter the response: losing an identity
-// record is a diagnostic gap, never a reason to fail a served request.
+// Record who sent this message. It never fails a served request: losing an identity record is a
+// diagnostic gap, not a reason to refuse. A notification (msg.id == null) identifies nothing worth
+// keeping, so it is skipped on purpose.
 def _recordMcpClient(msg) {
     try {
         if (!(msg instanceof Map) || msg.id == null) return
@@ -1246,17 +1257,21 @@ def _recordMcpClient(msg) {
         if (previous?.seenAt instanceof Number) previousSeenAt = (previous.seenAt as Number).longValue()
         // Per-request atomicState writes are a known cost in this app, so persist only a real
         // identity change or a timestamp old enough to have stopped meaning anything.
+        // Two clients alternating request-by-request write on every request; accepted, the record is diagnostic.
         if (!changed && ((record.seenAt as Long) - previousSeenAt) < 600000L) return
         atomicState.mcpClientLastSeen = record
         _mcpClientPushRecent(record)
-        // initialize logs its own richer line in handleInitialize; logging unchanged repeats
-        // here would put one line on every request.
+        // initialize logs its own richer line in handleInitialize; an unchanged identity re-logs
+        // every ten minutes and says nothing new.
         // A request that declared no clientInfo names no client, so it has no line to log.
         if (changed && msg.method != "initialize" && record.name) {
             mcpLog("info", "server", "MCP client ${record.name} ${record.version ?: 'unknown'} on protocol ${record.protocolVersion ?: 'unknown'} (${record.era}, ${record.source})")
         }
-    } catch (Exception e) {
-        mcpLog("debug", "server", "MCP client identity capture skipped: ${e.message}")
+    } catch (Throwable e) {
+        try {
+            mcpLog("warn", "server", "MCP client identity capture failed: ${e.class.simpleName}: ${e.message}")
+        } catch (Throwable ignored) {
+        }
     }
 }
 
@@ -1294,7 +1309,8 @@ private Map _mcpClientRecordFor(msg, Map previous) {
         record.requestedProtocolVersion = _mcpClientString(requested)
         record.protocolVersion = _mcpClientString(_negotiatedProtocolVersion(requested))
     } else if (headerVersion != null) {
-        // A legacy client never re-requests after the handshake, so keep what it asked for then.
+        // The header echoes the version negotiated at the handshake (validated upstream), so it
+        // replaces the stored one; what the client originally asked for stays.
         record.protocolVersion = headerVersion
     }
     return record
@@ -1309,6 +1325,8 @@ private String _mcpClientString(value) {
 // Newest first, deduped on the client itself so a reconnecting client cannot fill the list
 // with copies of itself, and capped so the stored history stays bounded. A nameless request
 // identifies nobody, so recent holds only clients that named themselves.
+// The read-modify-write is unsynchronized: concurrent requests can drop an entry, and the list
+// is best-effort diagnostic history, never a source of truth.
 private void _mcpClientPushRecent(Map record) {
     if (record?.name == null) return
     def stored = atomicState.mcpClientsRecent
@@ -1447,8 +1465,8 @@ def initializeProtocolVersions() {
 // requests an unknown, or requests the modern) protocolVersion negotiates down to.
 def defaultProtocolVersion() { initializeProtocolVersions()[0] }
 
-// The version initialize answers with for a requested one. Named because the client-identity
-// record has to store the NEGOTIATED version, not the asked-for one.
+// The version initialize answers with for a requested one -- the NEGOTIATED version, never the
+// asked-for one.
 def _negotiatedProtocolVersion(requested) {
     return initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
 }
@@ -10057,9 +10075,13 @@ Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable cle
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
-**Before filing a bug.** The result carries `preflight` (bug reports only) and `missingContext`; resolve both before handing the user the link. Preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and call this tool again so the report carries debug entries; then to attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure, `mode='mcp'` (error/warn entries are already in the report), and the client host's own MCP log via `clientLogs`.
+**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and call this tool again so the report carries debug entries -- that step is present only when the level is not already debug; then to attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure, `mode='mcp'` (error/warn entries are already in the report), and the client host's own MCP log via `clientLogs`.
 
-**What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. When the server has no client self-report, or it names a transport wrapper (mcp-remote, mcp-proxy, fastmcp-remote, or the Python SDK default identity `mcp 0.1.0` those bridges send), the result says so in missingContext: ask the user and never infer the host app or model from context. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log).
+**What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. When the server has no client self-report, or it names a transport wrapper (mcp-remote, mcp-proxy, fastmcp-remote, or the Python SDK default identity `mcp 0.1.0` those bridges send), the result says so in missingContext: ask the user and never infer the host app or model from context. When the current request declared no name of its own, wrapper detection also looks at the recently seen named clients, so a bridge that identified itself on an earlier request is still called out. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log). An `agent_behavior` report asks for `stepsToReproduce`, `verbatimToolCalls` and `clientLogs` exactly as a bug does, and renders the same sections.
+
+**Formatting the prose fields.** Put stack traces, JSON or tables in `expected`, `actual` or `stepsToReproduce` inside ``` fences, or indent every line -- an unfenced, unindented line over 100 characters is re-wrapped at word boundaries and a pasted payload loses its shape.
+
+**Log scoping.** `includeUnrelatedRecentLogs` defaults to false and only ever matters once the report is scoped: with no `failingTool`, `ruleId` or `nativeAppId` set, nothing is scoped out and the flag is a no-op.
 
 **What the report already carries.** The server records the client name/version the current request itself declared, the protocol version carried over from the handshake, and -- when the current request declared no name -- the named clients seen recently instead (all visible in `hub_get_info.mcpClient`), whether the request came over the cloud relay or the LAN, and a snapshot of the app's toggles (read/write masters, developer mode, per-tool overrides, Origin enforcement, time budgets). Hub Security is reported as a boolean only. Long prose fields are word-wrapped; verbatim and log fields are not.
 
