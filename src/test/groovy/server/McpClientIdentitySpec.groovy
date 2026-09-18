@@ -492,8 +492,13 @@ class McpClientIdentitySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    /** A stored record that throws the moment production copies it out of atomicState. */
+    /**
+     * A stored record that throws the moment production copies it out of atomicState. It holds
+     * one real entry: an EMPTY map is copied without ever consulting entrySet() (HashMap.putAll
+     * short-circuits on size 0), so an empty subclass would never throw.
+     */
     static class ExplodingRecord extends LinkedHashMap {
+        ExplodingRecord() { super.put('name', 'exploding') }
         @Override
         Set entrySet() { throw new IllegalStateException('boom') }
     }
