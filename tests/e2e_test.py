@@ -14435,6 +14435,16 @@ class TestRunner:
             f"mcpClient.recent must be a list capped at 5: {recent!r}"
         assert any(isinstance(e, dict) and e.get("name") == probe for e in recent), \
             f"the probe client is missing from mcpClient.recent: {recent!r}"
+        # Identity is per-request: this suite's ordinary calls carry no clientInfo, so the
+        # next one must NOT inherit the probe's name (one install serves several clients),
+        # while the probe stays in the named-client history.
+        info2 = self.client.call_tool("hub_get_info", {})
+        last2 = (info2.get("mcpClient") or {}).get("lastSeen") or {}
+        assert last2.get("name") is None, \
+            f"a request without clientInfo must not be attributed to the previous client: {last2!r}"
+        recent2 = (info2.get("mcpClient") or {}).get("recent") or []
+        assert any(isinstance(e, dict) and e.get("name") == probe for e in recent2), \
+            f"the probe client dropped out of mcpClient.recent: {recent2!r}"
 
     @test("protocol")
     def test_modern_header_method_mismatch_rejected(self) -> None:

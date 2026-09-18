@@ -1288,9 +1288,12 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.preflight.size() == 3
-        inner.missingContext*.field == ['llmModel', 'stepsToReproduce', 'verbatimToolCalls', 'clientLogs']
+        inner.missingContext*.field == ['llmClient', 'llmModel', 'stepsToReproduce', 'verbatimToolCalls', 'clientLogs']
+
+        and: 'the dispatched call itself declared no clientInfo, so the supplied llmClient must be confirmed, not trusted'
+        inner.missingContext[0].ask.startsWith("Confirm with the user that 'Claude Code 2.1' is the host app")
         inner.report.contains('## MCP Server Settings')
-        inner.report.contains('- **Client (MCP self-report):** claude-ai 1.4.2 (Claude)')
+        inner.report.contains('- **Client (MCP self-report):** not reported on this request (recent clients: claude-ai 1.4.2 [legacy, cloud])')
         inner.report.contains('- **Connection:** ')
 
         where:
