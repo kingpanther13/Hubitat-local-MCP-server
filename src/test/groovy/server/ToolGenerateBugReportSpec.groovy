@@ -822,6 +822,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         def result = script.toolGenerateBugReport(baseArgs([
             llmClient         : 'Claude Code 2.1',
             llmModel          : 'Claude Opus 5',
+            stepsToReproduce  : '1. call hub_set_rule',
             verbatimToolCalls : 'hub_set_rule({"ruleId":"7"}) -> HTTP 500 Internal error',
             clientLogs        : '2026-09-18T10:00:01 ERROR mcp-server-hubitat: transport closed',
         ]))

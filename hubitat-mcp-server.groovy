@@ -1251,7 +1251,8 @@ def _recordMcpClient(msg) {
         _mcpClientPushRecent(record)
         // initialize logs its own richer line in handleInitialize; logging unchanged repeats
         // here would put one line on every request.
-        if (changed && msg.method != "initialize") {
+        // A headerless legacy call with no clientInfo identifies nothing worth a log line.
+        if (changed && msg.method != "initialize" && (record.name || record.protocolVersion)) {
             mcpLog("info", "server", "MCP client ${record.name ?: 'unknown'} ${record.version ?: 'unknown'} on protocol ${record.protocolVersion ?: 'unknown'} (${record.era}, ${record.source})")
         }
     } catch (Exception e) {

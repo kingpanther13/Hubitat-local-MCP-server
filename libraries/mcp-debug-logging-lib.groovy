@@ -629,25 +629,25 @@ def _getAllToolDefinitions_partDebugLogging() {
         ],
         [
             name: "hub_report_issue",
-            description: "File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post. Paste real tool calls and client-host log lines rather than describing them; the result's preflight and missingContext name anything still missing.[[FLAT_TRIM]] A report without those two fields nearly always comes back with questions.[[/FLAT_TRIM]]",
+            description: "File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: returns a prefilled GitHub issue link plus the report body.[[FLAT_TRIM]] It gathers scoped recent logs and hub/version info; the user opens the link and posts. Paste real tool calls and client-host log lines rather than describing them; the result's preflight and missingContext name anything still missing.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     title: [type: "string", description: "Short bug/issue narrative. Seeds GitHub title."],
                     expected: [type: "string", description: "What should have happened."],
                     actual: [type: "string", description: "What actually happened."],
-                    stepsToReproduce: [type: "string", description: "Exact sequence that reproduces the failure."],
+                    stepsToReproduce: [type: "string", description: "Exact repro sequence."],
                     issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
                     failingTool: [type: "string", description: "MCP tool that failed; scopes logs + titles issue."],
                     ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
                     nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
-                    llmClient: [type: "string", description: "Host app + version, e.g. 'Claude Code 2.1', 'Claude Desktop', 'Claude.ai web', 'ChatGPT desktop', 'Cursor'. 'Claude' alone is not enough -- ask the user."],
-                    llmModel: [type: "string", description: "Model in use, e.g. 'Claude Opus 5', 'Sonnet 5', 'Haiku 4.5', 'GPT-5'. Ask the user if unknown."],
-                    verbatimToolCalls: [type: "string", description: "The EXACT failing tool call(s) -- tool name and args JSON -- plus the EXACT raw response/error text, copied from the transcript.[[FLAT_TRIM]] Never paraphrase or summarize: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"],
-                    clientLogs: [type: "string", description: "Raw log lines from the MCP client host covering the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary.[[/FLAT_TRIM]]"],
+                    llmClient: [type: "string", description: "Host app + version (Claude Code 2.1, Claude Desktop, Claude.ai web...); 'Claude' alone is not enough."],
+                    llmModel: [type: "string", description: "Model in use (Opus 5, Sonnet 5, GPT-5...); ask if unknown."],
+                    verbatimToolCalls: [type: "string", description: "EXACT failing call (tool + args JSON) and EXACT raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"],
+                    clientLogs: [type: "string", description: "Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary.[[/FLAT_TRIM]]"],
                     privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name, suppresses raw logs."],
                     includeRawLogs: [type: "boolean", description: "Default: true private, false public."],
-                    includeUnrelatedRecentLogs: [type: "boolean", description: "When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope; default false, no-op when unscoped."],
+                    includeUnrelatedRecentLogs: [type: "boolean", description: "When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope.[[FLAT_TRIM]] Default false, no-op when unscoped.[[/FLAT_TRIM]]"],
                     logWindowSeconds: [type: "integer", description: "Default 120."]
                 ],
                 required: ["title", "expected", "actual"]
