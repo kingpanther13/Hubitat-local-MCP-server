@@ -310,7 +310,10 @@ private String _bugReportClientLine(Map client) {
 private boolean _bugReportClientIsWrapper(Map client) {
     def name = client?.name?.toString()?.toLowerCase()
     if (!name) return false
-    return ["mcp-remote", "mcp-proxy", "supergateway"].any { name.contains(it) }
+    // "mcp 0.1.0" is the Python MCP SDK's default clientInfo: what fastmcp-remote / mcp-proxy
+    // style bridges send. A client named "mcp" with a real version is not a bridge.
+    if (name == "mcp") return client.version?.toString() == "0.1.0"
+    return ["mcp-remote", "mcp-proxy", "fastmcp-remote", "supergateway"].any { name.contains(it) }
 }
 
 private List _bugReportSettingsLines(String privacyMode) {
@@ -384,7 +387,7 @@ private List _bugReportMissingContext(args, String issueType, Map client = null)
     def missing = []
     boolean wrapper = _bugReportClientIsWrapper(client)
     boolean unidentified = !client?.name || wrapper
-    def why = wrapper ? "the client self-reports as '${client.name}', a transport wrapper, not the host app".toString() : "the client sent no self-report"
+    def why = wrapper ? "the client self-reports as '${client.name}${client.version ? ' ' + client.version : ''}', a transport wrapper (stdio-to-HTTP bridge), not the host app".toString() : "the client sent no self-report"
     if (blank(args.llmClient)) {
         def ask = "Ask the user which app they run (Claude Code, Claude Desktop, Claude.ai web, ChatGPT desktop, Cursor, ...) and pass it as llmClient."
         if (unidentified) ask = "${ask} The server could not identify the client (${why}): do NOT guess or infer it -- ask the user.".toString()

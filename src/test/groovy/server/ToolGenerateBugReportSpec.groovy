@@ -980,6 +980,25 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('- **Client (MCP self-report):** mcp-remote 0.1.29 (transport wrapper -- host app unknown)')
     }
 
+    def "the Python SDK default identity mcp 0.1.0 is treated as a bridge, a real mcp version is not"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord(name: 'mcp', version: version, title: null))
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
+
+        then:
+        (result.missingContext.find { it.field == 'llmClient' } != null) == bridge
+        result.report.contains('(transport wrapper -- host app unknown)') == bridge
+
+        where:
+        version | bridge
+        '0.1.0' | true
+        '1.2.0' | false
+    }
+
     def "a named non-wrapper client leaves a supplied llmClient unquestioned"() {
         given:
         sharedLocation.hub = new TestHub()
