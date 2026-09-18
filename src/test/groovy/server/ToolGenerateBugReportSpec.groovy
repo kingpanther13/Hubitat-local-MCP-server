@@ -1132,6 +1132,22 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         line.endsWith('-- host app unknown behind a transport wrapper')
     }
 
+    def "a named non-wrapper client is not re-flagged by a wrapper left in the history"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        atomicStateMap.mcpClientLastSeen = clientRecord(name: 'claude-code', version: '2.1.274', title: 'Claude Code', era: 'modern')
+        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null)]
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code 2.1.274']))
+
+        then:
+        result.missingContext.every { it.field != 'llmClient' }
+        result.report.contains('- **Client (MCP self-report):** claude-code 2.1.274 (Claude Code)')
+        !result.report.contains('host app unknown behind a transport wrapper')
+    }
+
     def "a named non-wrapper client leaves a supplied llmClient unquestioned"() {
         given:
         sharedLocation.hub = new TestHub()

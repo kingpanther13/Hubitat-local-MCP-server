@@ -133,7 +133,7 @@ def toolGenerateBugReport(args) {
     def anchor = _bugReportResolveAnchor(args, allEntries)
     def scopedLogs = _bugReportScopedLogs(args, allEntries, anchor, windowMs)
     def identity = mcpClientIdentity()
-    def env = _bugReportEnvironmentSummary(args, privacyMode)
+    def env = _bugReportEnvironmentSummary(args, privacyMode, identity)
     def ruleInfo = _bugReportRuleInfo(args)
     def suggestedTitle = _bugReportSuggestedTitle(args, issueType)
     def submitUrl = _bugReportSubmitUrl(issueType, suggestedTitle)
@@ -257,7 +257,7 @@ private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) 
     ]
 }
 
-private Map _bugReportEnvironmentSummary(args, String privacyMode) {
+private Map _bugReportEnvironmentSummary(args, String privacyMode, Map identity = null) {
     def hubName = "Unknown"
     def hubModel = "Unknown"
     def hubFirmware = "Unknown"
@@ -270,7 +270,6 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
     } catch (Throwable e) {
         mcpLog("warn", "bug-report", "_bugReportEnvironmentSummary: location access threw (${e.message}); env fields may be incomplete")
     }
-    def identity = mcpClientIdentity()
     def client = identity?.lastSeen
     return [
         version: currentVersion(),
@@ -338,6 +337,8 @@ private boolean _bugReportClientIsWrapper(Map client) {
 // anywhere in the recent history still stands between this server and the real host app.
 private Map _bugReportWrapperFrom(Map client, List recent) {
     if (_bugReportClientIsWrapper(client)) return client
+    // A named, non-wrapper client answers for THIS request; history only speaks for a nameless one.
+    if (client?.name) return null
     return (recent ?: []).find { it instanceof Map && it["name"] && _bugReportClientIsWrapper(it) }
 }
 
