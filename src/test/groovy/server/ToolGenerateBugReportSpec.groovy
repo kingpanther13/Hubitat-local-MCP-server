@@ -677,8 +677,24 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         def result = script.toolGenerateBugReport(baseArgs())
 
         then:
-        result.report.contains('- **Client (MCP self-report):** not reported by client')
+        result.report.contains('- **Client (MCP self-report):** not reported on this request')
         result.report.contains('- **Protocol version:** not reported by client')
+    }
+
+    def "environment names the recently seen clients when this request declared none"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
+        atomicStateMap.mcpClientsRecent = [clientRecord()]
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains(
+            '- **Client (MCP self-report):** not reported on this request ' +
+            '(recent clients: claude-ai 1.4.2 [legacy, cloud])')
     }
 
     def "environment reports a local connection by default"() {
@@ -958,7 +974,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         def ask = result.missingContext.find { it.field == 'llmClient' }.ask
         ask.contains('do NOT guess or infer it')
-        ask.contains('the client sent no self-report')
+        ask.contains('the client sent no self-report on this request')
     }
 
     def "a transport wrapper self-report asks the user to confirm the supplied llmClient"() {

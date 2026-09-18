@@ -132,9 +132,9 @@ class McpClientIdentitySpec extends ToolSpecBase {
         last.requestedProtocolVersion == null
     }
 
-    // ---- carry-over ----
+    // ---- per-request identity, protocol carry-over ----
 
-    def "a later legacy message without clientInfo keeps the name the handshake established"() {
+    def "a later legacy message without clientInfo is not attributed to the handshake client"() {
         given:
         script.metaClass.getRooms = { -> [] }
         driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
@@ -142,11 +142,39 @@ class McpClientIdentitySpec extends ToolSpecBase {
         when: 'a plain tools/call, which carries no clientInfo at all'
         mcpDriver.callTool('hub_list_rooms', [:])
 
-        then:
+        then: 'one install serves several clients at once, so a nameless request names nobody'
         def last = script.mcpClientIdentity().lastSeen
-        last.name == 'claude-ai'
-        last.version == '1.4.0'
+        last.name == null
+        last.version == null
         last.era == 'legacy'
+
+        and: 'the protocol fields still carry over, and the handshake client stays in the history'
+        last.protocolVersion == '2025-06-18'
+        script.mcpClientIdentity().recent*.name == ['claude-ai']
+    }
+
+    def "a nameless request is not pushed onto recent"() {
+        given:
+        script.metaClass.getRooms = { -> [] }
+
+        when: 'a headerless tools/call with no handshake before it'
+        mcpDriver.callTool('hub_list_rooms', [:])
+
+        then: 'the request was recorded, but it identified no client to remember'
+        script.mcpClientIdentity().lastSeen != null
+        script.mcpClientIdentity().recent == []
+    }
+
+    def "a nameless request does not log an identity line"() {
+        given:
+        script.metaClass.getRooms = { -> [] }
+        def logs = captureMcpLogs()
+
+        when:
+        mcpDriver.callTool('hub_list_rooms', [:])
+
+        then:
+        logs.findAll { it.message.startsWith('MCP client ') }.isEmpty()
     }
 
     def "a headerless follow-up keeps the negotiated protocol version rather than blanking it"() {
@@ -171,7 +199,7 @@ class McpClientIdentitySpec extends ToolSpecBase {
         mcpDriver.pushHeaders(['MCP-Protocol-Version': '2025-06-18'])
         mcpDriver.callTool('hub_list_rooms', [:])
 
-        then: 'same tuple as the handshake, so no rewrite and no identity line'
+        then: 'the protocol fields carry over, and a nameless request logs no identity line'
         def last = script.mcpClientIdentity().lastSeen
         last.requestedProtocolVersion == '2025-06-18'
         last.protocolVersion == '2025-06-18'
@@ -376,9 +404,13 @@ class McpClientIdentitySpec extends ToolSpecBase {
         then:
         response.result.isError != true
         def info = mcpDriver.parseInner(response)
-        info.mcpClient.lastSeen.name == 'claude-ai'
-        info.mcpClient.lastSeen.version == '1.4.0'
+
+        and: 'this tools/call declared no clientInfo of its own, so lastSeen names nobody'
+        info.mcpClient.lastSeen.name == null
         info.mcpClient.lastSeen.era == 'legacy'
+        info.mcpClient.lastSeen.protocolVersion == '2025-06-18'
+
+        and: 'the handshake client is still named in the history'
         info.mcpClient.recent*.name == ['claude-ai']
 
         where:

@@ -269,7 +269,8 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
     } catch (Throwable e) {
         mcpLog("warn", "bug-report", "_bugReportEnvironmentSummary: location access threw (${e.message}); env fields may be incomplete")
     }
-    def client = mcpClientIdentity()?.lastSeen
+    def identity = mcpClientIdentity()
+    def client = identity?.lastSeen
     return [
         version: currentVersion(),
         hubName: privacyMode == "public" ? "<hub-name>" : hubName,
@@ -285,7 +286,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         nativeRm: _bugReportNativeRmStatus(),
         deviceCount: selectedDevices?.size() ?: 0,
         connection: _isCloudRequest() ? "cloud" : "local",
-        clientSelfReport: _bugReportClientLine(client),
+        clientSelfReport: _bugReportClientLine(client, identity?.recent),
         protocolVersion: client?.protocolVersion ? "${client.protocolVersion} (${client.era ?: 'unknown'})" : "not reported by client",
         llmClient: args.llmClient?.toString()?.trim() ?: "Not provided",
         llmModel: args.llmModel?.toString()?.trim() ?: "Not provided",
@@ -296,8 +297,19 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
 // The client's own initialize self-report, not the agent-supplied llmClient: the two
 // disagree often enough (a wrapper reports its transport, the user names the host app)
 // that a maintainer needs both.
-private String _bugReportClientLine(Map client) {
-    if (!client?.name) return "not reported by client"
+private String _bugReportClientLine(Map client, List recent) {
+    // A request that declared nothing still narrows the field: name whoever HAS spoken to this
+    // install, so a maintainer sees the candidates instead of a dead end.
+    if (!client?.name) {
+        def named = (recent ?: []).findAll { it instanceof Map && it["name"] }
+        if (!named) return "not reported on this request"
+        def listed = named.take(5).collect { entry ->
+            def item = entry["name"].toString()
+            if (entry["version"]) item = "${item} ${entry['version']}".toString()
+            return "${item} [${entry['era'] ?: 'unknown'}, ${entry['source'] ?: 'unknown'}]".toString()
+        }
+        return "not reported on this request (recent clients: ${listed.join(', ')})".toString()
+    }
     def line = client.name.toString()
     if (client.version) line = "${line} ${client.version}"
     if (client.title) line = "${line} (${client.title})"
@@ -387,7 +399,7 @@ private List _bugReportMissingContext(args, String issueType, Map client = null)
     def missing = []
     boolean wrapper = _bugReportClientIsWrapper(client)
     boolean unidentified = !client?.name || wrapper
-    def why = wrapper ? "the client self-reports as '${client.name}${client.version ? ' ' + client.version : ''}', a transport wrapper (stdio-to-HTTP bridge), not the host app".toString() : "the client sent no self-report"
+    def why = wrapper ? "the client self-reports as '${client.name}${client.version ? ' ' + client.version : ''}', a transport wrapper (stdio-to-HTTP bridge), not the host app".toString() : "the client sent no self-report on this request"
     if (blank(args.llmClient)) {
         def ask = "Ask the user which app they run (Claude Code, Claude Desktop, Claude.ai web, ChatGPT desktop, Cursor, ...) and pass it as llmClient."
         if (unidentified) ask = "${ask} The server could not identify the client (${why}): do NOT guess or infer it -- ask the user.".toString()
