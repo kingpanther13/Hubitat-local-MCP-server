@@ -11885,23 +11885,23 @@ class TestRunner:
             assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
         assert "safeMode" in result, f"hub_get_info missing safeMode: {sorted(result)}"
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
-        # Client identity: the recorder runs before dispatch, but an identical repeat inside the
-        # ten-minute window deliberately keeps the earlier seenAt, so the record handed back may
-        # predate THIS call. Shape only here -- the name/version capture is proved in the
-        # protocol group, which controls what the client declares.
-        client = result.get("mcpClient")
-        assert isinstance(client, dict), f"hub_get_info missing mcpClient: {sorted(result)}"
-        last = client.get("lastSeen")
-        assert isinstance(last, dict), f"mcpClient.lastSeen must name the caller: {client!r}"
-        assert last.get("era") == "modern", f"this suite speaks 2026-07-28: {last!r}"
-        assert last.get("protocolVersion") == MODERN_PROTOCOL_VERSION, \
-            f"lastSeen.protocolVersion must be the header version: {last!r}"
-        assert last.get("source") in {"cloud", "local"}, f"unexpected lastSeen.source: {last!r}"
-        assert isinstance(last.get("seenAt"), int) and last["seenAt"] > 0, \
-            f"lastSeen.seenAt must be an epoch-ms stamp: {last!r}"
-        recent = client.get("recent")
-        assert isinstance(recent, list) and len(recent) <= 5, \
-            f"mcpClient.recent must be a list capped at 5: {recent!r}"
+        # Client identity is derived from THIS request and nothing is persisted, so the record
+        # handed back describes the very call that fetched it. Shape only here -- the
+        # name/version capture is proved in the protocol group, which controls what the
+        # client declares.
+        identity = result.get("mcpClient")
+        assert isinstance(identity, dict), f"hub_get_info missing mcpClient: {sorted(result)}"
+        client = identity.get("client")
+        assert isinstance(client, dict), f"mcpClient.client must name the caller: {identity!r}"
+        assert client.get("era") == "modern", f"this suite speaks 2026-07-28: {client!r}"
+        assert client.get("protocolVersion") == MODERN_PROTOCOL_VERSION, \
+            f"client.protocolVersion must be the header version: {client!r}"
+        assert client.get("source") in {"cloud", "local"}, f"unexpected client.source: {client!r}"
+        assert isinstance(client.get("wrapper"), bool), \
+            f"every identity must carry a wrapper verdict: {client!r}"
+        leftovers = {"recent", "lastSeen"} & set(identity)
+        assert not leftovers, f"identity is not stored between requests: {sorted(leftovers)}"
+        assert "seenAt" not in client, f"identity is not stored between requests: {sorted(client)}"
 
     @test("system_tools")
     def test_report_issue_report_shape(self) -> None:
@@ -14590,12 +14590,12 @@ class TestRunner:
 
     @test("protocol")
     def test_modern_client_identity_recorded_from_meta(self) -> None:
-        """A modern request's `_meta` clientInfo is captured and read back on the SAME call:
-        the recorder runs before dispatch, so hub_get_info's own body names the client that
-        asked for it. Proves the modern `_meta` capture shape against real firmware, which
-        no unit harness can do -- the header value and the relay source both come from the
-        live request object."""
-        probe = f"e2e-client-probe-{int(time.time())}"
+        """A modern request's `_meta` clientInfo is read back on the SAME call: identity is
+        derived from the request in hand, so hub_get_info's own body names the client that
+        asked for it. Proves the modern `_meta` shape against real firmware, which no unit
+        harness can do -- the header value and the relay source both come from the live
+        request object."""
+        probe = "hubitat-e2e-modern-probe"
         resp = self.client.raw_request({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {
@@ -14614,35 +14614,26 @@ class TestRunner:
         result = resp.json().get("result", {})
         assert not result.get("isError"), f"hub_get_info returned an error envelope: {str(result)[:300]}"
         info = json.loads(result["content"][0]["text"])
-        client = info.get("mcpClient") or {}
-        last = client.get("lastSeen") or {}
-        assert last.get("name") == probe, f"the declared client name was not captured: {last!r}"
-        assert last.get("version") == "9.9.9", f"the declared client version was not captured: {last!r}"
-        assert last.get("title") == "E2E Probe", f"the declared client title was not captured: {last!r}"
-        assert last.get("era") == "modern", f"a 2026-07-28 request must record era 'modern': {last!r}"
-        assert last.get("protocolVersion") == MODERN_PROTOCOL_VERSION, \
-            f"lastSeen.protocolVersion must be the header version: {last!r}"
-        assert last.get("requestedProtocolVersion") is None, \
-            f"requestedProtocolVersion belongs to the initialize handshake only: {last!r}"
-        assert last.get("source") in {"cloud", "local"}, f"unexpected lastSeen.source: {last!r}"
-        assert "wrapper" in last, f"every identity record must carry a wrapper flag: {last!r}"
-        assert last["wrapper"] is False, \
-            f"the probe name is not a stdio-to-HTTP bridge and must not be flagged: {last!r}"
-        recent = client.get("recent")
-        assert isinstance(recent, list) and len(recent) <= 5, \
-            f"mcpClient.recent must be a list capped at 5: {recent!r}"
-        assert any(isinstance(e, dict) and e.get("name") == probe for e in recent), \
-            f"the probe client is missing from mcpClient.recent: {recent!r}"
-        # Identity is per-request: this suite's ordinary calls carry no clientInfo, so the
-        # next one must NOT inherit the probe's name (one install serves several clients),
-        # while the probe stays in the named-client history.
+        client = (info.get("mcpClient") or {}).get("client") or {}
+        assert client.get("name") == probe, f"the declared client name was not read: {client!r}"
+        assert client.get("version") == "9.9.9", f"the declared client version was not read: {client!r}"
+        assert client.get("title") == "E2E Probe", f"the declared client title was not read: {client!r}"
+        assert client.get("era") == "modern", f"a 2026-07-28 request must read era 'modern': {client!r}"
+        assert client.get("protocolVersion") == MODERN_PROTOCOL_VERSION, \
+            f"client.protocolVersion must be the header version: {client!r}"
+        assert client.get("requestedProtocolVersion") is None, \
+            f"requestedProtocolVersion belongs to the initialize handshake only: {client!r}"
+        assert client.get("source") in {"cloud", "local"}, f"unexpected client.source: {client!r}"
+        assert "wrapper" in client, f"every identity must carry a wrapper verdict: {client!r}"
+        assert client["wrapper"] is False, \
+            f"the probe name is not a stdio-to-HTTP bridge and must not be flagged: {client!r}"
+        # Identity is read from the request in hand and nothing is kept, so an ordinary call
+        # that declares no clientInfo names nobody -- it cannot inherit the probe's name, and
+        # there is no history for it to fall back on either.
         info2 = self.client.call_tool("hub_get_info", {})
-        last2 = (info2.get("mcpClient") or {}).get("lastSeen") or {}
-        assert last2.get("name") is None, \
-            f"a request without clientInfo must not be attributed to the previous client: {last2!r}"
-        recent2 = (info2.get("mcpClient") or {}).get("recent") or []
-        assert any(isinstance(e, dict) and e.get("name") == probe for e in recent2), \
-            f"the probe client dropped out of mcpClient.recent: {recent2!r}"
+        client2 = (info2.get("mcpClient") or {}).get("client") or {}
+        assert client2.get("name") is None, \
+            f"a request without clientInfo must name nobody: {client2!r}"
 
     @test("protocol")
     def test_modern_header_method_mismatch_rejected(self) -> None:
@@ -14997,22 +14988,21 @@ class TestRunner:
              f"legacy-only={sorted(legacy_names - modern_names)}, "
              f"modern-only={sorted(modern_names - legacy_names)}")
 
-        # Identity is recorded per HTTP request, so the handshake clientInfo lands on the
-        # record for THAT POST; this follow-up declares none and reads it back out of history.
+        # Identity is read from the request in hand; nothing is stored. A legacy tools/call
+        # carries no clientInfo of its own -- only the handshake POST could -- so it names
+        # nobody, which is exactly why the report tool asks the user instead.
         info = legacy.call_tool("hub_get_info", replay_safe=True)
-        seen = ((info.get("mcpClient") or {}).get("recent")) or []
-        probe = next((e for e in seen
-                      if isinstance(e, dict) and e.get("name") == "hubitat-e2e-legacy-probe"), None)
-        assert probe is not None, \
-            f"the legacy handshake client is missing from mcpClient.recent: {seen!r}"
-        assert probe.get("version") == "1.0", f"legacy probe version not captured: {probe!r}"
-        assert probe.get("era") == "legacy", f"a legacy handshake must record era legacy: {probe!r}"
-        assert probe.get("requestedProtocolVersion") == LEGACY_PROTOCOL_VERSION, \
-            f"the requested handshake revision was not stored: {probe!r}"
-        assert probe.get("protocolVersion") == LEGACY_PROTOCOL_VERSION, \
-            f"the negotiated handshake revision was not stored: {probe!r}"
-        assert probe.get("wrapper") is False, \
-            f"a named non-bridge client must not be flagged as a transport wrapper: {probe!r}"
+        client = (info.get("mcpClient") or {}).get("client") or {}
+        assert client.get("name") is None, \
+            f"a legacy tools/call declares no clientInfo and must name nobody: {client!r}"
+        assert client.get("era") == "legacy", \
+            f"a legacy-header request must read era legacy: {client!r}"
+        assert client.get("protocolVersion") == LEGACY_PROTOCOL_VERSION, \
+            f"client.protocolVersion must echo the negotiated legacy header: {client!r}"
+        assert client.get("requestedProtocolVersion") is None, \
+            f"requestedProtocolVersion belongs to the initialize handshake only: {client!r}"
+        assert client.get("wrapper") is False, \
+            f"a nameless request names no transport wrapper: {client!r}"
 
         capped = legacy.initialize(MODERN_PROTOCOL_VERSION)
         assert capped.get("protocolVersion") == DEFAULT_PROTOCOL_VERSION, \

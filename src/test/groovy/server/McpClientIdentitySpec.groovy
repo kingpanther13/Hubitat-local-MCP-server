@@ -8,19 +8,17 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Covers the client-identity capture wired into {@code handleMcpRequest()}: one record per
- * HTTP request, written by {@code _recordMcpClient(requestBody, headerVersion, modern)} into
- * {@code atomicState.mcpClientLastSeen} / {@code atomicState.mcpClientsRecent}, which
- * {@code mcpClientIdentity()} reads back for {@code hub_get_info}.
+ * Covers {@code mcpClientIdentity()}: the client behind the request currently in hand,
+ * derived from {@code request.JSON} plus the request's own header and source, and read back
+ * by {@code hub_get_info} and the bug-report tool. Nothing is persisted.
  *
- * Driven through {@link McpRequestDriver} rather than by calling the recorder directly,
- * because the two facts that decide a record -- the {@code MCP-Protocol-Version} header value
- * and {@code request.requestSource} -- live on the hub request object, so a direct call would
- * prove the storage shape while skipping every input that selects it.
+ * Driven through {@link McpRequestDriver} rather than by calling the derivation directly,
+ * because the three facts that decide an identity -- the body, the
+ * {@code MCP-Protocol-Version} header value and {@code request.requestSource} -- all live on
+ * the hub request object, so a direct call would prove the shape while skipping every input
+ * that selects it.
  */
 class McpClientIdentitySpec extends ToolSpecBase {
-
-    private static final long FIXED_NOW = 1234567890000L
 
     /** hub_get_info reads location.hub -- a class-2 seam, so stubbed on the Mock. */
     @Shared private TestLocation sharedLocation = new TestLocation()
@@ -31,10 +29,6 @@ class McpClientIdentitySpec extends ToolSpecBase {
 
     def setup() {
         sharedLocation.hub = new TestHub(localIP: '192.168.1.133')
-    }
-
-    def cleanup() {
-        NOW_OVERRIDE.set(null)
     }
 
     // ---- helpers ----
@@ -60,7 +54,8 @@ class McpClientIdentitySpec extends ToolSpecBase {
 
     private List captureMcpLogs() {
         def entries = []
-        script.metaClass.mcpLog = { String level, String component, String message ->
+        script.metaClass.mcpLog = { String level, String component, String message,
+                                    String ruleId = null, Map extra = null ->
             entries << [level: level, component: component, message: message]
         }
         return entries
@@ -68,48 +63,75 @@ class McpClientIdentitySpec extends ToolSpecBase {
 
     // ---- legacy initialize ----
 
-    def "a legacy initialize with clientInfo records the client, both versions, and the legacy era"() {
+    def "a legacy initialize names the client, both versions, and the legacy era"() {
         when:
         driveLegacyInitialize([name: 'claude-ai', version: '1.4.0', title: 'Claude'])
 
         then:
-        def last = script.mcpClientIdentity().lastSeen
-        last.name == 'claude-ai'
-        last.version == '1.4.0'
-        last.title == 'Claude'
-        last.requestedProtocolVersion == '2025-06-18'
-        last.protocolVersion == '2025-06-18'
-        last.era == 'legacy'
-        last.source == 'local'
-        last.seenAt == FIXED_NOW
+        def client = script.mcpClientIdentity().client
+        client.name == 'claude-ai'
+        client.version == '1.4.0'
+        client.title == 'Claude'
+        client.requestedProtocolVersion == '2025-06-18'
+        client.protocolVersion == '2025-06-18'
+        client.era == 'legacy'
+        client.source == 'local'
+        client.wrapper == false
     }
 
-    def "an unsupported requested version is stored alongside the version initialize negotiated down to"() {
+    def "an unsupported requested version is reported alongside the version initialize negotiated down to"() {
         when:
         driveLegacyInitialize([name: 'oldclient', version: '0.1'], '1999-01-01')
 
         then: 'requested is what the client asked for; protocolVersion is what it was answered with'
-        def last = script.mcpClientIdentity().lastSeen
-        last.requestedProtocolVersion == '1999-01-01'
-        last.protocolVersion == '2025-11-25'
-        script.mcpClientIdentity().recent.size() == 1
+        def client = script.mcpClientIdentity().client
+        client.requestedProtocolVersion == '1999-01-01'
+        client.protocolVersion == '2025-11-25'
     }
 
-    def "an initialize without clientInfo records the versions and leaves the client unnamed"() {
+    def "an initialize without clientInfo reports the versions and leaves the client unnamed"() {
         when:
         driveLegacyInitialize(null)
 
         then:
-        def last = script.mcpClientIdentity().lastSeen
-        last.name == null
-        last.version == null
-        last.protocolVersion == '2025-06-18'
-        last.era == 'legacy'
+        def client = script.mcpClientIdentity().client
+        client.name == null
+        client.version == null
+        client.protocolVersion == '2025-06-18'
+        client.era == 'legacy'
+    }
+
+    def "clientInfo sent as a String is tolerated and the response is normal"() {
+        when:
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 9, method: 'initialize',
+                            params: [protocolVersion: '2025-06-18', clientInfo: 'claude-ai']])
+        script.handleMcpRequest()
+
+        then: 'the handshake answered normally'
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.protocolVersion == '2025-06-18'
+
+        and: 'the unusable clientInfo is ignored, not read and not rethrown'
+        def client = script.mcpClientIdentity().client
+        client.name == null
+        client.protocolVersion == '2025-06-18'
+    }
+
+    def "a request over the cloud relay reports source cloud"() {
+        given:
+        mcpDriver.requestSource = 'cloud'
+
+        when:
+        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
+
+        then:
+        script.mcpClientIdentity().client.source == 'cloud'
     }
 
     // ---- modern era ----
 
-    def "a modern tools call records the modern era and the client name from _meta"() {
+    def "a modern tools call reports the modern era and the client name from _meta"() {
         given:
         script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }
 
@@ -123,393 +145,78 @@ class McpClientIdentitySpec extends ToolSpecBase {
         mcpDriver.lastRenderArgs.status == null
         mcpDriver.parseResponseJson().error == null
 
-        and:
-        def last = script.mcpClientIdentity().lastSeen
-        last.name == 'mcp-python-sdk'
-        last.version == '2.0.0'
-        last.era == 'modern'
-        last.protocolVersion == '2026-07-28'
-        last.requestedProtocolVersion == null
+        and: 'the header carries the version outside the handshake, so nothing was requested here'
+        def client = script.mcpClientIdentity().client
+        client.name == 'mcp-python-sdk'
+        client.version == '2.0.0'
+        client.era == 'modern'
+        client.protocolVersion == '2026-07-28'
+        client.requestedProtocolVersion == null
     }
 
-    // ---- per-request identity, protocol carry-over ----
-
-    def "a later legacy message without clientInfo is not attributed to the handshake client"() {
+    def "an initialize under a modern header reads as legacy era with what it negotiated"() {
         given:
-        script.metaClass.getRooms = { -> [] }
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-
-        when: 'a plain tools/call, which carries no clientInfo at all'
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        then: 'one install serves several clients at once, so a nameless request names nobody'
-        def last = script.mcpClientIdentity().lastSeen
-        last.name == null
-        last.version == null
-        last.era == 'legacy'
-
-        and: 'the protocol fields still carry over, and the handshake client stays in the history'
-        last.protocolVersion == '2025-06-18'
-        script.mcpClientIdentity().recent*.name == ['claude-ai']
-    }
-
-    def "a nameless request is not pushed onto recent"() {
-        given:
-        script.metaClass.getRooms = { -> [] }
-
-        when: 'a headerless tools/call with no handshake before it'
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        then: 'the request was recorded, but it identified no client to remember'
-        script.mcpClientIdentity().lastSeen != null
-        script.mcpClientIdentity().recent == []
-    }
-
-    def "a nameless request does not log an identity line"() {
-        given:
-        script.metaClass.getRooms = { -> [] }
-        def logs = captureMcpLogs()
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'initialize'])
 
         when:
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        then:
-        logs.findAll { it.message.startsWith('MCP client ') }.isEmpty()
-    }
-
-    def "a headerless follow-up keeps the negotiated protocol version rather than blanking it"() {
-        given:
-        script.metaClass.getRooms = { -> [] }
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-
-        when:
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        then: 'no version signal on this message, so the handshake value carries forward'
-        script.mcpClientIdentity().lastSeen.protocolVersion == '2025-06-18'
-    }
-
-    def "a legacy follow-up header replaces the negotiated version while the requested one stays"() {
-        given:
-        script.metaClass.getRooms = { -> [] }
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-        def logs = captureMcpLogs()
-
-        when: 'the mandatory header rides a plain tools/call, naming a different supported revision'
-        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2025-03-26'])
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        then: 'the header is what the client negotiated, so it replaces the stored value'
-        def last = script.mcpClientIdentity().lastSeen
-        last.protocolVersion == '2025-03-26'
-
-        and: 'what the client asked for at the handshake is untouched, and a nameless request logs nothing'
-        last.requestedProtocolVersion == '2025-06-18'
-        logs.findAll { it.message.startsWith('MCP client ') }.isEmpty()
-    }
-
-    // ---- write gating ----
-
-    def "an identical repeat inside the ten-minute window does not rewrite seenAt"() {
-        given:
-        script.metaClass.getRooms = { -> [] }
-        def clock = new java.util.concurrent.atomic.AtomicLong(FIXED_NOW)
-        NOW_OVERRIDE.set({ -> clock.get() })
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-        mcpDriver.callTool('hub_list_rooms', [:])
-        long firstSeenAt = script.mcpClientIdentity().lastSeen.seenAt as long
-
-        when: 'the same client repeats the same call a minute later'
-        clock.set(FIXED_NOW + 60000L)
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        then: 'the tuple is unchanged, so the record was not rewritten'
-        script.mcpClientIdentity().lastSeen.seenAt == firstSeenAt
-    }
-
-    def "two clients alternating request-by-request rewrite the record every time"() {
-        given:
-        def clock = new java.util.concurrent.atomic.AtomicLong(FIXED_NOW)
-        NOW_OVERRIDE.set({ -> clock.get() })
-
-        when:
-        driveLegacyInitialize([name: 'client-a', version: '1.0'])
-
-        then:
-        script.mcpClientIdentity().lastSeen.seenAt == FIXED_NOW
-
-        when: 'the other client takes a turn a second later'
-        clock.set(FIXED_NOW + 1000L)
-        driveLegacyInitialize([name: 'client-b', version: '2.0'])
-
-        then:
-        script.mcpClientIdentity().lastSeen.seenAt == FIXED_NOW + 1000L
-
-        when: 'and the first one comes back a second after that'
-        clock.set(FIXED_NOW + 2000L)
-        driveLegacyInitialize([name: 'client-a', version: '1.0'])
-
-        then: 'the tuple differs on every step, so the write gate suppresses nothing -- the accepted cost'
-        script.mcpClientIdentity().lastSeen.seenAt == FIXED_NOW + 2000L
-        script.mcpClientIdentity().lastSeen.name == 'client-a'
-    }
-
-    def "a repeat past the ten-minute window refreshes seenAt"() {
-        given:
-        script.metaClass.getRooms = { -> [] }
-        def clock = new java.util.concurrent.atomic.AtomicLong(FIXED_NOW)
-        NOW_OVERRIDE.set({ -> clock.get() })
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        when:
-        clock.set(FIXED_NOW + 700000L)
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        then:
-        script.mcpClientIdentity().lastSeen.seenAt == FIXED_NOW + 700000L
-    }
-
-    // ---- recent history ----
-
-    def "a different client is pushed onto recent, newest first"() {
-        when:
-        driveLegacyInitialize([name: 'client-a', version: '1.0'])
-        driveLegacyInitialize([name: 'client-b', version: '2.0'])
-
-        then:
-        script.mcpClientIdentity().recent*.name == ['client-b', 'client-a']
-        script.mcpClientIdentity().lastSeen.name == 'client-b'
-    }
-
-    def "recent is capped at five clients, dropping the oldest"() {
-        when:
-        (1..7).each { n -> driveLegacyInitialize([name: "client-${n}".toString(), version: '1.0']) }
-
-        then:
-        def recent = script.mcpClientIdentity().recent
-        recent.size() == 5
-        recent*.name == ['client-7', 'client-6', 'client-5', 'client-4', 'client-3']
-    }
-
-    def "a returning client is deduped rather than appended a second time"() {
-        when:
-        driveLegacyInitialize([name: 'client-a', version: '1.0'])
-        driveLegacyInitialize([name: 'client-b', version: '2.0'])
-        driveLegacyInitialize([name: 'client-a', version: '1.0'])
-
-        then:
-        script.mcpClientIdentity().recent*.name == ['client-a', 'client-b']
-    }
-
-    def "mcpClientIdentity hands back copies, so a caller cannot edit stored state"() {
-        given:
-        driveLegacyInitialize([name: 'client-a', version: '1.0'])
-
-        when:
-        def snapshot = script.mcpClientIdentity()
-        snapshot.lastSeen.name = 'tampered'
-        snapshot.recent[0].name = 'tampered'
-
-        then:
-        script.mcpClientIdentity().lastSeen.name == 'client-a'
-        script.mcpClientIdentity().recent[0].name == 'client-a'
-    }
-
-    // ---- malformed input ----
-
-    def "clientInfo sent as a String is tolerated and the response is normal"() {
-        when:
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 9, method: 'initialize',
-                            params: [protocolVersion: '2025-06-18', clientInfo: 'claude-ai']])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 4, method: 'initialize',
+                            params: [protocolVersion: '2026-07-28', capabilities: [:],
+                                     clientInfo: [name: 'dual-era-client', version: '1.0']]])
         script.handleMcpRequest()
 
-        then: 'the handshake answered normally'
-        def response = mcpDriver.parseResponseJson()
-        response.error == null
-        response.result.protocolVersion == '2025-06-18'
-
-        and: 'the unusable clientInfo is ignored, not stored and not rethrown'
-        def last = script.mcpClientIdentity().lastSeen
-        last.name == null
-        last.protocolVersion == '2025-06-18'
+        then: 'reaching initialize proves a legacy-era client, so it is capped like any other'
+        def client = script.mcpClientIdentity().client
+        client.era == 'legacy'
+        client.requestedProtocolVersion == '2026-07-28'
+        client.protocolVersion == '2025-11-25'
     }
 
-    def "a notification is not recorded as a client"() {
-        when: 'an id-less message -- a notification, which identifies nothing worth keeping'
-        mcpDriver.pushBody([jsonrpc: '2.0', method: 'notifications/initialized', params: [:]])
-        script.handleMcpRequest()
+    // ---- per-request derivation ----
 
-        then:
-        script.mcpClientIdentity().lastSeen == null
-        script.mcpClientIdentity().recent == []
-    }
-
-    def "an identity read before any request answers empty rather than null-dereferencing"() {
-        expect:
-        script.mcpClientIdentity() == [lastSeen: null, recent: []]
-    }
-
-    // ---- recorder failure ----
-
-    def "a recorder failure is reported and the request is still served"() {
-        given: 'a stored record that throws the moment the recorder copies it'
-        atomicStateMap.mcpClientLastSeen = new ExplodingRecord()
-        def logs = captureMcpLogs()
-
-        when:
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-
-        then: 'losing an identity record is a diagnostic gap, never a reason to fail the handshake'
-        def response = mcpDriver.parseResponseJson()
-        response.error == null
-        response.result.protocolVersion == '2025-06-18'
-
-        and:
-        logs.any {
-            it.level == 'warn' && it.component == 'server' &&
-            it.message.startsWith('MCP client identity capture failed: IllegalStateException')
-        }
-    }
-
-    def "a recorder failure whose own recovery log throws still serves the request"() {
-        given: 'only warn throws -- handleInitialize logs its own info line through the same method'
-        atomicStateMap.mcpClientLastSeen = new ExplodingRecord()
-        script.metaClass.mcpLog = { String level, String component, String message ->
-            if (level == 'warn') throw new RuntimeException('log down')
-        }
-
-        when:
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-
-        then:
-        def response = mcpDriver.parseResponseJson()
-        response.error == null
-        response.result.protocolVersion == '2025-06-18'
-    }
-
-    def "an identity read of an unreadable record names the failure instead of answering empty"() {
+    def "a headerless tools call names nobody and states no protocol version"() {
         given:
-        atomicStateMap.mcpClientLastSeen = new ExplodingRecord()
+        script.metaClass.getRooms = { -> [] }
 
-        when:
-        def identity = script.mcpClientIdentity()
+        when: 'a plain tools/call, which carries no clientInfo and no header of its own'
+        mcpDriver.callTool('hub_list_rooms', [:])
 
-        then: 'an empty answer would read as an install nobody has ever connected to'
-        identity.lastSeen == null
-        identity.recent == []
-        identity.error.startsWith('IllegalStateException')
+        then: 'a legacy client names itself at the handshake only, so this request names nobody'
+        def client = script.mcpClientIdentity().client
+        client.name == null
+        client.version == null
+        client.era == 'legacy'
+        client.protocolVersion == null
+        client.requestedProtocolVersion == null
+        client.wrapper == false
     }
 
-    // ---- transport source ----
-
-    def "a request over the cloud relay records source cloud"() {
-        given:
-        mcpDriver.requestSource = 'cloud'
-
-        when:
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-
-        then:
-        script.mcpClientIdentity().lastSeen.source == 'cloud'
-    }
-
-    // ---- logging ----
-
-    def "initialize logs the client and both protocol versions"() {
-        given:
-        def logs = captureMcpLogs()
-
-        when:
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-
-        then:
-        logs.any {
-            it.level == 'info' && it.component == 'server' &&
-            it.message == 'initialize from claude-ai 1.4.0: requested protocolVersion 2025-06-18, negotiated 2025-06-18 (local)'
-        }
-    }
-
-    def "initialize without clientInfo logs an unknown client"() {
-        given:
-        def logs = captureMcpLogs()
-
-        when:
-        driveLegacyInitialize(null)
-
-        then:
-        logs.any { it.level == 'info' && it.message.startsWith('initialize from unknown client:') }
-    }
-
-    def "an identity change from a non-initialize message logs one line, and an unchanged repeat logs none"() {
+    def "an earlier handshake does not name a later request"() {
         given:
         script.metaClass.getRooms = { -> [] }
         driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
-        def logs = captureMcpLogs()
 
-        when: 'the era and protocol version change under the same connection'
-        driveModernToolsCall('hub_list_rooms', [
-            'io.modelcontextprotocol/clientInfo': [name: 'claude-ai', version: '1.4.0'],
-            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-        ])
+        when: 'the same install serves the next call, which declares nothing'
+        mcpDriver.callTool('hub_list_rooms', [:])
 
-        then:
-        def identityLines = logs.findAll { it.message.startsWith('MCP client ') }
-        identityLines.size() == 1
-        identityLines[0].level == 'info'
-        identityLines[0].component == 'server'
-        identityLines[0].message == 'MCP client claude-ai 1.4.0 on protocol 2026-07-28 (modern, local)'
-
-        when: 'the same client repeats the same call'
-        driveModernToolsCall('hub_list_rooms', [
-            'io.modelcontextprotocol/clientInfo': [name: 'claude-ai', version: '1.4.0'],
-            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-        ])
-
-        then: 'no second line -- an unchanged repeat must not log on every request'
-        logs.findAll { it.message.startsWith('MCP client ') }.size() == 1
+        then: 'one install serves several clients at once, and nothing is carried between requests'
+        script.mcpClientIdentity().client.name == null
     }
 
-    // ---- hub_get_info ----
-
-    @Unroll
-    def "hub_get_info exposes the client identity through the dispatch envelope (useGateways=#useGateways)"() {
+    def "no identity is stored anywhere in app state"() {
         given:
-        settingsMap.useGateways = useGateways
-        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
+        script.metaClass.getRooms = { -> [] }
 
         when:
-        def response = mcpDriver.callTool('hub_get_info', [:])
+        driveLegacyInitialize([name: 'claude-ai', version: '1.4.0'])
+        mcpDriver.callTool('hub_list_rooms', [:])
 
-        then:
-        response.result.isError != true
-        def info = mcpDriver.parseInner(response)
-
-        and: 'this tools/call declared no clientInfo of its own, so lastSeen names nobody'
-        info.mcpClient.lastSeen.name == null
-        info.mcpClient.lastSeen.era == 'legacy'
-        info.mcpClient.lastSeen.protocolVersion == '2025-06-18'
-
-        and: 'the handshake client is still named in the history'
-        info.mcpClient.recent*.name == ['claude-ai']
-
-        where:
-        useGateways << [true, false]
+        then: 'a per-request atomicState write is the load this identity read exists to avoid'
+        !atomicStateMap.containsKey('mcpClientLastSeen')
+        !atomicStateMap.containsKey('mcpClientsRecent')
+        atomicStateMap.keySet().every { !(it as String).startsWith('mcpClient') }
     }
 
-    // ---- one record per HTTP request ----
-
-    def "a malformed message is never allowed to name a client"() {
-        when: 'the envelope is rejected at dispatch, so its clientInfo speaks for nothing'
-        mcpDriver.pushBody([jsonrpc: '1.0', id: 3, method: 'initialize',
-                            params: [protocolVersion: '2025-06-18',
-                                     clientInfo: [name: 'bogus-client', version: '1.0']]])
-        script.handleMcpRequest()
-
-        then:
-        script.mcpClientIdentity().lastSeen == null
-        script.mcpClientIdentity().recent == []
-    }
+    // ---- which message in the POST speaks ----
 
     @Unroll
     def "a batch POST is one client: the member that declares clientInfo names it (named first: #namedFirst)"() {
@@ -526,82 +233,73 @@ class McpClientIdentitySpec extends ToolSpecBase {
         script.handleMcpRequest()
 
         then: 'order cannot change who sent the POST'
-        script.mcpClientIdentity().lastSeen.name == 'batch-probe'
-        script.mcpClientIdentity().recent*.name == ['batch-probe']
+        script.mcpClientIdentity().client.name == 'batch-probe'
 
         where:
         namedFirst << [true, false]
     }
 
-    def "a legacy request does not inherit the protocol version a modern one negotiated"() {
-        given:
-        script.metaClass.getRooms = { -> [] }
-        driveModernToolsCall('hub_list_rooms', [
-            'io.modelcontextprotocol/clientInfo': [name: 'claude-code', version: '2.1'],
-        ])
-
-        when: 'a headerless legacy call follows on the same install'
-        mcpDriver.pushHeaders([:])
-        mcpDriver.callTool('hub_list_rooms', [:])
-
-        then: 'a 2026-07-28 revision must never be attributed to a legacy exchange'
-        def last = script.mcpClientIdentity().lastSeen
-        last.era == 'legacy'
-        last.protocolVersion == null
-        last.requestedProtocolVersion == null
-    }
-
-    def "an initialize under a modern header is recorded as legacy era with what it negotiated"() {
-        given:
-        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'initialize'])
-
-        when:
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 4, method: 'initialize',
-                            params: [protocolVersion: '2026-07-28', capabilities: [:],
-                                     clientInfo: [name: 'dual-era-client', version: '1.0']]])
+    def "a malformed member never names the client"() {
+        when: 'the envelope is rejected at dispatch, so its clientInfo speaks for nothing'
+        mcpDriver.pushBody([jsonrpc: '1.0', id: 3, method: 'initialize',
+                            params: [protocolVersion: '2025-06-18',
+                                     clientInfo: [name: 'bogus-client', version: '1.0']]])
         script.handleMcpRequest()
 
-        then: 'reaching initialize proves a legacy-era client, so it is capped like any other'
-        def last = script.mcpClientIdentity().lastSeen
-        last.requestedProtocolVersion == '2026-07-28'
-        last.protocolVersion == '2025-11-25'
-
-        and: 'the record says legacy too, so a headerless follow-up can still carry the versions over'
-        last.era == 'legacy'
+        then:
+        script.mcpClientIdentity().client == null
     }
 
-    def "a named modern repeat inside the window leaves seenAt alone"() {
-        given:
-        script.metaClass.getRooms = { -> [] }
-        def clock = new java.util.concurrent.atomic.AtomicLong(FIXED_NOW)
-        NOW_OVERRIDE.set({ -> clock.get() })
-        def meta = ['io.modelcontextprotocol/clientInfo': [name: 'claude-code', version: '2.1']]
-        driveModernToolsCall('hub_list_rooms', meta)
-        long firstSeenAt = script.mcpClientIdentity().lastSeen.seenAt as long
-
-        when:
-        clock.set(FIXED_NOW + 60000L)
-        driveModernToolsCall('hub_list_rooms', meta)
+    def "a notification names no client"() {
+        when: 'an id-less message -- a notification, which identifies nothing worth reporting'
+        mcpDriver.pushBody([jsonrpc: '2.0', method: 'notifications/initialized', params: [:]])
+        script.handleMcpRequest()
 
         then:
-        script.mcpClientIdentity().lastSeen.seenAt == firstSeenAt
+        script.mcpClientIdentity().client == null
     }
 
-    def "one client seen across both eras is a single recent entry carrying the newer era"() {
+    def "an identity read outside any request answers null rather than throwing"() {
+        expect:
+        script.mcpClientIdentity() == [client: null]
+    }
+
+    // ---- read failure ----
+
+    def "an unreadable body names the failure, and the request is still served"() {
         given:
-        script.metaClass.getRooms = { -> [] }
-        driveLegacyInitialize([name: 'claude-code', version: '2.1'])
+        mcpDriver.pushBodyThrowing(new IllegalStateException('boom'))
+        def logs = captureMcpLogs()
 
-        when: 'the same product upgrades its transport'
-        driveModernToolsCall('hub_list_rooms', [
-            'io.modelcontextprotocol/clientInfo': [name: 'claude-code', version: '2.1'],
-        ])
+        when:
+        script.handleMcpRequest()
 
-        then: 'recent is deduped on name+version, so the era of the newest sighting wins'
-        def recent = script.mcpClientIdentity().recent
-        recent.size() == 1
-        recent[0].name == 'claude-code'
-        recent[0].era == 'modern'
+        then: 'an unreadable body is answered as a parse error, never as a crash'
+        mcpDriver.parseResponseJson().error.code == -32700
+
+        when:
+        def identity = script.mcpClientIdentity()
+
+        then: 'a null client would read as a request nobody sent'
+        identity.client == null
+        identity.error == 'IllegalStateException: boom'
+
+        and:
+        logs.any {
+            it.level == 'warn' && it.component == 'server' &&
+            it.message.startsWith('MCP client identity read failed: IllegalStateException')
+        }
+    }
+
+    def "a read failure whose own recovery log throws still answers"() {
+        given:
+        mcpDriver.pushBodyThrowing(new IllegalStateException('boom'))
+        script.metaClass.mcpLog = { String level, String component, String message ->
+            throw new RuntimeException('log down')
+        }
+
+        expect:
+        script.mcpClientIdentity() == [client: null, error: 'IllegalStateException: boom']
     }
 
     // ---- transport-wrapper flag ----
@@ -616,7 +314,7 @@ class McpClientIdentitySpec extends ToolSpecBase {
         driveLegacyInitialize(info)
 
         then: 'an unanchored contains-match would flag unrelated names'
-        script.mcpClientIdentity().lastSeen.wrapper == expected
+        script.mcpClientIdentity().client.wrapper == expected
 
         where:
         clientName           | clientVersion || expected
@@ -632,70 +330,7 @@ class McpClientIdentitySpec extends ToolSpecBase {
         'mcp-remote-control' | '1.0'         || false
     }
 
-    def "the wrapper flag is computed on read, so a stored record without one still reports it"() {
-        given: 'a record persisted before the flag was read-time, naming a known bridge'
-        atomicStateMap.mcpClientLastSeen = [
-            name: 'mcp-remote', version: '0.1.29', title: null,
-            protocolVersion: '2025-11-25', requestedProtocolVersion: '2025-06-18',
-            era: 'legacy', source: 'local', seenAt: FIXED_NOW,
-        ]
-
-        expect: 'a stored verdict would outlive a change to the bridge list, so none is stored'
-        !atomicStateMap.mcpClientLastSeen.containsKey('wrapper')
-        script.mcpClientIdentity().lastSeen.wrapper == true
-    }
-
-    def "a recent entry gets the same read-time wrapper flag"() {
-        given:
-        atomicStateMap.mcpClientsRecent = [
-            [name: 'supergateway', version: '3.4.0', era: 'legacy', source: 'local', seenAt: FIXED_NOW],
-            [name: 'claude-code', version: '2.1', era: 'legacy', source: 'local', seenAt: FIXED_NOW],
-        ]
-
-        expect:
-        script.mcpClientIdentity().recent*.wrapper == [true, false]
-    }
-
-    // ---- rejected requests name nobody ----
-
-    def "an oversized batch is rejected before it can name a client"() {
-        given: 'one element past the 50-message inbound cap'
-        def batch = (1..51).collect { i ->
-            [jsonrpc: '2.0', id: i, method: 'initialize',
-             params: [protocolVersion: '2025-06-18', clientInfo: [name: 'mcp-remote', version: '0.1.29']]]
-        }
-        mcpDriver.pushBody(batch)
-
-        when:
-        script.handleMcpRequest()
-
-        then: 'the rejection returns before the recorder runs'
-        mcpDriver.parseResponseJson().error.code == -32600
-        script.mcpClientIdentity().lastSeen == null
-        script.mcpClientIdentity().recent == []
-    }
-
     // ---- client-supplied text ----
-
-    def "the initialize log line is sanitized to a single capped line"() {
-        given:
-        def logs = []
-        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null ->
-            logs << [level: level, component: component, msg: msg]
-        }
-        def hostile = 'evil\n## Injected heading ' + ('x' * 200)
-
-        when:
-        driveLegacyInitialize([name: hostile, version: '1.0'])
-
-        then:
-        def line = logs.find { it.msg?.startsWith('initialize from ') }
-        line != null
-        !line.msg.contains('\n')
-        line.msg.startsWith('initialize from evil ## Injected heading x')
-        line.msg.contains(' 1.0: requested protocolVersion')
-    }
-
 
     def "a client name carrying markdown and backticks is flattened, stripped and capped"() {
         given:
@@ -704,8 +339,8 @@ class McpClientIdentitySpec extends ToolSpecBase {
         when:
         driveLegacyInitialize([name: hostile, version: '1.0'])
 
-        then: 'the name is echoed into logs, markdown and a durable list'
-        def name = script.mcpClientIdentity().lastSeen.name
+        then: 'the name is echoed into logs and into markdown headed for a public tracker'
+        def name = script.mcpClientIdentity().client.name
         name.length() == 120
         !name.contains('\n')
         !name.contains('\t')
@@ -713,14 +348,73 @@ class McpClientIdentitySpec extends ToolSpecBase {
         name.startsWith('evil name ## Injected heading x')
     }
 
-    /**
-     * A stored record that throws the moment production copies it out of atomicState. It holds
-     * one real entry: an EMPTY map is copied without ever consulting entrySet() (HashMap.putAll
-     * short-circuits on size 0), so an empty subclass would never throw.
-     */
-    static class ExplodingRecord extends LinkedHashMap {
-        ExplodingRecord() { super.put('name', 'exploding') }
-        @Override
-        Set entrySet() { throw new IllegalStateException('boom') }
+    def "the initialize log line is sanitized, requested version included"() {
+        given:
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null ->
+            logs << [level: level, component: component, msg: msg]
+        }
+
+        when: 'both the name and the requested version are client-supplied text'
+        driveLegacyInitialize([name: 'evil\n## Injected heading ' + ('x' * 200), version: '1.0'],
+                              '2025-06-18\n## Injected version')
+
+        then:
+        def line = logs.find { it.msg?.startsWith('initialize from ') }
+        line != null
+        !line.msg.contains('\n')
+        line.msg.startsWith('initialize from evil ## Injected heading x')
+        line.msg.contains('requested protocolVersion 2025-06-18 ## Injected version, negotiated 2025-11-25')
+    }
+
+    def "initialize without clientInfo logs an unknown client"() {
+        given:
+        def logs = captureMcpLogs()
+
+        when:
+        driveLegacyInitialize(null)
+
+        then:
+        logs.any { it.level == 'info' && it.message.startsWith('initialize from unknown client:') }
+    }
+
+    // ---- hub_get_info ----
+
+    @Unroll
+    def "hub_get_info exposes the caller's identity through the dispatch envelope (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [:])
+
+        then:
+        response.result.isError != true
+        def info = mcpDriver.parseInner(response)
+
+        and: 'this tools/call declared no clientInfo of its own, so it names nobody'
+        info.mcpClient.client.name == null
+        info.mcpClient.client.era == 'legacy'
+        info.mcpClient.client.wrapper == false
+
+        and: 'nothing is remembered, so there is no history alongside it'
+        !info.mcpClient.containsKey('recent')
+        !info.mcpClient.containsKey('lastSeen')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_get_info names a modern client that declared itself on the same call"() {
+        when:
+        driveModernToolsCall('hub_get_info', [
+            'io.modelcontextprotocol/clientInfo': [name: 'claude-code', version: '2.1', title: 'Claude Code'],
+        ])
+
+        then:
+        def info = mcpDriver.parseInner(mcpDriver.parseResponseJson() as Map)
+        info.mcpClient.client.name == 'claude-code'
+        info.mcpClient.client.title == 'Claude Code'
+        info.mcpClient.client.era == 'modern'
     }
 }

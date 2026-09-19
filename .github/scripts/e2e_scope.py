@@ -62,7 +62,7 @@ FILE_GROUP_MAP = {
     # through those groups.
     "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
                                                  "native_apps", "best_practice_gating",
-                                                 "devices", "diagnostics"],
+                                                 "devices", "diagnostics", "system_tools"],
 }
 
 

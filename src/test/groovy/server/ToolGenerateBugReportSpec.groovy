@@ -48,8 +48,12 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
     }
 
 
+    /**
+     * One identity as {@code mcpClientIdentity()} derives it from the request in hand. The
+     * wrapper verdict comes from production so this fixture cannot drift from the bridge list.
+     */
     private Map clientRecord(Map overrides = [:]) {
-        return [
+        Map record = [
             name                     : 'claude-ai',
             version                  : '1.4.2',
             title                    : 'Claude',
@@ -57,13 +61,20 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
             requestedProtocolVersion : '2025-11-25',
             era                      : 'legacy',
             source                   : 'cloud',
-            seenAt                   : 1_700_000_000_000L,
         ] + overrides
+        if (!record.containsKey('wrapper')) {
+            record.wrapper = script._mcpClientIsWrapper(record.name as String, record.version as String)
+        }
+        return record
     }
 
+    /** Nothing is stored, so the caller's identity is stubbed at the seam the tool reads. */
     private void seedClient(Map record) {
-        atomicStateMap.mcpClientLastSeen = record
-        atomicStateMap.mcpClientsRecent = record == null ? [] : [record]
+        script.metaClass.mcpClientIdentity = { -> [client: record] }
+    }
+
+    private void seedClientReadFailure(String error) {
+        script.metaClass.mcpClientIdentity = { -> [client: null, error: error] }
     }
 
     // ---------- default invocation ----------
@@ -681,23 +692,6 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('- **Protocol version:** not reported by client')
     }
 
-    def "environment names the recently seen clients when this request declared none"() {
-        given:
-        sharedLocation.hub = new TestHub()
-        seedLogs([])
-        atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
-        atomicStateMap.mcpClientsRecent = [clientRecord()]
-
-        when:
-        def result = script.toolGenerateBugReport(baseArgs())
-
-        then:
-        def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
-        line.startsWith('- **Client (MCP self-report):** not reported on this request ' +
-                        '(recent clients: claude-ai 1.4.2 [legacy, cloud, seen ')
-        line.endsWith('])')
-    }
-
     def "environment reports a local connection by default"() {
         given:
         sharedLocation.hub = new TestHub()
@@ -1111,48 +1105,6 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         !ask.contains('do NOT guess or infer')
     }
 
-    def "a wrapper seen on an earlier request is still called out when this one named nobody"() {
-        given:
-        sharedLocation.hub = new TestHub()
-        seedLogs([])
-        atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
-        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null)]
-
-        when:
-        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
-
-        then:
-        def ask = result.missingContext.find { it.field == 'llmClient' }.ask
-        ask.contains('transport wrapper')
-        ask.contains('mcp-remote 0.1.29')
-
-        and: 'history speaks for a past request, so the ask says which one and when'
-        ask.contains('the most recent named client')
-        ask.contains('seen ')
-
-        and: 'the environment line names the bridge and says the host app behind it is unknown'
-        def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
-        line.contains('mcp-remote 0.1.29 [')
-        line.contains('(transport wrapper)')
-        line.endsWith('-- host app unknown behind a transport wrapper')
-    }
-
-    def "a named non-wrapper client is not re-flagged by a wrapper left in the history"() {
-        given:
-        sharedLocation.hub = new TestHub()
-        seedLogs([])
-        atomicStateMap.mcpClientLastSeen = clientRecord(name: 'claude-code', version: '2.1.274', title: 'Claude Code', era: 'modern')
-        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null)]
-
-        when:
-        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code 2.1.274']))
-
-        then:
-        result.missingContext.every { it.field != 'llmClient' }
-        result.report.contains('- **Client (MCP self-report):** claude-code 2.1.274 (Claude Code)')
-        !result.report.contains('host app unknown behind a transport wrapper')
-    }
-
     def "a named non-wrapper client leaves a supplied llmClient unquestioned"() {
         given:
         sharedLocation.hub = new TestHub()
@@ -1269,8 +1221,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         def result = script.toolGenerateBugReport(baseArgs())
 
         then:
-        result.instructions.startsWith('1. Resolve every preflight step')
-        result.instructions.contains('Never guess llmClient or llmModel -- ask the user.')
+        result.instructions.startsWith('1. Work through preflight and missingContext')
+        result.instructions.contains('ask them rather than guessing')
         result.instructions.contains('submitUrl')
         result.instructions.contains("'What happened'")
         result.instructions.contains("'Agent report output'")
@@ -1283,15 +1235,14 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
     //
     // hub_report_issue is routed through the executeTool switch (no gateway
     // group), so useGateways doesn't change tool resolution — the parameter is
-    // varied to assert envelope behaviour is identical in both modes. The tool
-    // has no IAE paths exercised by the direct features (all features here
-    // build a report and return success), so dispatch counterparts focus on
-    // distinct success-envelope shapes:
+    // varied to assert envelope behaviour is identical in both modes. The
+    // counterparts below cover the distinct envelope shapes:
     //   - default invocation (bug template, success envelope with inner result)
     //   - issueType routing (enhancement -> [feature] prefix + template)
     //   - log scoping (relevantCount + hint surfaces through the envelope)
     //   - privacy mode (public-safe report body suppresses raw logs)
     //   - ruleId related-rule section
+    //   - a blank required field -- the tool's one validation throw -- as an isError result
     // ---------------------------------------------------------------------------
 
     @Unroll
@@ -1438,7 +1389,6 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         sharedLocation.hub = new TestHub()
         seedLogs([])
-        seedClient(clientRecord())
 
         when:
         def response = mcpDriver.callTool('hub_report_issue', baseArgs([llmClient: 'Claude Code 2.1']))
@@ -1453,8 +1403,33 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         and: 'the dispatched call itself declared no clientInfo, so the supplied llmClient must be confirmed, not trusted'
         inner.missingContext[0].ask.startsWith("Confirm with the user that 'Claude Code 2.1' is the host app")
         inner.report.contains('## MCP Server Settings')
-        inner.report.contains('- **Client (MCP self-report):** not reported on this request (recent clients: claude-ai 1.4.2 [legacy, cloud, seen ')
+        inner.report.contains('- **Client (MCP self-report):** not reported on this request')
         inner.report.contains('- **Connection:** ')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "hub_report_issue via dispatch answers a blank required field with an isError result (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def response = mcpDriver.callTool('hub_report_issue', baseArgs([expected: '  ']))
+
+        then: 'input validation is a tool-execution error the caller can correct and retry'
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.tool == 'hub_report_issue'
+        inner.error.contains('title, expected and actual are required')
+
+        and: 'the refusal points at the section that documents what the tool wants'
+        inner.error.contains("hub_get_tool_guide(section=\"performance_diagnostics\")")
 
         where:
         useGateways << [true, false]
@@ -1560,8 +1535,72 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
         where:
         payload                        | secret               | expected
-        'token: abc123def456'          | 'abc123def456'       | 'token: <redacted>'
+        'token: abc123def4567890'      | 'abc123def4567890'   | 'token: <redacted>'
         'X-Api-Key: sk-live-0123456789'| 'sk-live-0123456789' | 'X-Api-Key: <redacted>'
+    }
+
+    @Unroll
+    def "prose that merely names a credential key is left alone: #payload"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([verbatimToolCalls: payload]))
+
+        then: 'a report that redacts its own error messages hides the diagnosis it was filed for'
+        result.report.contains(payload)
+        !result.report.contains('<redacted>')
+
+        where:
+        payload << [
+            'secret: rotated at midnight',
+            'The signature: deviceId, command, args',
+            'Missing required key: failingTool',
+            'Unknown key: deviceId in args',
+            'auth: failed for user bob',
+            "Token expired-at-midnight-rotation so the call 401'd",
+            'Basic authentication failed for user',
+            'password reset requested by the user',
+            'the api_key was missing from the request',
+            'Bearer token missing',
+        ]
+    }
+
+    @Unroll
+    def "a real credential is redacted: #payload"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([verbatimToolCalls: payload]))
+
+        then:
+        result.report.contains(expected)
+        !result.report.contains(secret)
+
+        where:
+        payload                                    | secret               | expected
+        'MCP_ACCESS_TOKEN=ghp_ABC123DEF456'        | 'ghp_ABC123DEF456'   | 'MCP_ACCESS_TOKEN=<redacted>'
+        'HUB_API_KEY=sk-live-9f8e7d6c5b4a'         | 'sk-live-9f8e7d6c5b4a' | 'HUB_API_KEY=<redacted>'
+        '{"Authorization": "e7f3a91c55d2b8f0"}'    | 'e7f3a91c55d2b8f0'   | '{"Authorization": "<redacted>"}'
+        '{"Cookie":"JSESSIONID=abc123DEF"}'        | 'JSESSIONID=abc123DEF' | '{"Cookie":"<redacted>"}'
+        '"password": "don\'t-tell-anyone-9f8e7d"' | "don\'t-tell-anyone" | '"password": "<redacted>"'
+    }
+
+    def "a cookie header ends at the closing quote, so the command around it survives"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def pasted = "curl -H 'Cookie: HUBSESSION=abc123DEF456' http://h/x?limit=1"
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([clientLogs: pasted]))
+
+        then: 'a redaction running to end-of-line would swallow the URL that shows what was called'
+        result.report.contains("curl -H 'Cookie: <redacted>' http://h/x?limit=1")
+        !result.report.contains('HUBSESSION')
     }
 
     def "a credential pasted into a prose field is redacted too"() {
@@ -1604,6 +1643,48 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.count('library marker') == 1
     }
 
+    def "a library marker inside an embedded log entry survives into the report"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([logEntry(message: 'boom // library marker mcp.McpDebugLoggingLib, line 417')])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'the log block is hub evidence, so it is concatenated unstripped'
+        result.report.contains('boom // library marker mcp.McpDebugLoggingLib, line 417')
+        result.report.count('library marker') == 1
+    }
+
+    def "an agent-supplied llmClient carrying a heading is flattened onto one line"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code\n## Environment']))
+
+        then: 'an agent-supplied field lands in a markdown bullet, so it cannot open a section'
+        result.report.contains('- **LLM / client:** Claude Code ## Environment')
+        result.report.readLines().count { it == '## Environment' } == 1
+    }
+
+    def "a settings snapshot that throws renders one unavailable line instead of failing the report"() {
+        given: 'log level debug keeps preflight off the same getter, so only the snapshot sees it fail'
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.mcpLogLevel = 'debug'
+        script.metaClass.getHiddenToolNames = { -> throw new IllegalStateException('boom') }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'a report that loses the toggle snapshot is still worth filing'
+        result.success == true
+        result.report.contains('- **Settings:** unavailable (IllegalStateException: boom)')
+        !result.report.contains('- **Read tools:**')
+    }
+
     def "preflight names the withheld error/warn block when raw logs are off"() {
         given:
         sharedLocation.hub = new TestHub()
@@ -1615,6 +1696,19 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         result.preflight.any { it.contains('error/warn withheld: includeRawLogs=false') }
         !result.preflight.any { it.contains('error/warn already attached') }
+    }
+
+    def "preflight names public mode when that is what withheld the error/warn block"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when: 'public mode is what turned raw logs off, so includeRawLogs=false is not the lever'
+        def result = script.toolGenerateBugReport(baseArgs([privacyMode: 'public']))
+
+        then:
+        result.preflight.any { it.contains('error/warn withheld in public mode') }
+        !result.preflight.any { it.contains('includeRawLogs=false') }
     }
 
     def "a private-mode withheld section steers at includeRawLogs, not privacyMode"() {
@@ -1684,58 +1778,13 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains(pasted)
     }
 
-    // ---------- wrapper history: newest named entry only ----------
-
-    def "a newer named non-wrapper client retires an older bridge in the history"() {
-        given:
-        sharedLocation.hub = new TestHub()
-        seedLogs([])
-        atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
-        atomicStateMap.mcpClientsRecent = [
-            clientRecord(name: 'claude-code', version: '2.1.274', title: null),
-            clientRecord(name: 'mcp-remote', version: '0.1.29', title: null),
-        ]
-
-        when:
-        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code 2.1.274']))
-
-        then: 'only the newest sighting can still be on the other end of this connection'
-        def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
-        !line.endsWith('-- host app unknown behind a transport wrapper')
-        result.missingContext.find { it.field == 'llmClient' }.ask.contains('sent no self-report')
-        !result.missingContext.find { it.field == 'llmClient' }.ask.contains('transport wrapper')
-    }
-
-    def "a bridge as the newest named entry still speaks for a nameless request"() {
-        given:
-        sharedLocation.hub = new TestHub()
-        seedLogs([])
-        atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
-        atomicStateMap.mcpClientsRecent = [
-            clientRecord(name: 'mcp-remote', version: '0.1.29', title: null),
-            clientRecord(name: 'claude-code', version: '2.1.274', title: null),
-        ]
-
-        when:
-        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code 2.1.274']))
-
-        then:
-        def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
-        line.endsWith('-- host app unknown behind a transport wrapper')
-
-        and:
-        def ask = result.missingContext.find { it.field == 'llmClient' }.ask
-        ask.contains('the most recent named client')
-        ask.contains('seen ')
-    }
-
     // ---------- identity read failure ----------
 
     def "an unreadable identity is reported as unavailable rather than as an unnamed client"() {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
-        atomicStateMap.mcpClientLastSeen = new ExplodingRecord()
+        seedClientReadFailure('IllegalStateException: boom')
 
         when:
         def result = script.toolGenerateBugReport(baseArgs())
@@ -1861,16 +1910,6 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         hint.contains('clientLogs')
         // logWindowSeconds only narrows a SCOPED report, so it is no lever on an oversized one.
         !hint.contains('logWindowSeconds')
-    }
-
-    /**
-     * A stored record that throws the moment production copies it out of atomicState, so the
-     * report sees a real identity READ failure rather than an absent record.
-     */
-    static class ExplodingRecord extends LinkedHashMap {
-        ExplodingRecord() { super.put('name', 'exploding') }
-        @Override
-        Set entrySet() { throw new IllegalStateException('boom') }
     }
 
 }

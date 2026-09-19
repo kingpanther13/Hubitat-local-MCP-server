@@ -913,7 +913,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the last MCP client seen, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]].",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the calling MCP client, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]].",
             inputSchema: [
                 type: "object",
                 properties: [
