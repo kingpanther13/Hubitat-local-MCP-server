@@ -128,7 +128,8 @@ def toolGenerateBugReport(args) {
     }
     def issueType = _bugReportNormalizeIssueType(args.issueType)
     def privacyMode = args.privacyMode?.toString()?.toLowerCase() == "public" ? "public" : "private"
-    def includeRawLogs = args.includeRawLogs == null ? (privacyMode == "private") : (args.includeRawLogs == true)
+    // Public mode is a hard withhold: a caller cannot opt raw content back in.
+    def includeRawLogs = privacyMode == "private" && (args.includeRawLogs == null || args.includeRawLogs == true)
     def windowMs = ((args.logWindowSeconds == null ? 120 : args.logWindowSeconds) as Integer) * 1000L
 
     initDebugLogs()
@@ -141,7 +142,7 @@ def toolGenerateBugReport(args) {
     def env = _bugReportEnvironmentSummary(args, privacyMode, identity)
     def ruleInfo = _bugReportRuleInfo(args)
     def suggestedTitle = _bugReportSuggestedTitle(args, issueType)
-    def submitUrl = _bugReportSubmitUrl(issueType, suggestedTitle)
+    def submitUrl = _bugReportSubmitUrl(issueType, suggestedTitle, env, args)
     def report = _bugReportBuildMarkdown(
         args: args,
         issueType: issueType,
@@ -542,11 +543,24 @@ private String _bugReportSuggestedTitle(args, String issueType) {
     return full.length() > 140 ? (full.take(137) + "...") : full
 }
 
-private String _bugReportSubmitUrl(String issueType, String suggestedTitle) {
+// Prefills the form field ids mcp_version, hub_firmware, mcp_client and failing_tool, declared in
+// .github/ISSUE_TEMPLATE/{bug_report,enhancement,agent_behavior}.yml -- GitHub drops an unknown id.
+private String _bugReportSubmitUrl(String issueType, String suggestedTitle, Map env, args) {
     def template = ["bug": "bug_report.yml", "enhancement": "enhancement.yml", "agent_behavior": "agent_behavior.yml"][issueType]
+    // A labels= query REPLACES the template's own default label, so it is repeated here.
+    def templateLabel = ["bug": "bug", "enhancement": "enhancement", "agent_behavior": "agent-behavior"][issueType]
     def base = "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/new"
     def encodedTitle = URLEncoder.encode(suggestedTitle ?: "", "UTF-8")
-    return "${base}?template=${template}&title=${encodedTitle}"
+    def encField = { value -> URLEncoder.encode((value ?: "").toString().take(120), "UTF-8") }
+    def url = "${base}?template=${template}&title=${encodedTitle}&labels=diag-prefilled,${templateLabel}" +
+        "&mcp_version=${encField(env?.version)}" +
+        "&hub_firmware=${encField(env?.hubFirmware)}" +
+        "&mcp_client=${encField("${env?.llmClient} / ${env?.clientSelfReport}")}"
+    def failingTool = _mcpClientString(args?.failingTool)
+    if (failingTool && issueType != "enhancement") {
+        url += "&failing_tool=${encField(failingTool)}"
+    }
+    return url.toString()
 }
 
 private String _bugReportFormatLogEntry(entry) {
@@ -625,7 +639,7 @@ private String _bugReportBuildMarkdown(Map params) {
         // Steering a private-mode caller at privacyMode='private' would be advice they already took.
         boolean pub = privacyMode == "public"
         String why = pub ? "raw text omitted in public mode" : "raw text omitted"
-        String how = pub ? "re-run with privacyMode='private' or pass includeRawLogs=true" : "pass includeRawLogs=true"
+        String how = pub ? "re-run with privacyMode='private'" : "pass includeRawLogs=true"
         def stand = n > 0 ?
             "_${n} relevant entr${n == 1 ? 'y' : 'ies'} (${why} — ${how} to see them)._" :
             "_No relevant errors logged (${why})._"
@@ -737,7 +751,7 @@ private String _bugReportRawSection(String heading, String body, boolean include
         // Steering a private-mode caller at privacyMode='private' would be advice they already took.
         boolean pub = privacyMode == "public"
         String what = pub ? "omitted in public mode" : "omitted"
-        String how = pub ? "re-run with privacyMode='private' or pass includeRawLogs=true" : "pass includeRawLogs=true"
+        String how = pub ? "re-run with privacyMode='private'" : "pass includeRawLogs=true"
         return "\n## ${heading}\n_${n} line(s) ${what} -- ${how}._\n".toString()
     }
     String fence = _bugReportFence(body)
@@ -782,7 +796,7 @@ def _getAllToolDefinitions_partDebugLogging() {
                     verbatimToolCalls: [type: "string", description: "EXACT failing call (tool + args JSON) and raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"],
                     clientLogs: [type: "string", description: "Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary. Also takes pasted hub_get_logs output.[[/FLAT_TRIM]]"],
                     privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name; withholds raw logs and the pasted verbatim/client-log sections."],
-                    includeRawLogs: [type: "boolean", description: "Default: true private, false public. false also withholds verbatimToolCalls/clientLogs."],
+                    includeRawLogs: [type: "boolean", description: "Private only (default true). false also hides pasted sections. Public always withholds."],
                     includeUnrelatedRecentLogs: [type: "boolean", description: "When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope.[[FLAT_TRIM]] Default false, no-op when unscoped.[[/FLAT_TRIM]]"],
                     logWindowSeconds: [type: "integer", description: "Default 120."]
                 ],

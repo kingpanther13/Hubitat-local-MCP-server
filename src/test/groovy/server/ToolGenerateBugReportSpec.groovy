@@ -319,6 +319,40 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         !titleQuery.contains('&')
     }
 
+    def "submitUrl prefills the issue-form field ids and the diag-prefilled label"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClient(clientRecord())
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            failingTool : 'hub manage rules',
+            llmClient   : 'Claude Code 2.1',
+        ]))
+
+        then:
+        result.submitUrl.contains('&labels=diag-prefilled')
+        result.submitUrl.contains('&mcp_version=')
+        result.submitUrl.contains('&hub_firmware=')
+        result.submitUrl.contains('&mcp_client=')
+        result.submitUrl.contains('&failing_tool=hub+manage+rules')
+        !result.submitUrl.contains(' ')
+    }
+
+    def "submitUrl omits failing_tool when no failing tool was supplied"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.submitUrl.contains('&labels=diag-prefilled')
+        !result.submitUrl.contains('failing_tool=')
+    }
+
     // ---------- title truncation ----------
 
     def "suggested title truncates to 140 chars with ellipsis when prefix+tool+title overflows"() {
@@ -628,23 +662,31 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.instructions.toLowerCase().contains('review')
     }
 
-    def "includeRawLogs=true in public mode still hides hub name but shows raw log text"() {
+    def "public mode withholds the raw log text and both pasted sections even with includeRawLogs=true"() {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([
-            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'hub_manage_native_rules_and_apps'], message: 'shown_anyway_in_public_mode'),
+            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'hub_manage_native_rules_and_apps'], message: 'secret_message_in_log'),
         ])
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([
-            failingTool    : 'hub_manage_native_rules_and_apps',
-            privacyMode    : 'public',
-            includeRawLogs : true,
+            failingTool       : 'hub_manage_native_rules_and_apps',
+            privacyMode       : 'public',
+            includeRawLogs    : true,
+            verbatimToolCalls : 'call A\ncall B',
+            clientLogs        : 'a single log line',
         ]))
 
-        then:
+        then: 'public mode is a hard withhold -- includeRawLogs cannot opt the content back in'
         result.report.contains('<hub-name>')
-        result.report.contains('shown_anyway_in_public_mode')
+        !result.report.contains('secret_message_in_log')
+        result.report.contains('raw text omitted in public mode')
+        result.report.contains('## Verbatim Tool Calls\n_2 line(s) omitted in public mode')
+        result.report.contains('## Client-Side Logs\n_1 line(s) omitted in public mode')
+        !result.report.contains('call A')
+        !result.report.contains('a single log line')
+        !result.report.contains('includeRawLogs=true')
     }
 
 
@@ -1763,6 +1805,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('## Client-Side Logs\n_1 line(s) omitted in public mode')
         !result.report.contains('call A')
         !result.report.contains('a single log line')
+        result.report.contains("re-run with privacyMode='private'")
+        !result.report.contains('includeRawLogs=true')
     }
 
     def "a library marker pasted into verbatimToolCalls survives into the report"() {

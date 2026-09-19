@@ -11955,6 +11955,13 @@ class TestRunner:
         assert isinstance(result.get("preflight"), list), f"preflight must be a list: {result!r}"
         assert "submitUrl" in (result.get("instructions") or ""), \
             f"instructions must point the agent at submitUrl: {result.get('instructions')!r}"
+        # The link carries the diagnostic prefill: a label marking the issue tool-generated plus
+        # the issue-form field ids, so a maintainer sees version/firmware/client without asking.
+        submit_url = result.get("submitUrl") or ""
+        assert "labels=diag-prefilled" in submit_url, \
+            f"submitUrl must carry the diag-prefilled label: {submit_url!r}"
+        assert "mcp_version=" in submit_url, \
+            f"submitUrl must prefill mcp_version: {submit_url!r}"
         report = result.get("report") or ""
         for marker in (
             "## Environment",
@@ -11988,13 +11995,15 @@ class TestRunner:
         assert "AAAAAAAAAAAAAAAA1" not in report, (
             f"a bearer credential survived into the private-mode report: {report!r}")
 
-        # Public mode withholds both pasted sections outright, credentials or not.
+        # Public mode withholds both pasted sections outright, credentials or not, and
+        # includeRawLogs=true cannot opt them back in.
         public = _report({
             "issueType": "bug",
             "title": "E2E report-shape probe (public)",
             "expected": "the pasted sections are withheld",
             "actual": "they were rendered verbatim",
             "privacyMode": "public",
+            "includeRawLogs": True,
             "llmClient": "hubitat-e2e-suite",
             "llmModel": "n/a (automated suite)",
             "verbatimToolCalls": verbatim,
@@ -12011,6 +12020,8 @@ class TestRunner:
             f"the verbatim payload leaked into a public report: {public_report!r}")
         assert "transport closed" not in public_report, (
             f"the client-log payload leaked into a public report: {public_report!r}")
+        assert "includeRawLogs=true" not in public_report, (
+            f"a public placeholder still offered an override that no longer exists: {public_report!r}")
 
         # agent_behavior asks for the same evidence as a bug and renders the same sections.
         agent = _report({
