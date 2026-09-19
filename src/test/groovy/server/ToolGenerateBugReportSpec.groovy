@@ -314,9 +314,10 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
         then:
         result.submitUrl.contains('&title=')
-        def titleQuery = result.submitUrl.substring(result.submitUrl.indexOf('&title=') + '&title='.length())
+        // The title is one query value among several now, so isolate it before checking the encoding.
+        def titleQuery = result.submitUrl.substring(result.submitUrl.indexOf('&title=') + '&title='.length()).split('&')[0]
         !titleQuery.contains(' ')
-        !titleQuery.contains('&')
+        titleQuery.contains('%26')
     }
 
     def "submitUrl prefills the issue-form field ids and the diag-prefilled label"() {
