@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.3.7 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.3.9 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -510,6 +510,17 @@ def advancedOverridesPage() {
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
                   description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit.",
                   defaultValue: false
+        }
+        section("Tool name number") {
+            paragraph "Inserts a single digit after the \"hub\" prefix of every MCP tool name on the wire (e.g. hub_get_info becomes hub3_get_info). Lets multiple Hubitat MCP servers coexist in one client without tool-name collisions -- internal behavior is unchanged, only the names the client sees. MCP clients cache the tool list, so refresh or reconnect your client after changing this."
+            input "enableHubToolNumber", "bool", title: "Add a digit to every tool name",
+                  description: "OFF by default. Turn ON to pick a digit below.",
+                  defaultValue: false, submitOnChange: true
+            if (settings.enableHubToolNumber) {
+                input "hubToolNumber", "enum", title: "Digit to insert",
+                      description: "e.g. 3 turns hub_get_info into hub3_get_info.",
+                      options: ("0".."9").collect { it }, required: false
+            }
         }
         section {
             def dt = (settings.disabled_tools ?: []).size()
@@ -1435,7 +1446,8 @@ def processJsonRpcMessage(msg) {
             case "tools/list":
                 return handleToolsList(msg)
             case "tools/call":
-                return handleToolsCall(msg)
+                // Mcp-Name validation already ran against the client's external name.
+                return handleToolsCall(_normalizeInboundToolName(msg))
             case "resources/list":
                 return handleResourcesList(msg)
             case "resources/read":
@@ -1594,6 +1606,58 @@ def handleServerDiscover(msg) {
     ])
 }
 
+// Issue #443: optional digit after "hub" in wire-facing tool names (hub_x -> hub3_x) so
+// several hubs can coexist in one client. Internal names never change.
+String _hubToolNumber() {
+    if (settings.enableHubToolNumber != true) return null
+    String digit = settings.hubToolNumber?.toString()
+    return (digit != null && digit ==~ /^[0-9]$/) ? digit : null
+}
+
+String _externalToolName(String name) {
+    String digit = _hubToolNumber()
+    return (digit != null && name?.startsWith("hub_")) ? "hub" + digit + name.substring(3) : name
+}
+
+// Plain hub_ names still pass, so a client with a stale cached catalog keeps working.
+String _internalToolName(String name) {
+    String digit = _hubToolNumber()
+    return (digit != null && name?.startsWith("hub${digit}_")) ? "hub" + name.substring(4) : name
+}
+
+// Renames the entry and, for a gateway, its tool= enum and "Available tools:" catalog lines.
+private Map _externalizeToolEntry(Map tool) {
+    Map result = tool + [name: _externalToolName(tool.name as String)]
+    def subEnum = tool.inputSchema?.properties?.tool?.enum
+    if (subEnum instanceof List) {
+        Map renamed = (subEnum as List).collectEntries { [(it): _externalToolName(it as String)] }
+        String description = tool.description as String
+        renamed.each { internalName, externalName ->
+            description = description.replace("- ${internalName}:".toString(), "- ${externalName}:".toString())
+        }
+        result.description = description
+        result.inputSchema = (tool.inputSchema as Map) + [
+            properties: (tool.inputSchema.properties as Map) + [
+                tool: (tool.inputSchema.properties.tool as Map) + [enum: renamed.values() as List]
+            ]
+        ]
+    }
+    return result
+}
+
+private def _normalizeInboundToolName(msg) {
+    if (_hubToolNumber() == null || !(msg.params instanceof Map)) return msg
+    Map params = msg.params as Map
+    Map newParams = params
+    if (params.name instanceof String) {
+        newParams = newParams + [name: _internalToolName(params.name as String)]
+    }
+    if (params.arguments instanceof Map && params.arguments.tool instanceof String) {
+        newParams = newParams + [arguments: (params.arguments as Map) + [tool: _internalToolName(params.arguments.tool as String)]]
+    }
+    return msg + [params: newParams]
+}
+
 def handleToolsList(msg) {
     // tools/list returns the full catalog in a single response. Pagination was
     // attempted in #180 (page size 50, cursor-based; ported via #190), but in
@@ -1613,6 +1677,7 @@ def handleToolsList(msg) {
     // -- that is opt-in and the size guard's "suggestion" hints already point
     // callers at it when needed.
     def all = getToolDefinitions()
+    if (_hubToolNumber() != null) all = all.collect { _externalizeToolEntry(it as Map) }
     // CacheableResult (SEP-2549): tools/list results carry the ttlMs freshness
     // hint plus cacheScope. Scope is "private" -- the endpoint is authenticated by
     // a per-install OAuth token and the catalog it returns is shaped by that
@@ -1996,7 +2061,7 @@ private def _mrtrMarkRejoined(result, boolean rejoined) {
 // say the failing slice may also have changed the hub, so the caller inspects instead
 // of repeating the whole operation.
 private Map _mrtrFailureWithLedger(Map rec, leafTool, String error) {
-    def failure = [success: false, isError: true, tool: leafTool, error: error]
+    def failure = [success: false, isError: true, tool: _externalToolName(leafTool as String), error: error]
     _mrtrAttachLedger(failure, rec)
     return failure
 }
@@ -4107,7 +4172,7 @@ private def _renderValidationError(id, toolName, reactiveToolName, args, String 
     // A throw with no message gets neither a hint nor a literal "null": there is nothing
     // for the model to act on. A hint failure must never mask the genuine refusal.
     boolean hasDetail = detail?.trim() as boolean
-    String text = hasDetail ? detail : "${reactiveToolName} rejected the call without a reason"
+    String text = hasDetail ? detail : "${_externalToolName(reactiveToolName as String)} rejected the call without a reason"
     def hint = null
     if (hasDetail) {
         try { hint = _reactiveBpsWarning(reactiveToolName, args, detail) }
@@ -4116,7 +4181,7 @@ private def _renderValidationError(id, toolName, reactiveToolName, args, String 
                 [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
         }
     }
-    def failure = [success: false, isError: true, tool: reactiveToolName,
+    def failure = [success: false, isError: true, tool: _externalToolName(reactiveToolName as String),
                    error: hint ? "${text} ${hint}".toString() : text, __validation: true]
     // A refusal on a later slice sits on top of committed work; hand that ledger back
     // exactly as a runtime failure would, so the caller does not repeat the whole batch.
@@ -4237,7 +4302,7 @@ def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) 
         truncated: true,
         estimatedBytes: actualBytes,
         sizeLimitBytes: limitBytes,
-        tool: toolName,
+        tool: _externalToolName(toolName),
         suggestion: _responseTooLargeSuggestion(toolName)
     ]
 }
@@ -5183,7 +5248,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     def gwConfig = getGatewayConfig()
     def config = gwConfig[gatewayName]
     if (!config) {
-        throw new IllegalArgumentException("Unknown gateway: ${gatewayName}")
+        throw new IllegalArgumentException("Unknown gateway: ${_externalToolName(gatewayName as String)}")
     }
 
     if (!toolName) {
@@ -5203,12 +5268,12 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
         def displayMeta = getToolDisplayMeta()
 
         return [
-            gateway: gatewayName,
+            gateway: _externalToolName(gatewayName as String),
             mode: "catalog",
             message: "Call again with tool='<name>' and args={...} to execute a tool.",
             tools: visibleSubTools.collect { name ->
                 def d = defMap[name]
-                def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
+                def entry = [name: _externalToolName(name as String), description: d?.description, inputSchema: d?.inputSchema]
                 def title = displayMeta[name]?.title
                 if (title) entry.title = title as String
                 entry
@@ -5217,7 +5282,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     }
 
     if (!config.tools.contains(toolName)) {
-        throw new IllegalArgumentException("Unknown tool '${toolName}' in ${gatewayName}. Available: ${config.tools.join(', ')}")
+        throw new IllegalArgumentException("Unknown tool '${_externalToolName(toolName as String)}' in ${_externalToolName(gatewayName as String)}. Available: ${config.tools.collect { _externalToolName(it as String) }.join(', ')}")
     }
 
     // Defensive: unreachable with current configs — gateway names and tool
@@ -5320,7 +5385,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
             // all-params list rides in the message -- no content is lost vs the old
             // structured `parameters` field.
             throw new IllegalArgumentException(
-                "Missing required ${paramWord} for ${toolName}: ${missing.join(', ')}. All parameters:\n${paramList}")
+                "Missing required ${paramWord} for ${_externalToolName(toolName as String)}: ${missing.join(', ')}. All parameters:\n${paramList}")
         }
     }
 
@@ -5957,18 +6022,18 @@ def executeTool(toolName, args) {
                 def visibleNames = getToolDefinitions()*.name as Set
                 def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
                 def hint = subTools
-                    ? "Call the underlying tool directly: ${subTools.join(', ')}. Refresh tools/list to see the flat catalog."
+                    ? "Call the underlying tool directly: ${subTools.collect { _externalToolName(it as String) }.join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
                 return [
                     isError: true,
-                    error: "Gateway tool '${toolName}' is disabled — useGateways is OFF in this server's preferences.",
+                    error: "Gateway tool '${_externalToolName(toolName as String)}' is disabled — useGateways is OFF in this server's preferences.",
                     hint: hint
                 ]
             }
             return handleGateway(toolName, args.tool, args.args, (args instanceof Map) ? args.__reqT0 : null)
 
         default:
-            throw new IllegalArgumentException("Unknown tool: ${toolName}")
+            throw new IllegalArgumentException("Unknown tool: ${_externalToolName(toolName as String)}")
     }
 }
 
@@ -9395,7 +9460,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.3.7"
+    return "4.3.9"
 }
 
 
@@ -10540,7 +10605,7 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
   - **NOTE:** fan `setSpeed` takes a fixed enum speed only (low / medium-low / medium / medium-high / high / on / off / auto); RM has no variable-sourced fan speed (unlike dimmer `setLevel`'s `levelVariable`) because the classic wizard exposes a variable toggle only for numeric/text value fields, not enum pickers. For a variable-driven speed, use `capability='runCommand'` with `command='setSpeed'` + `parameters=[{type:'string', variable:'<varName>'}]` (per-parameter variable sourcing).
 - **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `hub_list_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
-- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
+- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. `sourceVariable` works for Number, Decimal and String targets (a String target is written through RM's `valStringOp.<N>="Copy variable"` picker); a Boolean or DateTime target is refused before any write. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Rule-local Variable** (`capability='setLocalVariable'`): identical shape and source modes to `setVariable` (`variable` target + exactly one of `value`/`sourceVariable`/`fromDevice`/`math`), EXCEPT the `variable` target is validated against the rule's LOCAL variables (`state.allLocalVars`) instead of hub globals. Use this -- not `setVariable` -- when a local and a hub variable share a name and you mean the local; it cannot silently target the global. `sourceVariable`/`math` operands may be either local or hub (RM's source picker spans both; validated against the live revealed enum). Create a local first via `addLocalVariable`; list current locals via `hub_list_rule_local_variables` (in `hub_read_rules`). The picker section headers ` --LOCAL VARIABLES--` / ` --HUB VARIABLES--` are rejected as targets.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.

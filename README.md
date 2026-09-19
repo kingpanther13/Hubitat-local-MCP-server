@@ -841,6 +841,8 @@ Under **Settings > Advanced: Per-tool Overrides**, you can disable individual to
 
 Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[write]` marker, and a one-sentence description — so you can tell what you're disabling without decoding the bare names. The same friendly names are published on `tools/list` as MCP `annotations.title`, so clients that honor that field — claude.ai among them — display them in their tool lists too.
 
+**Tool name number** (off by default) inserts a digit after `hub` in every tool name the client sees (`hub_get_info` → `hub3_get_info`, including gateway sub-tools), so more than one hub's MCP server can be connected to the same client without name collisions. Reconnect the client after changing it.
+
 </details>
 
 <details>
@@ -1655,6 +1657,8 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.3.9** - fix: copy a variable into a String target through valStringOp. PRs: [#445](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/445)
+- **v4.3.8** - feat: optional digit suffix on hub tool names. PRs: [#444](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/444)
 - **v4.3.7** - fix: Rule Machine variable, settle, this-rule and wording corrections. PRs: [#441](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/441)
 - **v4.3.6** - ci: publish fork PR library bundles after e2e approval; ci: scan only the fork files the e2e job executes; fix: report unverified standalone rule edits and recovery outcomes. PRs: [#436](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/436), [#440](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/440), [#437](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/437)
 - **v4.3.5** - fix: build Boolean variable conditions and keep walkStep drive state between steps. PRs: [#426](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/426)

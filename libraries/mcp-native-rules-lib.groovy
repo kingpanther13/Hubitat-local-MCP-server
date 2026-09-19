@@ -3499,8 +3499,8 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "variable", type: "String", description: "Hub variable name to write (the target). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
                 ],
                 optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the write otherwise -- RM renders numOp/valNumber only for numeric targets). String, boolean, and datetime targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
-                    [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Schema-gated: the source-variable field is only revealed by RM after the numOp=variable write; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the write otherwise -- RM renders numOp/valNumber only for numeric targets). String, boolean, and datetime targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
+                    [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Works for Number, Decimal and String targets (a String target uses RM's valStringOp='Copy variable' picker instead of numOp=variable); a Boolean or DateTime target is refused before any write. Schema-gated: the source-variable field is only revealed by RM after that selector is written; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
                     [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable. Maps to numOp='device attribute'.[[FLAT_TRIM]] RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence.[[/FLAT_TRIM]]"],
                     [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the variable-math source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp='variable math'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require 'right'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject 'right'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."],
                     [name: "delay", type: "Map"],
@@ -3515,8 +3515,8 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "variable", type: "String", description: "Local variable name to write (the target). Must be an existing local variable on this rule (create one first via hub_set_rule addLocalVariable) -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
                 ],
                 optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime local-variable targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
-                    [name: "sourceVariable", type: "String", description: "Variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. RM's source picker spans BOTH local and hub variables, so the source may be either; validated against the live revealed enum (fails loud, success=false, if the hub does not reveal it). See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime local-variable targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
+                    [name: "sourceVariable", type: "String", description: "Variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. RM's source picker spans BOTH local and hub variables, so the source may be either; validated against the live revealed enum (fails loud, success=false, if the hub does not reveal it). Number, Decimal and String targets are supported; Boolean and DateTime targets are refused before any action row is written. See docs/rm_wire_format.md for the wire sequence."],
                     [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same wire and validation as setVariable's fromDevice."],
                     [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same operator set and wire as setVariable's math; operand variables may be local or hub (validated against the live revealed enum)."],
                     [name: "delay", type: "Map"],
@@ -5539,6 +5539,22 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
     // level deviceIds list (used by switch / dimmer / lock / shade /
     // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
     _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
+    // A hub-variable copy into a Boolean/DateTime target has no captured picker, so refuse it
+    // before the selectActions page-init POST. The builder repeats the check for locals, whose
+    // types are only readable from the rule itself.
+    if ((cap == "variable" || cap == "setVariable") && actionSpec.sourceVariable != null && actionSpec.variable != null) {
+        def targetType = null
+        try {
+            def meta = getAllGlobalVars()?.get(actionSpec.variable.toString())
+            targetType = (meta instanceof Map) ? meta?.type?.toString()?.toLowerCase() : null
+        } catch (Exception e) {
+            // Unreadable here: the builder reads the list again and refuses or warns from there.
+            mcpLog("debug", "rm-native", "setVariable pre-check: target type unreadable (${e.class.simpleName}: ${e.message}), deferred to the builder")
+        }
+        if (targetType in ["boolean", "datetime"]) {
+            throw new IllegalArgumentException("setVariable: sourceVariable copy into a ${targetType} target ('${actionSpec.variable}') is not supported yet -- its copy picker has not been mapped yet. Copy into a Number, Decimal or String variable, or build this action in the RM UI.")
+        }
+    }
     // Pre-validate a rule-targeting action's target rule id BEFORE any wizard write
     // (including the selectActions page-init POST below), so a bogus target is
     // refused with RM genuinely untouched. Capability-gated so only the rule-
@@ -6160,15 +6176,18 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         //   xVarV.<N>       = hub variable name (enum from hub variables list). GATES the
         //                     numOp.<N> reveal -- numOp does not render until xVarV is set, so
         //                     xVarV must be written before numOp.
-        //   numOp.<N>       = source mode enum. Supported here: "number" (constant),
+        //   numOp.<N>       = source mode enum, rendered only for a Number/Decimal target.
+        //                     Supported here: "number" (constant),
         //                     "variable" (copy from another variable), "device attribute"
         //                     (read a device's attribute), "variable math" (structured math).
         //                     Default: "number"
         //   valNumber.<N>   = value when numOp=number (constant form)
-        //   xVar3.<N>       = source variable name when numOp=variable (copy-from-variable form).
-        //                     Schema-gated: RM only reveals xVar3.<N> AFTER numOp.<N>="variable".
+        //   valStringOp.<N> = "Copy variable" for a copy into a String target (no numOp there).
+        //   xVar3.<N>       = source variable name for a copy (numOp=variable or valStringOp=Copy variable).
+        //                     Schema-gated: RM only reveals xVar3.<N> AFTER that selector lands.
         //                     Discovered from the live schema, not hardcoded. Post-write block:
         //                     __setVariableSourceVar.
+        //   valOffset.<N>   = 0 after xVar3 for a Number/Decimal copy (the RM UI default).
         //   customDev.<N>   = source device when numOp="device attribute" (capability.* single-
         //                     device picker, multiple=false). Reveals tCustomAttr.<N>.
         //   tCustomAttr.<N> = source attribute (enum FILTERED to the selected device's live
@@ -6285,6 +6304,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         def varDisplayKind = isLocalVar ? "local variables" : "hub variables"
         def emptyDisplay = isLocalVar ? "(none -- rule has no local variables defined)" : "(none -- hub has no variables defined)"
         def allVars = null
+        // Which picker names a copy-from-variable source. RM renders numOp.<N> only for a
+        // Number/Decimal target; a String target gets valStringOp.<N>, whose "Copy variable"
+        // option reveals the same xVar3.<N> source enum (captured from the RM UI, fw 2.5.1.183).
+        String copyOpField = "numOp"
         if (isLocalVar) {
             // Read state.allLocalVars (the rule-local namespace) from the rule's statusJson
             // appState. Normalize to the same {name -> [type:<token>]} shape getAllGlobalVars
@@ -6325,7 +6348,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             // numOp never reveals their source option for a non-numeric target, so the reveal walk
             // fails deep with a misleading not-in-schema message. Fail loud HERE, before any hub
             // write, with the actual requirement and the ONE supported alternative (sourceVariable,
-            // which copies from another variable; RM's source picker spans all types). (Type is read
+            // which copies into a Number, Decimal or String target). (Type is read
             // from the same namespace map already fetched for name validation; an unavailable map
             // skips this with everything else.)
             // The INTERNAL type token (NOT the UI label) is what both namespaces store: a Number var is
@@ -6344,7 +6367,20 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                     // from metadata we could not parse a type out of at all -- the latter is a
                     // shape problem, not a "this variable is the wrong type" problem.
                     def typeDisplay = targetType ? "of type '${targetType}'" : "of an unreadable type (its variable metadata did not carry a recognizable type token)"
-                    throw new IllegalArgumentException("${capLabel}: the ${modeName} source mode requires a Number or Decimal target variable; '${targetVar}' is ${typeDisplay}. To assign a String/Boolean/DateTime target use 'sourceVariable' (copy from another variable).")
+                    throw new IllegalArgumentException("${capLabel}: the ${modeName} source mode requires a Number or Decimal target variable; '${targetVar}' is ${typeDisplay}. To assign a String target use 'sourceVariable' (copy from another variable); a Boolean/DateTime target is not supported by these source modes, so build it in the RM UI.")
+                }
+            }
+            if (actionSpec.sourceVariable != null) {
+                def copyTargetMeta = allVars.get(targetVar)
+                def copyTargetType = (copyTargetMeta instanceof Map) ? copyTargetMeta?.type?.toString()?.toLowerCase() : null
+                if (copyTargetType == "string") {
+                    copyOpField = "valStringOp"
+                } else if (copyTargetType in ["boolean", "datetime"]) {
+                    // Their copy picker has not been captured; refusing here leaves no action row.
+                    throw new IllegalArgumentException("${capLabel}: sourceVariable copy into a ${copyTargetType} target ('${targetVar}') is not supported yet -- its copy picker has not been mapped yet. Copy into a Number, Decimal or String variable, or build this action in the RM UI.")
+                } else if (!_rmIsNumericVarType(copyTargetType)) {
+                    // Fail closed like the numeric-only modes above: the selector depends on the type.
+                    throw new IllegalArgumentException("${capLabel}: cannot read the type of target variable '${targetVar}' (its variable metadata did not carry a recognizable type token), so the copy selector cannot be chosen: numOp for a Number/Decimal target, valStringOp for a String target.")
                 }
             }
             // sourceVariable + math-operand names: pre-validate against the global namespace for
@@ -6383,11 +6419,14 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         // a setLocalVariable caller must not see "setVariable:" in a deferred error.
         actionSpec.__setVariableCapLabel = capLabel
         if (actionSpec.sourceVariable != null) {
-            // Write numOp=variable (the full word -- "var" is rejected by RM 5.1 live).
-            // The source-variable field (xVar3.<N>) is schema-gated and only revealed
-            // after numOp=variable is written. Discovery and write happen in the
-            // __setVariableSourceVar post-write block below (after fields.each).
-            fields["numOp.@N"] = "variable"
+            // Write numOp=variable (the full word -- "var" is rejected by RM 5.1 live), or for a
+            // String target valStringOp="Copy variable". Either way the source-variable field
+            // (xVar3.<N>) is schema-gated and only revealed after that write. Discovery and
+            // write happen in the __setVariableSourceVar post-write block below (after fields.each).
+            if (copyOpField == "valStringOp") fields["valStringOp.@N"] = "Copy variable"
+            else fields["numOp.@N"] = "variable"
+            actionSpec.__setVariableSourceOp = copyOpField
+            actionSpec.__setVariableSourceTypeUnread = (allVars == null)
             actionSpec.__setVariableSourceVar = actionSpec.sourceVariable.toString()
         } else if (actionSpec.fromDevice != null) {
             // Write numOp="device attribute". The device picker (customDev.<N>) and the
@@ -7499,7 +7538,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     }
 
     // setVariable copy-from-variable: source-variable field is schema-gated.
-    // RM 5.1 reveals the source-variable enum ONLY after numOp.<N>="variable" is written.
+    // RM 5.1 reveals the source-variable enum ONLY after the copy selector lands:
+    // numOp.<N>="variable" for a Number/Decimal target, valStringOp.<N>="Copy variable" for a String.
     // Discover the actual field name from the live schema (observed as xVar3.<N>) rather
     // than hardcoding it -- RM's field naming is firmware-version-specific.
     // Fail loud if the reveal does not materialise: a missing field means the write
@@ -7509,8 +7549,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         // Name the actual capability the caller invoked (setVariable vs setLocalVariable),
         // stashed when the markers were set; defaults to setVariable for safety.
         def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
-        // numOp=variable must have landed for the schema-gated source-variable field to appear.
-        _rmAssertNumOpLanded(idx, applied, skipped, "source-variable")
+        // The copy selector must have landed for the schema-gated source-variable field to appear.
+        def copyOp = (actionSpec.__setVariableSourceOp ?: "numOp").toString()
+        def copyMode = actionSpec.__setVariableSourceTypeUnread ? "source-variable (the variable list was unreadable, so the target type is unknown and numOp was assumed; a String target needs valStringOp)" : "source-variable"
+        _rmAssertSelectorLanded(idx, applied, skipped, copyMode, copyOp, capLbl)
         def srcCfg = _rmFetchConfigJson(appId, "doActPage")
         def srcInputs = (srcCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
         // Match xVar<digits>.<N> -- the source-variable enum for getSetVariable.
@@ -7521,7 +7563,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
         if (!xVarMatches) {
             def visibleNames = srcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
-            throw new IllegalArgumentException("${capLbl}: source-variable field was not revealed after writing numOp=variable for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
+            throw new IllegalArgumentException("${capLbl}: source-variable field was not revealed after writing ${copyOp == 'valStringOp' ? 'valStringOp=Copy variable' : 'numOp=variable'} for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
         }
         if (xVarMatches.size() > 1) {
             // More than one numeric xVar at this action slot is unexpected. Surface it loudly
@@ -7540,12 +7582,17 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             throw new IllegalArgumentException("${capLbl}: revealed field '${xVar3Field}' has no enumerable options -- cannot validate sourceVariable '${srcVar}'. Hub may not expose the variable list at this action position.")
         }
         if (!xVar3Opts.any { it == srcVar }) {
-            // The target + numOp=variable already landed before this deferred reveal-enum
+            // The target + copy selector already landed before this deferred reveal-enum
             // check, so the throw leaves a partial action row (target set, no source). Warn
             // the caller and point at the auto-snapshot taken before the edit for recovery.
             throw new IllegalArgumentException("${capLbl}: sourceVariable '${srcVar}' is not in the revealed enum for '${xVar3Field}'. Available: ${xVar3Opts.sort().join(', ')}. A partial action row was written (target variable set, no source) -- remove it with hub_set_rule(removeAction:{index:N}) or restore the pre-edit auto-snapshot via hub_restore_backup.")
         }
         _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, srcVar, applied, null, skipped)
+        if (copyOp == "numOp") {
+            // A Number copy is source + valOffset.<N>; the RM UI stores 0 by default. Without it the
+            // rule throws "Ambiguous method overloading for method java.lang.Long#plus" when it runs.
+            _rmWriteSettingOnPage(appId, "doActPage", "valOffset.${idx}".toString(), 0, applied, null, skipped)
+        }
     }
 
     // setVariable from-device: the device picker (customDev.<N>) and the attribute enum
@@ -7562,7 +7609,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         def fdDeviceId = fd.deviceId.toString()
         def fdAttr = fd.attribute.toString()
         // numOp must have landed for the gated fields to appear.
-        _rmAssertNumOpLanded(idx, applied, skipped, "device-attribute")
+        _rmAssertSelectorLanded(idx, applied, skipped, "device-attribute", "numOp", capLbl)
         // Step 1: customDev.<N> (capability.* single-device picker) must be revealed.
         def customDevField = "customDev.${idx}".toString()
         _rmRevealedInputOrThrow(appId, customDevField,
@@ -7602,7 +7649,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     if (actionSpec.__setVariableMath != null) {
         def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
         def m = actionSpec.__setVariableMath
-        _rmAssertNumOpLanded(idx, applied, skipped, "variable-math")
+        _rmAssertSelectorLanded(idx, applied, skipped, "variable-math", "numOp", capLbl)
         // The "(constant)" sentinel is RM's enum option that switches an operand to a literal.
         def constSentinel = "(constant)"
         // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
@@ -11068,18 +11115,19 @@ private void _rmDropPredClearPending(Integer appId, Object observedGeneration) {
 // static-schema behaviour read this to emit informational
 // sentinels. Does NOT imply failure.
 // setVariable reveal helpers -- shared across the three schema-gated source modes
-// (sourceVariable / fromDevice / math). Each mode writes numOp.<N> then walks a sequence of
-// schema-gated fields; these collapse the precondition check, the fetch-and-find-or-throw idiom,
-// and the constant-vs-variable operand write that were triplicated across the modes.
+// (sourceVariable / fromDevice / math). Each mode writes its selector (numOp.<N>, or
+// valStringOp.<N> for a String copy) then walks a sequence of schema-gated fields; these collapse
+// the precondition check, the fetch-and-find-or-throw idiom, and the constant-vs-variable operand
+// write that were triplicated across the modes.
 
-// Precondition: numOp.<N> must have landed for the mode's gated fields to appear. If the numOp
-// write was skipped, attribute the failure precisely (the numOp gap) rather than letting the
-// downstream reveal-miss blame a firmware gap. No-op when numOp landed.
-private void _rmAssertNumOpLanded(int idx, List applied, List skipped, String modeLabel) {
-    def numOpKey = "numOp.${idx}".toString()
-    if (!applied.contains(numOpKey) && skipped.any { it?.key?.toString() == numOpKey }) {
-        def numOpSkip = skipped.find { it?.key?.toString() == numOpKey }
-        throw new IllegalArgumentException("setVariable: numOp.${idx} write did not land (reason: ${numOpSkip?.reason}) -- ${modeLabel} reveal cannot proceed. Verify the doActPage schema includes numOp.${idx} at this action position.")
+// Precondition: the mode's selector (opField.<N>) must have landed for its gated fields to appear.
+// If that write was skipped, attribute the failure precisely rather than letting the downstream
+// reveal-miss blame a firmware gap. No-op when the selector landed.
+private void _rmAssertSelectorLanded(int idx, List applied, List skipped, String modeLabel, String opField = "numOp", String capLbl = "setVariable") {
+    def selectorKey = "${opField}.${idx}".toString()
+    if (!applied.contains(selectorKey) && skipped.any { it?.key?.toString() == selectorKey }) {
+        def selectorSkip = skipped.find { it?.key?.toString() == selectorKey }
+        throw new IllegalArgumentException("${capLbl}: ${opField}.${idx} write did not land (reason: ${selectorSkip?.reason}) -- ${modeLabel} reveal cannot proceed. Verify the doActPage schema includes ${opField}.${idx} at this action position.")
     }
 }
 
