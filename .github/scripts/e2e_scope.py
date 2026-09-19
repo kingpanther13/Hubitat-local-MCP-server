@@ -29,7 +29,7 @@ FILE_GROUP_MAP = {
     "libraries/mcp-custom-rules-lib.groovy":    ["rule_crud", "trigger_types", "condition_types", "action_types", "complex_patterns"],
     "hubitat-mcp-rule.groovy":                  ["rule_crud", "trigger_types", "condition_types", "action_types", "complex_patterns"],
     "libraries/mcp-diagnostics-lib.groovy":     ["diagnostics", "system_tools"],
-    "libraries/mcp-debug-logging-lib.groovy":   ["developer_mode", "diagnostics"],
+    "libraries/mcp-debug-logging-lib.groovy":   ["developer_mode", "diagnostics", "system_tools"],
     "libraries/mcp-system-lib.groovy":          ["system_tools", "infrastructure"],
     "libraries/mcp-self-admin-lib.groovy":      ["developer_mode", "best_practice_gating"],
     # virtual_device_lifecycle: the command round-trip, waitFor and `commands` batch tests are
@@ -62,7 +62,7 @@ FILE_GROUP_MAP = {
     # through those groups.
     "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
                                                  "native_apps", "best_practice_gating",
-                                                 "devices", "diagnostics"],
+                                                 "devices", "diagnostics", "system_tools"],
 }
 
 

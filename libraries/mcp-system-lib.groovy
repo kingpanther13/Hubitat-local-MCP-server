@@ -129,6 +129,7 @@ def toolGetHubInfo(args = null) {
 
     // Native log history can be temporarily unavailable independently of these stats.
     info.mcpServerVersion = currentVersion()
+    info.mcpClient = mcpClientIdentity()
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = logHistory.entries == null ? null : logHistory.entries.size()
@@ -912,7 +913,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system') for the optional deep-dive flags and PII gating.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the calling MCP client, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]].",
             inputSchema: [
                 type: "object",
                 properties: [
