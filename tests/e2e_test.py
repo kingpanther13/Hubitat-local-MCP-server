@@ -11854,6 +11854,13 @@ class TestRunner:
         # A pasted payload that carries its own bare ``` line -- the rendered block must open on a
         # LONGER backtick run, or the paste would close the block early.
         verbatim = 'hub_set_rule({"appId": 1}) ->\n```\nHTTP 500 Internal error\n```'
+        # Credentials reach the raw sections through pasted transcripts, and the report is headed
+        # for a public tracker, so they are redacted in BOTH privacy modes.
+        secret_logs = (
+            "2026-01-01T00:00:00 ERROR mcp-server-hubitat: transport closed\n"
+            "GET /apps/api/228/mcp?access_token=secret123 HTTP/1.1\n"
+            "Authorization: Bearer tok456"
+        )
         result = _report({
             "issueType": "bug",
             "title": "E2E report-shape probe",
@@ -11863,7 +11870,7 @@ class TestRunner:
             "llmClient": "hubitat-e2e-suite",
             "llmModel": "n/a (automated suite)",
             "verbatimToolCalls": verbatim,
-            "clientLogs": "2026-01-01T00:00:00 ERROR mcp-server-hubitat: transport closed",
+            "clientLogs": secret_logs,
         })
         assert result.get("success") is True, f"hub_report_issue failed: {result}"
         # This suite's ordinary calls declare no clientInfo, so the server can never confirm the
@@ -11893,6 +11900,36 @@ class TestRunner:
         expected_block = report.split("### Expected\n", 1)[1].split("\n### Actual", 1)[0]
         too_long = [line for line in expected_block.split("\n") if len(line) > 100]
         assert not too_long, f"expected prose was not wrapped at 100 chars: {too_long!r}"
+        assert "access_token=<redacted>" in report, (
+            f"the pasted access_token was not redacted: {report!r}")
+        assert "Authorization: <redacted>" in report, (
+            f"the pasted Authorization header was not redacted: {report!r}")
+        assert "secret123" not in report and "tok456" not in report, (
+            f"a credential survived into the private-mode report: {report!r}")
+
+        # Public mode withholds both pasted sections outright, credentials or not.
+        public = _report({
+            "issueType": "bug",
+            "title": "E2E report-shape probe (public)",
+            "expected": "the pasted sections are withheld",
+            "actual": "they were rendered verbatim",
+            "privacyMode": "public",
+            "llmClient": "hubitat-e2e-suite",
+            "llmModel": "n/a (automated suite)",
+            "verbatimToolCalls": verbatim,
+            "clientLogs": secret_logs,
+        })
+        assert public.get("success") is True, f"public-mode hub_report_issue failed: {public}"
+        public_report = public.get("report") or ""
+        for section in ("## Verbatim Tool Calls", "## Client-Side Logs"):
+            parts = public_report.split(section, 1)
+            assert len(parts) == 2, f"public report missing {section!r}: {public_report[:800]!r}"
+            assert "omitted in public mode" in parts[1].split("\n##", 1)[0], (
+                f"{section!r} was not withheld in public mode: {public_report!r}")
+        assert "HTTP 500 Internal error" not in public_report, (
+            f"the verbatim payload leaked into a public report: {public_report!r}")
+        assert "transport closed" not in public_report, (
+            f"the client-log payload leaked into a public report: {public_report!r}")
 
         # agent_behavior asks for the same evidence as a bug and renders the same sections.
         agent = _report({
@@ -14507,6 +14544,9 @@ class TestRunner:
         assert last.get("requestedProtocolVersion") is None, \
             f"requestedProtocolVersion belongs to the initialize handshake only: {last!r}"
         assert last.get("source") in {"cloud", "local"}, f"unexpected lastSeen.source: {last!r}"
+        assert "wrapper" in last, f"every identity record must carry a wrapper flag: {last!r}"
+        assert last["wrapper"] is False, \
+            f"the probe name is not a stdio-to-HTTP bridge and must not be flagged: {last!r}"
         recent = client.get("recent")
         assert isinstance(recent, list) and len(recent) <= 5, \
             f"mcpClient.recent must be a list capped at 5: {recent!r}"
@@ -14875,6 +14915,23 @@ class TestRunner:
             ("the legacy and modern catalogs disagree: "
              f"legacy-only={sorted(legacy_names - modern_names)}, "
              f"modern-only={sorted(modern_names - legacy_names)}")
+
+        # Identity is recorded per HTTP request, so the handshake clientInfo lands on the
+        # record for THAT POST; this follow-up declares none and reads it back out of history.
+        info = legacy.call_tool("hub_get_info", replay_safe=True)
+        seen = ((info.get("mcpClient") or {}).get("recent")) or []
+        probe = next((e for e in seen
+                      if isinstance(e, dict) and e.get("name") == "hubitat-e2e-legacy-probe"), None)
+        assert probe is not None, \
+            f"the legacy handshake client is missing from mcpClient.recent: {seen!r}"
+        assert probe.get("version") == "1.0", f"legacy probe version not captured: {probe!r}"
+        assert probe.get("era") == "legacy", f"a legacy handshake must record era legacy: {probe!r}"
+        assert probe.get("requestedProtocolVersion") == LEGACY_PROTOCOL_VERSION, \
+            f"the requested handshake revision was not stored: {probe!r}"
+        assert probe.get("protocolVersion") == LEGACY_PROTOCOL_VERSION, \
+            f"the negotiated handshake revision was not stored: {probe!r}"
+        assert probe.get("wrapper") is False, \
+            f"a named non-bridge client must not be flagged as a transport wrapper: {probe!r}"
 
         capped = legacy.initialize(MODERN_PROTOCOL_VERSION)
         assert capped.get("protocolVersion") == DEFAULT_PROTOCOL_VERSION, \

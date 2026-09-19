@@ -57,6 +57,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
             requestedProtocolVersion : '2025-11-25',
             era                      : 'legacy',
             source                   : 'cloud',
+            wrapper                  : false,
             seenAt                   : 1_700_000_000_000L,
         ] + overrides
     }
@@ -692,9 +693,10 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         def result = script.toolGenerateBugReport(baseArgs())
 
         then:
-        result.report.contains(
-            '- **Client (MCP self-report):** not reported on this request ' +
-            '(recent clients: claude-ai 1.4.2 [legacy, cloud])')
+        def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
+        line.startsWith('- **Client (MCP self-report):** not reported on this request ' +
+                        '(recent clients: claude-ai 1.4.2 [legacy, cloud, seen ')
+        line.endsWith('])')
     }
 
     def "environment reports a local connection by default"() {
@@ -1036,7 +1038,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
-        seedClient(clientRecord(name: 'mcp-remote', version: '0.1.29', title: null))
+        seedClient(clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true))
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
@@ -1055,7 +1057,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
-        seedClient(clientRecord(name: 'mcp', version: version, title: null))
+        seedClient(clientRecord(name: 'mcp', version: version, title: null, wrapper: bridge))
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
@@ -1075,7 +1077,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
-        seedClient(clientRecord(name: clientName, version: '1.0', title: null))
+        seedClient(clientRecord(name: clientName, version: '1.0', title: null, wrapper: wrapper))
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
@@ -1115,7 +1117,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub()
         seedLogs([])
         atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
-        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null)]
+        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true)]
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
@@ -1124,6 +1126,10 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         def ask = result.missingContext.find { it.field == 'llmClient' }.ask
         ask.contains('transport wrapper')
         ask.contains('mcp-remote 0.1.29')
+
+        and: 'history speaks for a past request, so the ask says which one and when'
+        ask.contains('the most recent named client')
+        ask.contains('seen ')
 
         and: 'the environment line names the bridge and says the host app behind it is unknown'
         def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
@@ -1137,7 +1143,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub()
         seedLogs([])
         atomicStateMap.mcpClientLastSeen = clientRecord(name: 'claude-code', version: '2.1.274', title: 'Claude Code', era: 'modern')
-        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null)]
+        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true)]
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code 2.1.274']))
@@ -1202,6 +1208,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.preflight.size() == 3
         result.preflight[0].startsWith('MCP log level is error.')
         result.preflight[0].contains("hub_set_log_level(level='debug')")
+        result.preflight[0].contains("hub_get_logs(mode='mcp')")
+        result.preflight[0].contains('clientLogs')
         result.preflight[1].contains("hub_get_logs(mode='hub')")
         result.preflight[1].contains('clientLogs')
         result.preflight[2].contains('verbatimToolCalls')
@@ -1446,11 +1454,231 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         and: 'the dispatched call itself declared no clientInfo, so the supplied llmClient must be confirmed, not trusted'
         inner.missingContext[0].ask.startsWith("Confirm with the user that 'Claude Code 2.1' is the host app")
         inner.report.contains('## MCP Server Settings')
-        inner.report.contains('- **Client (MCP self-report):** not reported on this request (recent clients: claude-ai 1.4.2 [legacy, cloud])')
+        inner.report.contains('- **Client (MCP self-report):** not reported on this request (recent clients: claude-ai 1.4.2 [legacy, cloud, seen ')
         inner.report.contains('- **Connection:** ')
 
         where:
         useGateways << [true, false]
+    }
+
+    // ---------- secret scrubbing + withheld raw sections ----------
+
+    def "access tokens and Authorization values are redacted out of the pasted sections"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            verbatimToolCalls : 'GET /apps/api/228/mcp?access_token=abc&limit=1',
+            clientLogs        : 'Authorization: Bearer x',
+        ]))
+
+        then: 'the report is headed for a public tracker, so private mode scrubs too'
+        result.report.contains('access_token=<redacted>')
+        result.report.contains('Authorization: <redacted>')
+        !result.report.contains('access_token=abc')
+        !result.report.contains('Bearer x')
+    }
+
+    def "public mode withholds both pasted sections and names how much was held back"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            privacyMode       : 'public',
+            verbatimToolCalls : 'call A\ncall B',
+            clientLogs        : 'a single log line',
+        ]))
+
+        then:
+        result.report.contains('## Verbatim Tool Calls\n_2 line(s) omitted in public mode')
+        result.report.contains('## Client-Side Logs\n_1 line(s) omitted in public mode')
+        !result.report.contains('call A')
+        !result.report.contains('a single log line')
+    }
+
+    def "a library marker pasted into verbatimToolCalls survives into the report"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def pasted = 'ERROR: foo // library marker mcp.McpDebugLoggingLib, line 417'
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([verbatimToolCalls: pasted]))
+
+        then: 'the marker strip cleans the template, never the evidence pasted into it'
+        result.report.contains(pasted)
+    }
+
+    // ---------- wrapper history: newest named entry only ----------
+
+    def "a newer named non-wrapper client retires an older bridge in the history"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
+        atomicStateMap.mcpClientsRecent = [
+            clientRecord(name: 'claude-code', version: '2.1.274', title: null),
+            clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true),
+        ]
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code 2.1.274']))
+
+        then: 'only the newest sighting can still be on the other end of this connection'
+        def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
+        !line.endsWith('-- host app unknown behind a transport wrapper')
+        result.missingContext.find { it.field == 'llmClient' }.ask.contains('sent no self-report')
+        !result.missingContext.find { it.field == 'llmClient' }.ask.contains('transport wrapper')
+    }
+
+    def "a bridge as the newest named entry still speaks for a nameless request"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
+        atomicStateMap.mcpClientsRecent = [
+            clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true),
+            clientRecord(name: 'claude-code', version: '2.1.274', title: null),
+        ]
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code 2.1.274']))
+
+        then:
+        def line = result.report.readLines().find { it.startsWith('- **Client (MCP self-report):**') }
+        line.endsWith('-- host app unknown behind a transport wrapper')
+
+        and:
+        def ask = result.missingContext.find { it.field == 'llmClient' }.ask
+        ask.contains('the most recent named client')
+        ask.contains('seen ')
+    }
+
+    // ---------- identity read failure ----------
+
+    def "an unreadable identity is reported as unavailable rather than as an unnamed client"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        atomicStateMap.mcpClientLastSeen = new ExplodingRecord()
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'a read failure and a silent client are different diagnoses'
+        result.report.contains('- **Client (MCP self-report):** unavailable (server-side identity read failed: IllegalStateException')
+        result.report.contains('- **Protocol version:** unavailable (server-side identity read failed: IllegalStateException')
+
+        and:
+        def ask = result.missingContext.find { it.field == 'llmClient' }.ask
+        ask.contains('the server could not read the client identity (IllegalStateException')
+    }
+
+    // ---------- effective settings ----------
+
+    def "a numeric setting the accessor overrides prints the effective value and names the raw one"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.loopGuardMax = 0
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'a report showing only the raw 0 would explain the wrong behaviour'
+        result.report.contains('- **Loop guard max executions:** 30 (configured 0)')
+        result.report.contains('- **Cloud-relay budget (ms):** 6000 (default)')
+    }
+
+    def "the engine line reports the resolved mode alongside the raw toggle"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'the toggle is off by default yet the read custom_* tools are still served'
+        result.report.contains('- **Legacy custom rule engine:** readonly (toggle unset)')
+    }
+
+    def "the settings section names the tools actually hidden from this client"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.disabled_tools = ['hub_list_devices']
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'the deny list is the input; what the client cannot see is the symptom'
+        def line = result.report.readLines().find { it.startsWith('- **Tools hidden from this client:**') }
+        line != null
+        line.contains('hub_list_devices')
+    }
+
+    def "preflight points at the app settings when hub_set_log_level is hidden from the client"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.disabled_tools = ['hub_set_log_level']
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'telling an agent to call a tool it cannot see is a dead end'
+        result.preflight[0].contains('hub_set_log_level is not available to this client')
+        result.preflight[0].contains("ask the user to raise it in the app's settings")
+        !result.preflight[0].contains("hub_set_log_level(level='debug')")
+    }
+
+    // ---------- wrap edge cases ----------
+
+    def "_bugReportWrap keeps a run of spaces intact across a break"() {
+        given:
+        def line = ('alpha ' * 18) + 'a  b ' + ('beta ' * 18).trim()
+
+        when:
+        def wrapped = script._bugReportWrap(line)
+
+        then:
+        line.length() > 100
+        wrapped.contains('\n')
+        wrapped.replaceAll('\n', ' ') == line
+        wrapped.readLines().every { it.trim() && !it.startsWith(' ') }
+    }
+
+    def "_bugReportWrap leaves a markdown table row unwrapped"() {
+        given:
+        def row = '| ' + ('cell | ' * 30)
+
+        expect:
+        row.length() > 100
+        script._bugReportWrap(row) == row
+    }
+
+    // ---------- response-size recovery hint ----------
+
+    def "the response-too-large hint for hub_report_issue names the fields to shrink"() {
+        expect:
+        def hint = script._responseTooLargeSuggestion('hub_report_issue')
+        hint.contains('includeRawLogs')
+        hint.contains('verbatimToolCalls')
+        hint.contains('clientLogs')
+    }
+
+    /**
+     * A stored record that throws the moment production copies it out of atomicState, so the
+     * report sees a real identity READ failure rather than an absent record.
+     */
+    static class ExplodingRecord extends LinkedHashMap {
+        ExplodingRecord() { super.put('name', 'exploding') }
+        @Override
+        Set entrySet() { throw new IllegalStateException('boom') }
     }
 
 }
