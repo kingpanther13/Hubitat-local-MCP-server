@@ -331,8 +331,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
             llmClient   : 'Claude Code 2.1',
         ]))
 
-        then:
-        result.submitUrl.contains('&labels=diag-prefilled')
+        then: 'the template label rides along, because a labels= query replaces the form default'
+        result.submitUrl.contains('&labels=diag-prefilled,bug&')
         result.submitUrl.contains('&mcp_version=')
         result.submitUrl.contains('&hub_firmware=')
         result.submitUrl.contains('&mcp_client=')
@@ -349,7 +349,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         def result = script.toolGenerateBugReport(baseArgs())
 
         then:
-        result.submitUrl.contains('&labels=diag-prefilled')
+        result.submitUrl.contains('&labels=diag-prefilled,bug&')
         !result.submitUrl.contains('failing_tool=')
     }
 
