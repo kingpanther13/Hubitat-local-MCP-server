@@ -291,6 +291,22 @@ class McpClientIdentitySpec extends ToolSpecBase {
         }
     }
 
+    def "a credential quoted by the read error is scrubbed from the error and the log line"() {
+        given:
+        def logs = captureMcpLogs()
+        mcpDriver.throwingRequest = new IllegalStateException('parse failed near access_token=SECRETY9 in body')
+
+        when:
+        def identity = script.mcpClientIdentity()
+
+        then:
+        identity.client == null
+        identity.error.startsWith('IllegalStateException: ')
+        !identity.error.contains('SECRETY9')
+        identity.error.contains('access_token=<redacted>')
+        logs.every { !it.message.contains('SECRETY9') }
+    }
+
     def "a read failure whose own recovery log throws still answers"() {
         given:
         mcpDriver.pushBodyThrowing(new IllegalStateException('boom'))

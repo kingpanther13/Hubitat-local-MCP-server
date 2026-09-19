@@ -1780,6 +1780,22 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
     // ---------- identity read failure ----------
 
+    def "a credential quoted by the identity read error never reaches the report or the asks"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        seedClientReadFailure('IllegalStateException: parse failed near access_token=SECRETX1 in body')
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        !result.report.contains('SECRETX1')
+        result.report.contains('access_token=<redacted>')
+        result.missingContext.every { !it.ask.contains('SECRETX1') }
+        result.missingContext.find { it.field == 'llmClient' }.ask.contains('access_token=<redacted>')
+    }
+
     def "an unreadable identity is reported as unavailable rather than as an unnamed client"() {
         given:
         sharedLocation.hub = new TestHub()

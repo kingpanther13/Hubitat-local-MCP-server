@@ -1271,11 +1271,14 @@ def mcpClientIdentity() {
         }
         return [client: client]
     } catch (Throwable e) {
+        // The message can quote the request body (a parse error does), so it is flattened,
+        // capped and credential-scrubbed before it reaches the log or a report.
+        String detail = "${e.class.simpleName}: ${_bugReportScrubSecrets(_mcpClientString(e.message))}".toString()
         try {
-            mcpLog("warn", "server", "MCP client identity read failed: ${e.class.simpleName}: ${e.message}")
+            mcpLog("warn", "server", "MCP client identity read failed: ${detail}")
         } catch (Throwable ignored) {
         }
-        return [client: null, error: "${e.class.simpleName}: ${e.message}".toString()]
+        return [client: null, error: detail]
     }
 }
 

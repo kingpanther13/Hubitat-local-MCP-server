@@ -276,7 +276,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode, Map identity)
         mcpLog("warn", "bug-report", "_bugReportEnvironmentSummary: location access threw (${e.message}); env fields may be incomplete")
     }
     def client = identity?.client
-    String identityError = identity?.error
+    String identityError = _bugReportScrubSecrets(identity?.error as String)
     return [
         version: currentVersion(),
         hubName: privacyMode == "public" ? "<hub-name>" : hubName,
@@ -410,6 +410,7 @@ private String _bugReportWrap(String text, int width = 100) {
 }
 
 private List _bugReportMissingContext(args, String issueType, Map client, String identityError) {
+    identityError = _bugReportScrubSecrets(identityError)
     def blank = { value -> !(value?.toString()?.trim()) }
     def missing = []
     boolean wrapper = !identityError && client?.wrapper == true
