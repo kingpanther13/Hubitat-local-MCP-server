@@ -621,6 +621,10 @@ class McpClientIdentitySpec extends ToolSpecBase {
         where:
         clientName           | clientVersion || expected
         'mcp-remote'         | '0.1.29'      || true
+        'MCP-Remote'         | '0.1.29'      || true
+        'mcp-proxy'          | '0.9.0'       || true
+        'fastmcp-remote'     | '2.0'         || true
+        'supergateway'       | '3.4.0'       || true
         'mcp'                | '0.1.0'       || true
         'mcp'                | null          || true
         'claude-code'        | '2.1'         || false
@@ -628,7 +632,70 @@ class McpClientIdentitySpec extends ToolSpecBase {
         'mcp-remote-control' | '1.0'         || false
     }
 
+    def "the wrapper flag is computed on read, so a stored record without one still reports it"() {
+        given: 'a record persisted before the flag was read-time, naming a known bridge'
+        atomicStateMap.mcpClientLastSeen = [
+            name: 'mcp-remote', version: '0.1.29', title: null,
+            protocolVersion: '2025-11-25', requestedProtocolVersion: '2025-06-18',
+            era: 'legacy', source: 'local', seenAt: FIXED_NOW,
+        ]
+
+        expect: 'a stored verdict would outlive a change to the bridge list, so none is stored'
+        !atomicStateMap.mcpClientLastSeen.containsKey('wrapper')
+        script.mcpClientIdentity().lastSeen.wrapper == true
+    }
+
+    def "a recent entry gets the same read-time wrapper flag"() {
+        given:
+        atomicStateMap.mcpClientsRecent = [
+            [name: 'supergateway', version: '3.4.0', era: 'legacy', source: 'local', seenAt: FIXED_NOW],
+            [name: 'claude-code', version: '2.1', era: 'legacy', source: 'local', seenAt: FIXED_NOW],
+        ]
+
+        expect:
+        script.mcpClientIdentity().recent*.wrapper == [true, false]
+    }
+
+    // ---- rejected requests name nobody ----
+
+    def "an oversized batch is rejected before it can name a client"() {
+        given: 'one element past the 50-message inbound cap'
+        def batch = (1..51).collect { i ->
+            [jsonrpc: '2.0', id: i, method: 'initialize',
+             params: [protocolVersion: '2025-06-18', clientInfo: [name: 'mcp-remote', version: '0.1.29']]]
+        }
+        mcpDriver.pushBody(batch)
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'the rejection returns before the recorder runs'
+        mcpDriver.parseResponseJson().error.code == -32600
+        script.mcpClientIdentity().lastSeen == null
+        script.mcpClientIdentity().recent == []
+    }
+
     // ---- client-supplied text ----
+
+    def "the initialize log line is sanitized to a single capped line"() {
+        given:
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null ->
+            logs << [level: level, component: component, msg: msg]
+        }
+        def hostile = 'evil\n## Injected heading ' + ('x' * 200)
+
+        when:
+        driveLegacyInitialize([name: hostile, version: '1.0'])
+
+        then:
+        def line = logs.find { it.msg?.startsWith('initialize from ') }
+        line != null
+        !line.msg.contains('\n')
+        line.msg.startsWith('initialize from evil ## Injected heading x')
+        line.msg.contains(' 1.0: requested protocolVersion')
+    }
+
 
     def "a client name carrying markdown and backticks is flattened, stripped and capped"() {
         given:

@@ -11856,10 +11856,15 @@ class TestRunner:
         verbatim = 'hub_set_rule({"appId": 1}) ->\n```\nHTTP 500 Internal error\n```'
         # Credentials reach the raw sections through pasted transcripts, and the report is headed
         # for a public tracker, so they are redacted in BOTH privacy modes.
+        # A redaction must end at the credential: the line after one that merely ENDS in the word
+        # "token", the closing quote and the URL after a header value, all have to survive.
         secret_logs = (
             "2026-01-01T00:00:00 ERROR mcp-server-hubitat: transport closed\n"
             "GET /apps/api/228/mcp?access_token=secret123 HTTP/1.1\n"
-            "Authorization: Bearer tok456"
+            "Authorization: Bearer tok456\n"
+            "2026-01-01T00:00:01 WARN mcp-server-hubitat: retry scheduled with token\n"
+            "2026-01-01T00:00:02 INFO mcp-server-hubitat: reconnected on attempt 2\n"
+            "curl -H 'Authorization: Bearer AAAAAAAAAAAAAAAA1' http://h/x"
         )
         result = _report({
             "issueType": "bug",
@@ -11902,10 +11907,18 @@ class TestRunner:
         assert not too_long, f"expected prose was not wrapped at 100 chars: {too_long!r}"
         assert "access_token=<redacted>" in report, (
             f"the pasted access_token was not redacted: {report!r}")
-        assert "Authorization: <redacted>" in report, (
+        assert "Authorization: Bearer <redacted>" in report, (
             f"the pasted Authorization header was not redacted: {report!r}")
         assert "secret123" not in report and "tok456" not in report, (
             f"a credential survived into the private-mode report: {report!r}")
+        assert "reconnected on attempt 2" in report, (
+            f"the log line after one ending in 'token' was eaten by the redaction: {report!r}")
+        assert "retry scheduled with token" in report, (
+            f"a line merely ending in the word 'token' was redacted: {report!r}")
+        assert "curl -H 'Authorization: Bearer <redacted>' http://h/x" in report, (
+            f"the redaction ate the closing quote or the URL after the credential: {report!r}")
+        assert "AAAAAAAAAAAAAAAA1" not in report, (
+            f"a bearer credential survived into the private-mode report: {report!r}")
 
         # Public mode withholds both pasted sections outright, credentials or not.
         public = _report({

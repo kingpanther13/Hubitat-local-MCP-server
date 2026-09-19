@@ -57,7 +57,6 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
             requestedProtocolVersion : '2025-11-25',
             era                      : 'legacy',
             source                   : 'cloud',
-            wrapper                  : false,
             seenAt                   : 1_700_000_000_000L,
         ] + overrides
     }
@@ -1038,7 +1037,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
-        seedClient(clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true))
+        seedClient(clientRecord(name: 'mcp-remote', version: '0.1.29', title: null))
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
@@ -1057,7 +1056,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
-        seedClient(clientRecord(name: 'mcp', version: version, title: null, wrapper: bridge))
+        seedClient(clientRecord(name: 'mcp', version: version, title: null))
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
@@ -1077,7 +1076,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([])
-        seedClient(clientRecord(name: clientName, version: '1.0', title: null, wrapper: wrapper))
+        seedClient(clientRecord(name: clientName, version: '1.0', title: null))
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
@@ -1117,7 +1116,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub()
         seedLogs([])
         atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
-        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true)]
+        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null)]
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Desktop']))
@@ -1143,7 +1142,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub()
         seedLogs([])
         atomicStateMap.mcpClientLastSeen = clientRecord(name: 'claude-code', version: '2.1.274', title: 'Claude Code', era: 'modern')
-        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true)]
+        atomicStateMap.mcpClientsRecent = [clientRecord(name: 'mcp-remote', version: '0.1.29', title: null)]
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([llmClient: 'Claude Code 2.1.274']))
@@ -1476,7 +1475,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
         then: 'the report is headed for a public tracker, so private mode scrubs too'
         result.report.contains('access_token=<redacted>')
-        result.report.contains('Authorization: <redacted>')
+        result.report.contains('Authorization: Bearer <redacted>')
         !result.report.contains('access_token=abc')
         !result.report.contains('Bearer x')
     }
@@ -1504,6 +1503,135 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         'yaml token'          | "token: 's3cretF'"                             | 's3cretF'  | "token: '<redacted>'"
         'basic scheme'        | 'Proxy: Basic dXNlcjpzM2NyZXRH'                | 'dXNlcjpzM2NyZXRH' | 'Basic <redacted>'
         'cookie header'       | 'Cookie: HUBSESSION=s3cretH; other=1'          | 's3cretH'  | 'Cookie: <redacted>'
+    }
+
+    def "the redaction ends at the credential, leaving the neighbouring evidence intact"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def pasted = [
+            '2026-01-01T00:00:01 WARN mcp-server-hubitat: retry scheduled with token',
+            '2026-01-01T00:00:02 INFO mcp-server-hubitat: reconnected on attempt 2',
+            "curl -H 'Authorization: Bearer AAAAAAAAAAAAAAAA1' http://h/x",
+        ].join('\n')
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([clientLogs: pasted]))
+
+        then: 'a redaction that ran to end-of-line would swallow all three'
+        result.report.contains('retry scheduled with token')
+        result.report.contains('reconnected on attempt 2')
+        result.report.contains("curl -H 'Authorization: Bearer <redacted>' http://h/x")
+        !result.report.contains('AAAAAAAAAAAAAAAA1')
+    }
+
+    @Unroll
+    def "prose that merely names a scheme is left alone: #payload"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([verbatimToolCalls: payload]))
+
+        then:
+        result.report.contains(payload)
+
+        where:
+        payload << [
+            'Token expired at midnight',
+            'Bearer token missing from request',
+            'Digest mismatch detected in payload',
+        ]
+    }
+
+    @Unroll
+    def "an unquoted credential is redacted: #payload"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([verbatimToolCalls: payload]))
+
+        then:
+        result.report.contains(expected)
+        !result.report.contains(secret)
+
+        where:
+        payload                        | secret               | expected
+        'token: abc123def456'          | 'abc123def456'       | 'token: <redacted>'
+        'X-Api-Key: sk-live-0123456789'| 'sk-live-0123456789' | 'X-Api-Key: <redacted>'
+    }
+
+    def "a credential pasted into a prose field is redacted too"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([actual: 'the call to ?access_token=abc 401d']))
+
+        then: 'the prose fields reach the same public tracker as the pasted sections'
+        result.report.contains('access_token=<redacted>')
+        !result.report.contains('access_token=abc')
+    }
+
+    def "title, expected and actual are required"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        script.toolGenerateBugReport(baseArgs([expected: '  ']))
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == 'title, expected and actual are required'
+    }
+
+    def "a library marker pasted into a prose field survives while the template carries none"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        def pasted = 'it printed // library marker mcp.McpDebugLoggingLib, line 9'
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([actual: pasted]))
+
+        then: 'the marker strip runs over the server-authored halves only'
+        result.report.contains(pasted)
+        result.report.count('library marker') == 1
+    }
+
+    def "preflight names the withheld error/warn block when raw logs are off"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([includeRawLogs: false]))
+
+        then:
+        result.preflight.any { it.contains('error/warn withheld: includeRawLogs=false') }
+        !result.preflight.any { it.contains('error/warn already attached') }
+    }
+
+    def "a private-mode withheld section steers at includeRawLogs, not privacyMode"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            includeRawLogs    : false,
+            verbatimToolCalls : 'call A\ncall B',
+        ]))
+
+        then: "privacyMode='private' is advice this caller already took"
+        result.report.contains('## Verbatim Tool Calls\n_2 line(s) omitted -- pass includeRawLogs=true._')
+        result.report.contains('## Recent Error/Warning Logs\n_No relevant errors logged (raw text omitted)._')
+        !result.report.contains("privacyMode='private'")
     }
 
     def "a sentinel pasted into verbatimToolCalls is not treated as the client-log slot"() {
@@ -1565,7 +1693,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
         atomicStateMap.mcpClientsRecent = [
             clientRecord(name: 'claude-code', version: '2.1.274', title: null),
-            clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true),
+            clientRecord(name: 'mcp-remote', version: '0.1.29', title: null),
         ]
 
         when:
@@ -1584,7 +1712,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         seedLogs([])
         atomicStateMap.mcpClientLastSeen = clientRecord(name: null, version: null, title: null)
         atomicStateMap.mcpClientsRecent = [
-            clientRecord(name: 'mcp-remote', version: '0.1.29', title: null, wrapper: true),
+            clientRecord(name: 'mcp-remote', version: '0.1.29', title: null),
             clientRecord(name: 'claude-code', version: '2.1.274', title: null),
         ]
 
@@ -1681,18 +1809,24 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
     // ---------- wrap edge cases ----------
 
-    def "_bugReportWrap keeps a run of spaces intact across a break"() {
-        given:
-        def line = ('alpha ' * 18) + 'a  b ' + ('beta ' * 18).trim()
+    def "_bugReportWrap collapses a space run straddling the break into one line break"() {
+        given: 'the run spans the wrap column, so both halves of it sit at a boundary'
+        def line = ('x' * 98) + (' ' * 5) + ('y' * 20)
 
         when:
         def wrapped = script._bugReportWrap(line)
 
-        then:
-        line.length() > 100
-        wrapped.contains('\n')
-        wrapped.replaceAll('\n', ' ') == line
-        wrapped.readLines().every { it.trim() && !it.startsWith(' ') }
+        then: 'one break, no blank line, no trailing space, no leading space'
+        wrapped == ('x' * 98) + '\n' + ('y' * 20)
+    }
+
+    def "_bugReportWrap wraps CRLF input at the same column as LF"() {
+        given:
+        def body = ('alpha ' * 30).trim()
+
+        expect:
+        script._bugReportWrap(body + '\r\n' + body) == script._bugReportWrap(body + '\n' + body)
+        !script._bugReportWrap(body + '\r\n' + body).contains('\r')
     }
 
     def "_bugReportWrap leaves a markdown table row unwrapped"() {
@@ -1704,6 +1838,19 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         script._bugReportWrap(row) == row
     }
 
+    def "the settings snapshot prints the capped captured-state limit next to the configured one"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.maxCapturedStates = 500
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'the engine caps at 100, so the raw value alone would explain the wrong behaviour'
+        result.report.contains('- **Max captured states:** 100 (configured 500)')
+    }
+
     // ---------- response-size recovery hint ----------
 
     def "the response-too-large hint for hub_report_issue names the fields to shrink"() {
@@ -1712,6 +1859,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         hint.contains('includeRawLogs')
         hint.contains('verbatimToolCalls')
         hint.contains('clientLogs')
+        // logWindowSeconds only narrows a SCOPED report, so it is no lever on an oversized one.
+        !hint.contains('logWindowSeconds')
     }
 
     /**

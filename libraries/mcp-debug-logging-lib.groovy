@@ -121,6 +121,11 @@ def toolGetLoggingStatus(args) {
 }
 
 def toolGenerateBugReport(args) {
+    // Validation first: a caller may correct and retry, so nothing may have happened yet.
+    def blankArg = { value -> !(value?.toString()?.trim()) }
+    if (blankArg(args.title) || blankArg(args.expected) || blankArg(args.actual)) {
+        throw new IllegalArgumentException("title, expected and actual are required")
+    }
     def issueType = _bugReportNormalizeIssueType(args.issueType)
     def privacyMode = args.privacyMode?.toString()?.toLowerCase() == "public" ? "public" : "private"
     def includeRawLogs = args.includeRawLogs == null ? (privacyMode == "private") : (args.includeRawLogs == true)
@@ -161,8 +166,8 @@ def toolGenerateBugReport(args) {
             otherRecentLogCount: scopedLogs.scoped && !scopedLogs.includedUnrelated ? scopedLogs.otherCount : 0
         ],
         missingContext: _bugReportMissingContext(args, issueType, identity?.lastSeen, identity?.recent, identity?.error as String),
-        preflight: _bugReportPreflight(issueType),
-        instructions: "1. Resolve every preflight step and missingContext item first -- a report without them usually gets sent back with questions. Never guess llmClient or llmModel -- ask the user. 2. Open submitUrl; the GitHub issue title is pre-filled. 3. Type a short description of what you were doing in the 'What happened' field. 4. Paste the 'report' content into the 'Agent report output' field. Privacy: if you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, filenames, access tokens, MCP endpoint URLs and any credentials with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting -- public mode is a best-effort assist, not a guarantee."
+        preflight: _bugReportPreflight(issueType, includeRawLogs, privacyMode),
+        instructions: "1. Resolve every preflight step and missingContext item first -- a report without them usually gets sent back with questions. Never guess llmClient or llmModel -- ask the user. 2. Open submitUrl; the GitHub issue title is pre-filled. 3. Type a short description of what you were doing in the free-text field at the top of the form ('What happened' on the bug template). 4. Paste the 'report' content into the 'Agent report output' field. Privacy: if you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, filenames, access tokens, MCP endpoint URLs and any credentials with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting -- public mode is a best-effort assist, not a guarantee."
     ]
     if (history.error) {
         result.logs.error = history.error
@@ -370,7 +375,7 @@ private List _bugReportSettingsLines(String privacyMode) {
         "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
         "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
         "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
-        "- **Max captured states:** ${effNum(settings.maxCapturedStates, settings.maxCapturedStates ?: 20)}",
+        "- **Max captured states:** ${effNum(settings.maxCapturedStates, getMaxCapturedStates())}",
         "- **Loop guard max executions:** ${effNum(settings.loopGuardMax, settings.loopGuardMax ?: 30)}",
         "- **Loop guard window (sec):** ${effNum(settings.loopGuardWindowSec, settings.loopGuardWindowSec ?: 60)}"
     ]
@@ -381,9 +386,7 @@ private List _bugReportSettingsLines(String privacyMode) {
 private String _bugReportFence(String text) {
     def runs = (text ?: "").findAll(/`+/)
     int longest = runs ? runs.collect { it.length() }.max() : 0
-    String fence = "```"
-    while (fence.length() <= longest) fence = fence + "`"
-    return fence
+    return "`".multiply(Math.max(3, longest + 1))
 }
 
 // Wraps only the free-prose fields. Lines inside a ``` fence and any single word longer
@@ -393,7 +396,10 @@ private String _bugReportWrap(String text, int width = 100) {
     def limit = width > 0 ? width : 100
     boolean inFence = false
     def out = []
-    text.split("\n", -1).each { String line ->
+    // A pasted payload can arrive CRLF or CR; normalise first so the wrap column and the fence
+    // detection below never see a stray carriage return as part of the line.
+    String normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized.split("\n", -1).each { String line ->
         if (line.trim().startsWith("```")) {
             inFence = !inFence
             out << line
@@ -412,11 +418,13 @@ private String _bugReportWrap(String text, int width = 100) {
             int cut = rest.substring(0, limit + 1).lastIndexOf(" ")
             if (cut < 0) cut = rest.indexOf(" ", limit + 1)
             if (cut < 0) break
-            out << rest.substring(0, cut)
+            // Trim at the break too: a space run straddling it would otherwise leave a trailing
+            // space here and an all-spaces line after it.
+            out << rest.substring(0, cut).replaceAll(/ +$/, "")
             // Drop the rest of a space run at the break so the next line never opens with a space.
             rest = rest.substring(cut + 1).replaceFirst(/^ +/, "")
         }
-        out << rest
+        if (rest.trim()) out << rest
     }
     return out.join("\n")
 }
@@ -465,7 +473,7 @@ private List _bugReportMissingContext(args, String issueType, Map client, List r
     return missing
 }
 
-private List _bugReportPreflight(String issueType) {
+private List _bugReportPreflight(String issueType, boolean includeRawLogs, String privacyMode) {
     def verbatimStep = "Paste the exact tool calls and raw responses in verbatimToolCalls -- do not paraphrase."
     // An agent-behavior report is about what the agent did, so the transcript is the whole
     // evidence; server-side log level changes nothing about it.
@@ -482,7 +490,10 @@ private List _bugReportPreflight(String issueType) {
             steps << "MCP log level is ${level}. Call hub_set_log_level(level='debug'), reproduce the failure, then attach the debug lines from hub_get_logs(mode='mcp') via clientLogs -- the report itself embeds only error/warn entries.".toString()
         }
     }
-    steps << "Attach logs from every source: hub_get_logs(mode='hub') for native hub logs around the failure, mode='mcp' for MCP entries (error/warn already attached), and your client host's own MCP logs via clientLogs."
+    // The embedded error/warn block is the reason mode='mcp' is normally redundant; when it is
+    // withheld the agent has to fetch those entries itself, so say which case this is.
+    String mcpNote = includeRawLogs ? "error/warn already attached" : "error/warn withheld: includeRawLogs=false"
+    steps << "Attach logs from every source: hub_get_logs(mode='hub') for native hub logs around the failure, mode='mcp' for MCP entries (${mcpNote}), and your client host's own MCP logs via clientLogs.".toString()
     steps << verbatimStep
     return steps
 }
@@ -549,7 +560,7 @@ private Map _bugReportRuleInfo(args) {
 private String _bugReportSuggestedTitle(args, String issueType) {
     def prefix = ["bug": "[bug]", "enhancement": "[feature]", "agent_behavior": "[agent-behavior]"][issueType]
     def toolCtx = args.failingTool?.toString()?.trim()
-    def userTitle = args.title?.toString()?.trim() ?: "Issue report"
+    def userTitle = _bugReportScrubSecrets(args.title?.toString()?.trim()) ?: "Issue report"
     def body = toolCtx ? "${toolCtx}: ${userTitle}" : userTitle
     def full = "${prefix} ${body}"
     return full.length() > 140 ? (full.take(137) + "...") : full
@@ -570,7 +581,7 @@ private String _bugReportFormatLogEntry(entry) {
     // Tag known-benign RM-internal noise so a maintainer reading this report
     // doesn't chase it as a real failure (see _isBenignRmInternalNoise).
     def benignTag = _isBenignRmInternalNoise(entry.message) ? " [KNOWN-BENIGN RM-internal noise — non-fatal, not an MCP bug]" : ""
-    return "[${ts}] ${lvl}${tool}: ${entry.message}${ruleRef}${benignTag}"
+    return "[${ts}] ${lvl}${tool}: ${_bugReportScrubSecrets(entry.message?.toString())}${ruleRef}${benignTag}"
 }
 
 private boolean _isBenignRmInternalNoise(message) {
@@ -594,15 +605,15 @@ private String _bugReportBuildMarkdown(Map params) {
     def otherLines = scopedLogs.includedUnrelated ? scopedLogs.other.collect { _bugReportFormatLogEntry(it) } : []
     def failingToolLine = args.failingTool ? "- **Failing tool:** ${args.failingTool}\n" : ""
     def nativeAppLine = args.nativeAppId ? "- **Native RM app id:** ${args.nativeAppId}\n" : ""
-    def reproSection = args.stepsToReproduce ? "\n### Steps to Reproduce\n${_bugReportWrap(args.stepsToReproduce.toString())}\n" : ""
+    def reproSection = args.stepsToReproduce ? "\n### Steps to Reproduce\n${_bugReportWrap(_bugReportScrubSecrets(args.stepsToReproduce.toString()))}\n" : ""
     def settingsSection = "## MCP Server Settings\n" + (env.settingsLines ?: []).join("\n") + "\n"
     def verbatim = _bugReportScrubSecrets(args.verbatimToolCalls?.toString()?.trim())
     def clientLogText = _bugReportScrubSecrets(args.clientLogs?.toString()?.trim())
     // An absent field is rendered as a visible gap on the reports that need it, so the reader can
     // see the agent skipped it rather than guessing whether it had nothing to paste.
     boolean needsEvidence = issueType in ["bug", "agent_behavior"]
-    def verbatimSection = _bugReportRawSection("Verbatim Tool Calls", verbatim, includeRawLogs, needsEvidence)
-    def clientLogSection = _bugReportRawSection("Client-Side Logs", clientLogText, includeRawLogs, needsEvidence)
+    def verbatimSection = _bugReportRawSection("Verbatim Tool Calls", verbatim, includeRawLogs, needsEvidence, privacyMode)
+    def clientLogSection = _bugReportRawSection("Client-Side Logs", clientLogText, includeRawLogs, needsEvidence, privacyMode)
     def ruleSection
     if (!ruleInfo) {
         ruleSection = ""
@@ -631,9 +642,13 @@ private String _bugReportBuildMarkdown(Map params) {
         logSection = "## Recent Error/Warning Logs\n_MCP log history unavailable. Log counts and evidence could not be recovered; retry after native logging is available._"
     } else if (!includeRawLogs) {
         def n = relevantLines.size()
+        // Steering a private-mode caller at privacyMode='private' would be advice they already took.
+        boolean pub = privacyMode == "public"
+        String why = pub ? "raw text omitted in public mode" : "raw text omitted"
+        String how = pub ? "re-run with privacyMode='private' or pass includeRawLogs=true" : "pass includeRawLogs=true"
         def stand = n > 0 ?
-            "_${n} relevant entr${n == 1 ? 'y' : 'ies'} (raw text omitted in public mode — re-run with privacyMode='private' or pass includeRawLogs=true to see them)._" :
-            "_No relevant errors logged (raw text omitted in public mode)._"
+            "_${n} relevant entr${n == 1 ? 'y' : 'ies'} (${why} — ${how} to see them)._" :
+            "_No relevant errors logged (${why})._"
         logSection = "## Recent Error/Warning Logs\n${stand}"
     } else {
         def relevantBlock = relevantLines ? "```\n" + relevantLines.join("\n") + "\n```" : "_No relevant errors logged_"
@@ -645,7 +660,16 @@ private String _bugReportBuildMarkdown(Map params) {
         }
     }
 
-    def md = """# ${heading}: ${args.title}
+    // The title and the prose fields carry pasted payloads, so they sit outside every
+    // multi-line literal below: the hub appends a "// library marker" comment to each physical
+    // line of an #include'd library, and only a multi-line literal captures one into the text.
+    String titleLine = "# ${heading}: ${_bugReportScrubSecrets(args.title?.toString()?.trim()) ?: 'Issue report'}"
+    String proseSections = expectedActualHeader +
+        "\n\n### Expected\n" + _bugReportWrap(_bugReportScrubSecrets(args.expected?.toString()) ?: "") +
+        "\n\n### Actual\n" + _bugReportWrap(_bugReportScrubSecrets(args.actual?.toString()) ?: "") +
+        "\n" + reproSection
+
+    def headPart = """
 
 **Generated:** ${formatTimestamp(now())}
 **MCP Server Version:** ${env.version}
@@ -669,52 +693,55 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Model:** ${env.llmModel}
 ${failingToolLine}${nativeAppLine}
 ${settingsSection}
-${expectedActualHeader}
-
-### Expected
-${_bugReportWrap(args.expected?.toString() ?: "")}
-
-### Actual
-${_bugReportWrap(args.actual?.toString() ?: "")}
-${reproSection}@@MCP_VERBATIM@@@@MCP_CLIENTLOGS@@${ruleSection}
+"""
+    def tailPart = """${ruleSection}
 ${logSection}
 
 ## Additional Context
 _Add any other context, screenshots, or transcripts when filing._
 """
     // The hub appends "// library marker mcp.<Lib>, line N" to every physical line of an
-    // #include'd library at compile time; lines INSIDE this (and ruleSection's) multi-line
-    // """ string literal capture those markers into the runtime text. Strip them so the
-    // user-facing report is clean on bundle-deployed hubs (found via issue #342). This also
-    // catches any marker that rode in through the interpolated ${ruleSection} block.
+    // #include'd library at compile time; lines INSIDE a multi-line """ string literal capture
+    // those markers into the runtime text. Strip them from the server-authored halves only
+    // (found via issue #342) -- a transcript can legitimately contain a marker, and stripping
+    // it would corrupt the evidence it was pasted to show.
     // _stripLibraryMarkers lives in the main app (it also cleans tool descriptions).
-    // The two pasted-payload sections are substituted AFTER the strip: a transcript can legitimately
-    // contain a library marker, and stripping it would corrupt the evidence it was pasted to show.
-    // One replacement of the adjacent pair: a second pass would rescan the first section's text,
-    // and a pasted transcript could legitimately contain the other sentinel.
-    return _stripLibraryMarkers(md).replace("@@MCP_VERBATIM@@@@MCP_CLIENTLOGS@@", verbatimSection + clientLogSection)
+    return titleLine + _stripLibraryMarkers(headPart) + proseSections +
+        verbatimSection + clientLogSection + _stripLibraryMarkers(tailPart)
 }
 
 // Credentials reach these sections through pasted transcripts and client logs, and the report is
 // headed for a public issue tracker -- redact in BOTH privacy modes, not just public.
 private String _bugReportScrubSecrets(String text) {
     if (text == null) return null
-    // URL / form style key=value, then JSON / YAML style "key": "value", for the common credential keys.
-    String out = text.replaceAll(/(?i)\b(access_token|refresh_token|id_token|auth_token|authToken|api_key|apikey|apiKey|client_secret|secret|password|passwd|pwd|token)=[^&\s"']+/, '$1=<redacted>')
-    out = out.replaceAll(/(?i)(["']?(?:access_token|refresh_token|id_token|auth_token|authToken|api_key|apikey|apiKey|client_secret|secret|password|passwd|pwd|token)["']?\s*[:=]\s*)(["'])[^"']*\2/, '$1$2<redacted>$2')
-    out = out.replaceAll(/(?i)Authorization:[^\r\n]*/, 'Authorization: <redacted>')
+    // Each pattern ends at the credential, never at the end of the line, so evidence sitting
+    // next to a secret (the following log line, a closing quote, the URL) survives.
+    String keys = "access_token|refresh_token|id_token|auth_token|authToken|access_key|secret_key|secretkey|api_key|apikey|apiKey|x-api-key|client_secret|secret|signature|sig|password|passwd|pwd|token|bearer|auth|key"
+    String out = text.replaceAll(/(?i)\b(${keys})=[^&\s"']+/, '$1=<redacted>')
+    out = out.replaceAll(/(?i)(["']?(?:${keys})["']?[ \t]*[:=][ \t]*)(["'])[^"'\r\n]*\2/, '$1$2<redacted>$2')
+    out = out.replaceAll(/(?i)\b(${keys})[ \t]*:[ \t]*[^\s"']{6,}/, '$1: <redacted>')
+    // Keep the scheme word and whatever follows the credential (a closing quote, a URL). Two
+    // passes: with a scheme word, then without one, so no replacement depends on an absent group.
+    out = out.replaceAll(/(?i)((?:Proxy-)?Authorization:[ \t]*(?:Bearer|Basic|Digest|Token)[ \t]+)[^\s"']+/, '$1<redacted>')
+    out = out.replaceAll(/(?i)((?:Proxy-)?Authorization:[ \t]*)(?!(?:Bearer|Basic|Digest|Token)\b)[^\s"']+/, '$1<redacted>')
     out = out.replaceAll(/(?i)Cookie:[^\r\n]*/, 'Cookie: <redacted>')
-    out = out.replaceAll(/(?i)\b(Bearer|Basic|Digest|Token)\s+[A-Za-z0-9._~+\/=-]{6,}/, '$1 <redacted>')
+    // A bare scheme only redacts a credential-SHAPED value: prose like "Token expired at
+    // midnight" or "Bearer token missing" must survive untouched.
+    out = out.replaceAll(/(?i)\b(Bearer|Basic|Digest|Token)[ \t]+(?=[A-Za-z0-9._~+\/=-]{16,})(?=[A-Za-z0-9._~+\/=-]*[0-9._+\/=-])[A-Za-z0-9._~+\/=-]{16,}/, '$1 <redacted>')
     return out
 }
 
 // A pasted payload is either fenced verbatim or withheld with its size named, so a reader can
 // tell "nothing to show" apart from "held back".
-private String _bugReportRawSection(String heading, String body, boolean includeRawLogs, boolean needsEvidence) {
+private String _bugReportRawSection(String heading, String body, boolean includeRawLogs, boolean needsEvidence, String privacyMode) {
     if (!body) return needsEvidence ? "\n## ${heading}\n_Not provided_\n".toString() : ""
     if (!includeRawLogs) {
         int n = body.split("\n", -1).size()
-        return "\n## ${heading}\n_${n} line(s) omitted in public mode -- re-run with privacyMode='private' or pass includeRawLogs=true._\n".toString()
+        // Steering a private-mode caller at privacyMode='private' would be advice they already took.
+        boolean pub = privacyMode == "public"
+        String what = pub ? "omitted in public mode" : "omitted"
+        String how = pub ? "re-run with privacyMode='private' or pass includeRawLogs=true" : "pass includeRawLogs=true"
+        return "\n## ${heading}\n_${n} line(s) ${what} -- ${how}._\n".toString()
     }
     String fence = _bugReportFence(body)
     return "\n## ${heading}\n${fence}text\n${body}\n${fence}\n".toString()
@@ -756,7 +783,7 @@ def _getAllToolDefinitions_partDebugLogging() {
                     llmClient: [type: "string", description: "Host app + version (Claude Code 2.1, Claude Desktop, Claude.ai web...); 'Claude' alone is not enough; ask, never guess."],
                     llmModel: [type: "string", description: "Model in use (Opus 5, Sonnet 5, GPT-5...); ask if unknown."],
                     verbatimToolCalls: [type: "string", description: "EXACT failing call (tool + args JSON) and EXACT raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"],
-                    clientLogs: [type: "string", description: "Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary.[[/FLAT_TRIM]]"],
+                    clientLogs: [type: "string", description: "Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary. Also takes pasted hub_get_logs output.[[/FLAT_TRIM]]"],
                     privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name, suppresses raw logs."],
                     includeRawLogs: [type: "boolean", description: "Default: true private, false public."],
                     includeUnrelatedRecentLogs: [type: "boolean", description: "When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope.[[FLAT_TRIM]] Default false, no-op when unscoped.[[/FLAT_TRIM]]"],

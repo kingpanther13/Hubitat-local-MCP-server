@@ -858,10 +858,6 @@ def handleMcpRequest() {
         }
     }
 
-    // One HTTP request is one client, so the identity is recorded here rather than per batch
-    // member. A rejected request above never gets to name anybody.
-    if (bodyCarriesRequest) _recordMcpClient(requestBody, headerVersion, modernRequest)
-
     def response
     if (requestBody instanceof List) {
         // Bug fix: empty batch array must return error per JSON-RPC 2.0 spec
@@ -873,6 +869,10 @@ def handleMcpRequest() {
             return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson(
                 jsonRpcError(null, -32600, "Invalid Request: batch too large (${requestBody.size()} elements, max 50)")))
         } else {
+            // One HTTP request is one client, so the identity is recorded once for the whole
+            // batch. A rejected request never gets to name anybody, so this sits after every
+            // rejection above.
+            if (bodyCarriesRequest) _recordMcpClient(requestBody, headerVersion, modernRequest)
             // Batch members must serialize normally. handleToolsCall hands back a
             // {__preserialized: <json string>} sentinel on the single-message fast path;
             // unwrap any such element back to a parsed object here so a sentinel can never
@@ -880,6 +880,7 @@ def handleMcpRequest() {
             response = requestBody.collect { msg -> processJsonRpcMessage(msg) }.findAll { it != null }.collect { _unwrapPreserialized(it) }
         }
     } else {
+        if (bodyCarriesRequest) _recordMcpClient(requestBody, headerVersion, modernRequest)
         response = processJsonRpcMessage(requestBody)
     }
 
@@ -1230,9 +1231,11 @@ def mcpClientIdentity() {
     try {
         def last = atomicState.mcpClientLastSeen
         def recent = atomicState.mcpClientsRecent
+        // wrapper is computed here, not stored: a stored verdict would outlive a change to
+        // the bridge list.
         return [
-            lastSeen: (last instanceof Map) ? ([:] + last) : null,
-            recent: (recent instanceof List) ? recent.findAll { it instanceof Map }.collect { [:] + it } : []
+            lastSeen: (last instanceof Map) ? _mcpClientStamped(last) : null,
+            recent: (recent instanceof List) ? recent.findAll { it instanceof Map }.collect { _mcpClientStamped(it) } : []
         ]
     } catch (Throwable e) {
         try {
@@ -1246,7 +1249,15 @@ def mcpClientIdentity() {
 // The fields that make a client distinct. seenAt is excluded deliberately -- it moves on every
 // request, and including it would make every request read as a different client.
 private List _mcpClientTupleKeys() {
-    return ["name", "version", "title", "protocolVersion", "requestedProtocolVersion", "era", "source", "wrapper"]
+    return ["name", "version", "title", "protocolVersion", "requestedProtocolVersion", "era", "source"]
+}
+
+// Copy a stored record on the way out so a caller cannot edit persisted state, and stamp the
+// read-time wrapper verdict onto the copy.
+private Map _mcpClientStamped(Map record) {
+    Map copy = [:] + record
+    copy.wrapper = _mcpClientIsWrapper(copy.name as String, copy.version as String)
+    return copy
 }
 
 // Record who sent this HTTP request. A batch is one client on one connection, so the whole POST
@@ -1340,7 +1351,6 @@ private Map _mcpClientRecordFor(msg, Map previous, String headerVersion, boolean
         record.protocolVersion = previous.protocolVersion
         record.requestedProtocolVersion = previous.requestedProtocolVersion
     }
-    record.wrapper = _mcpClientIsWrapper(record.name as String, record.version as String)
     return record
 }
 
@@ -1539,7 +1549,14 @@ def handleInitialize(msg) {
     def requested = msg.params?.protocolVersion
     def negotiated = _negotiatedProtocolVersion(requested)
     def info = msg.params?.clientInfo
-    String who = (info instanceof Map && info.name) ? "${info.name}${info.version ? ' ' + info.version : ''}" : "unknown client"
+    // Client-supplied text goes straight into the log line, so it is sanitized the same way
+    // the stored identity is.
+    String who = "unknown client"
+    if (info instanceof Map) {
+        String clientName = _mcpClientString(info["name"])
+        String clientVersion = _mcpClientString(info["version"])
+        if (clientName) who = clientVersion ? "${clientName} ${clientVersion}" : clientName
+    }
     mcpLog("info", "server", "initialize from ${who}: requested protocolVersion ${requested}, negotiated ${negotiated} (${_isCloudRequest() ? 'cloud' : 'local'})")
     return jsonRpcResult(msg.id, [
         protocolVersion: negotiated,
@@ -4253,7 +4270,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_metrics":
             return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
         case "hub_report_issue":
-            return "Shorten verbatimToolCalls and clientLogs to the failure window, pass includeRawLogs=false or a smaller logWindowSeconds, then call again -- the report is rebuilt on every call, nothing is lost."
+            return "Shorten verbatimToolCalls and clientLogs to the failure window or pass includeRawLogs=false, then call again -- the report is rebuilt on every call, nothing is lost."
         case "hub_get_source":
             return "Source file exceeds the inline cap. Use offset/length to read it in chunks, use hub_list_files / hub_read_file via the File Manager bridge, or fetch the source from version control instead."
         default:
@@ -9651,7 +9668,7 @@ Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime,
 **Always returned (regardless of the flags below):**
 - `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it).
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
-- `mcpClient` — the last recorded client: under `lastSeen`, the name/version/title as that HTTP request declared them (null when it declared none), `wrapper` true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version, the era (modern/legacy) and the source (cloud/local); plus `recent`, the named clients seen lately.
+- `mcpClient` — the last recorded client: under `lastSeen`, the name/version/title as that HTTP request declared them (null when it declared none), `wrapper` (computed on read from the name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version, the era (modern/legacy) and the source (cloud/local); plus `recent`, the named clients seen lately.
 
 **`includeHealthAlerts=true`** (default false): returns the hub's full health-alerts block from /hub2/hubData — every /hub2/hubData alert flag plus the hub's message strings, under `healthAlerts`. Covers radio offline, backup failures, low memory, DB bloat, and weak mesh. `platformUpdate` and `safeMode` are returned whether or not this flag is set.
 
@@ -10117,9 +10134,9 @@ Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable cle
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
-**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections are omitted entirely; in both modes access tokens and `Authorization` values are redacted out of them. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
+**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections are replaced by a placeholder naming how many lines were withheld, unless you pass `includeRawLogs=true`. In both modes credentials are redacted -- the same redaction also runs over `expected`, `actual`, `stepsToReproduce`, the title and the embedded log block. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
 
-**What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. When the server has no client self-report, or it names a transport wrapper (mcp-remote, mcp-proxy, fastmcp-remote, or the Python SDK default identity `mcp 0.1.0` those bridges send), the result says so in missingContext: ask the user and never infer the host app or model from context. When the current request declared no name of its own, wrapper detection also looks at the recently seen named clients, so a bridge that identified itself on an earlier request is still called out. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log). An `agent_behavior` report asks for `stepsToReproduce`, `verbatimToolCalls` and `clientLogs` exactly as a bug does, and renders the same sections.
+**What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. When the server has no client self-report, or it names a transport wrapper (mcp-remote, mcp-proxy, fastmcp-remote, supergateway, or the Python SDK default identity those bridges send -- `mcp 0.1.0`, or `mcp` with no version), the result says so in missingContext: ask the user and never infer the host app or model from context. When the current request declared no name of its own, wrapper detection also looks at the recently seen named clients, so a bridge that identified itself on an earlier request is still called out. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log), and also takes pasted `hub_get_logs` output. An `agent_behavior` report asks for `stepsToReproduce`, `verbatimToolCalls` and `clientLogs` exactly as a bug does, and renders the same sections.
 
 **Formatting the prose fields.** Put stack traces, JSON or tables in `expected`, `actual` or `stepsToReproduce` inside ``` fences, or indent every line -- an unfenced, unindented line over 100 characters is re-wrapped at word boundaries and a pasted payload loses its shape.
 
