@@ -690,18 +690,21 @@ _Add any other context, screenshots, or transcripts when filing._
     // _stripLibraryMarkers lives in the main app (it also cleans tool descriptions).
     // The two pasted-payload sections are substituted AFTER the strip: a transcript can legitimately
     // contain a library marker, and stripping it would corrupt the evidence it was pasted to show.
-    return _stripLibraryMarkers(md)
-        .replace("@@MCP_VERBATIM@@", verbatimSection)
-        .replace("@@MCP_CLIENTLOGS@@", clientLogSection)
+    // One replacement of the adjacent pair: a second pass would rescan the first section's text,
+    // and a pasted transcript could legitimately contain the other sentinel.
+    return _stripLibraryMarkers(md).replace("@@MCP_VERBATIM@@@@MCP_CLIENTLOGS@@", verbatimSection + clientLogSection)
 }
 
 // Credentials reach these sections through pasted transcripts and client logs, and the report is
 // headed for a public issue tracker -- redact in BOTH privacy modes, not just public.
 private String _bugReportScrubSecrets(String text) {
     if (text == null) return null
-    String out = text.replaceAll(/(?i)access_token=[^&\s"']+/, 'access_token=<redacted>')
+    // URL / form style key=value, then JSON / YAML style "key": "value", for the common credential keys.
+    String out = text.replaceAll(/(?i)\b(access_token|refresh_token|id_token|auth_token|authToken|api_key|apikey|apiKey|client_secret|secret|password|passwd|pwd|token)=[^&\s"']+/, '$1=<redacted>')
+    out = out.replaceAll(/(?i)(["']?(?:access_token|refresh_token|id_token|auth_token|authToken|api_key|apikey|apiKey|client_secret|secret|password|passwd|pwd|token)["']?\s*[:=]\s*)(["'])[^"']*\2/, '$1$2<redacted>$2')
     out = out.replaceAll(/(?i)Authorization:[^\r\n]*/, 'Authorization: <redacted>')
-    out = out.replaceAll(/(?i)Bearer\s+\S+/, 'Bearer <redacted>')
+    out = out.replaceAll(/(?i)Cookie:[^\r\n]*/, 'Cookie: <redacted>')
+    out = out.replaceAll(/(?i)\b(Bearer|Basic|Digest|Token)\s+[A-Za-z0-9._~+\/=-]{6,}/, '$1 <redacted>')
     return out
 }
 

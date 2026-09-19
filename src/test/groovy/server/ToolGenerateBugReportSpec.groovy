@@ -1481,6 +1481,49 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         !result.report.contains('Bearer x')
     }
 
+    @Unroll
+    def "the redaction covers the common credential shape: #label"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([verbatimToolCalls: payload]))
+
+        then:
+        result.report.contains(expected)
+        !result.report.contains(secret)
+
+        where:
+        label                 | payload                                        | secret     | expected
+        'quoted JSON token'   | '{"authToken":"s3cretA","x":1}'                | 's3cretA'  | '"authToken":"<redacted>"'
+        'quoted JSON password'| '{"password": "s3cretB"}'                      | 's3cretB'  | '"password": "<redacted>"'
+        'form password'       | 'user=bob&password=s3cretC&x=1'                | 's3cretC'  | 'password=<redacted>'
+        'api key'             | 'api_key=s3cretD'                              | 's3cretD'  | 'api_key=<redacted>'
+        'client secret'       | 'client_secret=s3cretE'                        | 's3cretE'  | 'client_secret=<redacted>'
+        'yaml token'          | "token: 's3cretF'"                             | 's3cretF'  | "token: '<redacted>'"
+        'basic scheme'        | 'Proxy: Basic dXNlcjpzM2NyZXRH'                | 'dXNlcjpzM2NyZXRH' | 'Basic <redacted>'
+        'cookie header'       | 'Cookie: HUBSESSION=s3cretH; other=1'          | 's3cretH'  | 'Cookie: <redacted>'
+    }
+
+    def "a sentinel pasted into verbatimToolCalls is not treated as the client-log slot"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([
+            verbatimToolCalls : 'payload mentions @@MCP_CLIENTLOGS@@ literally',
+            clientLogs        : 'real client log line',
+        ]))
+
+        then: 'the two sections land once each, in order, and the pasted text survives verbatim'
+        result.report.contains('payload mentions @@MCP_CLIENTLOGS@@ literally')
+        result.report.count('## Client-Side Logs') == 1
+        result.report.count('real client log line') == 1
+        result.report.indexOf('## Verbatim Tool Calls') < result.report.indexOf('## Client-Side Logs')
+    }
+
     def "public mode withholds both pasted sections and names how much was held back"() {
         given:
         sharedLocation.hub = new TestHub()

@@ -551,7 +551,7 @@ class McpClientIdentitySpec extends ToolSpecBase {
         last.requestedProtocolVersion == null
     }
 
-    def "an initialize under a modern header still records what it negotiated, not the header"() {
+    def "an initialize under a modern header is recorded as legacy era with what it negotiated"() {
         given:
         mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'initialize'])
 
@@ -565,6 +565,9 @@ class McpClientIdentitySpec extends ToolSpecBase {
         def last = script.mcpClientIdentity().lastSeen
         last.requestedProtocolVersion == '2026-07-28'
         last.protocolVersion == '2025-11-25'
+
+        and: 'the record says legacy too, so a headerless follow-up can still carry the versions over'
+        last.era == 'legacy'
     }
 
     def "a named modern repeat inside the window leaves seenAt alone"() {

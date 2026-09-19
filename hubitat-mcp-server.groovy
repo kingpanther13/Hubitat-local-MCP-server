@@ -1324,6 +1324,9 @@ private Map _mcpClientRecordFor(msg, Map previous, String headerVersion, boolean
         record.title = _mcpClientString(info["title"])
     }
     if (msg.method == "initialize") {
+        // initialize no longer exists in the modern revision, so reaching it proves a legacy-era
+        // client whatever header a dual-era probe put on it; the record must say so.
+        record.era = "legacy"
         def requested = params["protocolVersion"]
         record.requestedProtocolVersion = _mcpClientString(requested)
         record.protocolVersion = _mcpClientString(_negotiatedProtocolVersion(requested))
