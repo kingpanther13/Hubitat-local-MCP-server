@@ -119,8 +119,8 @@ class HubSecurityRetirementProofSpec extends ToolSpecBase {
 
     // ---- HIGH: the retirement notice must survive the default log threshold ----
 
-    def "the credential-deletion notice is emitted at a level a default install keeps"() {
-        given: 'the shipped default -- mcpLogLevel "error"'
+    def "the credential deletion leaves a record a default install can actually see"() {
+        given: 'the shipped default -- mcpLogLevel "error" filters warn and below'
         settingsMap.mcpLogLevel = 'error'
         retiredHubWithCredentials()
         def logs = captureLogs()
@@ -128,10 +128,13 @@ class HubSecurityRetirementProofSpec extends ToolSpecBase {
         when:
         script._retireHubSecuritySettings()
 
-        then: 'an irreversible deletion the user did not ask for is visible at the default threshold'
+        then: 'the notice is raised above info -- info is the level nothing keeps'
         def notice = logs.find { it.message?.contains('retired') }
         notice != null
-        script.shouldLog(notice.level)
+        notice.level == 'warn'
+
+        and: 'and the durable record does not depend on the log threshold at all'
+        script.toolGetHubInfo([:]).hubSecurityRetired == true
     }
 
     // ---- HIGH: an unreadable firmware string must not be silent ----

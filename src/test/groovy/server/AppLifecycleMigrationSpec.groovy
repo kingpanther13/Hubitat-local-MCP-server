@@ -7,8 +7,7 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Spec for the enableCustomRuleEngine rename migration inside updated()
- * and app-lifecycle teardown.
+ * Spec for the one-time migrations and sheds inside updated(), plus app-lifecycle teardown.
  *
  * Background: the legacy setting was `enableRuleEngine` (defaultValue: true).
  * The setting was renamed to `enableCustomRuleEngine` (defaultValue: false).
@@ -33,7 +32,7 @@ import support.ToolSpecBase
  *   - state.*             -- stateMap (the shared Map backed by AppExecutor).
  *   - settings.*          -- settingsMap (the shared Map backed by sandbox).
  *
- * All five scenarios from the design are covered:
+ * All five scenarios of the enableCustomRuleEngine rename migration are covered:
  *   1. Golden path: migration fires and forces OFF.
  *   2. Idempotent: already migrated -- migration block skipped.
  *   3. Fresh install: no legacy setting -- migration block skipped.
@@ -45,8 +44,8 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
 
-    // location.hub.firmwareVersionString drives _hubSecurityObsolete(); every feature that
-    // cares sets the hub explicitly, so the @Shared instance carries no state between them.
+    // location.hub.firmwareVersionString drives _hubSecurityObsolete(). Reset in setup() so a
+    // feature added later cannot inherit a retired-firmware hub from the one before it.
     @Shared private TestLocation sharedLocation = new TestLocation()
 
     // Ordered record of lifecycle wire-up calls. schedule()/unschedule() are
@@ -77,6 +76,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         // already cleared by HarnessSpec.setup(), so only the stub-app needs
         // explicit cleanup.
         sharedAppStub.settingsStore.clear()
+        sharedLocation.hub = null   // each Hub Security feature sets its own firmware
     }
 
     // -----------------------------------------------------------------------
@@ -537,7 +537,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
         and: 'the one-shot marker is stamped and the retirement is logged once for the user who had configured it'
         stateMap.hubSecurityRetired == true
-        mcpLogCalls.count { it.level == 'info' && it.component == 'hub-admin' && it.msg.contains('retired') } == 1
+        mcpLogCalls.count { it.level == 'warn' && it.component == 'hub-admin' && it.msg.contains('retired') } == 1
 
         where:
         // '2.10' and '2.10.0.1' pin the NUMERIC compare: lexically they sort below '2.5.0',

@@ -2163,6 +2163,27 @@ class TestRunner:
     # -----------------------------------------------------------------------
 
     @test("infrastructure")
+    def test_hub_security_retired_on_current_firmware(self) -> None:
+        # The credential shed rides the first MCP request on firmware >= 2.5.0 and stamps
+        # state.hubSecurityRetired whether or not credentials were ever stored -- so this needs
+        # no fixture, no credentials and no teardown, and every later run just re-reads the
+        # marker. Deliberately does NOT cover deleting real credentials: storing a username and
+        # password that every run would wipe is not something e2e can own.
+        info = self.client.call_tool("hub_get_info", {})
+        fw = str(info.get("firmwareVersion") or "")
+        parts = [int(p) if p.isdigit() else 0 for p in fw.split(".")]
+        while len(parts) < 2:
+            parts.append(0)
+        if (parts[0], parts[1]) < (2, 5):
+            return  # below the cutoff the section (and the credential path) legitimately stays
+        assert info.get("hubSecurityRetired") is True, (
+            f"hub_get_info did not report the shed on firmware {fw}: {info.get('hubSecurityRetired')!r}"
+        )
+        assert info.get("hubSecurityConfigured") is False, (
+            f"Hub Security still reads as configured after the shed: {info.get('hubSecurityConfigured')!r}"
+        )
+
+    @test("infrastructure")
     def test_server_discovery(self) -> None:
         result = self.client.discover()
         assert "serverInfo" in result, f"Missing serverInfo in discovery response: {list(result.keys())}"
