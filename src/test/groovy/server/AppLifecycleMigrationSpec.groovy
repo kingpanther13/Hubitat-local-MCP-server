@@ -535,8 +535,9 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         !atomicStateMap.containsKey('hubSecurityCookieExpiry')
         atomicStateMap.unrelatedState == 'keep'
 
-        and: 'the retirement is logged for the user who had configured it'
-        mcpLogCalls.any { it.level == 'info' && it.component == 'hub-admin' && it.msg.contains('retired') }
+        and: 'the one-shot marker is stamped and the retirement is logged once for the user who had configured it'
+        stateMap.hubSecurityRetired == true
+        mcpLogCalls.count { it.level == 'info' && it.component == 'hub-admin' && it.msg.contains('retired') } == 1
 
         where:
         // '2.10' and '2.10.0.1' pin the NUMERIC compare: lexically they sort below '2.5.0',
@@ -562,8 +563,9 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         !sharedAppStub.settingsStore.containsKey('hubSecurityEnabled')
         atomicStateMap.hubSecurityCookie == 'JSESSIONID=live'
 
-        and: 'no retirement log line'
+        and: 'no retirement log line, and the one-shot marker is NOT stamped'
         !mcpLogCalls.any { it.component == 'hub-admin' && it.msg.contains('retired') }
+        stateMap.hubSecurityRetired != true
 
         where:
         // null/blank firmware is the ESCAPE HATCH: _hubSecurityObsolete() must not inherit
@@ -595,5 +597,39 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
         expect: 'the live cached cookie is returned, not null'
         script.getHubSecurityCookie() == 'JSESSIONID=cached'
+    }
+
+    def "the shed runs without updated() -- a package upgrade alone must not leave credentials on disk"() {
+        given: 'an upgraded hub whose owner never opens the app page, so updated() never fires'
+        sharedLocation.hub = new TestHub(firmwareVersionString: '2.5.1.181')
+        settingsMap.hubSecurityEnabled = true
+        sharedAppStub.settingsStore.hubSecurityUser = 'hubadmin'
+        sharedAppStub.settingsStore.hubSecurityPassword = 'hunter2'
+        atomicStateMap.hubSecurityCookie = 'JSESSIONID=stale'
+
+        when: 'the per-request hook fires (handleMcpRequest calls this directly)'
+        script._retireHubSecuritySettings()
+
+        then:
+        sharedAppStub.settingsStore['hubSecurityEnabled'] == [type: 'bool', value: false]
+        !sharedAppStub.settingsStore.containsKey('hubSecurityUser')
+        !sharedAppStub.settingsStore.containsKey('hubSecurityPassword')
+        !atomicStateMap.containsKey('hubSecurityCookie')
+        stateMap.hubSecurityRetired == true
+    }
+
+    def "the one-shot marker short-circuits the shed so the per-request hook stays cheap"() {
+        given: 'already retired, and a credential re-appears (it cannot via the UI, but prove the guard)'
+        sharedLocation.hub = new TestHub(firmwareVersionString: '2.5.1.181')
+        stateMap.hubSecurityRetired = true
+        sharedAppStub.settingsStore.clear()
+        sharedAppStub.settingsStore.hubSecurityUser = 'leftover'
+
+        when:
+        script._retireHubSecuritySettings()
+
+        then: 'no further writes -- the marker returned before any settings access'
+        sharedAppStub.settingsStore.hubSecurityUser == 'leftover'
+        !sharedAppStub.settingsStore.containsKey('hubSecurityEnabled')
     }
 }

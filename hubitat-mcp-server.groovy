@@ -814,6 +814,7 @@ def handleMcpRequest() {
     }
 
     _cleanupRetiredToolState()
+    _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
     _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
@@ -6705,10 +6706,15 @@ private boolean _hubSecurityObsolete() {
 
 /**
  * Shed the retired Hub Security settings on a hub past the cutoff: force the toggle off, drop
- * the stored username/password, and clear any cached session cookie. Runs from updated(); the
- * getHubSecurityCookie() guard covers a hub that has not re-saved since its firmware upgrade.
+ * the stored username/password, and clear any cached session cookie.
+ *
+ * Called from updated() AND from the top of every MCP request, because updated() only fires on
+ * a manual save: a user who upgrades the package and never opens the app page would otherwise
+ * keep the dead credentials on disk indefinitely. state.hubSecurityRetired makes it one-shot, so
+ * the per-request cost after the first is a single state read.
  */
 private void _retireHubSecuritySettings() {
+    if (state.hubSecurityRetired == true) return
     if (!_hubSecurityObsolete()) return
     boolean had = (settings.hubSecurityEnabled == true) || settings.hubSecurityUser || settings.hubSecurityPassword
     app.updateSetting("hubSecurityEnabled", [type: "bool", value: false])
@@ -6716,6 +6722,7 @@ private void _retireHubSecuritySettings() {
     app.removeSetting("hubSecurityPassword")
     atomicState.remove("hubSecurityCookie")
     atomicState.remove("hubSecurityCookieExpiry")
+    state.hubSecurityRetired = true
     if (had) {
         mcpLog("info", "hub-admin", "Hub Security credentials retired on firmware ${hubSecurityRetiredFw()}+ (an app's loopback requests are exempt from hub login; the stored credentials were unused)")
     }
