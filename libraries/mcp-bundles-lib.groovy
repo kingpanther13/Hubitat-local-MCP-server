@@ -358,24 +358,6 @@ def _bundleResponseSucceeded(resp) {
     return text.equalsIgnoreCase("true")
 }
 
-def _firmwareAtLeast(fw, String target) {
-    // Compare dotted firmware versions segment-by-segment, numerically. Returns true when fw >=
-    // target. Missing/blank/unparseable fw returns true (assume modern): every hub running this
-    // server today is well past the 2.3.8.108 bundle2 cutoff, so the current endpoint is the safe default.
-    if (fw == null || !fw.toString().trim()) return true
-    def fwParts = fw.toString().trim().split("\\.")
-    def tgtParts = target.split("\\.")
-    int n = Math.max(fwParts.size(), tgtParts.size())
-    for (int i = 0; i < n; i++) {
-        String fwSeg = (i < fwParts.size()) ? fwParts[i] : "0"
-        String tgtSeg = (i < tgtParts.size()) ? tgtParts[i] : "0"
-        int a = fwSeg.isInteger() ? fwSeg.toInteger() : 0
-        int b = tgtSeg.isInteger() ? tgtSeg.toInteger() : 0
-        if (a != b) return a > b
-    }
-    return true  // all segments equal -> >= holds
-}
-
 // Tool DEFINITIONS for the bundle tools (issue #209: schema lives with the impl). Concatenated
 // into getAllToolDefinitions() in the main app; gateway membership + dispatch stay in main.
 def _getAllToolDefinitions_partBundles() {

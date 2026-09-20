@@ -375,10 +375,20 @@ All three:
 
 ### Hub Security Cookie Pattern
 
-When Hub Security is enabled on the hub, internal API calls require authentication:
+**Retired on firmware >= `hubSecurityRetiredFw()` (2.5.0).** Hubitat exempts an app's own
+loopback requests to `127.0.0.1:8080` from the admin-UI login, so these credentials never did
+anything there — verified live on 2.5.1.181 with Hub Login Security enforcing: `/hub/advanced/*`,
+`/hub2/hubData` and `/hub/details/json` 302 a LAN browser to `/login` while returning real data
+through `hubInternal*`. On such a hub `_hubSecurityObsolete()` is true, the settings section is
+not rendered, `updated()` calls `_retireHubSecuritySettings()` to force the toggle off and drop
+the stored credentials + cached cookie, and `getHubSecurityCookie()` returns null before reading
+any setting.
+
+Below that firmware the original path still runs:
 
 ```groovy
 def getHubSecurityCookie() {
+    // 0. Return null if _hubSecurityObsolete() (firmware >= 2.5.0)
     // 1. Return null if Hub Security not enabled
     // 2. Return cached cookie if not expired (30-minute cache)
     // 3. POST to /login with username/password
@@ -388,6 +398,11 @@ def getHubSecurityCookie() {
 ```
 
 The cookie is cached in `atomicState.hubSecurityCookie` with expiry in `atomicState.hubSecurityCookieExpiry`.
+
+`_hubSecurityObsolete()` reads `location.hub.firmwareVersionString` itself and treats an
+unreadable version as NOT obsolete — it deliberately avoids `_firmwareAtLeast`'s assume-modern
+default for a blank version, which would wipe a working install's credentials on an
+unidentifiable hub.
 
 Native requests use the fixed `http://127.0.0.1:8080` loopback endpoint on the hub. Login credentials and cookies are plaintext on that local connection; they are not sent to the hub's LAN address or cloud relay by this helper. This trusts the hub's operating system and locally installed code: a process able to inspect loopback traffic can read them. Install only trusted apps/drivers and restrict hub administration. Do not replace this origin with a remote HTTP address; remote credential transport requires authenticated TLS. The local HTTP connection does not provide confidentiality against a compromised hub.
 

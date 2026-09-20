@@ -284,15 +284,20 @@ def mainPage() {
             }
         }
 
-        section("Hub Security") {
-            paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
-                      "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
-            input "hubSecurityEnabled", "bool", title: "Hub Security Enabled",
-                  description: "Turn on if your hub has Hub Security (login) enabled",
-                  defaultValue: false, submitOnChange: true
-            if (settings.hubSecurityEnabled) {
-                input "hubSecurityUser", "text", title: "Hub Security Username", required: false
-                input "hubSecurityPassword", "password", title: "Hub Security Password", required: false
+        // Hidden entirely on firmware >= hubSecurityRetiredFw(): the credentials do nothing
+        // there (an app's loopback requests bypass the hub login), and updated() has already
+        // wiped any that were stored. Older hubs still see and use the section.
+        if (!_hubSecurityObsolete()) {
+            section("Hub Security") {
+                paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
+                          "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
+                input "hubSecurityEnabled", "bool", title: "Hub Security Enabled",
+                      description: "Turn on if your hub has Hub Security (login) enabled",
+                      defaultValue: false, submitOnChange: true
+                if (settings.hubSecurityEnabled) {
+                    input "hubSecurityUser", "text", title: "Hub Security Username", required: false
+                    input "hubSecurityPassword", "password", title: "Hub Security Password", required: false
+                }
             }
         }
 
@@ -621,6 +626,7 @@ def updated() {
     // Shed the retired publication toggle and its migration marker on upgraded hubs.
     app.removeSetting("publishOutputSchemas")
     atomicState.remove("publishOutputSchemasForcedOff")
+    _retireHubSecuritySettings()
     _cleanupRetiredToolState()
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
     synchronized (TOOL_SEARCH_INDEX) { TOOL_SEARCH_INDEX.clear() }   // ...and the in-JVM index itself
@@ -6580,6 +6586,24 @@ def getSelectedDevices() {
 // Single source for the hub's internal API base URI (was an 11x-repeated literal).
 def hubBaseUri() { "http://127.0.0.1:8080" }
 
+def _firmwareAtLeast(fw, String target) {
+    // Compare dotted firmware versions segment-by-segment, numerically. Returns true when fw >=
+    // target. Missing/blank/unparseable fw returns true (assume modern): every hub running this
+    // server today is well past the 2.3.8.108 bundle2 cutoff, so the current endpoint is the safe default.
+    if (fw == null || !fw.toString().trim()) return true
+    def fwParts = fw.toString().trim().split("\\.")
+    def tgtParts = target.split("\\.")
+    int n = Math.max(fwParts.size(), tgtParts.size())
+    for (int i = 0; i < n; i++) {
+        String fwSeg = (i < fwParts.size()) ? fwParts[i] : "0"
+        String tgtSeg = (i < tgtParts.size()) ? tgtParts[i] : "0"
+        int a = fwSeg.isInteger() ? fwSeg.toInteger() : 0
+        int b = tgtSeg.isInteger() ? tgtSeg.toInteger() : 0
+        if (a != b) return a > b
+    }
+    return true  // all segments equal -> >= holds
+}
+
 // Timeout rationale: reads are fast localhost fetches; writes (native-RM wizard steps,
 // large app/driver/library save+compile) can legitimately take minutes.
 def hubReadTimeoutSec() { 30 }
@@ -6655,7 +6679,50 @@ def _parseSinceArg(since) {
     return null
 }
 
+// Firmware at which the Hub Security credential settings are retired. Hubitat exempts an
+// app's own loopback requests to 127.0.0.1:8080 from the admin-UI login (Hubitat staff,
+// community topic 143694, 2024-10-14), so these credentials do nothing: verified live on
+// 2.5.1.181 with Hub Login Security enforcing -- /hub/advanced/*, /hub2/hubData and
+// /hub/details/json all 302 a LAN browser to /login while returning real data through
+// hubInternal*. The exact firmware that introduced the exemption is unknown, so the gate sits
+// at a version we have actually tested rather than the earliest that might work.
+def hubSecurityRetiredFw() { "2.5.0" }
+
+/**
+ * True when this hub's firmware retires the Hub Security credential settings.
+ *
+ * Deliberately does NOT lean on _firmwareAtLeast's assume-modern default for a missing
+ * version: that helper returns true for a blank/unreadable firmware string, which here would
+ * wipe a working install's credentials on a hub we could not identify. Unreadable firmware
+ * keeps the settings, so the escape hatch survives.
+ */
+private boolean _hubSecurityObsolete() {
+    String fw = null
+    try { fw = location?.hub?.firmwareVersionString?.toString()?.trim() } catch (Exception ignored) { }
+    if (!fw) return false
+    return _firmwareAtLeast(fw, hubSecurityRetiredFw())
+}
+
+/**
+ * Shed the retired Hub Security settings on a hub past the cutoff: force the toggle off, drop
+ * the stored username/password, and clear any cached session cookie. Runs from updated(); the
+ * getHubSecurityCookie() guard covers a hub that has not re-saved since its firmware upgrade.
+ */
+private void _retireHubSecuritySettings() {
+    if (!_hubSecurityObsolete()) return
+    boolean had = (settings.hubSecurityEnabled == true) || settings.hubSecurityUser || settings.hubSecurityPassword
+    app.updateSetting("hubSecurityEnabled", [type: "bool", value: false])
+    app.removeSetting("hubSecurityUser")
+    app.removeSetting("hubSecurityPassword")
+    atomicState.remove("hubSecurityCookie")
+    atomicState.remove("hubSecurityCookieExpiry")
+    if (had) {
+        mcpLog("info", "hub-admin", "Hub Security credentials retired on firmware ${hubSecurityRetiredFw()}+ (an app's loopback requests are exempt from hub login; the stored credentials were unused)")
+    }
+}
+
 def getHubSecurityCookie() {
+    if (_hubSecurityObsolete()) return null
     if (!settings.hubSecurityEnabled) return null
     if (!settings.hubSecurityUser || !settings.hubSecurityPassword) {
         mcpLog("warn", "hub-admin", "Hub Security is enabled but credentials are not configured")

@@ -2,6 +2,8 @@ package server
 
 import spock.lang.Shared
 import support.TestChildApp
+import support.TestHub
+import support.TestLocation
 import support.ToolSpecBase
 
 /**
@@ -43,6 +45,10 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
 
+    // location.hub.firmwareVersionString drives _hubSecurityObsolete(); every feature that
+    // cares sets the hub explicitly, so the @Shared instance carries no state between them.
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
     // Ordered record of lifecycle wire-up calls. schedule()/unschedule() are
     // class-2 (declared on the eighty20results delegate chain), so a per-instance
     // metaClass stub on the script is bypassed -- they must be recorded via
@@ -56,6 +62,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         // ToolManageLogsSpec). Must be in setupSpec (not given:) because the
         // @Shared Mock's interaction set is read-only after setup() completes.
         appExecutor.getApp() >> sharedAppStub
+        appExecutor.getLocation() >> sharedLocation
         // Record schedule/unschedule call order for the schedule-symmetry test.
         appExecutor.schedule(*_) >> { args -> lifecycleCalls << 'schedule' }
         appExecutor.unschedule() >> { lifecycleCalls << 'unschedule' }
@@ -490,5 +497,103 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         stateMap.updateCheck.latestVersion == '9.9.9'
         stateMap.updateCheck.checkedAt == 1234567890000L
         stateMap.updateCheck.lastError == 'http 503'
+    }
+
+    // -----------------------------------------------------------------------
+    // Hub Security retirement (firmware >= hubSecurityRetiredFw(), 2.5.0)
+    //
+    // The credentials never authenticated anything: Hubitat exempts an app's own
+    // loopback requests to 127.0.0.1:8080 from the admin-UI login, verified live on
+    // 2.5.1.181 with Hub Login Security enforcing. updated() sheds them on a hub past
+    // the cutoff; an older or UNREADABLE firmware keeps them (the escape hatch).
+    // -----------------------------------------------------------------------
+
+    def "updated() wipes stored Hub Security credentials and forces the toggle off on #fw"() {
+        given:
+        def mcpLogCalls = stubUpdatedDeps()
+        sharedLocation.hub = new TestHub(firmwareVersionString: fw)
+        settingsMap.hubSecurityEnabled = true
+        settingsMap.hubSecurityUser = 'hubadmin'
+        settingsMap.hubSecurityPassword = 'hunter2'
+        sharedAppStub.settingsStore.hubSecurityUser = 'hubadmin'
+        sharedAppStub.settingsStore.hubSecurityPassword = 'hunter2'
+        atomicStateMap.hubSecurityCookie = 'JSESSIONID=stale'
+        atomicStateMap.hubSecurityCookieExpiry = 1234567890000L + 60_000
+        atomicStateMap.unrelatedState = 'keep'
+
+        when: 'twice -- the shed must be idempotent, like the output-schema one above'
+        script.updated()
+        script.updated()
+
+        then: 'the toggle is forced off and both credential settings are gone'
+        sharedAppStub.settingsStore['hubSecurityEnabled'] == [type: 'bool', value: false]
+        !sharedAppStub.settingsStore.containsKey('hubSecurityUser')
+        !sharedAppStub.settingsStore.containsKey('hubSecurityPassword')
+
+        and: 'the cached session cookie is cleared, unrelated atomicState untouched'
+        !atomicStateMap.containsKey('hubSecurityCookie')
+        !atomicStateMap.containsKey('hubSecurityCookieExpiry')
+        atomicStateMap.unrelatedState == 'keep'
+
+        and: 'the retirement is logged for the user who had configured it'
+        mcpLogCalls.any { it.level == 'info' && it.component == 'hub-admin' && it.msg.contains('retired') }
+
+        where:
+        // '2.10' and '2.10.0.1' pin the NUMERIC compare: lexically they sort below '2.5.0',
+        // numerically 10 > 5, so both are past the cutoff.
+        fw << ['2.5.0', '2.5.0.123', '2.5.1.181', '2.10', '2.10.0.1']
+    }
+
+    def "updated() leaves Hub Security settings alone on #fw (below the cutoff, or unreadable)"() {
+        given:
+        def mcpLogCalls = stubUpdatedDeps()
+        sharedLocation.hub = new TestHub(firmwareVersionString: fw)
+        settingsMap.hubSecurityEnabled = true
+        sharedAppStub.settingsStore.hubSecurityUser = 'hubadmin'
+        sharedAppStub.settingsStore.hubSecurityPassword = 'hunter2'
+        atomicStateMap.hubSecurityCookie = 'JSESSIONID=live'
+
+        when:
+        script.updated()
+
+        then: 'nothing is shed -- an old hub may genuinely need these'
+        sharedAppStub.settingsStore.hubSecurityUser == 'hubadmin'
+        sharedAppStub.settingsStore.hubSecurityPassword == 'hunter2'
+        !sharedAppStub.settingsStore.containsKey('hubSecurityEnabled')
+        atomicStateMap.hubSecurityCookie == 'JSESSIONID=live'
+
+        and: 'no retirement log line'
+        !mcpLogCalls.any { it.component == 'hub-admin' && it.msg.contains('retired') }
+
+        where:
+        // null/blank firmware is the ESCAPE HATCH: _hubSecurityObsolete() must not inherit
+        // _firmwareAtLeast's assume-modern default, which would wipe an unidentifiable hub.
+        fw << ['2.4.9.999', '2.3.8.108', '2.4.99.99', null, '', '   ']
+    }
+
+    def "getHubSecurityCookie() returns null on retired firmware even before updated() has run"() {
+        given: 'an upgraded hub whose app has not re-saved, so the settings are still populated'
+        sharedLocation.hub = new TestHub(firmwareVersionString: '2.5.1.181')
+        settingsMap.hubSecurityEnabled = true
+        settingsMap.hubSecurityUser = 'hubadmin'
+        settingsMap.hubSecurityPassword = 'hunter2'
+        atomicStateMap.hubSecurityCookie = 'JSESSIONID=stale'
+        atomicStateMap.hubSecurityCookieExpiry = 1234567890000L + 60_000
+
+        expect: 'the runtime guard short-circuits before any setting or cached cookie is read'
+        script.getHubSecurityCookie() == null
+    }
+
+    def "getHubSecurityCookie() still authenticates below the cutoff"() {
+        given:
+        sharedLocation.hub = new TestHub(firmwareVersionString: '2.4.9.999')
+        settingsMap.hubSecurityEnabled = true
+        settingsMap.hubSecurityUser = 'hubadmin'
+        settingsMap.hubSecurityPassword = 'hunter2'
+        atomicStateMap.hubSecurityCookie = 'JSESSIONID=cached'
+        atomicStateMap.hubSecurityCookieExpiry = 1234567890000L + 60_000
+
+        expect: 'the live cached cookie is returned, not null'
+        script.getHubSecurityCookie() == 'JSESSIONID=cached'
     }
 }
