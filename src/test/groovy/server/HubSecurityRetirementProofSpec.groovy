@@ -55,15 +55,23 @@ class HubSecurityRetirementProofSpec extends ToolSpecBase {
 
     // ---- CRITICAL: the shed must not take down request handling ----
 
+    /**
+     * TestChildApp.removeSetting delegates to settingsStore.remove, so a store whose remove()
+     * throws reproduces a durable-store failure mid-shed without touching metaClass (a
+     * per-instance metaClass override does NOT intercept the call -- an earlier version of this
+     * spec tried that and passed vacuously).
+     */
+    private Map throwingStore() {
+        return new HashMap() {
+            @Override Object remove(Object key) { throw new IllegalStateException('storage unavailable') }
+        }
+    }
+
     def "a durable-store failure during the shed does not escape to the caller"() {
         given:
         retiredHubWithCredentials()
         captureLogs()
-
-        and: 'the settings store rejects the write, as it can on a hub mid-reload'
-        sharedAppStub.metaClass.removeSetting = { String name ->
-            throw new IllegalStateException('storage unavailable')
-        }
+        sharedAppStub.settingsStore = throwingStore()
 
         when:
         script._retireHubSecuritySettings()
@@ -72,25 +80,23 @@ class HubSecurityRetirementProofSpec extends ToolSpecBase {
         noExceptionThrown()
 
         cleanup:
-        sharedAppStub.metaClass = null
+        sharedAppStub.settingsStore = [:]
     }
 
     def "a failed shed is reported, not swallowed"() {
         given:
         retiredHubWithCredentials()
         def logs = captureLogs()
-        sharedAppStub.metaClass.removeSetting = { String name ->
-            throw new IllegalStateException('storage unavailable')
-        }
+        sharedAppStub.settingsStore = throwingStore()
 
         when:
         script._retireHubSecuritySettings()
 
-        then: 'the failure names the risk -- a partial shed can leave the password on disk'
+        then: 'the failure is visible -- a partial shed can leave the password on disk'
         logs.any { it.level == 'error' && it.component == 'hub-admin' }
 
         cleanup:
-        sharedAppStub.metaClass = null
+        sharedAppStub.settingsStore = [:]
     }
 
     // ---- CRITICAL: the per-request wiring itself ----
