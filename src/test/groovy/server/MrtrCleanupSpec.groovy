@@ -387,6 +387,7 @@ class MrtrCleanupSpec extends ToolSpecBase {
         where:
         operation                       | arguments
         '_cleanupRetiredToolState'       | []
+        '_retireHubSecuritySettings'     | []
         '_mrtrEnsureCleanupScheduled'    | []
         'runMrtrCleanup'                 | []
         '_mrtrCleanupRecord'             | [[checkpoint: [clonerAppId: 'invalid']]]
