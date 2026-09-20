@@ -2115,7 +2115,7 @@ class TestRunner:
             # delete is silently skipped (try/except swallows the refusal),
             # leaving the variable stranded.
             self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_delete_variable", "args": {"name": name, "confirm": True},
+                "tool": "hub_delete_variable", "args": {"name": name, "confirm": True, "force": True},
             })
         except Exception as exc:
             print(f"[WARN] _delete_variable_safe({name}) failed: {exc}")
@@ -5565,6 +5565,10 @@ class TestRunner:
                                   "periodic": {"frequency": "Hourly"}}}, ("everyn",)),
                 ({"addAction": {"capability": "runRule", "ruleIds": [999999999]}},
                  ("'999999999'", "hub_list_rules")),
+                # RM's "this rule" sentinel is a privateBoolean-only target; elsewhere it is
+                # refused by name rather than as an unparseable rule id.
+                ({"addAction": {"capability": "runRule", "ruleIds": ["*"]}},
+                 ('"this rule" target', "privateBoolean")),
                 ({"addRequiredExpression": {"conditions": [{"capability": "Days of week"}]}},
                  ("structured condition shortcut",)),
                 ({"addRequiredExpression": {"conditions": [{"capability": "Lock codes"}]}},
@@ -5854,6 +5858,38 @@ class TestRunner:
                 f"the order sentinel did not render on the page at all: {page_text[:400]}"
             assert run_pos < sentinel_pos, \
                 f"position not preserved: Run Actions at {run_pos}, sentinel at {sentinel_pos}"
+
+            # RM's own "this rule" target: it must write verbatim and survive a modifyAction
+            # that changes only the boolean value (issue #434). The rebuild lands a NEW index,
+            # so the old privateT/pvTF keys must be gone and the new pair must hold "*" + the
+            # flipped value -- re-reading the old index would pass on a no-op.
+            pb_added = self._set_rule(caller_id, {
+                "addAction": {"capability": "privateBoolean", "ruleIds": ["*"], "value": False}},
+                strict=True)
+            pb_idx = pb_added.get("actionIndex")
+            pb_settings = self._get_persisted_rule_config(caller_id).get("settings") or {}
+            if pb_idx is None:
+                pb_idx = next((str(k).split(".", 1)[1] for k in pb_settings if str(k).startswith("privateT.")), None)
+            assert pb_idx is not None, f"privateBoolean '*' action reported no index: {pb_added}"
+            assert self._normalize_ruleact_ids(pb_settings.get(f"privateT.{pb_idx}")) == ["*"], \
+                f"privateT.{pb_idx} did not persist RM's this-rule target: {pb_settings}"
+            # pvTF is inverted: value False stores "true".
+            assert str(pb_settings.get(f"pvTF.{pb_idx}")).lower() == "true", \
+                f"pvTF.{pb_idx} did not store the requested value: {pb_settings}"
+
+            pb_mod = self._set_rule(caller_id, {
+                "modifyAction": {"index": int(pb_idx), "mods": {"value": True}}}, strict=True)
+            pb_new_idx = pb_mod.get("newActionIndex")
+            assert pb_new_idx is not None, f"privateBoolean modifyAction carried no newActionIndex: {pb_mod}"
+            assert pb_mod.get("verifiedTargets") == ["*"], \
+                f"modifyAction did not verify the this-rule target through the rebuild: {pb_mod}"
+            pb_after = self._get_persisted_rule_config(caller_id).get("settings") or {}
+            assert self._normalize_ruleact_ids(pb_after.get(f"privateT.{pb_new_idx}")) == ["*"], \
+                f"the rebuilt action lost the this-rule target: {pb_after}"
+            assert str(pb_after.get(f"pvTF.{pb_new_idx}")).lower() == "false", \
+                f"modifyAction did not flip pvTF on the rebuilt action: {pb_after}"
+            assert f"privateT.{pb_idx}" not in pb_after, \
+                f"the pre-rebuild privateBoolean row survived the retarget: {pb_after}"
 
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
@@ -8371,6 +8407,8 @@ class TestRunner:
         var_name = f"{PREFIX}sv_modes"          # Number target
         str_var_name = f"{PREFIX}sv_str"        # String target (numeric-target-only reject)
         bool_var_name = f"{PREFIX}sv_bool"      # Boolean target (numeric-target-only reject)
+        str_src_name = f"{PREFIX}sv_str_src"    # String copy source
+        num_src_name = f"{PREFIX}sv_num_src"    # Number copy source (Rule D runs the copy)
 
         # Create a var via hub_create_variable (guaranteed to CREATE a missing var in the hub
         # namespace, unlike hub_set_variable whose missing-var semantics are ambiguous), then wait
@@ -8419,6 +8457,8 @@ class TestRunner:
             {"name": var_name, "type": "Number", "value": "0"},
             {"name": str_var_name, "type": "String", "value": "init"},
             {"name": bool_var_name, "type": "Boolean", "value": "false"},
+            {"name": str_src_name, "type": "String", "value": "copied"},
+            {"name": num_src_name, "type": "Number", "value": "7"},
         ])
         # The matrix is split across SMALL rules (<=3 setVariable actions each): the classic wizard
         # re-POSTs the FULL rule page per submitOnChange, so piling many actions into one rule trips
@@ -8632,13 +8672,77 @@ class TestRunner:
                     f"negative type-filter rejection did not name a filtered-attribute-enum frame: {neg}"
                 assert "tCustomAttr" in neg_err or "switch" in neg_err, \
                     f"negative rejection should name the attribute field or the requested attribute; error={neg_err}"
+
+                # sourceVariable into a String target: a String var renders no numOp, so the copy
+                # goes through valStringOp="Copy variable", which reveals xVar3.<N>. The persisted
+                # settings are the proof, not the envelope.
+                copy_entry = self._patch_rule(app_c, [
+                    {"addAction": {"capability": "setVariable", "variable": str_var_name,
+                                   "sourceVariable": str_src_name}},
+                ])[0]
+                assert copy_entry.get("success") is not False, \
+                    f"String-target sourceVariable copy failed: {copy_entry}"
+                copy_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
+                copy_idx = copy_entry.get("actionIndex") or next(
+                    (str(k).split(".", 1)[1] for k, v in copy_settings.items()
+                     if str(k).startswith("valStringOp.") and v == "Copy variable"), None)
+                assert copy_idx is not None, \
+                    f"no valStringOp.<N>='Copy variable' persisted for the String copy: {copy_settings}"
+                assert copy_settings.get(f"valStringOp.{copy_idx}") == "Copy variable" \
+                    and copy_settings.get(f"xVarV.{copy_idx}") == str_var_name \
+                    and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
+                    f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
+                # What the copy itself WROTE. The persisted rule can still hold numOp/customDev at
+                # this index: the refused numeric-target fromDevice case above (the switch
+                # attribute) leaves settings without an actType, so the next add reuses that index.
+                copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
+                assert not any(k.startswith("numOp.") for k in copy_applied), \
+                    f"String copy wrote a numOp field: settingsApplied={copy_applied}"
+                # A Boolean target's copy picker is uncaptured, so it is refused before any write.
+                bool_copy = self._patch_rule(app_c, [
+                    {"addAction": {"capability": "setVariable", "variable": bool_var_name,
+                                   "sourceVariable": bool_var_name}},
+                ], expected_refusals=1)[0]
+                assert "not supported yet" in (bool_copy.get("error") or ""), \
+                    f"Boolean-target copy should be refused by name, got: {bool_copy}"
                 self._assert_rule_healthy(app_c)
             finally:
                 self._delete_native(app_c)
+
+            # Rule D: Number copy, then RUN the actions. The persisted settings alone do not prove
+            # it: without valOffset.<N> RM throws "Ambiguous method overloading ... Long#plus" at
+            # run time and leaves the target unchanged, although the rule saves and reads healthy.
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": var_name, "value": 0}})
+            copy_spec = {"capability": "setVariable", "variable": var_name,
+                         "sourceVariable": num_src_name}
+            app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec]})
+            try:
+                d_settings = self._get_persisted_rule_config(app_d).get("settings") or {}
+                d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
+                              if str(k).startswith("numOp.") and v == "variable"), None)
+                assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
+                assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
+                self._assert_rule_healthy(app_d)
+                self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_call_rule", "args": {"ruleId": app_d, "action": "actions"}})
+                got = None
+                deadline = time.time() + 15.0
+                while time.time() < deadline:
+                    got = self.client.call_tool("hub_manage_variables", {
+                        "tool": "hub_get_variable", "args": {"name": var_name}}).get("value")
+                    if str(got) in ("7", "7.0"):
+                        break
+                    time.sleep(1.0)
+                assert str(got) in ("7", "7.0"),                     f"running the Number copy did not set {var_name} to 7 (got {got!r})"
+            finally:
+                self._delete_native(app_d)
         finally:
             self._delete_variable_safe(var_name)
             self._delete_variable_safe(str_var_name)
             self._delete_variable_safe(bool_var_name)
+            self._delete_variable_safe(str_src_name)
+            self._delete_variable_safe(num_src_name)
 
     @test("native_apps")
     def test_set_rule_walker_enum_required_expression(self) -> None:
@@ -11254,6 +11358,54 @@ class TestRunner:
             for n in names:
                 self._delete_variable_safe(n)
 
+    @test("hub_variables")
+    def test_hub_variable_delete_refuses_rule_machine_consumer(self) -> None:
+        # A Rule Machine rule is not a child of this server, so only the hub's own in-use
+        # registry can see it. Without force the delete must refuse and leave both intact.
+        var_name = f"{PREFIX}InUseVar"
+        self._create_hub_variable_visible(var_name, "Number", "0")
+        app_id = self._create_native_rule("VarConsumer", {
+            "addActions": [{"capability": "setVariable", "variable": var_name, "value": 5}]})
+        try:
+            refused = None
+            try:
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
+            except McpToolError as exc:
+                refused = str(exc)
+            assert refused and "in use" in refused and "force=true" in refused, \
+                f"delete of a variable an RM rule uses was not refused: {refused}"
+            got = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": var_name}})
+            assert got.get("source") == "hub", f"refused delete still removed the variable: {got}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+            self._delete_variable_safe(var_name)
+
+    @test("native_apps")
+    def test_set_rule_update_with_false_required_expression_is_suppressed(self) -> None:
+        # RM drops trigger subscriptions while the Required Expression is false. updateRule must
+        # report that as SUPPRESSED, not as an incomplete trigger.
+        app_id = self._create_native_rule("GatedTrigger", {
+            "addTrigger": {"capability": "Switch", "deviceIds": [int(self.get_test_switch_id())], "state": "on"},
+            "addRequiredExpression": {"conditions": [{"capability": "Private Boolean", "state": "true"}]},
+            "addActions": [{"capability": "log", "message": "E2E gated"}],
+        })
+        try:
+            pb = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule_private_boolean", "args": {"ruleId": int(app_id), "value": False}})
+            assert pb.get("success") is not False, \
+                f"could not set the Private Boolean false, so the Required Expression is not gated: {pb}"
+            # strict: a relay-dropped response raises instead of returning a verdict-less sentinel.
+            res = self._set_rule(app_id, {"button": "updateRule"}, strict=True)
+            settle = str((res or {}).get("subscriptionSettle") or "")
+            assert settle.startswith("SUPPRESSED"), \
+                f"a rule gated by a false Required Expression should report SUPPRESSED, got: {settle!r} ({res})"
+            assert "Required Expression is false" in settle, f"unexpected suppression reason: {settle}"
+        finally:
+            self._delete_native(app_id)
+
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
     # -----------------------------------------------------------------------
@@ -11733,6 +11885,160 @@ class TestRunner:
             assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
         assert "safeMode" in result, f"hub_get_info missing safeMode: {sorted(result)}"
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
+        # Client identity is derived from THIS request and nothing is persisted, so the record
+        # handed back describes the very call that fetched it. Shape only here -- the
+        # name/version capture is proved in the protocol group, which controls what the
+        # client declares.
+        identity = result.get("mcpClient")
+        assert isinstance(identity, dict), f"hub_get_info missing mcpClient: {sorted(result)}"
+        client = identity.get("client")
+        assert isinstance(client, dict), f"mcpClient.client must name the caller: {identity!r}"
+        assert client.get("era") == "modern", f"this suite speaks 2026-07-28: {client!r}"
+        assert client.get("protocolVersion") == MODERN_PROTOCOL_VERSION, \
+            f"client.protocolVersion must be the header version: {client!r}"
+        assert client.get("source") in {"cloud", "local"}, f"unexpected client.source: {client!r}"
+        assert isinstance(client.get("wrapper"), bool), \
+            f"every identity must carry a wrapper verdict: {client!r}"
+        leftovers = {"recent", "lastSeen"} & set(identity)
+        assert not leftovers, f"identity is not stored between requests: {sorted(leftovers)}"
+        assert "seenAt" not in client, f"identity is not stored between requests: {sorted(client)}"
+
+    @test("system_tools")
+    def test_report_issue_report_shape(self) -> None:
+        # hub_report_issue is read-only -- it renders a markdown report out of MCP log history plus
+        # the recorded client identity and writes nothing to the hub. It is an MRTR read tool, so a
+        # still-hydrating log buffer rides a requestState continuation the client follows itself.
+        def _report(args: dict) -> dict:
+            res = self.client.call_tool("hub_report_issue", args)
+            assert isinstance(res, dict), f"hub_report_issue returned {type(res)}"
+            return res
+
+        long_expected = (
+            "The trigger should have been created and the rule should then have started listening "
+            "for the switch event without any further interaction from the agent, because every "
+            "required field was supplied on the very first call."
+        )
+        assert len(long_expected) > 150, "the wrap assertion needs prose longer than the wrap width"
+        # A pasted payload that carries its own bare ``` line -- the rendered block must open on a
+        # LONGER backtick run, or the paste would close the block early.
+        verbatim = 'hub_set_rule({"appId": 1}) ->\n```\nHTTP 500 Internal error\n```'
+        # Credentials reach the raw sections through pasted transcripts, and the report is headed
+        # for a public tracker, so they are redacted in BOTH privacy modes.
+        # A redaction must end at the credential: the line after one that merely ENDS in the word
+        # "token", the closing quote and the URL after a header value, all have to survive.
+        secret_logs = (
+            "2026-01-01T00:00:00 ERROR mcp-server-hubitat: transport closed\n"
+            "GET /apps/api/228/mcp?access_token=secret123 HTTP/1.1\n"
+            "Authorization: Bearer tok456\n"
+            "2026-01-01T00:00:01 WARN mcp-server-hubitat: retry scheduled with token\n"
+            "2026-01-01T00:00:02 INFO mcp-server-hubitat: reconnected on attempt 2\n"
+            "curl -H 'Authorization: Bearer AAAAAAAAAAAAAAAA1' http://h/x"
+        )
+        result = _report({
+            "issueType": "bug",
+            "title": "E2E report-shape probe",
+            "expected": long_expected,
+            "actual": "addTrigger returned an error",
+            "stepsToReproduce": "1. call hub_set_rule with a switch trigger",
+            "llmClient": "hubitat-e2e-suite",
+            "llmModel": "n/a (automated suite)",
+            "verbatimToolCalls": verbatim,
+            "clientLogs": secret_logs,
+        })
+        assert result.get("success") is True, f"hub_report_issue failed: {result}"
+        # This suite's ordinary calls declare no clientInfo, so the server can never confirm the
+        # host app and always asks the user about llmClient. Everything actually supplied must be
+        # accepted, so no OTHER field may come back as missing.
+        missing = [entry.get("field") for entry in (result.get("missingContext") or [])]
+        assert [f for f in missing if f != "llmClient"] == [], \
+            f"a supplied field was reported missing: {result.get('missingContext')!r}"
+        assert isinstance(result.get("preflight"), list), f"preflight must be a list: {result!r}"
+        assert "submitUrl" in (result.get("instructions") or ""), \
+            f"instructions must point the agent at submitUrl: {result.get('instructions')!r}"
+        # The link carries the diagnostic prefill: a label marking the issue tool-generated plus
+        # the issue-form field ids, so a maintainer sees version/firmware/client without asking.
+        submit_url = result.get("submitUrl") or ""
+        assert "labels=diag-prefilled" in submit_url, \
+            f"submitUrl must carry the diag-prefilled label: {submit_url!r}"
+        assert "mcp_version=" in submit_url, \
+            f"submitUrl must prefill mcp_version: {submit_url!r}"
+        report = result.get("report") or ""
+        for marker in (
+            "## Environment",
+            "- **Connection:** ",
+            "- **Client (MCP self-report):** ",
+            "- **Protocol version:** ",
+            "- **Model:** ",
+            "## MCP Server Settings",
+            "## Verbatim Tool Calls",
+            "## Client-Side Logs",
+            "## Recent Error/Warning Logs",
+        ):
+            assert marker in report, f"report missing {marker!r}: {report[:800]!r}"
+        assert "## Verbatim Tool Calls\n````text\n" in report, \
+            f"verbatim fence did not escalate past the pasted ```: {report!r}"
+        expected_block = report.split("### Expected\n", 1)[1].split("\n### Actual", 1)[0]
+        too_long = [line for line in expected_block.split("\n") if len(line) > 100]
+        assert not too_long, f"expected prose was not wrapped at 100 chars: {too_long!r}"
+        assert "access_token=<redacted>" in report, (
+            f"the pasted access_token was not redacted: {report!r}")
+        assert "Authorization: Bearer <redacted>" in report, (
+            f"the pasted Authorization header was not redacted: {report!r}")
+        assert "secret123" not in report and "tok456" not in report, (
+            f"a credential survived into the private-mode report: {report!r}")
+        assert "reconnected on attempt 2" in report, (
+            f"the log line after one ending in 'token' was eaten by the redaction: {report!r}")
+        assert "retry scheduled with token" in report, (
+            f"a line merely ending in the word 'token' was redacted: {report!r}")
+        assert "curl -H 'Authorization: Bearer <redacted>' http://h/x" in report, (
+            f"the redaction ate the closing quote or the URL after the credential: {report!r}")
+        assert "AAAAAAAAAAAAAAAA1" not in report, (
+            f"a bearer credential survived into the private-mode report: {report!r}")
+
+        # Public mode withholds both pasted sections outright, credentials or not, and
+        # includeRawLogs=true cannot opt them back in.
+        public = _report({
+            "issueType": "bug",
+            "title": "E2E report-shape probe (public)",
+            "expected": "the pasted sections are withheld",
+            "actual": "they were rendered verbatim",
+            "privacyMode": "public",
+            "includeRawLogs": True,
+            "llmClient": "hubitat-e2e-suite",
+            "llmModel": "n/a (automated suite)",
+            "verbatimToolCalls": verbatim,
+            "clientLogs": secret_logs,
+        })
+        assert public.get("success") is True, f"public-mode hub_report_issue failed: {public}"
+        public_report = public.get("report") or ""
+        for section in ("## Verbatim Tool Calls", "## Client-Side Logs"):
+            parts = public_report.split(section, 1)
+            assert len(parts) == 2, f"public report missing {section!r}: {public_report[:800]!r}"
+            assert "omitted in public mode" in parts[1].split("\n##", 1)[0], (
+                f"{section!r} was not withheld in public mode: {public_report!r}")
+        assert "HTTP 500 Internal error" not in public_report, (
+            f"the verbatim payload leaked into a public report: {public_report!r}")
+        assert "transport closed" not in public_report, (
+            f"the client-log payload leaked into a public report: {public_report!r}")
+        assert "includeRawLogs=true" not in public_report, (
+            f"a public placeholder still offered an override that no longer exists: {public_report!r}")
+
+        # agent_behavior asks for the same evidence as a bug and renders the same sections.
+        agent = _report({
+            "issueType": "agent_behavior",
+            "title": "E2E agent-behavior probe",
+            "expected": "the agent picks the documented tool",
+            "actual": "the agent guessed a tool name",
+        })
+        assert agent.get("success") is True, f"agent_behavior report failed: {agent}"
+        agent_missing = [entry.get("field") for entry in (agent.get("missingContext") or [])]
+        assert "verbatimToolCalls" in agent_missing and "clientLogs" in agent_missing, \
+            f"agent_behavior must ask for the same evidence as a bug: {agent_missing!r}"
+        agent_preflight = agent.get("preflight") or []
+        assert len(agent_preflight) == 1 and "verbatimToolCalls" in agent_preflight[0], \
+            f"agent_behavior preflight must be the single verbatim step: {agent_preflight!r}"
+        assert "## Verbatim Tool Calls\n_Not provided_" in (agent.get("report") or ""), \
+            f"agent_behavior must render the missing-evidence gap: {agent.get('report')!r}"
 
     @test("system_tools")
     def test_hub_mesh_read(self) -> None:
@@ -14359,6 +14665,53 @@ class TestRunner:
                 f"modern {label} result missing the serverInfo _meta key: {result.get('_meta')!r}"
 
     @test("protocol")
+    def test_modern_client_identity_recorded_from_meta(self) -> None:
+        """A modern request's `_meta` clientInfo is read back on the SAME call: identity is
+        derived from the request in hand, so hub_get_info's own body names the client that
+        asked for it. Proves the modern `_meta` shape against real firmware, which no unit
+        harness can do -- the header value and the relay source both come from the live
+        request object."""
+        probe = "hubitat-e2e-modern-probe"
+        resp = self.client.raw_request({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "hub_get_info",
+                "arguments": {},
+                "_meta": {
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": probe, "version": "9.9.9", "title": "E2E Probe",
+                    },
+                    "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+                },
+            },
+        })
+        assert resp.status_code == 200, \
+            f"a modern tools/call carrying _meta clientInfo must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
+        result = resp.json().get("result", {})
+        assert not result.get("isError"), f"hub_get_info returned an error envelope: {str(result)[:300]}"
+        info = json.loads(result["content"][0]["text"])
+        client = (info.get("mcpClient") or {}).get("client") or {}
+        assert client.get("name") == probe, f"the declared client name was not read: {client!r}"
+        assert client.get("version") == "9.9.9", f"the declared client version was not read: {client!r}"
+        assert client.get("title") == "E2E Probe", f"the declared client title was not read: {client!r}"
+        assert client.get("era") == "modern", f"a 2026-07-28 request must read era 'modern': {client!r}"
+        assert client.get("protocolVersion") == MODERN_PROTOCOL_VERSION, \
+            f"client.protocolVersion must be the header version: {client!r}"
+        assert client.get("requestedProtocolVersion") is None, \
+            f"requestedProtocolVersion belongs to the initialize handshake only: {client!r}"
+        assert client.get("source") in {"cloud", "local"}, f"unexpected client.source: {client!r}"
+        assert "wrapper" in client, f"every identity must carry a wrapper verdict: {client!r}"
+        assert client["wrapper"] is False, \
+            f"the probe name is not a stdio-to-HTTP bridge and must not be flagged: {client!r}"
+        # Identity is read from the request in hand and nothing is kept, so an ordinary call
+        # that declares no clientInfo names nobody -- it cannot inherit the probe's name, and
+        # there is no history for it to fall back on either.
+        info2 = self.client.call_tool("hub_get_info", {})
+        client2 = (info2.get("mcpClient") or {}).get("client") or {}
+        assert client2.get("name") is None, \
+            f"a request without clientInfo must name nobody: {client2!r}"
+
+    @test("protocol")
     def test_modern_header_method_mismatch_rejected(self) -> None:
         """Mcp-Method mirrors the body `method`; a disagreement MUST be rejected with
         HTTP 400 + -32020 HeaderMismatch. This is the vulnerability the mirroring
@@ -14711,6 +15064,22 @@ class TestRunner:
              f"legacy-only={sorted(legacy_names - modern_names)}, "
              f"modern-only={sorted(modern_names - legacy_names)}")
 
+        # Identity is read from the request in hand; nothing is stored. A legacy tools/call
+        # carries no clientInfo of its own -- only the handshake POST could -- so it names
+        # nobody, which is exactly why the report tool asks the user instead.
+        info = legacy.call_tool("hub_get_info", replay_safe=True)
+        client = (info.get("mcpClient") or {}).get("client") or {}
+        assert client.get("name") is None, \
+            f"a legacy tools/call declares no clientInfo and must name nobody: {client!r}"
+        assert client.get("era") == "legacy", \
+            f"a legacy-header request must read era legacy: {client!r}"
+        assert client.get("protocolVersion") == LEGACY_PROTOCOL_VERSION, \
+            f"client.protocolVersion must echo the negotiated legacy header: {client!r}"
+        assert client.get("requestedProtocolVersion") is None, \
+            f"requestedProtocolVersion belongs to the initialize handshake only: {client!r}"
+        assert client.get("wrapper") is False, \
+            f"a nameless request names no transport wrapper: {client!r}"
+
         capped = legacy.initialize(MODERN_PROTOCOL_VERSION)
         assert capped.get("protocolVersion") == DEFAULT_PROTOCOL_VERSION, \
             (f"initialize must negotiate {MODERN_PROTOCOL_VERSION} DOWN to "
@@ -14798,6 +15167,30 @@ class TestRunner:
             page = self._rule_page_text(app_id)
             assert kept in page and skipped not in page, \
                 f"the legacy stop must keep the clean prefix and never write the tail: {page}"
+
+            # Exercise the budget boundary without changing hub-wide timeout settings or adding
+            # another rule. The gateway preserves the supplied leaf clock for legacy calls;
+            # the modern detached worker removes it and checks health normally.
+            done_args = {"appId": app_id, "confirm": True, "__reqT0": 1,
+                         "walkStep": {"page": "selectActions", "operation": "done"}}
+            unverified = legacy.call_tool("hub_manage_rule_machine",
+                                         {"tool": "hub_set_rule", "args": done_args})
+            assert unverified.get("success") is False and unverified.get("partial") is True \
+                and unverified.get("healthUnverified") is True \
+                and (unverified.get("health") or {}).get("skipped") is True, \
+                f"a committed standalone legacy Done with skipped health must report unverified: {unverified}"
+            assert unverified.get("status") != "in_progress" \
+                and "unverified" in str(unverified.get("error") or "") \
+                and any("do not re-run" in str(hint) for hint in unverified.get("repairHints") or []), \
+                f"the result must direct verification, never replay a committed step: {unverified}"
+            checked = self.client.call_tool("hub_manage_rule_machine",
+                                            {"tool": "hub_set_rule", "args": done_args})
+            assert checked.get("success") is True and checked.get("healthUnverified") is not True \
+                and (checked.get("health") or {}).get("ok") is True \
+                and (checked.get("health") or {}).get("skipped") is not True, \
+                f"modern Done must discard the stale clock and verify the committed rule: {checked}"
+            self._last_write_health = None
+            self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
 
@@ -14946,9 +15339,11 @@ class TestRunner:
         for var_name in list(self.created_variable_names):
             try:
                 print(f"  Deleting tracked variable {var_name}")
+                # force: teardown must not be stopped by the in-use refusal, which can still
+                # see a registration from a rule deleted moments earlier.
                 self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_delete_variable",
-                    "args": {"name": var_name, "confirm": True},
+                    "args": {"name": var_name, "confirm": True, "force": True},
                 })
             except Exception as exc:
                 print(f"  [WARN] Failed to delete variable {var_name}: {exc}")

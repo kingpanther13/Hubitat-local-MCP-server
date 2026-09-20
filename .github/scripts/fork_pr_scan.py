@@ -33,9 +33,13 @@ import sys
 MARKER = "<!-- fork-pr-scan -->"
 HARD_FAIL_PATH = "tests/sdk-conformance-requirements.txt"
 
-# Paths the e2e job EXECUTES from the PR head (mcp_watchdog_deploy.sh, e2e_test.py,
-# sdk_conformance_test.py, lane/lease scripts, and the pip install of the requirements).
-WATCHED = (".github/scripts/", "tests/")
+# Only what the e2e job EXECUTES from the PR head: every .github/scripts entry it invokes
+# (mcp_watchdog_deploy.sh, the lease/lane scripts) plus the Python it runs from tests/
+# (e2e_test.py, sdk_conformance_test.py and their helpers) and the pip install of the pinned
+# requirements. NOT all of tests/: BAT-v2.md and friends are manual-testing docs that nothing
+# executes, and padding the list with them is how a reviewer stops reading it.
+WATCHED_DIRS = (".github/scripts/",)
+WATCHED_SUFFIXED = {"tests/": ".py"}
 
 PATTERNS: list[tuple[str, str]] = [
     ("network", r"\b(curl|wget|nc|ncat|socat|ssh|scp)\b"),
@@ -65,7 +69,12 @@ def gh(*args: str) -> str:
 
 
 def watched(path: str) -> bool:
-    return path.startswith(WATCHED) or path == HARD_FAIL_PATH
+    if path == HARD_FAIL_PATH or path.startswith(WATCHED_DIRS):
+        return True
+    return any(
+        path.startswith(prefix) and path.endswith(suffix)
+        for prefix, suffix in WATCHED_SUFFIXED.items()
+    )
 
 
 def added_lines(patch: str) -> list[tuple[int, str]]:
@@ -117,8 +126,8 @@ def build_report(files: list[dict]) -> tuple[str, bool]:
     lines = [MARKER, "## Fork PR pre-approval scan", ""]
     if not scanned and not unscannable:
         lines += [
-            "No changes under `.github/scripts/`, `tests/`, or the pinned requirements file, "
-            "so nothing the e2e job executes from this PR changed.",
+            "No changes under `.github/scripts/`, no `tests/*.py`, and no change to the pinned "
+            "requirements file, so nothing the e2e job executes from this PR changed.",
         ]
     elif scanned:
         lines += [

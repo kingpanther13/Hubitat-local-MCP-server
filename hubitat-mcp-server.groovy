@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.3.5 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.3.10 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -510,6 +510,17 @@ def advancedOverridesPage() {
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
                   description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit.",
                   defaultValue: false
+        }
+        section("Tool name number") {
+            paragraph "Inserts a single digit after the \"hub\" prefix of every MCP tool name on the wire (e.g. hub_get_info becomes hub3_get_info). Lets multiple Hubitat MCP servers coexist in one client without tool-name collisions -- internal behavior is unchanged, only the names the client sees. MCP clients cache the tool list, so refresh or reconnect your client after changing this."
+            input "enableHubToolNumber", "bool", title: "Add a digit to every tool name",
+                  description: "OFF by default. Turn ON to pick a digit below.",
+                  defaultValue: false, submitOnChange: true
+            if (settings.enableHubToolNumber) {
+                input "hubToolNumber", "enum", title: "Digit to insert",
+                      description: "e.g. 3 turns hub_get_info into hub3_get_info.",
+                      options: ("0".."9").collect { it }, required: false
+            }
         }
         section {
             def dt = (settings.disabled_tools ?: []).size()
@@ -1214,6 +1225,100 @@ def _decodeHeaderValue(String value) {
     }
 }
 
+// ==================== MCP CLIENT IDENTITY ====================
+
+// Identity is read from the request in hand; nothing is stored. One install serves several
+// clients at once, so a persisted record would cost an atomicState write per request only to
+// describe the latest of them. `client` is null when the POST carried no valid message; its
+// name/version/title are null when that message declared no clientInfo. On a read failure the
+// result carries an `error` key instead, so a caller can say so rather than reporting "no
+// client" as if nobody had connected.
+def mcpClientIdentity() {
+    try {
+        def body = request.JSON
+        def messages = (body instanceof List) ? body : [body]
+        // A batch is one client on one connection, so the first valid message that names itself
+        // speaks for the whole POST; a malformed envelope or a notification names nobody.
+        def valid = messages.findAll { _mcpClientValidMessage(it) }
+        if (!valid) return [client: null]
+        def chosen = valid.find { _mcpClientInfoFrom(it) != null } ?: valid[0]
+        def params = (chosen.params instanceof Map) ? chosen.params : [:]
+        def info = _mcpClientInfoFrom(chosen)
+        String name = info == null ? null : _mcpClientString(info["name"])
+        String version = info == null ? null : _mcpClientString(info["version"])
+        Map client = [
+            name: name,
+            version: version,
+            title: info == null ? null : _mcpClientString(info["title"]),
+            // wrapper is derived, never carried: the verdict follows the current bridge list.
+            wrapper: _mcpClientIsWrapper(name, version),
+            protocolVersion: null,
+            requestedProtocolVersion: null,
+            era: _modernEraRequest() ? "modern" : "legacy",
+            source: _isCloudRequest() ? "cloud" : "local"
+        ]
+        if (chosen.method == "initialize") {
+            // initialize no longer exists in the modern revision, so reaching it proves a
+            // legacy-era client whatever header a dual-era probe put on it.
+            client.era = "legacy"
+            def requested = params["protocolVersion"]
+            client.requestedProtocolVersion = _mcpClientString(requested)
+            client.protocolVersion = _mcpClientString(_negotiatedProtocolVersion(requested))
+        } else {
+            // Outside the handshake the header is the only version the request states, so a
+            // headerless pre-2025-06-18 client reports none.
+            client.protocolVersion = _requestHeader("MCP-Protocol-Version")
+        }
+        return [client: client]
+    } catch (Throwable e) {
+        // The message can quote the request body (a parse error does), so it is flattened,
+        // capped and credential-scrubbed before it reaches the log or a report.
+        String detail = "${e.class.simpleName}: ${_bugReportScrubSecrets(_mcpClientString(e.message))}".toString()
+        try {
+            mcpLog("warn", "server", "MCP client identity read failed: ${detail}")
+        } catch (Throwable ignored) {
+        }
+        return [client: null, error: detail]
+    }
+}
+
+// Only a well-formed request can name a client: a malformed envelope or a notification is
+// dispatch-rejected, so letting one speak would let noise stand in for a real identity.
+private boolean _mcpClientValidMessage(msg) {
+    if (!(msg instanceof Map)) return false
+    if (msg.jsonrpc != "2.0" || msg.id == null) return false
+    return (msg.method instanceof String) && !((String) msg.method).isEmpty()
+}
+
+// Modern clients declare themselves in params._meta; initialize carries the legacy params.clientInfo.
+private Map _mcpClientInfoFrom(msg) {
+    def params = (msg?.params instanceof Map) ? msg.params : [:]
+    def meta = (params["_meta"] instanceof Map) ? params["_meta"] : [:]
+    def info = meta["io.modelcontextprotocol/clientInfo"]
+    if (!(info instanceof Map)) info = params["clientInfo"]
+    return (info instanceof Map) ? info : null
+}
+
+// A transport wrapper self-reports ITS OWN name, never the host app behind it, so a match here
+// means this request's identity cannot name the real client. "mcp" with no version or 0.1.0 is
+// the Python MCP SDK default identity stdio-to-HTTP bridges send; an unanchored contains-match
+// would flag unrelated names like mcp-remote-control.
+private boolean _mcpClientIsWrapper(String name, String version) {
+    String lower = name?.toLowerCase()
+    if (!lower) return false
+    if (lower == "mcp") return version == null || version == "0.1.0"
+    return ["mcp-remote", "mcp-proxy", "fastmcp-remote", "supergateway"].contains(lower)
+}
+
+// Client-supplied text is echoed into logs and into markdown headed for a public issue tracker,
+// so a defective client could otherwise bloat it or inject structure into the report it lands in.
+private String _mcpClientString(value) {
+    if (value == null) return null
+    String s = value.toString().replaceAll(/[\r\n\t`]/, " ").replaceAll(/ {2,}/, " ").trim()
+    if (s.length() > 120) s = s.substring(0, 120)
+    return s.isEmpty() ? null : s
+}
+
 def processJsonRpcMessage(msg) {
     if (!msg) {
         return jsonRpcError(null, -32600, "Invalid Request: empty message")
@@ -1257,7 +1362,8 @@ def processJsonRpcMessage(msg) {
             case "tools/list":
                 return handleToolsList(msg)
             case "tools/call":
-                return handleToolsCall(msg)
+                // Mcp-Name validation already ran against the client's external name.
+                return handleToolsCall(_normalizeInboundToolName(msg))
             case "resources/list":
                 return handleResourcesList(msg)
             case "resources/read":
@@ -1336,6 +1442,12 @@ def initializeProtocolVersions() {
 // requests an unknown, or requests the modern) protocolVersion negotiates down to.
 def defaultProtocolVersion() { initializeProtocolVersions()[0] }
 
+// The version initialize answers with for a requested one -- the NEGOTIATED version, never the
+// asked-for one.
+def _negotiatedProtocolVersion(requested) {
+    return initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
+}
+
 // Freshness hint for the cacheable list results (SEP-2549 CacheableResult:
 // tools/list and server/discover). Both payloads only shift when this app's
 // settings change (Read/Write masters, gateway mode, per-tool overrides) or the
@@ -1363,7 +1475,17 @@ def handleInitialize(msg) {
     // on the default -- see initializeProtocolVersions() for why the modern revision
     // is not negotiable through this legacy-era handshake.
     def requested = msg.params?.protocolVersion
-    def negotiated = initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
+    def negotiated = _negotiatedProtocolVersion(requested)
+    def info = msg.params?.clientInfo
+    // Client-supplied text goes straight into the log line, so it is sanitized the same way the
+    // reported identity is -- the requested version included, it comes from the same payload.
+    String who = "unknown client"
+    if (info instanceof Map) {
+        String clientName = _mcpClientString(info["name"])
+        String clientVersion = _mcpClientString(info["version"])
+        if (clientName) who = clientVersion ? "${clientName} ${clientVersion}" : clientName
+    }
+    mcpLog("info", "server", "initialize from ${who}: requested protocolVersion ${_mcpClientString(requested)}, negotiated ${negotiated} (${_isCloudRequest() ? 'cloud' : 'local'})")
     return jsonRpcResult(msg.id, [
         protocolVersion: negotiated,
         capabilities: serverCapabilities(),
@@ -1400,6 +1522,58 @@ def handleServerDiscover(msg) {
     ])
 }
 
+// Issue #443: optional digit after "hub" in wire-facing tool names (hub_x -> hub3_x) so
+// several hubs can coexist in one client. Internal names never change.
+String _hubToolNumber() {
+    if (settings.enableHubToolNumber != true) return null
+    String digit = settings.hubToolNumber?.toString()
+    return (digit != null && digit ==~ /^[0-9]$/) ? digit : null
+}
+
+String _externalToolName(String name) {
+    String digit = _hubToolNumber()
+    return (digit != null && name?.startsWith("hub_")) ? "hub" + digit + name.substring(3) : name
+}
+
+// Plain hub_ names still pass, so a client with a stale cached catalog keeps working.
+String _internalToolName(String name) {
+    String digit = _hubToolNumber()
+    return (digit != null && name?.startsWith("hub${digit}_")) ? "hub" + name.substring(4) : name
+}
+
+// Renames the entry and, for a gateway, its tool= enum and "Available tools:" catalog lines.
+private Map _externalizeToolEntry(Map tool) {
+    Map result = tool + [name: _externalToolName(tool.name as String)]
+    def subEnum = tool.inputSchema?.properties?.tool?.enum
+    if (subEnum instanceof List) {
+        Map renamed = (subEnum as List).collectEntries { [(it): _externalToolName(it as String)] }
+        String description = tool.description as String
+        renamed.each { internalName, externalName ->
+            description = description.replace("- ${internalName}:".toString(), "- ${externalName}:".toString())
+        }
+        result.description = description
+        result.inputSchema = (tool.inputSchema as Map) + [
+            properties: (tool.inputSchema.properties as Map) + [
+                tool: (tool.inputSchema.properties.tool as Map) + [enum: renamed.values() as List]
+            ]
+        ]
+    }
+    return result
+}
+
+private def _normalizeInboundToolName(msg) {
+    if (_hubToolNumber() == null || !(msg.params instanceof Map)) return msg
+    Map params = msg.params as Map
+    Map newParams = params
+    if (params.name instanceof String) {
+        newParams = newParams + [name: _internalToolName(params.name as String)]
+    }
+    if (params.arguments instanceof Map && params.arguments.tool instanceof String) {
+        newParams = newParams + [arguments: (params.arguments as Map) + [tool: _internalToolName(params.arguments.tool as String)]]
+    }
+    return msg + [params: newParams]
+}
+
 def handleToolsList(msg) {
     // tools/list returns the full catalog in a single response. Pagination was
     // attempted in #180 (page size 50, cursor-based; ported via #190), but in
@@ -1419,6 +1593,7 @@ def handleToolsList(msg) {
     // -- that is opt-in and the size guard's "suggestion" hints already point
     // callers at it when needed.
     def all = getToolDefinitions()
+    if (_hubToolNumber() != null) all = all.collect { _externalizeToolEntry(it as Map) }
     // CacheableResult (SEP-2549): tools/list results carry the ttlMs freshness
     // hint plus cacheScope. Scope is "private" -- the endpoint is authenticated by
     // a per-install OAuth token and the catalog it returns is shaped by that
@@ -1802,7 +1977,7 @@ private def _mrtrMarkRejoined(result, boolean rejoined) {
 // say the failing slice may also have changed the hub, so the caller inspects instead
 // of repeating the whole operation.
 private Map _mrtrFailureWithLedger(Map rec, leafTool, String error) {
-    def failure = [success: false, isError: true, tool: leafTool, error: error]
+    def failure = [success: false, isError: true, tool: _externalToolName(leafTool as String), error: error]
     _mrtrAttachLedger(failure, rec)
     return failure
 }
@@ -3913,7 +4088,7 @@ private def _renderValidationError(id, toolName, reactiveToolName, args, String 
     // A throw with no message gets neither a hint nor a literal "null": there is nothing
     // for the model to act on. A hint failure must never mask the genuine refusal.
     boolean hasDetail = detail?.trim() as boolean
-    String text = hasDetail ? detail : "${reactiveToolName} rejected the call without a reason"
+    String text = hasDetail ? detail : "${_externalToolName(reactiveToolName as String)} rejected the call without a reason"
     def hint = null
     if (hasDetail) {
         try { hint = _reactiveBpsWarning(reactiveToolName, args, detail) }
@@ -3922,7 +4097,7 @@ private def _renderValidationError(id, toolName, reactiveToolName, args, String 
                 [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
         }
     }
-    def failure = [success: false, isError: true, tool: reactiveToolName,
+    def failure = [success: false, isError: true, tool: _externalToolName(reactiveToolName as String),
                    error: hint ? "${text} ${hint}".toString() : text, __validation: true]
     // A refusal on a later slice sits on top of committed work; hand that ledger back
     // exactly as a runtime failure would, so the caller does not repeat the whole batch.
@@ -4043,7 +4218,7 @@ def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) 
         truncated: true,
         estimatedBytes: actualBytes,
         sizeLimitBytes: limitBytes,
-        tool: toolName,
+        tool: _externalToolName(toolName),
         suggestion: _responseTooLargeSuggestion(toolName)
     ]
 }
@@ -4075,6 +4250,8 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_info":
         case "hub_get_metrics":
             return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
+        case "hub_report_issue":
+            return "Shorten verbatimToolCalls and clientLogs to the failure window or pass includeRawLogs=false, then call again -- the report is rebuilt on every call, nothing is lost."
         case "hub_get_source":
             return "Source file exceeds the inline cap. Use offset/length to read it in chunks, use hub_list_files / hub_read_file via the File Manager bridge, or fetch the source from version control instead."
         default:
@@ -4993,7 +5170,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     def gwConfig = getGatewayConfig()
     def config = gwConfig[gatewayName]
     if (!config) {
-        throw new IllegalArgumentException("Unknown gateway: ${gatewayName}")
+        throw new IllegalArgumentException("Unknown gateway: ${_externalToolName(gatewayName as String)}")
     }
 
     if (!toolName) {
@@ -5013,12 +5190,12 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
         def displayMeta = getToolDisplayMeta()
 
         return [
-            gateway: gatewayName,
+            gateway: _externalToolName(gatewayName as String),
             mode: "catalog",
             message: "Call again with tool='<name>' and args={...} to execute a tool.",
             tools: visibleSubTools.collect { name ->
                 def d = defMap[name]
-                def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
+                def entry = [name: _externalToolName(name as String), description: d?.description, inputSchema: d?.inputSchema]
                 def title = displayMeta[name]?.title
                 if (title) entry.title = title as String
                 entry
@@ -5027,7 +5204,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     }
 
     if (!config.tools.contains(toolName)) {
-        throw new IllegalArgumentException("Unknown tool '${toolName}' in ${gatewayName}. Available: ${config.tools.join(', ')}")
+        throw new IllegalArgumentException("Unknown tool '${_externalToolName(toolName as String)}' in ${_externalToolName(gatewayName as String)}. Available: ${config.tools.collect { _externalToolName(it as String) }.join(', ')}")
     }
 
     // Defensive: unreachable with current configs — gateway names and tool
@@ -5130,7 +5307,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
             // all-params list rides in the message -- no content is lost vs the old
             // structured `parameters` field.
             throw new IllegalArgumentException(
-                "Missing required ${paramWord} for ${toolName}: ${missing.join(', ')}. All parameters:\n${paramList}")
+                "Missing required ${paramWord} for ${_externalToolName(toolName as String)}: ${missing.join(', ')}. All parameters:\n${paramList}")
         }
     }
 
@@ -5769,18 +5946,18 @@ def executeTool(toolName, args) {
                 def visibleNames = getToolDefinitions()*.name as Set
                 def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
                 def hint = subTools
-                    ? "Call the underlying tool directly: ${subTools.join(', ')}. Refresh tools/list to see the flat catalog."
+                    ? "Call the underlying tool directly: ${subTools.collect { _externalToolName(it as String) }.join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
                 return [
                     isError: true,
-                    error: "Gateway tool '${toolName}' is disabled — useGateways is OFF in this server's preferences.",
+                    error: "Gateway tool '${_externalToolName(toolName as String)}' is disabled — useGateways is OFF in this server's preferences.",
                     hint: hint
                 ]
             }
             return handleGateway(toolName, args.tool, args.args, (args instanceof Map) ? args.__reqT0 : null)
 
         default:
-            throw new IllegalArgumentException("Unknown tool: ${toolName}")
+            throw new IllegalArgumentException("Unknown tool: ${_externalToolName(toolName as String)}")
     }
 }
 
@@ -8364,7 +8541,7 @@ private Map _rmFetchStatusJson(Integer appId) {
  * health source across EVERY rule engine (issue #254 + the VRB follow-up).
  * Returns a normalized map or null when appId is not a recognized rule shape:
  *
- *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, paused, predicate, capabsfalse]
+ *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, paused, predicate, actionList]
  *     from GET /app/ruleBuilderJson (the real `broken` boolean + predicate/condition
  *     structure, instead of scraping rendered HTML).
  *   - graph Visual Rule (VRB 2.0) -> [ruleFormat:"vrb-graph", broken:<validationErrors
@@ -8417,7 +8594,6 @@ private Map _ruleCompiledState(Integer appId) {
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
                         paused: parsed.paused instanceof Boolean ? parsed.paused : null,
                         predicate: pred,
-                        capabsfalse: (parsed.capabsfalse instanceof Map ? parsed.capabsfalse : null),
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
                         endpoint: "ruleBuilderJson"]
             }
@@ -8780,11 +8956,9 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             compiledActionList = _rmCoerceActionIndices(cs.actionList)   // null in -> null out
             if (cs.validationErrors) validationErrors = cs.validationErrors
             if (ruleFormat == "rm" && broken == true) {
-                // capabsfalse renders the live false-condition text (with current
-                // values) — it points at what is wrong.
-                def detail = (cs.capabsfalse instanceof Map && !cs.capabsfalse.isEmpty()) ?
-                    " False conditions: ${cs.capabsfalse.values().join('; ')}".toString() : ""
-                issues << "ruleBuilderJson reports broken:true (compiled-state boolean — authoritative).${detail}".toString()
+                // Not capabsfalse: it lists a rule's conditions whatever their current truth,
+                // so quoting it as "false conditions" points at the wrong cause.
+                issues << "ruleBuilderJson reports broken:true (compiled-state boolean — authoritative).".toString()
             } else if (ruleFormat == "vrb-graph" && !validationErrors.isEmpty()) {
                 issues << "Visual Rule (graph) has validation errors: ${validationErrors.join('; ')}".toString()
             }
@@ -9125,7 +9299,7 @@ private Map _rmLiveSettingsFromStatus(Map status) {
  * Throws IllegalStateException (sandbox-friendly alias for the divergence
  * condition) with a specific message listing the poisoned setting names.
  */
-private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touchedNames) {
+private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touchedNames, boolean includeRecoveryAdvice = true) {
     def status = _rmFetchStatusJson(appId)
     def live = (status?.appSettings ?: []).collectEntries { s ->
         [(s?.name?.toString()): s]
@@ -9144,8 +9318,8 @@ private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touc
         def settingWord = (poisoned.size() == 1) ? "setting" : "settings"
         throw new IllegalStateException(
             "MarshalFlagDivergenceException: multiple=true flag flipped to false on ${settingWord} ${poisoned} " +
-            "for app ${appId}. This corrupts RM's device-list rendering. Caller should re-POST with the full " +
-            "3-field group (settings[name], name.type, name.multiple=true) to recover.")
+            "for app ${appId}. This corrupts RM's device-list rendering." +
+            (includeRecoveryAdvice ? " Caller should re-POST with the full 3-field group (settings[name], name.type, name.multiple=true) to recover." : ""))
     }
 }
 
@@ -9210,7 +9384,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.3.5"
+    return "4.3.10"
 }
 
 
@@ -9252,6 +9426,7 @@ def _guideSectionForTool(toolName) {
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
               'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
     if (t in ['hub_call_device_command', 'hub_get_device_attribute']) return 'device_authorization'
+    if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
 }
 
@@ -9478,11 +9653,12 @@ Creates a device from a driver TYPE id (the `id` from `hub_list_drivers(include=
 
 ### hub_get_info
 
-Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime, memory, temperature, DB size, MCP stats, security/toggle settings), it always returns two extra fields and supports two optional deep-dive flags. Use it for health checks, version lookups, or when triaging hub performance.
+Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime, memory, temperature, DB size, MCP stats, security/toggle settings), it always returns three extra fields and supports two optional deep-dive flags. Use it for health checks, version lookups, or when triaging hub performance.
 
 **Always returned (regardless of the flags below):**
 - `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it).
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
+- `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
 
 **`includeHealthAlerts=true`** (default false): returns the hub's full health-alerts block from /hub2/hubData — every /hub2/hubData alert flag plus the hub's message strings, under `healthAlerts`. Covers radio offline, backup failures, low memory, DB bloat, and weak mesh. `platformUpdate` and `safeMode` are returned whether or not this flag is set.
 
@@ -9972,6 +10148,18 @@ Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable cle
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
+Issue-type routing: `issueType` picks the GitHub issue template behind `submitUrl` -- `bug` opens the bug-report template, `enhancement` the feature template, `agent_behavior` the agent-behavior template -- and sets the report heading and the title prefix (`[bug]` / `[feature]` / `[agent-behavior]`) with it. Filing a feature request as a bug lands the user on the wrong form, so pick the type before you call.
+
+**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections and the raw log text are withheld unconditionally -- a placeholder names how many lines were held back, and there is no override; `includeRawLogs` only matters in private mode, where `false` withholds the same content. The link also prefills the MCP server version, hub firmware, client and failing tool, and labels the issue `diag-prefilled` so a tool-generated report is recognisable. In both modes credentials are redacted -- the same redaction also runs over `expected`, `actual`, `stepsToReproduce`, the title and the embedded log block. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
+
+**What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. When the server has no client self-report, or it names a transport wrapper (mcp-remote, mcp-proxy, fastmcp-remote, supergateway, or the Python SDK default identity those bridges send -- `mcp 0.1.0`, or `mcp` with no version), the result says so in missingContext: ask the user and never infer the host app or model from context. Wrapper detection reads only what THIS request self-reported; nothing is carried over from an earlier one. A legacy client names itself on `initialize` alone, so an ordinary tool call from one reports `not reported on this request` and the tool asks the user instead. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log), and also takes pasted `hub_get_logs` output. An `agent_behavior` report asks for `stepsToReproduce`, `verbatimToolCalls` and `clientLogs` exactly as a bug does, and renders the same sections.
+
+**Formatting the prose fields.** Put stack traces, JSON or tables in `expected`, `actual` or `stepsToReproduce` inside ``` fences, or indent every line -- an unfenced, unindented line over 100 characters is re-wrapped at word boundaries and a pasted payload loses its shape.
+
+**Log scoping.** `includeUnrelatedRecentLogs` defaults to false and only ever matters once the report is scoped: with no `failingTool`, `ruleId` or `nativeAppId` set, nothing is scoped out and the flag is a no-op.
+
+**What the report already carries.** The server reads the client name/version this very request declared and the protocol version it states (both visible in `hub_get_info.mcpClient`), whether the request came over the cloud relay or the LAN, and a snapshot of the app's toggles (read/write masters, developer mode, per-tool overrides, Origin enforcement, time budgets). Hub Security is reported as a boolean only. Long prose fields are word-wrapped; verbatim and log fields are not.
+
 
 ### hub_list_devices
 
@@ -10368,11 +10556,11 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
   - **NOTE:** fan `setSpeed` takes a fixed enum speed only (low / medium-low / medium / medium-high / high / on / off / auto); RM has no variable-sourced fan speed (unlike dimmer `setLevel`'s `levelVariable`) because the classic wizard exposes a variable toggle only for numeric/text value fields, not enum pickers. For a variable-driven speed, use `capability='runCommand'` with `command='setSpeed'` + `parameters=[{type:'string', variable:'<varName>'}]` (per-parameter variable sourcing).
 - **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `hub_list_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
-- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
+- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. `sourceVariable` works for Number, Decimal and String targets (a String target is written through RM's `valStringOp.<N>="Copy variable"` picker); a Boolean or DateTime target is refused before any write. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Rule-local Variable** (`capability='setLocalVariable'`): identical shape and source modes to `setVariable` (`variable` target + exactly one of `value`/`sourceVariable`/`fromDevice`/`math`), EXCEPT the `variable` target is validated against the rule's LOCAL variables (`state.allLocalVars`) instead of hub globals. Use this -- not `setVariable` -- when a local and a hub variable share a name and you mean the local; it cannot silently target the global. `sourceVariable`/`math` operands may be either local or hub (RM's source picker spans both; validated against the live revealed enum). Create a local first via `addLocalVariable`; list current locals via `hub_list_rule_local_variables` (in `hub_read_rules`). The picker section headers ` --LOCAL VARIABLES--` / ` --HUB VARIABLES--` are rejected as targets.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
-- **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`. Raw `pvTF.<N>` and `pR.<N>` store the inverse of the rendered True/False (`pR`: `false`=pause, `true`=resume); the rendered paragraph is ground truth, so do not "fix" readbacks against the raw field. For all four, each `ruleIds` target must resolve to an existing Rule Machine rule -- checked against the live RM rule list before any write -- and a target id that is not an existing rule is rejected fail-loud ("RM is not touched"), steering to `hub_list_rules`, rather than baking a dangling rule reference that renders broken and never fires. On a hub whose rule list can't be resolved (RM not installed or the app-tree read failed) the check is skipped and the write proceeds. A hub with zero rules is NOT a can't-resolve case: every rule target is then rejected fail-loud.
+- **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`; its `ruleIds` may include `"*"`, RM's "this rule" target, alone or mixed (`["*", 1809]`), and `modifyAction` keeps it. `"*"` is refused by name on the other three, where it has not been observed. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`. Raw `pvTF.<N>` and `pR.<N>` store the inverse of the rendered True/False (`pR`: `false`=pause, `true`=resume); the rendered paragraph is ground truth, so do not "fix" readbacks against the raw field. For all four, each `ruleIds` target must resolve to an existing Rule Machine rule -- checked against the live RM rule list before any write -- and a target id that is not an existing rule is rejected fail-loud ("RM is not touched"), steering to `hub_list_rules`, rather than baking a dangling rule reference that renders broken and never fires. On a hub whose rule list can't be resolved (RM not installed or the app-tree read failed) the check is skipped and the write proceeds. A hub with zero rules is NOT a can't-resolve case: every rule target is then rejected fail-loud.
 - **Activate a Scene / Room Lighting group**: RM 5.1 has no dedicated activate-scene action subtype. Each Scene / Room Lighting instance spawns an activator device with the switch capability -- activate it via the Switch action: `capability='switch' + action='on' + deviceIds=[<activatorDeviceId>]` (use `action='off'` to send an off/deactivate command, whose effect is configuration-dependent). The `activate_scene` action lives ONLY on the legacy custom rule engine (the `hub_*_custom_rule` tools / `hub_get_tool_guide(section='rules')`), not on this native addAction surface.
 - **Device control**: `capability='capture' + deviceIds`. `capability='restore'` (no fields). `capability='refresh' + deviceIds`. `capability='poll' + deviceIds`. `capability='disableDevice' + action='disable'/'enable' + deviceIds`.
 - **Flow control** (delay/wait/repeat/exit/comment/conditional):
@@ -10430,7 +10618,7 @@ To compare a **device attribute against a hub variable**, there is no direct sha
 
 ### `addRequiredExpression` operator contract
 
-Combine multiple conditions with `operator: 'AND'|'OR'|'XOR'` (one operator applied to every gap) OR `operators: ['AND','OR', ...]` (one per gap; length = `conditions.size()-1`) for mixed expressions like `P1 AND P2 OR P3 XOR P4`. RM 5.1: AND/OR/XOR have equal precedence, evaluated left-to-right.
+Combine multiple conditions with `operator: 'AND'|'OR'|'XOR'` (one operator applied to every gap) OR `operators: ['AND','OR', ...]` (one per gap; length = `conditions.size()-1`) for mixed expressions like `P1 AND P2 OR P3 XOR P4`. RM 5.1 walks the expression strictly left to right and stops early: once the left side of an OR is true the result is true, and once the left side of an AND is false the result is false, so later terms are never read (`Mode AND Evening OR Morning AND PB` never reads PB while Mode and Evening are true). Whenever AND and OR are mixed, group with `subExpression` to state the intent, e.g. `Mode AND (Evening OR Morning) AND PB`.
 
 ### `replaceRequiredExpression` -- change an existing Required Expression in place
 
@@ -10477,6 +10665,8 @@ hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'click', click:{name:'hasAll'}},
   {page:'selectTriggers', operation:'done'}]})
 ```
+
+A standalone mutating `walkStep` (`write`, `click`, `navigate`, or `done`) whose time budget skips the health probe also returns `success:false`, `partial:true`, and `healthUnverified:true` when the operation otherwise succeeded. This is a terminal request with committed work, not a checkpoint to replay: call `hub_get_rule_health(appId=...)` and address any issue before continuing or treating the rule as complete. Read-only `introspect` and the deliberately deferred per-step health inside an unfinished drive do not acquire that failure flag. Modern detached writes discard the request clock and check health normally; the budget case primarily affects legacy requests. An unreadable probe remains separately identified by `health.unreadable` and its verification hint.
 
 ### Raw `settings`/`button` mode (manual wizard flow)
 
@@ -10583,7 +10773,12 @@ Create a new hub variable (global variable visible to apps and Rule Machine), on
 
 Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale lease variables, or general cleanup.
 
-**Why the reference-safety refusal matters:** the tool refuses by default when a child rule app references the variable because deletion would silently break those rules — null lookups → false conditions, and a literal `%varname%` left in substitutions. Pass `force=true` to proceed anyway after acknowledging the breakage.
+**Why the reference-safety refusal matters:** deleting a variable something still uses silently breaks it — null lookups → false conditions, and a literal `%varname%` left in substitutions. Without `force=true` the tool refuses when:
+- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there);
+- that registry cannot be read, since unknown is not the same as unused;
+- one of this server's child rules names the variable, quoted or as a `%name%` substitution.
+
+Apps that never register their use, such as webCoRE pistons, cannot be seen by any of these checks; the response's `coverageNote` says so and `platformInUse` reports what the registry said. Pass `force=true` to proceed anyway after acknowledging the breakage.
 
 ### hub_list_variable_changes
 

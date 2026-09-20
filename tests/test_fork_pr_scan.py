@@ -61,10 +61,25 @@ def test_ignores_paths_the_e2e_job_does_not_execute():
     body, blocking = scan.build_report([
         _file("README.md", '@@ -1,0 +1,1 @@\n+see https://example.com and os.environ\n'),
         _file("libraries/mcp-rooms-lib.groovy", '@@ -1,0 +1,1 @@\n+  httpGet("https://example.com")\n'),
+        # tests/ holds manual-testing docs and fixtures too; only the Python there is executed by
+        # the job, and listing the rest is what makes the report too long to read.
+        _file("tests/BAT-v2.md", '@@ -1,0 +1,1 @@\n+Call https://example.com by hand, then read os.environ\n'),
+        _file("tests/fixtures/mcp-e2e-throwaway-bundle.zip", None),
     ])
     assert not blocking
     assert "nothing the e2e job executes from this PR changed" in body
     assert "README.md" not in body
+    assert "BAT-v2" not in body
+    assert "throwaway-bundle.zip" not in body, (
+        "a fixture with no patch must be ignored, not treated as an unscannable executed file"
+    )
+
+
+def test_python_under_tests_is_still_watched():
+    body, _ = scan.build_report([
+        _file("tests/sdk_conformance_helpers.py", '@@ -1,0 +4,1 @@\n+    urllib.request.urlopen(url)\n'),
+    ])
+    assert "tests/sdk_conformance_helpers.py` | 4 | network |" in body
 
 
 def test_comment_only_additions_are_not_findings():

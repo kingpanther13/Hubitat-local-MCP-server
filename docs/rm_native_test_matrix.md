@@ -80,7 +80,7 @@ Expressions are used in: Required Expression, `IF (expression) THEN`, `Wait for 
 | `NOT` on a condition | TBD | `expr_not.json` | | ❌ | Binds tightest |
 | Parenthesized sub-expression | TBD | `expr_parens.json` | | ❌ | |
 | Nested sub-expressions | TBD | `expr_nested.json` | | ❌ | Innermost evaluated first |
-| Left-to-right equal precedence of AND/OR/XOR | TBD | `expr_precedence.json` | | ❌ | Round-trip must preserve operator order |
+| Strict left-to-right AND/OR/XOR walk | TBD | `expr_precedence.json` | | ❌ | Round-trip must preserve operator order; a true OR-left or false AND-left ends the whole expression (XOR undocumented) |
 | Conditional trigger (single condition attached to one trigger) | selectTriggers: `isCondTrig.<N>` | `cond_trigger.json` | | ❌ | Evaluated AFTER trigger event (contrast required-expression) |
 
 ## 3. Trigger / condition capabilities

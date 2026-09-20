@@ -129,6 +129,7 @@ def toolGetHubInfo(args = null) {
 
     // Native log history can be temporarily unavailable independently of these stats.
     info.mcpServerVersion = currentVersion()
+    info.mcpClient = mcpClientIdentity()
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = logHistory.entries == null ? null : logHistory.entries.size()
@@ -1115,7 +1116,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system') for the optional deep-dive flags and PII gating.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the calling MCP client, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]].",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1202,25 +1203,25 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_get_hub_mesh",
-            description: """Read Hub Mesh config: enabled state, peer hubs, sync interval, and shared/linked devices + hub variables (hub-to-hub sharing; NOT the Z-Wave/Zigbee radio mesh).[[FLAT_TRIM]] Radio topology is hub_get_radio_details instead. Peers are discovered automatically on the LAN, so there is no "add peer" operation. Unshared devices and local hub variables come back as counts only (privateDeviceCount / localHubVariableCount — hub_list_devices / hub_list_variables carry the full lists), and modeHubId 'none' means this hub uses its own local modes. Full field reference: hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            description: """Read Hub Mesh config: enabled state, peer hubs, shared/linked devices + variables (hub-to-hub sharing, NOT the Z-Wave/Zigbee radio mesh).[[FLAT_TRIM]] Radio topology is hub_get_radio_details. Peers auto-discover on the LAN (no "add peer" op). Unshared devices and local hub variables come back as counts only (privateDeviceCount / localHubVariableCount — hub_list_devices / hub_list_variables carry the full lists); modeHubId 'none' = local modes. Full field reference: hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    include_token: [type: "boolean", description: "Also return this hub's mesh auth token (a credential — omitted by default).[[FLAT_TRIM]] Needed when a peer hub has UI login security and must be given this hub's token.[[/FLAT_TRIM]]"]
+                    include_token: [type: "boolean", description: "Also return this hub's mesh token (a credential; off by default).[[FLAT_TRIM]] Needed when a peer hub has UI login security and must be given this hub's token.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
         [
             name: "hub_update_hub_mesh",
-            description: """Change Hub Mesh settings (hub-to-hub device/variable sharing; NOT the Z-Wave/Zigbee radios). All parameters optional — pass only what changes. ⚠️ An enabled change takes effect only after a hub REBOOT (hub_reboot).[[FLAT_TRIM]] This tool never reboots on its own. Each applied field is echoed in `applied`. Peer hubs are auto-discovered on the LAN so there is no "add peer" write, and per-DEVICE sharing is hub_update_device (meshEnabled / meshFullSync), not here. Read the current config and valid peer hubIds with hub_get_hub_mesh first; full write model in hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            description: """Change Hub Mesh settings (hub-to-hub sharing, NOT the Z-Wave/Zigbee radios). All optional — pass only what changes. ⚠️ An `enabled` change needs a hub REBOOT (hub_reboot) to take effect.[[FLAT_TRIM]] The tool never reboots on its own. Applied fields are echoed in `applied`. Peers auto-discover on the LAN (no "add peer" write); per-DEVICE sharing is hub_update_device (meshEnabled / meshFullSync). Read current config + valid peer hubIds via hub_get_hub_mesh; full write model in hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     enabled: [type: "boolean", description: "Hub Mesh on/off. ⚠️ Needs a hub reboot to take effect."],
                     full_refresh_interval: [type: "integer", enum: [0, 120, 300, 3600], description: "Full-sync interval in seconds; 0 = never."],
-                    mode_hub_id: [type: "string", description: "Peer hubId whose modes this hub follows (hub_get_hub_mesh peers[].hubId), or 'none' for local modes."],
-                    peer_hub_id: [type: "string", description: "Peer hubId whose mesh auth token is stored here, e.g. 12. Send together with peer_token."],
-                    peer_token: [type: "string", description: "That peer's mesh token.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]] Send together with peer_hub_id."]
+                    mode_hub_id: [type: "string", description: "Peer hubId whose modes to follow, or 'none' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    peer_hub_id: [type: "string", description: "Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    peer_token: [type: "string", description: "That peer's mesh token; send with peer_hub_id.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],

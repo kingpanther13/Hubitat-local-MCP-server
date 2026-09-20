@@ -3026,7 +3026,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         thrownEx.message.contains("Unstubbed hubInternalGet")
     }
 
-    def "replaceActions with a bogus rule target is rejected BEFORE clearActions wipes the rule"() {
+    @spock.lang.Unroll
+    def "replaceActions with a bad rule target (#label) is rejected BEFORE clearActions wipes the rule"() {
         // Wipe-then-drop guard: the replaceActions path clears the rule's actions before re-adding
         // the incoming list, so a bogus rule target must be caught pre-flight (ahead of the clear)
         // or the rule is destroyed and then the item is dropped. Assert the reject envelope AND
@@ -3065,18 +3066,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
 
-        when: "replaceActions carries a runRule action pointed at a non-existent rule id"
-        def result = script.toolSetRule([appId: 100,
-            replaceActions: [[capability: "runRule", ruleIds: [999999]]], confirm: true])
+        when: "replaceActions carries a rule-targeting action with a bad target"
+        def result = script.toolSetRule([appId: 100, replaceActions: [spec], confirm: true])
 
-        then: "the operation fails loud, naming the quoted missing id and steering to hub_list_rules"
+        then: "the operation fails loud with the target-specific message"
         result.success == false
-        result.error?.toString()?.contains("'999999'")
-        result.error?.toString()?.contains("does not exist")
-        result.error?.toString()?.contains("hub_list_rules")
+        expected.every { result.error?.toString()?.contains(it) }
 
         and: "clearActions never ran -- no trashActs submit POST fired, so the seeded action survives"
         !posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[trashActs]") }
+
+        where:
+        label                  | spec                                                                 | expected
+        "missing id"           | [capability: "runRule", ruleIds: [999999]]                           | ["'999999'", "does not exist", "hub_list_rules"]
+        "runRule this-rule"    | [capability: "runRule", ruleIds: ["*"]]                              | ['"this rule" target', "only for privateBoolean"]
+        "privateBoolean mixed" | [capability: "privateBoolean", ruleIds: ["*", 999999], value: false] | ["'999999'", "does not exist"]
     }
 
     def "_rmNormalizeRuleIdsForWrite canonicalizes decimal-form ids and wraps a scalar"() {
@@ -3236,7 +3240,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         thrownEx.message.contains("Unstubbed hubInternalGet")
     }
 
-    def "patches replaceActions with a bogus rule target is rejected as a per-op failure, before clearActions"() {
+    @spock.lang.Unroll
+    def "patches replaceActions with a bad rule target (#label) is rejected as a per-op failure, before clearActions"() {
         // The patches path has a DIFFERENT error-capture shape than the top-level replaceActions:
         // a per-op try/catch turns the pre-flight throw into a {success:false} patch entry rather
         // than propagating. Assert the per-op failure AND that clearActions never ran.
@@ -3272,19 +3277,69 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "a patches batch's replaceActions op targets a non-existent rule id"
-        def result = script.toolSetRule([appId: 100,
-            patches: [[replaceActions: [[capability: "runRule", ruleIds: [999999]]]]], confirm: true])
+        def result = script.toolSetRule([appId: 100, patches: [[replaceActions: [spec]]], confirm: true])
 
-        then: "the replaceActions patch op reports success:false naming the quoted missing id and hub_list_rules (per-op catch shape)"
+        then: "the replaceActions patch op reports success:false with the target-specific message (per-op catch shape)"
         def rp = (result.patches as List)?.find { it.op == "replaceActions" }
         rp != null
         rp.success == false
-        rp.error?.toString()?.contains("'999999'")
-        rp.error?.toString()?.contains("does not exist")
-        rp.error?.toString()?.contains("hub_list_rules")
+        expected.every { rp.error?.toString()?.contains(it) }
 
         and: "clearActions never ran -- no trashActs submit POST fired, so the seeded action survives"
         !posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[trashActs]") }
+
+        where:
+        label                  | spec                                                                 | expected
+        "missing id"           | [capability: "runRule", ruleIds: [999999]]                           | ["'999999'", "does not exist", "hub_list_rules"]
+        "runRule this-rule"    | [capability: "runRule", ruleIds: ["*"]]                              | ['"this rule" target', "only for privateBoolean"]
+        "privateBoolean mixed" | [capability: "privateBoolean", ruleIds: ["*", 999999], value: false] | ["'999999'", "does not exist"]
+    }
+
+    @spock.lang.Unroll
+    def "#route: a privateBoolean this-rule target passes the pre-clear guard"() {
+        given:
+        installRuleTargetStubs()
+        enableWrite()
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "cancelTrash", type: "button"],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null, sections: [[title: "", input: selectActionsSchema]]],
+                settings: ["actType.1": "switchActs"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def spec = [capability: "privateBoolean", ruleIds: ["*", 555], value: false]
+
+        when:
+        def result = null
+        try {
+            result = script.toolSetRule(route == "replaceActions" ?
+                [appId: 100, replaceActions: [spec], confirm: true] :
+                [appId: 100, patches: [[replaceActions: [spec]]], confirm: true])
+        } catch (Exception ignored) { /* the rebuild past the clear is unstubbed */ }
+
+        then: "no target refusal, and the guard let the clear run"
+        !result?.toString()?.contains('"this rule" target')
+        !result?.toString()?.contains("does not exist")
+        posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[trashActs]") }
+
+        where:
+        route << ["replaceActions", "patches"]
     }
 
     @spock.lang.Unroll
@@ -4135,6 +4190,102 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.verifiedTargets == ["300"]
         result.success == true
         result.partial == false
+    }
+
+    def "modifyAction carries a mixed this-rule privateBoolean target ['*','1809'] through the rebuild"() {
+        given:
+        def ma = wireModifyActionTransport(100, [1, 2, 3],
+            ["actType.2": "rulesActs", "actSubType.2": "getSetPrivateBoolean", "privateT.2": ["*", "1809"],
+             "pvTF.2": "false", "pvRuleType.2": "Rule Machine",
+             "privateT.4": ["*", "1809"], "pvTF.4": "true"])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 4)
+
+        when:
+        def result = script._rmModifyAction(100, 2, [value: false])
+
+        then:
+        specs[0].capability == "privateBoolean"
+        specs[0].ruleIds*.toString() == ["*", "1809"]
+        result.verifiedTargets == ["*", "1809"]
+        result.success == true
+    }
+
+    def "this-rule target '*' is kept for privateBoolean and refused with a named message elsewhere"() {
+        expect:
+        script._rmNormalizeRuleIdsForWrite(["*", 1809], true) == ["*", 1809]
+        script._rmValidateRuleTargetExists("privateBoolean", ["*"], [] as Set) == null
+        script._rmValidateRuleTargetExists("privateBoolean", ["*", "1809"], [1809] as Set) == null
+
+        when: "the rule list is unverifiable, shape checks still refuse"
+        script._rmValidateRuleTargetExists("runRule", ["*"], null)
+
+        then:
+        def eNull = thrown(IllegalArgumentException)
+        eNull.message.startsWith("runRule target '*' is Rule Machine")
+
+        when:
+        script._rmValidateRuleTargetExists("privateBoolean", ["*", "1810"], [1809] as Set)
+
+        then: "the '*' fast path does not skip the numeric id beside it"
+        def eMixed = thrown(IllegalArgumentException)
+        eMixed.message.contains("'1810'")
+        eMixed.message.contains("does not exist")
+
+        when:
+        script._rmValidateRuleTargetExists("runRule", ["*"], [1809] as Set)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('"this rule" target')
+        e.message.contains("only for privateBoolean")
+        !e.message.contains("is not a valid numeric rule id")
+
+        when:
+        script._rmNormalizeRuleIdsForWrite(["*"])
+
+        then:
+        def e2 = thrown(IllegalArgumentException)
+        e2.message.startsWith("rule target '*' is Rule Machine")
+    }
+
+    @spock.lang.Unroll
+    def "#cap addAction with the this-rule target '*': #outcome"() {
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
+        def writes = []
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            writes << [field: key, value: value]
+            applied << key
+        }
+        Exception caught = null
+
+        when:
+        try { script._rmAddAction(100, actionSpec) }
+        catch (Exception e) { caught = e }
+
+        then:
+        if (written != null) {
+            assert writes.find { it.field?.toString()?.startsWith(fieldPrefix) }?.value == written
+        } else {
+            assert caught instanceof IllegalArgumentException
+            assert caught.message.contains('"this rule" target')
+            assert writes.isEmpty() && posts.isEmpty()
+        }
+
+        where:
+        cap              | fieldPrefix  | actionSpec                                                      | written     | outcome
+        "privateBoolean" | "privateT."  | [capability: "privateBoolean", ruleIds: ["*", 555.0], value: false] | ["*", 555] | "written mixed"
+        "privateBoolean" | "privateT."  | [capability: "privateBoolean", ruleIds: ["*"], value: true]       | ["*"]       | "written alone"
+        "runRule"        | "ruleAct."   | [capability: "runRule", ruleIds: ["*"]]                           | null        | "refused before any write"
     }
 
     def "modifyAction reposition soft-failure STOPS the move loop and flips success false with the verifyHint"() {
@@ -10486,6 +10637,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         rereads == 0
         !(result.opResult?.containsKey("navRetried"))
         result.after?.inputs == []
+        result.success == false
+        result.partial == true
+        result.healthUnverified == true
+        result.repairHints?.any { it.contains("do not re-run") }
     }
 
     def "a non-walker navigate (the commit-only callers) never re-reads an empty render"() {
@@ -25611,6 +25766,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 // numOp=variable written: RM reveals xVar3.1 (source-variable enum).
                 extraInputs << [name: "xVar3.1", type: "enum", options: ["dest": "dest", "source": "source"]]
             }
+            if (writtenFields.containsKey("xVar3.1")) {
+                extraInputs << [name: "valOffset.1", type: "number"]
+            }
             modeActsDoActPageJson(100, extraInputs, { seq })
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
@@ -25630,6 +25788,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         writtenFields["xVar3.1"] == "source"
         !writtenFields.containsKey("xVar.1")
 
+        and: "the offset the RM UI stores is written; without it the rule throws Long#plus at run time"
+        writtenFields["valOffset.1"].toString() == "0"
+
         and: "constant value field is not written for the copy-from-variable path"
         !writtenFields.containsKey("valNumber.1")
 
@@ -25638,6 +25799,268 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.settingsApplied?.contains("xVar3.1")
         result.settingsSkipped == null || result.settingsSkipped.isEmpty()
         result.partial != true
+    }
+
+    def "addAction setVariable sourceVariable into a String target uses valStringOp=Copy variable, not numOp"() {
+        // Captured from the RM UI on fw 2.5.1.183: a String target renders no numOp.<N>; its
+        // source picker is valStringOp.<N>, whose "Copy variable" option reveals xVar3.<N>
+        // (stored: valStringOp.1="Copy variable", xVar3.1="AMGateA_Shared"). Writing numOp for a
+        // String target is refused not_in_schema and leaves a partial row.
+        // The stub reveals ONLY valStringOp for this target, and gates xVar3.1 on it. The type
+        // token is mixed-case to cover the case-insensitive match.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["msg": [name: "msg", type: "String", value: "x"], "fallback": [name: "fallback", type: "string", value: "y"]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def extraInputs = [
+                [name: "xVarV.1", type: "enum", options: ["msg": "msg"]],
+                [name: "valStringOp.1", type: "enum", options: ["Set string": "Set string", "Copy variable": "Copy variable"]]
+            ]
+            if (writtenFields["valStringOp.1"] == "Copy variable") {
+                extraInputs << [name: "xVar3.1", type: "enum", options: ["fallback": "fallback", "msg": "msg"]]
+            }
+            modeActsDoActPageJson(100, extraInputs, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "msg", sourceVariable: "fallback"],
+            confirm: true
+        ])
+
+        then: "the target is set, the String selector is written, and numOp never is"
+        writtenFields["xVarV.1"] == "msg"
+        writtenFields["valStringOp.1"] == "Copy variable"
+        !writtenFields.containsKey("numOp.1")
+
+        and: "the source lands in the revealed xVar3.1, with no Number offset"
+        writtenFields["xVar3.1"] == "fallback"
+        !writtenFields.containsKey("valOffset.1")
+
+        and: "the action bakes cleanly"
+        result.success == true
+        result.settingsSkipped == null || result.settingsSkipped.isEmpty()
+        result.partial != true
+    }
+
+    def "addAction setLocalVariable sourceVariable into a String local uses valStringOp=Copy variable"() {
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writtenFields[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def extraInputs = [
+                [name: "xVarV.1", type: "enum", options: ["note": "note"]],
+                [name: "valStringOp.1", type: "enum", options: ["Set string": "Set string", "Copy variable": "Copy variable"]]
+            ]
+            if (writtenFields["valStringOp.1"] == "Copy variable") {
+                extraInputs << [name: "xVar3.1", type: "enum", options: ["hubMsg": "hubMsg", "note": "note"]]
+            }
+            modeActsDoActPageJson(100, extraInputs, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [note: [type: "STRING", value: ""]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "note", sourceVariable: "hubMsg"],
+            confirm: true
+        ])
+
+        then:
+        writtenFields["xVarV.1"] == "note"
+        writtenFields["valStringOp.1"] == "Copy variable"
+        !writtenFields.containsKey("numOp.1")
+        writtenFields["xVar3.1"] == "hubMsg"
+        result.success == true
+        result.partial != true
+    }
+
+    @spock.lang.Unroll
+    def "addAction setLocalVariable sourceVariable into a #type local is refused before any action row is written"() {
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writtenFields[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [flag: [type: type, value: null]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "flag", sourceVariable: "other"],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.startsWith("setLocalVariable:")
+        result.error?.contains("not supported yet")
+        result.error?.contains(type.toLowerCase())
+        !writtenFields.keySet().any { it.endsWith(".1") }
+
+        where:
+        type << ["boolean", "DateTime"]
+    }
+
+    def "addAction setVariable sourceVariable fails closed when the target type cannot be read"() {
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writtenFields[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["dest": [name: "dest", value: "x"], "source": [name: "source", type: "integer", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "dest", sourceVariable: "source"],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("cannot read the type of target variable 'dest'")
+        !writtenFields.keySet().any { it.endsWith(".1") }
+    }
+
+    def "addAction setVariable sourceVariable into a String target reports a valStringOp.1 that is not in the schema"() {
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.getAllGlobalVars = { -> ["msg": [name: "msg", type: "string", value: "x"], "fallback": [name: "fallback", type: "string", value: "y"]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            modeActsDoActPageJson(100, [[name: "xVarV.1", type: "enum", options: ["msg": "msg"]]], { ++fetchSeq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "msg", sourceVariable: "fallback"],
+            confirm: true
+        ])
+
+        then: "the helper is handed valStringOp, not the numOp default"
+        result.success == false
+        result.error?.contains("valStringOp.1 write did not land (reason: not_in_schema)")
+    }
+
+    @spock.lang.Unroll
+    def "addAction setVariable sourceVariable into a #type target is refused before any write"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << path
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["flag": [name: "flag", type: type, value: null], "other": [name: "other", type: type, value: null]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "flag", sourceVariable: "other"],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("not supported yet")
+        result.error?.contains(type.toLowerCase())
+        !posts.contains("/installedapp/update/json")
+
+        where:
+        type << ["boolean", "DateTime"]
+    }
+
+    def "_rmAssertSelectorLanded names the selector field and capability it checked"() {
+        when:
+        script._rmAssertSelectorLanded(3, [], [[key: "valStringOp.3", reason: "not_in_schema"]], "source-variable", "valStringOp", "setLocalVariable")
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.startsWith("setLocalVariable: valStringOp.3 write did not land (reason: not_in_schema)")
+
+        when: "no selector argument: the default is numOp"
+        script._rmAssertSelectorLanded(3, [], [[key: "numOp.3", reason: "not_in_schema"]], "source-variable")
+
+        then:
+        def e2 = thrown(IllegalArgumentException)
+        e2.message.startsWith("setVariable: numOp.3 write did not land")
+
+        when:
+        script._rmAssertSelectorLanded(3, ["numOp.3"], [], "source-variable")
+
+        then:
+        noExceptionThrown()
     }
 
     def "addAction setVariable rejects missing variable field"() {
@@ -35034,6 +35457,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         persistent.steps[0].error?.contains("multiple=true flag flipped")
         persistent.steps[0].error?.contains("Automatic recovery was already attempted")
         persistent.steps[0].error?.contains("do not resend it")
+        !persistent.steps[0].error?.contains("Caller should re-POST")
         persistent.repairHints?.any { it.contains("Do not re-run that step") }
         !persistent.repairHints?.any { it.contains("re-run the drive from that step") }
         posts.count { p -> p.body?.keySet()?.any { it.toString().contains("tDev1") } } == 2
@@ -35046,6 +35470,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsResult.success == false
         settingsResult.error?.contains("multiple=true flag flipped")
         settingsResult.error?.contains("Automatic recovery was already attempted")
+        !settingsResult.error?.contains("Caller should re-POST")
         settingsResult.backup?.backupKey != null
         settingsResult.restoreHint?.contains(settingsResult.backup.backupKey)
     }
@@ -35079,6 +35504,54 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.settingsNotLanded[0].reason == "silent_rejection"
         result.partial == true
         !clicks.contains("updateRule")
+    }
+
+    def "walkStep standalone #operation with an exhausted health budget reports mutation verification honestly"() {
+        given:
+        enableWrite()
+        def healthCalls = 0
+        def value = "before"
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+            healthCalls++
+            [ok: false, structuralIssues: ["missing End-Repeat"]]
+        }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionDone", type: "button"], [name: "probe", type: "text"]], null, [probe: value])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "probe", type: "text", value: value]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << body
+            if (body.containsKey("settings[probe]")) value = body["settings[probe]"]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true,
+            walkStep: [page: "doActPage", operation: operation, click: [name: "actionDone"], write: [probe: "after"]]])
+
+        then:
+        result.success == !mutating
+        (result.healthUnverified == true) == mutating
+        (result.partial == true) == mutating
+        result.health.skipped == true
+        result.status != "in_progress"
+        healthCalls == 0
+        !mutating || result.error?.contains("unverified")
+        !mutating || result.repairHints?.any { it.contains("hub_get_rule_health") && it.contains("do not re-run") }
+        posts.size() == expectedPosts
+        operation != "write" || (result.valueEcho?.match == true && value == "after")
+
+        where:
+        operation    | mutating | expectedPosts
+        "click"      | true     | 1
+        "write"      | true     | 1
+        "done"       | true     | 3
+        "introspect" | false    | 0
     }
 
     def "walkStep drive: a finished drive whose final health check the time budget shed reports itself unverified"() {
@@ -38970,6 +39443,121 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !result.subscriptionSettle?.contains("The triggers are likely incomplete")
     }
 
+    def "subscriptionSettle reports SUPPRESSED without a second click when #gate"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        List<Map> posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100, label: label],
+                appSettings: [[name: "tDev1", deviceIdsForDeviceList: [8]]],
+                eventSubscriptions: [],
+                scheduledJobs: [], appState: appState, childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, button: "updateRule", confirm: true])
+
+        then:
+        result.subscriptionSettle?.startsWith("SUPPRESSED:")
+        result.subscriptionSettle?.contains(reason)
+        !result.subscriptionSettle?.contains("likely incomplete")
+        posts.count { it.path == "/installedapp/btn" && it.body.name == "updateRule" } == 1
+
+        where:
+        gate                          | label                                                              | appState                                    | reason
+        "Required Expression false"   | "R <span style='color:red'>(Required Expression false)</span>"     | []                                          | "Required Expression is false"
+        "paused in appState"          | "R"                                                                | [[name: "paused", value: true]]             | "paused"
+        "stopped in appState"         | "R"                                                                | [[name: "stopped", value: true]]            | "stopped"
+    }
+
+    def "subscriptionSettle reports UNKNOWN, not a failure, when the post-retry status read fails"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        // The read right after the automatic second updateRule click fails once.
+        int updateClicks = 0
+        boolean failNextRead = false
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "updateRule" && ++updateClicks == 2) failNextRead = true
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (failNextRead) {
+                failNextRead = false
+                throw new RuntimeException("statusJson read timed out")
+            }
+            JsonOutput.toJson([
+                installedApp: [id: 100, label: "r"],
+                appSettings: [[name: "tDev1", deviceIdsForDeviceList: [8]]],
+                eventSubscriptions: [],
+                scheduledJobs: [], appState: [], childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, button: "updateRule", confirm: true])
+
+        then:
+        updateClicks == 2
+        result.subscriptionSettle?.startsWith("UNKNOWN:")
+        result.subscriptionSettle?.contains("trigger subscribed is unverified")
+        !(result.error?.toString()?.contains("triggerCount"))
+    }
+
+    def "subscriptionSettle SUPPRESSED text falls back for an unmapped gate"() {
+        expect:
+        script._rmSuppressedSettleText("somethingNew").contains("RM reports the rule as inactive (somethingNew)")
+        !script._rmSuppressedSettleText("somethingNew").contains("null")
+    }
+
+    def "subscriptionSettle still WARNs when a rule is only NAMED like a decoration"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "updateRule", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100, label: "Porch (Required Expression false)"],
+                appSettings: [[name: "tDev1", deviceIdsForDeviceList: [8]]],
+                eventSubscriptions: [],
+                scheduledJobs: [], appState: [], childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, button: "updateRule", confirm: true])
+
+        then:
+        result.subscriptionSettle?.contains("The trigger is likely incomplete")
+    }
+
     def "subscriptionSettle WARN message: plural 'triggers are' when triggerCount=2"() {
         // Plural-side regression pin for the trigVerb ternary in
         // toolSetRule's button-handler post-updateRule branch.
@@ -41655,9 +42243,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (device-relative RHS lands) but never exposes state_1 (the offset slot), so
         // the requested offset degrades with a sentinel and the inner addRE returns
         // partial:true. Wrap it in patches: [[addRequiredExpression: {...}]] so the same
-        // partial:true propagates to result.patches[0] and the new clause surfaces it on
-        // the outer envelope.
-        // Both-ways pending (orchestrator).
+        // partial:true propagates to result.patches[0] and the outer stop envelope.
         given:
         enableWrite()
         def updateRuleClicked = false

@@ -1,3 +1,5 @@
+# Field ids below are prefilled by hub_report_issue (_bugReportSubmitUrl in libraries/mcp-debug-logging-lib.groovy).
+# GitHub renders this form from the default branch and silently drops an unknown id, so keep the two lists in sync.
 name: Agent behavior / tool description issue
 description: The LLM picked the wrong tool, was confused by a tool description, or followed a bad workflow. The server isn't broken — the agent surface is.
 title: "[agent-behavior] "
@@ -20,5 +22,29 @@ body:
       label: Agent report output
       description: Paste the full output of the `generate_bug_report` tool with `issueType=agent_behavior` here.
       render: markdown
+    validations:
+      required: false
+  - type: input
+    id: mcp_version
+    attributes:
+      label: MCP server version
+    validations:
+      required: false
+  - type: input
+    id: hub_firmware
+    attributes:
+      label: Hub firmware
+    validations:
+      required: false
+  - type: input
+    id: mcp_client
+    attributes:
+      label: MCP client (host app / self-report)
+    validations:
+      required: false
+  - type: input
+    id: failing_tool
+    attributes:
+      label: Failing tool
     validations:
       required: false

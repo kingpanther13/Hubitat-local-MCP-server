@@ -1053,8 +1053,11 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             return [status: 200]
         }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> false }
         // backupItemSource is called between clicks as wizard priming on this firmware.
         script.metaClass.backupItemSource = { String type, String id -> [:] }
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg -> logs << msg }
 
         when:
         def result = script.toolDeleteHubVariable([name: 'condemned', confirm: true])
@@ -1069,6 +1072,123 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.source == 'hub'
         result.deleted == true
         result.name == 'condemned'
+        result.platformInUse == false
+        result.coverageNote.contains('webCoRE')
+
+        and: "an unforced delete of an unused variable carries no forced note"
+        logs.any { it.contains("removed hub var 'condemned'") && !it.contains("forced") }
+    }
+
+    @spock.lang.Unroll
+    def "hub_delete_variable hub-namespace: registry #state without force refuses before any click"() {
+        given:
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'shared', type: 'Number', value: 5, deviceId: null, attribute: null] }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> registry }
+
+        when:
+        script.toolDeleteHubVariable([name: 'shared', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'shared'")
+        ex.message.contains(phrase)
+        ex.message.contains('force=true')
+        buttonClicks.isEmpty()
+
+        where:
+        state          | registry | phrase
+        "in use"       | true     | "registered as in use"
+        "unreadable"   | null     | "is unknown"
+    }
+
+    @spock.lang.Unroll
+    def "hub_delete_variable hub-namespace: force=true deletes when the registry is #note and says so"() {
+        given:
+        enableWrite()
+        def calls = 0
+        script.metaClass.getGlobalVar = { String n ->
+            calls++
+            calls == 1 ? [name: 'shared', type: 'Number', value: 5, deviceId: null, attribute: null] : null
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> registry }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg -> logs << msg }
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'shared', confirm: true, force: true])
+
+        then:
+        result.success == true
+        result.deleted == true
+        result.platformInUse == registry
+
+        and: "the audit line says the delete was forced past the registry"
+        logs.any { it.contains("removed hub var 'shared'") && it.contains("(forced; hub in-use registry: ${note})") }
+
+        where:
+        registry | note
+        true     | "true"
+        null     | "unreadable"
+    }
+
+    @spock.lang.Unroll
+    def "_hubVarPlatformInUse reads the Hub Variables page: '#name' -> #expected"() {
+        given:
+        def row = { String n, boolean used ->
+            used ? "<tr style='color:black'><td><div><a href='#' data-stateAttribute='inUse' aria-label='Show In Use Apps for ${n}' style='color:orange'>${n}</a></div></td><td>Number</td></tr>" :
+                   "<tr style='color:black'><td>${n}</td><td>Number</td></tr>"
+        }
+        def page = groovy.json.JsonOutput.toJson([configPage: [sections: [[body: [[type: 'paragraph',
+            description: "<table>${row('GT1', true)}${row('Idle', false)}${row('Tom &amp; Jerry', true)}</table>".toString()]]]]]])
+        hubGet.register('/installedapp/configure/json/1424') { params -> page }
+
+        expect:
+        script._hubVarPlatformInUse(1424, name) == expected
+
+        where:
+        name          | expected
+        'GT1'         | true
+        'Idle'        | false
+        'Tom & Jerry' | true
+        'GT'          | null
+        'Missing'     | null
+    }
+
+    def "_hubVarPlatformInUse is unknown when the page cannot be read"() {
+        given:
+        hubGet.register('/installedapp/configure/json/1424') { params -> throw new RuntimeException('401') }
+
+        expect:
+        script._hubVarPlatformInUse(1424, 'GT1') == null
+        script._hubVarPlatformInUse(null, 'GT1') == null
+    }
+
+    def "hub_delete_variable refuses when a child rule uses the variable only as a %name% substitution"() {
+        given:
+        enableWrite()
+        stateMap.ruleVariables = [Temp: 20]
+        def consumer = new support.TestChildApp(id: 7L, label: 'Announces Temp')
+        consumer.ruleData = [triggers: [], conditions: [],
+                             actions: [[type: 'log', message: 'Temperature is %Temp%']]]
+        childAppsList << consumer
+
+        when:
+        script.toolDeleteHubVariable([name: 'Temp', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('id=7')
+        stateMap.ruleVariables == [Temp: 20]
     }
 
     def "hub_delete_variable hub-namespace post-wizard verification fails when var still exists"() {
@@ -1083,6 +1203,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         and: 'wizard primitives recorded but no real effect'
         script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> false }
         script.metaClass.backupItemSource = { String type, String id -> [:] }
 
         when:

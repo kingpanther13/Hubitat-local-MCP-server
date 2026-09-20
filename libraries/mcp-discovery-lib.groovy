@@ -94,7 +94,7 @@ def toolSearchTools(args) {
     def results = ranked.collect { r ->
         def tool = visibleCorpus[r.index]
         def entry = [
-            tool: tool.name,
+            tool: _externalToolName(tool.name as String),
             description: tool.description,
             relevance: Math.round(r.score * 100) / 100.0
         ]
@@ -107,10 +107,10 @@ def toolSearchTools(args) {
             def config = gatewayConfig.get(tool.gateway)
             def intro = _visibleGatewayIntro(tool.gateway, gatewayConfig, searchHideByName, displayMeta)
             entry.description = "${config.summaries.get(tool.name) ?: ''} [${intro}]".toString()
-            entry.gateway = tool.gateway
-            entry.callAs = "Call via ${tool.gateway}(tool=\"${tool.name}\", args={...})"
+            entry.gateway = _externalToolName(tool.gateway as String)
+            entry.callAs = "Call via ${_externalToolName(tool.gateway as String)}(tool=\"${_externalToolName(tool.name as String)}\", args={...})"
         } else {
-            entry.callAs = "Call directly: ${tool.name}({...})"
+            entry.callAs = "Call directly: ${_externalToolName(tool.name as String)}({...})"
         }
         return entry
     }

@@ -743,9 +743,8 @@ def toolDeleteHubVariable(args) {
 
     // Source detection: hub vs rule_engine namespace. Hub vars are deleted
     // through the Hub Variables system app's wizard; rule_engine vars are a
-    // map in state we can rewrite directly. Same in-use safety scan applies
-    // to both — child rules can reference a hub var by name in their
-    // triggers/conditions/actions JSON.
+    // map in state we can rewrite directly. The child-rule scan applies to
+    // both; a hub var is also checked against the hub's in-use registry.
     def hubVar = null
     try { hubVar = getGlobalVar(varName) }
     catch (Exception e) {
@@ -763,18 +762,18 @@ def toolDeleteHubVariable(args) {
     // break on next access (null lookup → conditions flip false, %varname% substitution
     // leaves literal text). Block by default — caller must opt in via force=true after
     // acknowledging the breakage. Match heuristic: variable name appears in the rule's
-    // serialized triggers/conditions/actions JSON.
+    // serialized triggers/conditions/actions JSON, as a quoted value or a %name% substitution.
     def consumers = []
     try {
-        // Word-boundary match: look for "<varName>" (JSON-quoted) so a var
-        // named `temp` doesn't match rules referencing `temperature` etc.
-        def needle = "\"${varName}\""
+        // Word-boundary match: the JSON-quoted name or a %name% substitution, so a
+        // var named `temp` doesn't match rules referencing `temperature` etc.
+        def needles = ["\"${varName}\"".toString(), "%${varName}%".toString()]
         getChildApps()?.each { child ->
             def ruleData = null
             try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
             if (ruleData) {
                 def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                if (serialized?.contains(needle)) {
+                if (needles.any { serialized?.contains(it) }) {
                     consumers << [id: child.id, label: child.label]
                 }
             }
@@ -784,6 +783,23 @@ def toolDeleteHubVariable(args) {
         // rather than blocking deletion entirely. Log so investigators know the scan
         // didn't run.
         logDebug("hub_delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
+    }
+    // Rule Machine and the other apps that register Hub Variable use with the hub are
+    // not MCP children, so ask the hub itself. Unreadable means unknown, not unused.
+    def hubVarsAppId = null
+    Boolean platformInUse = null
+    if (isHubVar) {
+        try {
+            hubVarsAppId = _findHubVariablesAppId()
+            platformInUse = _hubVarPlatformInUse(hubVarsAppId, varName)
+        } catch (Exception e) {
+            logDebug("hub_delete_variable: platform in-use check failed: ${e.class.simpleName}: ${e.message}")
+        }
+        if (platformInUse != false && !force) {
+            throw new IllegalArgumentException(platformInUse ?
+                "Hub Variable '${varName}' is registered as in use by at least one app (Settings > Hub Variables shows it in orange; click its name to see which). Deleting it breaks those apps, which is why the hub's own delete prompt warns. Update or remove the consuming apps first, or pass force=true to delete anyway." :
+                "Could not read the hub's in-use registry for Hub Variable '${varName}', so whether an app uses it is unknown. Check Settings > Hub Variables (an in-use variable is shown in orange), then retry, or pass force=true to delete anyway.")
+        }
     }
     if (consumers && !force) {
         def consumerCount = consumers.size()
@@ -806,7 +822,7 @@ def toolDeleteHubVariable(args) {
         def previousValue = hubVar.value
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
-        def appId = _findHubVariablesAppId()
+        def appId = hubVarsAppId ?: _findHubVariablesAppId()
         // The wizard's first click sequence after a fresh create/edit can be
         // dropped silently by the hub (state-machine race that priming
         // alone doesn't reliably defeat). Retry the full click
@@ -841,7 +857,8 @@ def toolDeleteHubVariable(args) {
             def cc = consumers.size()
             consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
         }
-        mcpLog("warn", "developer-mode", "hub_delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${consumerNote}")
+        def registryNote = (platformInUse != false) ? " (forced; hub in-use registry: ${platformInUse == null ? 'unreadable' : 'true'})" : ""
+        mcpLog("warn", "developer-mode", "hub_delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${registryNote}${consumerNote}")
         return [
             success: true,
             name: varName,
@@ -850,7 +867,9 @@ def toolDeleteHubVariable(args) {
             type: previousType,
             previousValue: previousValue,
             connectorDeleted: hadConnector,
-            brokenConsumers: consumers ?: null
+            brokenConsumers: consumers ?: null,
+            platformInUse: platformInUse,
+            coverageNote: _hubVarDeleteCoverageNote()
         ]
     }
 
@@ -869,6 +888,26 @@ def toolDeleteHubVariable(args) {
     }
     mcpLog("warn", "developer-mode", "hub_delete_variable: removed '${varName}' (previous value: ${auditValue})${consumerNote}")
     return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
+}
+
+// Whether the Hub Variables page marks this variable as in use: the hub renders a
+// "Show In Use Apps" button for a registered variable and plain text otherwise.
+// Returns null when the page cannot be read or does not list the variable.
+Boolean _hubVarPlatformInUse(Integer hubVarsAppId, String varName) {
+    if (hubVarsAppId == null || !varName) return null
+    def text
+    try { text = hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString() }
+    catch (Exception e) { return null }
+    if (!text) return null
+    def escaped = varName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
+    def forms = [varName, escaped].unique()
+    if (forms.any { text.contains("Show In Use Apps for ${it}'".toString()) }) return true
+    if (forms.any { text.contains("<td>${it}</td>".toString()) }) return false
+    return null
+}
+
+String _hubVarDeleteCoverageNote() {
+    return "Checked the hub's in-use registry and this server's own rules. Apps that do not register Hub Variable use with the hub, such as webCoRE pistons, are not covered."
 }
 
 def _getAllToolDefinitions_partVariables() {
@@ -931,13 +970,13 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.\n\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** for a hub variable the tool first reads the hub's own in-use registry (what Settings > Hub Variables shows in orange, covering Rule Machine and other registering apps) and refuses when it is in use or when the registry cannot be read. It also scans this server's child rules for the name, quoted or as a %name% substitution. Apps that never register use, such as webCoRE pistons, are not covered (see `coverageNote`). To proceed anyway, pass `force=true` after acknowledging the breakage; `brokenConsumers` then lists the affected child rules.\n\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name to delete"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
-                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."],
+                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when the hub reports the variable in use, the in-use registry cannot be read, or a child rule references it. Without force, the tool refuses and says why."],
                 ],
                 required: ["name", "confirm"]
             ]

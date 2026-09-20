@@ -285,7 +285,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         hubGet.register('/app/ruleBuilderJson/100') {
-            ruleBuilderJson([broken: true, capabsfalse: ["1": "Temperature of BAT-Motion1(70) is ≠ Alice's Room T&H(73.9)"]])
+            ruleBuilderJson([broken: true, capabsfalse: ["1": "Temperature of Sensor A(70) is ≠ Sensor B(73.9)"]])
         }
         hubGet.register('/installedapp/configure/json/100') { configJson(100) }   // no *BROKEN*, no markers
         hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
@@ -297,7 +297,8 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.ok == false
         h.broken == true
         h.issues.any { it.contains("broken:true") }
-        h.issues.any { it.contains("False conditions:") }
+        // capabsfalse lists conditions regardless of their truth, so it is not quoted as the cause
+        !h.issues.any { it.contains("False conditions") || it.contains("Sensor A") }
         // the JSON caught a break the render scan missed -> cross-check fires
         h.issues.any { it.contains("cross-check") }
     }
@@ -770,7 +771,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
     def "_rmBuildUpdateErrorResponse attaches compiled-state health on a non-preflight mutation failure"() {
         given:
-        seedHealthy(100, [broken: true, capabsfalse: ["1": "X is wrong"]])
+        seedHealthy(100, [broken: true])
 
         when:
         def r = script._rmBuildUpdateErrorResponse(100, "addAction failed: relay 504", [backupKey: "rm-rule_100_x"])
