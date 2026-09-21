@@ -10,7 +10,6 @@ including the case it exists to catch -- a `//` line inside a tool description.
 """
 
 import importlib.util
-import re
 from pathlib import Path
 
 import pytest
@@ -194,30 +193,42 @@ def test_the_package_still_ships_substantially_less_than_it_stores():
         "has largely stopped working; check for a stray triple-quote marker in a comment.")
 
 
-def test_no_real_library_uses_a_multi_line_slashy_string():
-    """A `//` line inside a multi-line Groovy slashy string (/.../) IS blanked, and
-    verify_library_transform does not see it: its string check reads triple-quoted bodies only.
-    Nothing in the package writes one, and this keeps it that way -- the alternative is broken
-    Groovy shipped to hubs with every cheap lane green."""
-    opener = re.compile(r"(?:=~|==~|=|~|\(|,)\s*/(?![/*=])")
+def test_the_builder_refuses_a_multi_line_slashy_string(tmp_path):
+    """A `//` line inside a multi-line Groovy slashy string (/.../) is string CONTENT, and
+    neither scan reads it: it would be blanked and the string check would not notice. No
+    library writes one, so the builder refuses the form rather than ship broken Groovy."""
+    text = 'library(name: "X")\ndef re = /^abc\n// part of the string\nxyz/\n'
+    with pytest.raises(RuntimeError, match="slashy string that does not close"):
+        builder.prepare_library_source(_write(tmp_path, text))
+
+
+def test_the_builder_refuses_a_multi_line_dollar_slashy_string(tmp_path):
+    text = 'library(name: "X")\ndef re = $/^abc\n// part of the string\nxyz/$\n'
+    with pytest.raises(RuntimeError, match="dollar-slashy string that does not close"):
+        builder.prepare_library_source(_write(tmp_path, text))
+
+
+def test_the_builder_refuses_an_escaped_triple_quote_marker(tmp_path):
+    """Every scan here pairs markers raw, so an escaped marker would close a pairing early
+    and a later string line could be blanked AND accepted by the same flawed reading."""
+    text = 'library(name: "X")\ndef d = "a \\""" b"\ndef a = 1\n'
+    with pytest.raises(RuntimeError, match="escapes a triple-quote marker"):
+        builder.prepare_library_source(_write(tmp_path, text))
+
+
+def test_a_single_line_slashy_regex_is_not_refused(tmp_path):
+    """The real libraries are full of these, including ones ending in the `$` anchor, and
+    prose like "health:/success:" inside a comment must not read as an opener."""
+    text = ('library(name: "X")\ndef a = s.replaceAll(/ +$/, "")\n'
+            'def b = (v =~ /^(\\d+)([mhd])$/)\n// populates health:/success: in the envelope\n')
+    shipped = builder.prepare_library_source(_write(tmp_path, text))
+    assert 'replaceAll(/ +$/, "")' in shipped
+
+
+def test_real_libraries_pass_the_unsupported_form_check():
     for lib in builder.LIBS:
-        for number, line in enumerate(lib["source"].read_text(encoding="utf-8").split("\n"), 1):
-            match = opener.search(line)
-            if not match:
-                continue
-            rest, index, closed = line[match.end():], 0, False
-            while index < len(rest):
-                if rest[index] == "\\":
-                    index += 2
-                    continue
-                if rest[index] == "/":
-                    closed = True
-                    break
-                index += 1
-            assert closed, (
-                f"{lib['source'].name}:{number} opens a slashy string that does not close on the "
-                "same line. A comment-looking line inside it would be blanked and the build's "
-                "string check would not notice. Use a quoted pattern instead.")
+        text = lib["source"].read_text(encoding="utf-8").replace("\r\n", "\n")
+        builder._reject_unsupported_string_forms(lib["source"].name, text)
 
 
 def test_declaration_end_rejects_a_file_that_does_not_open_with_the_declaration():

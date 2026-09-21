@@ -161,6 +161,55 @@ SOURCE_URL_BASE = (
 _TRIPLE_QUOTES = ('"""', "'''")
 
 
+# A marker a backslash escapes is not a delimiter, but every scan here pairs markers raw,
+# so an escaped one would close a pairing early and let a later string line be blanked and
+# then accepted by the same flawed reading. Odd backslash count = escaped.
+_ESCAPED_MARKER = re.compile(r'(?<!\\)(?:\\\\)*\\(?:"""|\'\'\')')
+
+# Groovy's slashy (/.../) and dollar-slashy ($/.../$) strings can span lines, and a line
+# inside one that starts with // is string CONTENT. Neither the tracker nor the regex
+# pairing reads them, so such a line would be blanked and the string check would not see
+# it. No library writes one; refuse rather than grow a full Groovy lexer for a form the
+# package does not use.
+_SLASHY_OPEN = re.compile(r"(?:=~|==~|=|~|\(|,|:)\s*(\$?)/(?![/*=])")
+
+
+def _reject_unsupported_string_forms(name: str, text: str) -> None:
+    """Fail the build on the two string forms these line-based scans cannot read."""
+    match = _ESCAPED_MARKER.search(text)
+    if match:
+        line = text.count("\n", 0, match.start()) + 1
+        raise RuntimeError(
+            f"{name}:{line} escapes a triple-quote marker. Every check here pairs markers raw, so "
+            "an escaped one would silently mis-pair -- use a different quoting form."
+        )
+    for number, line_text in enumerate(text.split("\n"), 1):
+        # Only the line that OPENS such a string matters, and an opener line is code by
+        # definition -- skipping comment lines keeps prose like "health:/success:" from
+        # reading as one.
+        if line_text.lstrip().startswith("//"):
+            continue
+        opener = _SLASHY_OPEN.search(line_text)
+        if not opener:
+            continue
+        closer = "/$" if opener.group(1) else "/"
+        rest, index, closed = line_text[opener.end():], 0, False
+        while index < len(rest):
+            if rest[index] == "\\":
+                index += 2
+                continue
+            if rest.startswith(closer, index):
+                closed = True
+                break
+            index += 1
+        if not closed:
+            raise RuntimeError(
+                f"{name}:{number} opens a {'dollar-' if opener.group(1) else ''}slashy string that "
+                "does not close on the same line. A comment-looking line inside it would be blanked "
+                "with nothing to catch it -- use a quoted pattern instead."
+            )
+
+
 def _triple_quote_protected_lines(text: str) -> set[int]:
     """Indices of lines any regex-paired triple-quoted body touches.
 
@@ -258,6 +307,7 @@ def prepare_library_source(source: Path) -> str:
     blanked, and one notice line inserted just below the ``library(...)``
     declaration pointing at the fully commented source."""
     text = source.read_text(encoding="utf-8").replace("\r\n", "\n")
+    _reject_unsupported_string_forms(source.name, text)
     lines = strip_comment_lines(text).split("\n")
     notice = (
         "// Developer comments are blanked in this hub copy so the hub's code pages stay fast -- "
@@ -280,9 +330,10 @@ def verify_library_transform(source: Path, shipped: str) -> None:
 
     The line-by-line check catches a stripper that touches code. The string-literal
     check is deliberately an INDEPENDENT reading of both texts (regex over triple-quoted
-    bodies, not the stripper's own line-state tracking), so a `//` line that lives inside
-    a tool description -- the one input that could silently lose string content -- fails
-    here instead of shipping.
+    bodies, not the stripper's own line-state tracking), so a `//` line inside a tool
+    description fails here instead of shipping. It reads TRIPLE-QUOTED bodies only --
+    the other multi-line forms (slashy, dollar-slashy, escaped markers) are refused
+    outright by _reject_unsupported_string_forms() before any of this runs.
     """
     original = source.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
     out = shipped.split("\n")
