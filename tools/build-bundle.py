@@ -32,11 +32,22 @@ is deterministic (fixed DOS epoch, pinned deflate level) so two builds of the
 same library source on the same zlib are byte-identical and can be compared
 directly (the e2e cmp-byte-verifies the published artifact against its own CI rebuild).
 
+Each library is shipped with its whole-line `//` developer comments blanked
+(issue #451): those comments are ~40% of the bytes the hub's Libraries Code page
+and /hub2/userLibraries have to serve, and Groovy discards them at compile time.
+Only lines that consist of nothing but a `//` comment are emptied -- inline
+trailing comments, string contents and every code line are untouched -- and each
+emptied line is kept as an empty line, so hub line numbers still map to the repo
+file (offset by the one notice line inserted below the `library(...)` declaration,
+which points at the fully commented source on GitHub). verify_library_transform()
+re-checks both properties, per library, at build time.
+
 Run:  python3 tools/build-bundle.py
 """
 
 from __future__ import annotations
 
+import re
 import sys
 import zipfile
 import zlib
@@ -142,6 +153,129 @@ _FIXED_DT = (1980, 1, 1, 0, 0, 0)
 _DEFLATE_LEVEL = 9  # pinned so deflate output is reproducible build-to-build
 
 
+SOURCE_URL_BASE = (
+    "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/libraries/"
+)
+
+_TRIPLE_QUOTES = ('"""', "'''")
+
+
+def strip_comment_lines(text: str) -> str:
+    """Blank every line that is only a `//` comment, keeping the line count.
+
+    Lines inside a triple-quoted string are left alone even when they start with
+    `//` (a tool description could legitimately contain one). The tracker is
+    deliberately simple -- it toggles on each `\"\"\"` / `'''` seen on a code line
+    -- because the only thing that must never happen is blanking a line that is
+    part of a string; a comment line can't open or close a string, so it is never
+    counted.
+    """
+    out = []
+    open_quote = None
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if open_quote is None and stripped.startswith("//"):
+            out.append("")
+            continue
+        out.append(line)
+        for quote in _TRIPLE_QUOTES:
+            if open_quote is None and quote in line:
+                if line.count(quote) % 2 == 1:
+                    open_quote = quote
+            elif open_quote == quote and quote in line:
+                if line.count(quote) % 2 == 1:
+                    open_quote = None
+    return "\n".join(out)
+
+
+def _declaration_end(lines: list[str]) -> int:
+    """Index of the last line of the leading ``library(...)`` declaration.
+
+    The notice line goes AFTER it, never before: the hub parses that declaration
+    server-side to name the library, and nothing in the vendored hub UI source
+    shows whether it tolerates anything above it -- so don't find out on a user's
+    hub. Parentheses inside quoted text (the description) are not counted.
+    """
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if not line.startswith("library("):
+            raise RuntimeError(
+                f"library file does not open with a library(...) declaration: {line[:60]!r}"
+            )
+        depth = 0
+        for scan in range(index, len(lines)):
+            quote = None
+            for char in lines[scan]:
+                if quote:
+                    if char == quote:
+                        quote = None
+                elif char in "\"'":
+                    quote = char
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+            if depth <= 0:
+                return scan
+        raise RuntimeError("unterminated library(...) declaration")
+    raise RuntimeError("library file is empty")
+
+
+def prepare_library_source(source: Path) -> str:
+    """The text shipped for one library: CRLF-normalized, whole-line comments
+    blanked, and one notice line inserted just below the ``library(...)``
+    declaration pointing at the fully commented source."""
+    text = source.read_text(encoding="utf-8").replace("\r\n", "\n")
+    lines = strip_comment_lines(text).split("\n")
+    notice = (
+        "// Developer comments are blanked in this hub copy so the hub's code pages stay fast -- "
+        "Groovy discards them anyway. Below this line, a line number here is the repository file's "
+        f"plus one. Full source: {SOURCE_URL_BASE}{source.name}"
+    )
+    at = _declaration_end(lines) + 1
+    return "\n".join([*lines[:at], notice, *lines[at:]])
+
+
+def verify_library_transform(source: Path, shipped: str) -> None:
+    """Fail the build unless the shipped text differs from the source ONLY by blanked
+    comment lines plus the one inserted notice.
+
+    The line-by-line check catches a stripper that touches code. The string-literal
+    check is deliberately an INDEPENDENT reading of both texts (regex over triple-quoted
+    bodies, not the stripper's own line-state tracking), so a `//` line that lives inside
+    a tool description -- the one input that could silently lose string content -- fails
+    here instead of shipping.
+    """
+    original = source.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
+    out = shipped.split("\n")
+    if len(out) != len(original) + 1:
+        raise RuntimeError(
+            f"{source.name}: shipped {len(out)} lines from {len(original)} source lines "
+            "(expected exactly one added notice line)"
+        )
+    notice_at = _declaration_end(out) + 1
+    for offset, line in enumerate(out):
+        if offset == notice_at:
+            continue
+        src = original[offset if offset < notice_at else offset - 1]
+        if line == src:
+            continue
+        if line == "" and src.lstrip().startswith("//"):
+            continue
+        raise RuntimeError(
+            f"{source.name}: line {offset + 1} of the shipped library is neither the source line "
+            f"nor a blanked comment: {src[:70]!r} -> {line[:70]!r}"
+        )
+    for quotes in ('"""', "'''"):
+        pattern = re.compile(re.escape(quotes) + "(.*?)" + re.escape(quotes), re.DOTALL)
+        if pattern.findall("\n".join(original)) != pattern.findall("\n".join(out)):
+            raise RuntimeError(
+                f"{source.name}: {quotes}-quoted string content changed -- a comment-looking line "
+                "inside a string was blanked. Reword that line in the source."
+            )
+
+
 def _add(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename=name, date_time=_FIXED_DT)
     info.compress_type = zipfile.ZIP_DEFLATED
@@ -170,15 +304,9 @@ def build() -> str:
 
     with zipfile.ZipFile(OUTPUT_ZIP, "w") as zf:
         for lib in LIBS:
-            # Read as text + normalize CRLF->LF so the committed ZIP is byte-identical
-            # regardless of the builder's git core.autocrlf / platform.
-            content = (
-                lib["source"]
-                .read_text(encoding="utf-8")
-                .replace("\r\n", "\n")
-                .encode("utf-8")
-            )
-            _add(zf, lib["dest"], content)
+            shipped = prepare_library_source(lib["source"])
+            verify_library_transform(lib["source"], shipped)
+            _add(zf, lib["dest"], shipped.encode("utf-8"))
         _add(zf, "install.txt", manifest.encode())
         _add(zf, "update.txt", manifest.encode())
     return manifest

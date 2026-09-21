@@ -36,6 +36,16 @@ import requests
 from device_configuration_helpers import assert_native_preferences
 from sdk_conformance_helpers import assert_exact_rule_log_messages
 
+
+def _bundle_builder():
+    """tools/build-bundle.py as a module (its filename is not importable by name)."""
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "tools" / "build-bundle.py"
+    spec = importlib.util.spec_from_file_location("build_bundle", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 # ---------------------------------------------------------------------------
 # Artifact prefix — every test-created resource uses this for safe cleanup
 # ---------------------------------------------------------------------------
@@ -12217,8 +12227,10 @@ class TestRunner:
         rooms_lib = next((lib for lib in libs
                           if lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp"), None)
         assert rooms_lib, f"McpRoomsLib not found in hub libraries (got {lib_names})"
-        expected = (Path(__file__).resolve().parent.parent / "libraries" / "mcp-rooms-lib.groovy").read_text(
-            encoding="utf-8")
+        # The hub holds what tools/build-bundle.py wrote into the zip (comment lines blanked, one
+        # notice line on top), not the checkout file byte-for-byte -- compare against the builder.
+        expected = _bundle_builder().prepare_library_source(
+            Path(__file__).resolve().parent.parent / "libraries" / "mcp-rooms-lib.groovy")
         # Stay below the source reader's automatic File Manager save threshold.
         assert len(expected) <= 64000, "Choose a smaller installed library for the read-only source check"
         readback = self.client.call_tool("hub_get_source", {

@@ -149,14 +149,32 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 # the hub: exactly ONE copy per namespace+name (two = the duplicate-library
 # trap; the app's #include binds to only one, so a bundle update can land in
 # the wrong copy -- a hard error in BOTH modes, an install cannot heal it) and
-# an on-hub source length equal to the checkout file's (the bundle stores the
-# file verbatim; totalLength is a CHARACTER count = UTF-16 units, and wc -m
-# matches for the repo's all-BMP/ASCII source). enforce = the post-install
+# an on-hub source length equal to the built bundle entry's (the builder blanks
+# the checkout file's comment lines and prepends a notice line, so the zip entry
+# -- not libraries/*.groovy -- is what the hub holds; totalLength is a CHARACTER
+# count = UTF-16 units, matched by Python's len() for the repo's all-BMP source).
+# enforce = the post-install
 # gate: any mismatch is a hard ::error:: + exit. probe = the pre-skip check:
 # a mismatch (or an unreadable hub list) returns 1 so the caller installs --
 # fail-safe toward installing + verifying, never toward a false skip.
 # Uses the INCLUDES array (section 1) and REPO_DIR (section 2) globals.
 # ---------------------------------------------------------------------------
+# bundle_entry_chars <entry> -- character count of <entry> inside the first built zip under
+# $REPO_DIR/bundles/ that carries it (empty output when none does). Only what the builder wrote
+# to the zip is what the hub imports, so this -- not the checkout file -- is the verify baseline.
+bundle_entry_chars() {
+  python3 - "$REPO_DIR/bundles" "$1" <<'PY'
+import sys, zipfile
+from pathlib import Path
+out_dir, entry = Path(sys.argv[1]), sys.argv[2]
+for zip_path in sorted(out_dir.glob("*.zip")):
+    with zipfile.ZipFile(zip_path) as zf:
+        if entry in zf.namelist():
+            print(len(zf.read(entry).decode("utf-8")))
+            break
+PY
+}
+
 verify_includes_current() {
   local MODE="$1"
   [ "${#INCLUDES[@]}" -eq 0 ] && return 0
@@ -201,7 +219,11 @@ verify_includes_current() {
       echo "::error::no libraries/*.groovy in the checkout declares name \"${NAME}\" -- cannot verify ${TOKEN}."
       exit 1
     fi
-    EXPECTED_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$LIB_FILE" | tr -d '[:space:]')
+    EXPECTED_CHARS=$(bundle_entry_chars "${NS}.${NAME}.groovy")
+    if [ -z "$EXPECTED_CHARS" ]; then
+      echo "::error::no built bundle under ${REPO_DIR}/bundles/ carries entry ${NS}.${NAME}.groovy -- cannot verify ${TOKEN} (the builder's LIBS list and the app's #include set have drifted)."
+      exit 1
+    fi
     SRC_RPC=$(jq -nc --arg id "$LIB_ID" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:($id|tonumber),length:1,noSave:true}}}')
     SRC_TEXT=$(call_tool_retry "$SRC_RPC")
@@ -211,7 +233,7 @@ verify_includes_current() {
         echo "  probe: library ${TOKEN} (id ${LIB_ID}) differs: ${HUB_CHARS:-unknown} chars on the hub vs the checkout's ${EXPECTED_CHARS}."
         return 1
       fi
-      echo "::error::library ${TOKEN} (id ${LIB_ID}) is STALE on the hub: ${HUB_CHARS:-unknown} chars vs the PR file's ${EXPECTED_CHARS} ($(basename "$LIB_FILE")). The bundle step did not land this library -- the app would compile against old library code."
+      echo "::error::library ${TOKEN} (id ${LIB_ID}) is STALE on the hub: ${HUB_CHARS:-unknown} chars vs the PR bundle entry's ${EXPECTED_CHARS} (built from $(basename "$LIB_FILE")). The bundle step did not land this library -- the app would compile against old library code."
       exit 1
     fi
     echo "  ${TOKEN}: id ${LIB_ID}, ${HUB_CHARS} chars -- matches the PR file."
