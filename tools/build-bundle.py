@@ -160,21 +160,42 @@ SOURCE_URL_BASE = (
 _TRIPLE_QUOTES = ('"""', "'''")
 
 
+def _triple_quote_protected_lines(text: str) -> set[int]:
+    """Indices of lines any regex-paired triple-quoted body touches.
+
+    A SECOND, independent opinion on "is this line inside a string", used to veto
+    a blanking the line tracker would allow. It also protects a comment that
+    merely CONTAINS a marker (`// example: \"\"\" ... \"\"\"`): its two markers pair
+    with each other, the line is protected, and the build's string-content check
+    never sees a body disappear.
+    """
+    protected: set[int] = set()
+    for quotes in ('"""', "'''"):
+        pattern = re.escape(quotes) + ".*?" + re.escape(quotes)
+        for match in re.finditer(pattern, text, re.DOTALL):
+            first = text.count("\n", 0, match.start())
+            last = text.count("\n", 0, match.end())
+            protected.update(range(first, last + 1))
+    return protected
+
+
 def strip_comment_lines(text: str) -> str:
     """Blank every line that is only a `//` comment, keeping the line count.
 
-    Lines inside a triple-quoted string are left alone even when they start with
-    `//` (a tool description could legitimately contain one). The tracker is
-    deliberately simple -- it toggles on each `\"\"\"` / `'''` seen on a code line
-    -- because the only thing that must never happen is blanking a line that is
-    part of a string; a comment line can't open or close a string, so it is never
-    counted.
+    A line is blanked only when BOTH readings of the file agree it sits outside a
+    triple-quoted string: the running tracker below, and the regex pairing in
+    _triple_quote_protected_lines(). Either one saying "inside" keeps the line --
+    a comment surviving costs a few bytes, blanking a line of a tool description
+    silently truncates it. The tracker toggles on each `\"\"\"` / `'''` seen on a
+    line it did not blank; a comment line can neither open nor close a string, so
+    it is never counted.
     """
+    protected = _triple_quote_protected_lines(text)
     out = []
     open_quote = None
-    for line in text.split("\n"):
+    for index, line in enumerate(text.split("\n")):
         stripped = line.lstrip()
-        if open_quote is None and stripped.startswith("//"):
+        if open_quote is None and stripped.startswith("//") and index not in protected:
             out.append("")
             continue
         out.append(line)

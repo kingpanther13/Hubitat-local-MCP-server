@@ -127,3 +127,31 @@ def test_real_libraries_keep_their_declaration_first():
     for lib in builder.LIBS:
         shipped = builder.prepare_library_source(lib["source"]).split("\n")
         assert shipped[0].startswith("library("), lib["source"].name
+
+
+def test_a_comment_that_contains_triple_quotes_is_left_alone(tmp_path):
+    """`// \"\"\" example \"\"\"` must survive: blanking it would delete a pair of markers the
+    build's string-content check reads, failing the build on a legitimate comment."""
+    text = 'library(name: "X")\n// example: """ inline """\ndef a = 1\n'
+    src = _write(tmp_path, text)
+    shipped = builder.prepare_library_source(src)
+    assert '// example: """ inline """' in shipped
+    builder.verify_library_transform(src, shipped)
+
+
+def test_a_comment_holding_one_marker_is_left_alone(tmp_path):
+    """One unpaired marker in a comment pairs with the next real one, so every line between
+    them is protected rather than risked."""
+    text = 'library(name: "X")\n// mentions """ once\ndef d = """desc"""\n'
+    src = _write(tmp_path, text)
+    shipped = builder.prepare_library_source(src)
+    assert '// mentions """ once' in shipped
+    builder.verify_library_transform(src, shipped)
+
+
+def test_protection_does_not_spare_comments_between_two_descriptions(tmp_path):
+    """The veto must stay narrow: a comment sitting between two complete descriptions is
+    outside both and still gets blanked."""
+    text = 'library(name: "X")\ndef a = """one"""\n// blank me\ndef b = """two"""\n'
+    shipped = builder.prepare_library_source(_write(tmp_path, text)).split("\n")
+    assert shipped[3] == ""
