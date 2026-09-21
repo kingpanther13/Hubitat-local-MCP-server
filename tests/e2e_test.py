@@ -11277,6 +11277,18 @@ class TestRunner:
         # Track BEFORE creating: there is no prefix sweep for variables, so a crash
         # between the create landing and a later append would strand it.
         self.created_variable_names.append(var_name)
+        # The 504 retry re-runs this test from the top, but the hub keeps whatever the
+        # aborted attempt already committed -- run 35548123903 died here on "Hub variable
+        # ... already exists" after its first attempt's create landed behind a lost
+        # response. Clear the name first so the retry starts from the state attempt 1
+        # assumed. Best effort: a hub that cannot delete it will fail the create below
+        # with the same clear message.
+        if not self._hub_variable_absent(var_name):
+            try:
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
+            except (McpToolError, McpError) as exc:
+                print(f"    pre-clean of {var_name} failed ({exc}); the create below will report it")
         # CREATE -- the read-back below binds source/value/type, so a relay 504 only
         # costs the create-response assertion (skipped with a print).
         cw = self._soft_write(
