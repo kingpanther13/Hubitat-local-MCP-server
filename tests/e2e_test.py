@@ -42,8 +42,14 @@ def _bundle_builder():
     import importlib.util
     path = Path(__file__).resolve().parent.parent / "tools" / "build-bundle.py"
     spec = importlib.util.spec_from_file_location("build_bundle", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load the bundle builder from {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:  # a repo-tooling failure, not a hub one -- say so
+        raise RuntimeError(f"tools/build-bundle.py failed to import ({exc}) -- the library "
+                           "read-back cannot compute the text the hub should hold") from exc
     return module
 
 # ---------------------------------------------------------------------------
@@ -11283,12 +11289,27 @@ class TestRunner:
         # response. Clear the name first so the retry starts from the state attempt 1
         # assumed. Best effort: a hub that cannot delete it will fail the create below
         # with the same clear message.
-        if not self._hub_variable_absent(var_name):
-            try:
-                self.client.call_tool("hub_manage_variables", {
-                    "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
-            except (McpToolError, McpError) as exc:
-                print(f"    pre-clean of {var_name} failed ({exc}); the create below will report it")
+        try:
+            leftover = not self._hub_variable_absent(var_name)
+        except requests.HTTPError as exc:
+            # _hub_variable_absent answers only MCP-level errors; an exhausted read retry
+            # raises a bare HTTPError. This line runs right after a 504, so letting that
+            # escape would fail the run from the code meant to rescue it.
+            print(f"    pre-clean probe of {var_name} unreadable ({exc}); skipping the pre-clean")
+            leftover = False
+        if leftover:
+            # _soft_write, not a bare call: hub_delete_variable is a write, and its 504
+            # keeps the delete possibly-committed. Verify by absence rather than calling a
+            # landed delete a failure.
+            pre = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}}),
+                lambda: self._hub_variable_absent(var_name),
+                "pre-clean hub_delete_variable",
+            )
+            if pre["relayDropped"] and not pre["committed"]:
+                print(f"    pre-clean of {var_name}: delete response lost and the variable is still "
+                      "present -- the create below will report the collision")
         # CREATE -- the read-back below binds source/value/type, so a relay 504 only
         # costs the create-response assertion (skipped with a print).
         cw = self._soft_write(
@@ -12240,7 +12261,8 @@ class TestRunner:
                           if lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp"), None)
         assert rooms_lib, f"McpRoomsLib not found in hub libraries (got {lib_names})"
         # The hub holds what tools/build-bundle.py wrote into the zip (comment lines blanked, one
-        # notice line on top), not the checkout file byte-for-byte -- compare against the builder.
+        # notice line below the library(...) declaration), not the checkout file byte-for-byte --
+        # compare against the builder.
         expected = _bundle_builder().prepare_library_source(
             Path(__file__).resolve().parent.parent / "libraries" / "mcp-rooms-lib.groovy")
         # Stay below the source reader's automatic File Manager save threshold.
@@ -12249,8 +12271,17 @@ class TestRunner:
             "type": "library", "id": str(rooms_lib["id"]), "length": len(expected),
         })
         assert readback.get("success") is True, f"installed library source read failed: {readback}"
-        assert readback.get("source", "").replace("\r\n", "\n") == expected, \
-            "installed McpRoomsLib source does not match the deployed branch"
+        hub_source = readback.get("source")
+        assert hub_source is not None, f"hub_get_source returned no 'source' field: {sorted(readback)}"
+        hub_source = hub_source.replace("\r\n", "\n")
+        if hub_source != expected:
+            at = next((i for i, (a, b) in enumerate(zip(hub_source, expected, strict=False)) if a != b),
+                      min(len(hub_source), len(expected)))
+            raise AssertionError(
+                f"installed McpRoomsLib differs from prepare_library_source() at char {at}: hub has "
+                f"{len(hub_source)} chars, the builder produced {len(expected)}. "
+                f"hub={hub_source[at:at + 80]!r} builder={expected[at:at + 80]!r}. Either the hub's "
+                "library is stale, or the builder's transform changed since this bundle was built.")
         assert readback.get("version") is not None and readback.get("version") == rooms_lib.get("version"), \
             f"library source/list versions differ: source={readback.get('version')}, list={rooms_lib.get('version')}"
 

@@ -150,7 +150,8 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 # trap; the app's #include binds to only one, so a bundle update can land in
 # the wrong copy -- a hard error in BOTH modes, an install cannot heal it) and
 # an on-hub source length equal to the built bundle entry's (the builder blanks
-# the checkout file's comment lines and prepends a notice line, so the zip entry
+# the checkout file's comment lines and inserts a notice line below the
+# library(...) declaration, so the zip entry
 # -- not libraries/*.groovy -- is what the hub holds; totalLength is a CHARACTER
 # count = UTF-16 units, matched by Python's len() for the repo's all-BMP source).
 # enforce = the post-install
@@ -159,19 +160,42 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 # fail-safe toward installing + verifying, never toward a false skip.
 # Uses the INCLUDES array (section 1) and REPO_DIR (section 2) globals.
 # ---------------------------------------------------------------------------
-# bundle_entry_chars <entry> -- character count of <entry> inside the first built zip under
-# $REPO_DIR/bundles/ that carries it (empty output when none does). Only what the builder wrote
-# to the zip is what the hub imports, so this -- not the checkout file -- is the verify baseline.
+# bundle_entry_chars <entry> -- character count of <entry> as the BUILT zip carries it.
+# Only what the builder wrote to the zip is what the hub imports, so this -- not the
+# checkout file -- is the verify baseline. Every failure exits non-zero with its own
+# ::error::, so a build that never ran, a corrupt zip and a drifted LIBS list are three
+# different messages instead of one empty string the caller has to guess at. An entry
+# carried by two zips with different lengths is refused: the caller verifies against one
+# number and the hub installed a specific bundle, so an ambiguous answer is not usable.
 bundle_entry_chars() {
   python3 - "$REPO_DIR/bundles" "$1" <<'PY'
 import sys, zipfile
 from pathlib import Path
+
 out_dir, entry = Path(sys.argv[1]), sys.argv[2]
-for zip_path in sorted(out_dir.glob("*.zip")):
-    with zipfile.ZipFile(zip_path) as zf:
-        if entry in zf.namelist():
-            print(len(zf.read(entry).decode("utf-8")))
-            break
+if not out_dir.is_dir():
+    sys.exit(f"::error::{out_dir} does not exist -- the bundle build step did not run.")
+zips = sorted(out_dir.glob("*.zip"))
+if not zips:
+    sys.exit(f"::error::no zip under {out_dir} -- the bundle build step produced nothing.")
+
+found = {}
+for zip_path in zips:
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            if entry in zf.namelist():
+                found[zip_path.name] = len(zf.read(entry).decode("utf-8"))
+    except (zipfile.BadZipFile, UnicodeDecodeError, OSError) as exc:
+        sys.exit(f"::error::{zip_path} is unreadable ({type(exc).__name__}: {exc}) -- "
+                 "the build wrote a bundle this job cannot verify against.")
+
+if not found:
+    sys.exit(f"::error::no zip under {out_dir} carries entry {entry} -- the builder's LIBS "
+             "list and the app's #include set have drifted.")
+if len(set(found.values())) > 1:
+    sys.exit(f"::error::entry {entry} appears in several built zips at different lengths "
+             f"({found}) -- cannot tell which one the hub installed.")
+print(next(iter(found.values())))
 PY
 }
 
@@ -219,24 +243,43 @@ verify_includes_current() {
       echo "::error::no libraries/*.groovy in the checkout declares name \"${NAME}\" -- cannot verify ${TOKEN}."
       exit 1
     fi
-    EXPECTED_CHARS=$(bundle_entry_chars "${NS}.${NAME}.groovy")
+    # bundle_entry_chars prints its own ::error:: naming the cause and exits non-zero. The
+    # `|| true` is the same guard LIB_FILE carries above: a bare assignment whose command
+    # fails would abort the function under set -euo pipefail before the mode branch below
+    # runs, and probe mode owes its caller a return 1 (install + verify), never an exit.
+    EXPECTED_CHARS=$(bundle_entry_chars "${NS}.${NAME}.groovy") || true
     if [ -z "$EXPECTED_CHARS" ]; then
-      echo "::error::no built bundle under ${REPO_DIR}/bundles/ carries entry ${NS}.${NAME}.groovy -- cannot verify ${TOKEN} (the builder's LIBS list and the app's #include set have drifted)."
+      if [ "$MODE" = "probe" ]; then
+        echo "  probe: could not measure the built bundle entry for ${TOKEN} (cause above) -- treating the hub as not current."
+        return 1
+      fi
+      echo "::error::could not measure the built bundle entry for ${TOKEN} -- see the bundle_entry_chars error above."
       exit 1
     fi
     SRC_RPC=$(jq -nc --arg id "$LIB_ID" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:($id|tonumber),length:1,noSave:true}}}')
     SRC_TEXT=$(call_tool_retry "$SRC_RPC")
     HUB_CHARS=$(printf '%s' "$SRC_TEXT" | jq -r '.totalLength // empty' 2>/dev/null || true)
+    if [ -z "$HUB_CHARS" ]; then
+      # Empty covers every way the read can fail to produce a number: a relay drop that
+      # outlived call_tool_retry, a non-JSON body, a JSON-RPC error envelope, a tool error.
+      # None of those is evidence about the library, so neither mode may call it stale.
+      if [ "$MODE" = "probe" ]; then
+        echo "  probe: could not read hub_get_source for ${TOKEN} (id ${LIB_ID}) -- treating the hub as not current."
+        return 1
+      fi
+      echo "::error::could not read hub_get_source for ${TOKEN} (id ${LIB_ID}) after retries (relay drop or unparseable response) -- this is NOT a staleness verdict; re-run the job."
+      exit 1
+    fi
     if [ "$HUB_CHARS" != "$EXPECTED_CHARS" ]; then
       if [ "$MODE" = "probe" ]; then
-        echo "  probe: library ${TOKEN} (id ${LIB_ID}) differs: ${HUB_CHARS:-unknown} chars on the hub vs the checkout's ${EXPECTED_CHARS}."
+        echo "  probe: library ${TOKEN} (id ${LIB_ID}) differs: ${HUB_CHARS:-unknown} chars on the hub vs the PR bundle entry's ${EXPECTED_CHARS}."
         return 1
       fi
       echo "::error::library ${TOKEN} (id ${LIB_ID}) is STALE on the hub: ${HUB_CHARS:-unknown} chars vs the PR bundle entry's ${EXPECTED_CHARS} (built from $(basename "$LIB_FILE")). The bundle step did not land this library -- the app would compile against old library code."
       exit 1
     fi
-    echo "  ${TOKEN}: id ${LIB_ID}, ${HUB_CHARS} chars -- matches the PR file."
+    echo "  ${TOKEN}: id ${LIB_ID}, ${HUB_CHARS} chars -- matches the PR's built bundle entry."
   done
   return 0
 }
@@ -252,7 +295,7 @@ verify_includes_current() {
 #    PR merges. There is no committed zip. Resolution order, lightest first:
 #      a. SKIP -- the built zip is byte-identical to canonical main's AND a
 #         live probe proves every #include'd library on the hub matches the
-#         checkout (no install, no recompile wave). Byte-equality alone is NOT
+#         bundle entry built from the checkout (no install, no recompile wave). Byte-equality alone is NOT
 #         enough: the dead-man restore reinstates the main that was canonical
 #         when its run ARMED, so a merge landing mid-run moves main ahead and
 #         leaves the hub one merge behind -- a later PR whose zip equals the
@@ -306,8 +349,11 @@ else
     if [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ] \
        && MAIN_BUNDLE_URL=$(resolve_main_bundle_artifact_url "$BASENAME"); then
       MAIN_ZIP_TMP="$(mktemp)"
-      if curl -fsSL "$MAIN_BUNDLE_URL" -o "$MAIN_ZIP_TMP" 2>/dev/null \
-         && cmp -s "$BUNDLE_PATH" "$MAIN_ZIP_TMP"; then
+      if ! curl -fsSL "$MAIN_BUNDLE_URL" -o "$MAIN_ZIP_TMP" 2>/dev/null; then
+        # Fail-safe (we install below), but a URL that is broken rather than "bytes differ"
+        # disables the skip on every run and pays the recompile wave unexplained.
+        echo "  could not fetch canonical main's artifact (${MAIN_BUNDLE_URL}) -- cannot byte-compare; installing."
+      elif cmp -s "$BUNDLE_PATH" "$MAIN_ZIP_TMP"; then
         BUNDLE_SAME="true"
       fi
       rm -f "$MAIN_ZIP_TMP"

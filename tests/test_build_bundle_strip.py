@@ -1,15 +1,16 @@
 """pytest: the bundle builder blanks whole-line `//` comments and nothing else (issue #451).
 
-Libraries ship to hubs with their developer comments blanked -- those comments were ~40% of the bytes
-the hub's Libraries Code page and /hub2/userLibraries have to serve, and Groovy discards them at
-compile time. The transform must be exactly "blank a line that is only a comment, then add one notice
-line": every code line, every inline trailing comment and every line inside a string stays
+Libraries ship to hubs with their developer comments blanked -- those comments were ~30% of the bytes
+the hub's Libraries Code page and /hub2/userLibraries have to serve, ~43% of the largest library, and
+Groovy discards them at compile time. The transform must be exactly "blank a line that is only a
+comment and sits outside a triple-quoted string, then add one notice line": every code line, every inline trailing comment and every line inside a string stays
 byte-identical, and the line count is preserved so a hub line number still maps to the repo file.
 `tools/build-bundle.py` re-checks that per library at build time; these tests pin the checker itself,
 including the case it exists to catch -- a `//` line inside a tool description.
 """
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -149,9 +150,86 @@ def test_a_comment_holding_one_marker_is_left_alone(tmp_path):
     builder.verify_library_transform(src, shipped)
 
 
+def test_a_protected_comment_does_not_suppress_later_blanking(tmp_path):
+    """A kept comment holding one marker must not leave the tracker inside a string: while it did,
+    one stray marker forfeited every blanking in the rest of the file."""
+    text = ('library(name: "X")\n// mentions """ once\ndef d = """desc"""\n'
+            "// blank me\ndef a = 1\n")
+    shipped = builder.prepare_library_source(_write(tmp_path, text)).split("\n")
+    assert shipped[2] == '// mentions """ once'
+    assert shipped[4] == "", f"later comment was not blanked: {shipped[4]!r}"
+
+
 def test_protection_does_not_spare_comments_between_two_descriptions(tmp_path):
     """The veto must stay narrow: a comment sitting between two complete descriptions is
     outside both and still gets blanked."""
     text = 'library(name: "X")\ndef a = """one"""\n// blank me\ndef b = """two"""\n'
     shipped = builder.prepare_library_source(_write(tmp_path, text)).split("\n")
     assert shipped[3] == ""
+
+
+def test_no_real_library_carries_a_protected_comment_line():
+    """The regex veto pairs markers across the WHOLE file, so one unpaired marker in a new
+    comment re-phases every later pairing and quietly keeps thousands of comments. No library
+    trips it today; this pins that, because the saving would fall without any test failing."""
+    for lib in builder.LIBS:
+        text = lib["source"].read_text(encoding="utf-8").replace("\r\n", "\n")
+        protected = builder._triple_quote_protected_lines(text)
+        kept = [n for n, line in enumerate(text.split("\n"), 1)
+                if line.lstrip().startswith("//") and n - 1 in protected]
+        assert not kept, (
+            f"{lib['source'].name}: comment lines {kept[:5]} sit inside a triple-quoted region. "
+            "A stray marker in a comment re-phases the pairing and forfeits the size win -- "
+            "reword the comment that introduced the marker.")
+
+
+def test_the_package_still_ships_substantially_less_than_it_stores():
+    """The point of the transform. `test_real_libraries_actually_shrink` is satisfied by one
+    blanked line; this holds the aggregate, which is ~69.5% today."""
+    source = sum(len(lib["source"].read_text(encoding="utf-8").replace("\r\n", "\n"))
+                 for lib in builder.LIBS)
+    shipped = sum(len(builder.prepare_library_source(lib["source"])) for lib in builder.LIBS)
+    assert shipped / source < 0.75, (
+        f"shipped {shipped:,} chars of {source:,} ({shipped / source:.1%}) -- the comment strip "
+        "has largely stopped working; check for a stray triple-quote marker in a comment.")
+
+
+def test_no_real_library_uses_a_multi_line_slashy_string():
+    """A `//` line inside a multi-line Groovy slashy string (/.../) IS blanked, and
+    verify_library_transform does not see it: its string check reads triple-quoted bodies only.
+    Nothing in the package writes one, and this keeps it that way -- the alternative is broken
+    Groovy shipped to hubs with every cheap lane green."""
+    opener = re.compile(r"(?:=~|==~|=|~|\(|,)\s*/(?![/*=])")
+    for lib in builder.LIBS:
+        for number, line in enumerate(lib["source"].read_text(encoding="utf-8").split("\n"), 1):
+            match = opener.search(line)
+            if not match:
+                continue
+            rest, index, closed = line[match.end():], 0, False
+            while index < len(rest):
+                if rest[index] == "\\":
+                    index += 2
+                    continue
+                if rest[index] == "/":
+                    closed = True
+                    break
+                index += 1
+            assert closed, (
+                f"{lib['source'].name}:{number} opens a slashy string that does not close on the "
+                "same line. A comment-looking line inside it would be blanked and the build's "
+                "string check would not notice. Use a quoted pattern instead.")
+
+
+def test_declaration_end_rejects_a_file_that_does_not_open_with_the_declaration():
+    with pytest.raises(RuntimeError, match="does not open with a library"):
+        builder._declaration_end(["// a header comment", 'library(name: "X")'])
+
+
+def test_declaration_end_rejects_an_unterminated_declaration():
+    with pytest.raises(RuntimeError, match="unterminated"):
+        builder._declaration_end(["library(", '    name: "X",'])
+
+
+def test_declaration_end_rejects_an_empty_file():
+    with pytest.raises(RuntimeError, match="empty"):
+        builder._declaration_end(["", "   "])

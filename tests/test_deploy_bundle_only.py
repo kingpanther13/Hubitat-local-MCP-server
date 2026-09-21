@@ -100,3 +100,18 @@ def test_deploy_probes_the_hub_before_skipping_and_heals_when_stale():
         f"{SCRIPT.name}: the enforce pass is no longer gated on whether a bundle actually installed -- "
         "on the all-skip path the per-skip probe is the verification, not a second enforce pass."
     )
+
+
+def test_deploy_verifies_against_the_built_bundle_entry_not_the_checkout_file():
+    """The builder blanks comment lines, so libraries/*.groovy is no longer what the hub holds.
+    Reverting this verify to `wc -m` on the checkout file leaves every Python lane green and
+    surfaces only as a confusing char mismatch in live e2e."""
+    text = SCRIPT.read_text()
+    assert "bundle_entry_chars" in text, (
+        f"{SCRIPT.name} no longer measures the built bundle entry -- the library length verify "
+        "must compare the hub against what the builder shipped, not against libraries/*.groovy."
+    )
+    assert 'wc -m < "$LIB_FILE"' not in text, (
+        f"{SCRIPT.name} measures the checkout file again: the hub holds the transformed bundle "
+        "entry, so this comparison can never match."
+    )

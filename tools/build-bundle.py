@@ -33,8 +33,9 @@ same library source on the same zlib are byte-identical and can be compared
 directly (the e2e cmp-byte-verifies the published artifact against its own CI rebuild).
 
 Each library is shipped with its whole-line `//` developer comments blanked
-(issue #451): those comments are ~40% of the bytes the hub's Libraries Code page
-and /hub2/userLibraries have to serve, and Groovy discards them at compile time.
+(issue #451): they are ~30% of the bytes the hub's Libraries Code page and
+/hub2/userLibraries have to serve -- ~43% of the largest library -- and Groovy
+discards them at compile time.
 Only lines that consist of nothing but a `//` comment are emptied -- inline
 trailing comments, string contents and every code line are untouched -- and each
 emptied line is kept as an empty line, so hub line numbers still map to the repo
@@ -186,17 +187,26 @@ def strip_comment_lines(text: str) -> str:
     triple-quoted string: the running tracker below, and the regex pairing in
     _triple_quote_protected_lines(). Either one saying "inside" keeps the line --
     a comment surviving costs a few bytes, blanking a line of a tool description
-    silently truncates it. The tracker toggles on each `\"\"\"` / `'''` seen on a
-    line it did not blank; a comment line can neither open nor close a string, so
-    it is never counted.
+    silently truncates it.
+
+    The tracker toggles on each marker it sees on a line it read as CODE. A
+    whole-line comment read outside a string is skipped, blanked or kept: its
+    markers sit inside the comment and open nothing. A line the tracker reads as
+    string content still toggles even when it looks like a comment -- that is how
+    a description's closing marker is seen.
     """
     protected = _triple_quote_protected_lines(text)
     out = []
     open_quote = None
     for index, line in enumerate(text.split("\n")):
         stripped = line.lstrip()
-        if open_quote is None and stripped.startswith("//") and index not in protected:
-            out.append("")
+        if open_quote is None and stripped.startswith("//"):
+            # Markers on a comment line read outside a string are inside the comment:
+            # they open nothing, so the tracker must not count them. That matters for
+            # a PROTECTED comment, which is kept -- counting its markers would leave
+            # the tracker "inside a string" for the rest of the file and forfeit every
+            # later blanking.
+            out.append(line if index in protected else "")
             continue
         out.append(line)
         for quote in _TRIPLE_QUOTES:
@@ -254,6 +264,12 @@ def prepare_library_source(source: Path) -> str:
         "Groovy discards them anyway. Below this line, a line number here is the repository file's "
         f"plus one. Full source: {SOURCE_URL_BASE}{source.name}"
     )
+    for quotes in _TRIPLE_QUOTES:
+        if quotes in notice:
+            raise RuntimeError(
+                f"the notice line contains {quotes}, which verify_library_transform() reads as a "
+                "string marker -- reword it"
+            )
     at = _declaration_end(lines) + 1
     return "\n".join([*lines[:at], notice, *lines[at:]])
 
@@ -323,11 +339,18 @@ def build() -> str:
     lib_lines = "\n".join(f"library {lib['dest']}" for lib in LIBS)
     manifest = f"{NAMESPACE}\n{BUNDLE_NAME}\n{lib_lines}\n"
 
+    # Transform and CHECK every library before opening the archive: verify_library_transform
+    # is designed to raise, and raising mid-write would leave a truncated bundles/*.zip on
+    # disk that a later build step (or a developer) could mistake for a real build.
+    shipped_by_dest = {}
+    for lib in LIBS:
+        shipped = prepare_library_source(lib["source"])
+        verify_library_transform(lib["source"], shipped)
+        shipped_by_dest[lib["dest"]] = shipped.encode("utf-8")
+
     with zipfile.ZipFile(OUTPUT_ZIP, "w") as zf:
         for lib in LIBS:
-            shipped = prepare_library_source(lib["source"])
-            verify_library_transform(lib["source"], shipped)
-            _add(zf, lib["dest"], shipped.encode("utf-8"))
+            _add(zf, lib["dest"], shipped_by_dest[lib["dest"]])
         _add(zf, "install.txt", manifest.encode())
         _add(zf, "update.txt", manifest.encode())
     return manifest
