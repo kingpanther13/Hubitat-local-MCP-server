@@ -734,7 +734,7 @@ private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
                 app.updateSetting('protectedAppIds', [type: 'enum', value: selected as List])
             }
             // Publish initialization and its effective selection together: concurrent handlers
-            // may retain older settings snapshots. Only the UI's Done callback replaces it.
+            // may retain older settings snapshots. Only updated() republishes saved choices.
             atomicState.protectedAppsPolicy = [ids: selected as List]
         } catch (Exception e) {
             // Keep enforcing the default even if persistence fails; the next request retries.
@@ -817,8 +817,6 @@ private void _requireUnprotectedAppDeletion(Integer appId) {
 
 def initialize() {
     _protectedAppIds()
-    // Stamp when THIS app instance came up. Any op record still marked "running" that
-    // started before this stamp was written by an instance that no longer exists: its
     if (!state.accessToken) {
         createAccessToken()
         log.info "Created access token"

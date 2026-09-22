@@ -124,14 +124,19 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         writes.empty
     }
 
-    def 'backup restore checks the embedded target before applying settings'() {
+    @Unroll
+    def '#appType backup restore checks the embedded target before applying settings'() {
         when:
-        script._rmRestoreFromBackup([fileName: 'backup.json'], [ruleId: 42, appType: 'rule_machine', configJson: [settings: [:]]])
+        script._rmRestoreFromBackup([fileName: 'backup.json'], [ruleId: 42, appType: appType, configJson: [settings: [:]]])
 
         then:
         def e = thrown(IllegalArgumentException)
         e.message.toLowerCase().contains('protected')
+        e.message.contains('42')
         writes.empty
+
+        where:
+        appType << ['rule_machine', 'visual_rule']
     }
 
     @Unroll

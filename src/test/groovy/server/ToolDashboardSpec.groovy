@@ -1095,6 +1095,25 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- create legacy ----------
 
+    def "create legacy refuses a protected parent before creating or configuring a dashboard"() {
+        given:
+        enableWrite()
+        registerLegacyParent(21)
+        atomicStateMap.protectedAppsPolicy = [ids: ['21']]
+        def rawPaths = stubCreateChild('850')
+        def forms = captureFormPosts()
+
+        when:
+        script.toolCreateDashboard([name: 'Patio', type: 'legacy'])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('protected')
+        error.message.contains('21')
+        rawPaths.empty
+        forms.empty
+    }
+
     def "create legacy: createchild under the legacy parent, then writes label + devicesPicked"() {
         given:
         enableWrite()
