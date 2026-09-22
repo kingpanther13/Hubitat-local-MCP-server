@@ -174,6 +174,10 @@ private List _vrbNewChildIds(Collection before) {
 }
 
 private Map _vrbCreateChild(String version) {
+    // Check outside the fallback catch: an authorization refusal must not trigger another create route.
+    if (!_protectedAppIds().isEmpty()) {
+        _requireUnprotectedAppMutation(_vrbParentNode().data.id, "create a visual rule under")
+    }
     // The VRB parent offers a per-VERSION child-create route, so the DEFINITION picks which
     // builder the new rule runs instead of the firmware picking for us:
     //   /installedapp/createchild/hubitat/Visual Rule Builder <version>/parent/<parentId>
@@ -1267,6 +1271,7 @@ private Map _toolSetVisualRuleImpl(args) {
         throw new IllegalArgumentException("Nothing to change: provide definition (full replacement), name (rename), and/or paused (pause/resume) alongside appId.")
     }
     def appId = normalizeRuleId(args.appId)
+    _requireUnprotectedAppMutation(appId, "edit visual rule")
     def detected
     try {
         detected = _vrbDetect(appId)
@@ -1565,6 +1570,7 @@ def toolDeleteVisualRule(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required (find it with hub_get_visual_rule).")
     def appId = normalizeRuleId(args.appId)
+    _requireUnprotectedAppDeletion(appId)
     // Type-gate before deleting: forcedelete removes ANY installed app, so only proceed once
     // the id provably speaks a VRB serialization.
     def detected
@@ -1612,6 +1618,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
     // re-saves the snapshot's captured definition (vrbFormat + vrbDefinition/vrbRuleJson,
     // written by _rmBackupRuleSnapshot) through the same save+verify tail the set tool uses.
     def savedId = (snapshot.appId ?: snapshot.ruleId) as Integer
+    _requireUnprotectedAppMutation(savedId, "restore visual rule")
     def vrbFormat = snapshot.vrbFormat?.toString()
     def definition
     if (vrbFormat == "classic" && snapshot.vrbDefinition instanceof Map) {

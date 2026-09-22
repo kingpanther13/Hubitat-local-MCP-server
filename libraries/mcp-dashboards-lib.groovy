@@ -412,6 +412,7 @@ private Map _createLegacyDashboard(Map args) {
                 error: "The legacy Hubitat® Dashboard parent app was not found and could not be auto-installed via Add Built-In App (details logged), so no legacy dashboard can be created.",
                 note: "Install the built-in 'Hubitat® Dashboard' app via Apps > Add built-in app and retry, or create an Easy Dashboard instead (omit type)."]
     }
+    _requireUnprotectedAppMutation(parentId, "create a dashboard under")
     def resp
     try {
         resp = hubInternalGetRaw("/installedapp/createchild/hubitat/Dashboard/parent/${parentId}")
@@ -471,6 +472,7 @@ def toolUpdateDashboard(args) {
                 note: "Transient hub error (details logged); retry."]
     }
     if (probe.legacy == true) {
+        _requireUnprotectedAppMutation(updateId, "edit dashboard")
         return _updateLegacyDashboard(updateId, probe, args)
     }
     def legacyOnlyArgs = ["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
@@ -733,6 +735,7 @@ def toolDeleteDashboard(args) {
                 note: "Transient hub error (details logged); retry."]
     }
     if (legacyProbe.legacy == true) {
+        _requireUnprotectedAppDeletion(dashId.toInteger())
         // /dashboard/delete does NOT remove a legacy child (verified live: success:false and the app
         // stays), so route through the classic force-delete. That endpoint can answer 500 for a
         // delete that actually committed -- confirm by effect, same as the Easy path.

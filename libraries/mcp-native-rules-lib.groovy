@@ -242,6 +242,7 @@ def toolSetAppDisabled(args) {
         throw new IllegalArgumentException("appId must be a positive integer (got: '${id}')")
     }
     int appId = id.toString().toInteger()
+    _requireUnprotectedAppMutation(appId, "enable or disable")
     if (args?.disabled == null) {
         throw new IllegalArgumentException("disabled is required (true to disable the app, false to enable it)")
     }
@@ -695,6 +696,7 @@ def toolRunRmRule(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     def idArg = _rmRuleIdListArg(args.ruleId)
     List<Integer> ruleIds = idArg.ids
+    ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
     def action = args?.action ?: "rule"
 
     // start/stop route through the stopRule button click (a toggle on
@@ -850,6 +852,7 @@ def toolSetRulePaused(args) {
     else throw new IllegalArgumentException("paused must be boolean true/false (got: ${args.paused})")
     def idArg = _rmRuleIdListArg(args.ruleId)
     List<Integer> ruleIds = idArg.ids
+    ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
     def result = paused ? sendRmAction(ruleIds, "pauseRule", "hub_set_rule_paused")
                         : sendRmAction(ruleIds, "resumeRule", "hub_set_rule_paused")
     // idsVerified: true = every id existence-checked before dispatch; false = the
@@ -890,6 +893,7 @@ def toolSetRmRuleBoolean(args) {
     }
     def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
     def idArg = _rmRuleIdListArg(args.ruleId)
+    idArg.ids.each { _requireUnprotectedAppMutation(it, "set rule private boolean") }
     def result = sendRmAction(idArg.ids as List, rmAction, "hub_set_rule_private_boolean value=${resolved}")
     if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     return result
@@ -10054,6 +10058,7 @@ def _createButtonRuleViaController(args) {
     if (controllerId == null) {
         throw new IllegalArgumentException("buttonRule.controllerId is required -- the appId of a Button Controller-5.1 instance (from hub_list_apps scope='instances'). Create one first via hub_set_native_app(appType='button_controller', name=...) and assign its button device.")
     }
+    _requireUnprotectedAppMutation(controllerId, "create a button rule under")
     def buttonNumber = null
     try { buttonNumber = (br.buttonNumber as Integer) } catch (Exception ignore) {}
     if (buttonNumber == null || buttonNumber < 1) {
@@ -10169,6 +10174,7 @@ def _createNativeAppShell(args) {
     if (!name) throw new IllegalArgumentException("name is required")
 
     def parentId = _discoverParentAppId(appType)
+    _requireUnprotectedAppMutation(parentId, "create a child app under")
     def newId
     try {
         newId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
@@ -13886,6 +13892,7 @@ def _applyNativeAppEdit(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
+    _requireUnprotectedAppMutation(appId, "edit")
     def settingsMap = args?.settings instanceof Map ? args.settings : null
     // Raw `settings` mode is the unstructured escape hatch; it doesn't go
     // through addTrigger/addAction's deviceId pre-validator. Scan settings
@@ -15732,6 +15739,7 @@ def toolDeleteNativeApp(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
+    _requireUnprotectedAppDeletion(appId)
     def force = args?.force == true
 
     def backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete")

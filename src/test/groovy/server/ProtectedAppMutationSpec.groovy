@@ -33,6 +33,9 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
     def '#method rejects protected target before mutation with Developer Mode #developerMode'() {
         given:
         settingsMap.enableDeveloperMode = developerMode
+        hubGet.register('/installedapp/statusJson/42') {
+            '{"installedApp":{"id":42,"name":"Dashboard","systemAppType":true}}'
+        }
 
         when:
         script."$method"(arguments + [confirm: true])
@@ -46,14 +49,16 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         where:
         [developerMode, row] << [[false, true], [
             ['toolSetNativeApp', [appId: 42, settings: [protectedAppIds: []]]],
-            ['toolSetRule', [appId: 'rm-42', settings: [enableDeveloperMode: true]]],
-            ['toolSetNativeApp', [appId: 'rule-42', button: 'updateRule']],
+            ['toolSetRule', [appId: ' 42 ', settings: [enableDeveloperMode: true]]],
+            ['toolSetNativeApp', [appId: '00042', button: 'updateRule']],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],
             ['toolSetAppDisabled', [appId: 42, disabled: false]],
             ['toolDeleteNativeApp', [appId: 42]],
-            ['toolDeleteNativeApp', [appId: 'rm-42', force: true]],
+            ['toolDeleteNativeApp', [appId: ' 42 ', force: true]],
             ['toolSetVisualRule', [appId: 42, paused: true]],
             ['toolDeleteVisualRule', [appId: 42]],
+            ['toolUpdateDashboard', [dashboardId: '42', name: 'Changed']],
+            ['toolDeleteDashboard', [dashboardId: '42']],
             ['toolSetNativeApp', [buttonRule: [controllerId: 42, buttonNumber: 1, event: 'pushed']]],
             ['toolRunRmRule', [ruleId: 42, action: 'stop']],
             ['toolSetRulePaused', [ruleId: 42, paused: true]],
@@ -138,14 +143,76 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         ]]
 
         when:
-        def result = operation == 'clone' ? script._mrtrCloneNativeAppSlice(rec, [:]) : script._mrtrImportNativeAppSlice(rec, [:])
+        if (operation == 'clone') script._mrtrCloneNativeAppSlice(rec, [:])
+        else script._mrtrImportNativeAppSlice(rec, [:])
 
         then:
-        result.success == false
-        result.error.toLowerCase().contains('protected')
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('protected')
         writes.every { it == '/installedapp/forcedelete/900/quiet' }
 
         where:
         operation << ['clone', 'import']
     }
+    @Unroll
+    def 'generic protection is enforced through #gateway dispatch with Developer Mode #developerMode'() {
+        given:
+        settingsMap.enableDeveloperMode = developerMode
+        settingsMap.enableMandatoryBPS = false
+        settingsMap.useGateways = gateway
+        def args = [appId: 42, settings: [protectedAppIds: []], confirm: true]
+
+        when:
+        script.executeTool(gateway ? 'hub_manage_native_rules_and_apps' : 'hub_set_native_app',
+            gateway ? [tool: 'hub_set_native_app', args: args] : args)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('protected')
+        writes.empty
+
+        where:
+        [gateway, developerMode] << [[false, true], [false, true]].combinations()
+    }
+
+    @Unroll
+    def 'rule batch #method refuses all dispatch when one target is protected'() {
+        given:
+        rmUtils = new RMUtilsMock(stubRuleList: [[id: 43, name: 'Allowed'], [id: 42, name: 'Protected']])
+        rmUtils.install()
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":43}},{"data":{"id":42}}]}'
+        }
+
+        when:
+        script."$method"([ruleId: [43, 42]] + args)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('protected')
+        !rmUtils.calls.any { it.method == 'sendAction' }
+        writes.empty
+
+        where:
+        method                  | args
+        'toolRunRmRule'          | [action: 'actions']
+        'toolSetRulePaused'      | [paused: true]
+        'toolSetRmRuleBoolean'   | [value: true]
+    }
+
+    def 'Easy Dashboard with a protected installed-app numeric ID reaches its own update endpoint'() {
+        given:
+        hubGet.register('/installedapp/statusJson/42') { '{"installedApp":{"id":42,"name":"Other app","systemAppType":false}}' }
+        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"id":42}' }
+        settingsMap.bypassDeviceAllowlist = true
+
+        when:
+        def result = script.toolUpdateDashboard([dashboardId: '42', name: 'Easy', deviceIds: ['1'],
+            options: [dashboardPin: '', hsmPin: '']])
+
+        then:
+        noExceptionThrown()
+        writes.contains('/dashboard/update')
+    }
+
 }

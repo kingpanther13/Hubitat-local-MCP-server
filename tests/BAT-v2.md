@@ -3007,6 +3007,20 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 **Expected**: Tool returns an `isError: true` MCP response with a message containing "Developer Mode tools are disabled" and pointing the user to the toggle. No setting is written. AI surfaces the message and asks the user to enable the toggle in the UI before retrying.
 
+### Protected apps — generic mutations versus dedicated self-administration
+
+Run on a dedicated test hub. Record the original Developer Mode, logging level and Protected apps selections. Do not use self-disable or self-delete as failure probes: a missing guard would terminate the endpoint needed for verification and cleanup. Fresh-install and upgrade default initialization, preservation of an intentionally empty list, and Developer Mode off/on refusal are also covered by the direct/dispatch specs.
+
+```json
+{
+  "setup_prompt": "Enable the Write master and Developer Mode in the app UI, with a recent backup. Read the MCP server's installed-app ID and raw settings using hub_get_app_config(includeSettings=true). Confirm its own ID is selected in Protected apps; if the admin deliberately removed it, stop this scenario without changing their selection. Record mcpLogLevel and all raw settings. Create one disposable native Rule Machine rule named 'BAT Protected App' containing only a Log Message action and no triggers or device references, then select that fixture in Protected apps using the UI.",
+  "test_prompt": "Inspect the protected test rule. Try renaming, disabling and deleting it, then try changing it through the rule editor. Explain each refusal and leave its configuration intact. Using the generic app editor, also try saving the MCP server's current logging level unchanged. Then use its dedicated developer settings tool to change the logging level temporarily and restore it. Verify that the protected apps list cannot be changed through that developer tool.",
+  "teardown_prompt": "Restore the original logging level and Protected apps selections through their authorized interfaces. Remove only the disposable BAT Protected App rule after unprotecting it in the UI; if a missing guard already deleted it, do not recreate or delete any other app. Restore the original Developer Mode value in the UI and verify the original MCP settings are unchanged."
+}
+```
+
+**Expected:** Reads remain available. Generic edit, disable, delete and `hub_set_rule` edits of the protected fixture fail with its installed-app ID and UI guidance, before any mutation, even with Developer Mode enabled. A same-value `hub_set_native_app` edit of the protected MCP instance is refused. `hub_update_mcp_settings` can change and restore the allowlisted logging level, but rejects `protectedAppIds`; it does not weaken protection. After manual removal of only the fixture from Protected apps, normal generic mutation and cleanup work. Repeat the fixture-only generic refusals with Developer Mode off; dedicated self-administration must then retain its existing refusal. Never disable/delete the MCP server itself.
+
 ### T220 — hub_update_mcp_settings flips a boolean setting end-to-end
 
 ```json

@@ -90,6 +90,8 @@
 // Code-derived metadata is valid for one compiled class, including same-version deploys:
 // recompilation resets statics without needing updated() or a contributor version bump.
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
+// Serialize the one-time protected-app default across concurrent endpoint handlers.
+@groovy.transform.Field static final Map PROTECTED_APPS_LOCK = new java.util.HashMap()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
@@ -207,6 +209,7 @@ preferences {
 }
 
 def mainPage() {
+    _protectedAppIds()
     dynamicPage(name: "mainPage", title: "MCP Rule Server", install: true, uninstall: true) {
         section("MCP Endpoint") {
             if (!state.accessToken) {
@@ -256,6 +259,13 @@ def mainPage() {
             href name: "advancedOverrides", page: "advancedOverridesPage",
                  title: "Advanced: Per-tool Overrides & expert settings",
                  description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and configure Origin validation."
+        }
+
+        section("Protected apps") {
+            input "protectedAppIds", "enum", title: "Protect installed apps from generic mutations",
+                  options: _protectedAppOptions(), multiple: true, required: false, submitOnChange: true,
+                  description: "Selected apps cannot be edited, controlled, disabled, or deleted through generic app/native-rule tools, even with Developer Mode on. Reads and dedicated Developer Mode maintenance remain available."
+            paragraph "The MCP server is selected by default. You can remove it or clear the list; later updates preserve your choice. Manage this list here in the Hubitat app UI."
         }
 
         section("Best-Practice Guidance") {
@@ -689,7 +699,109 @@ def uninstalled() {
     try { unschedule() } catch (Exception e) { /* best-effort teardown */ }
 }
 
+private String _protectedAppId(value) {
+    String id = value?.toString()?.trim()
+    return id?.isLong() && id.toLong() > 0L ? id.toLong().toString() : null
+}
+
+private Set<String> _protectedAppSelection(value) {
+    def values = value instanceof Collection ? value : (value == null ? [] : [value])
+    return values.collect { _protectedAppId(it) }.findAll { it != null } as Set
+}
+
+private Set<String> _protectedAppIds() {
+    if (atomicState.protectedAppsInitialized == true) return _protectedAppSelection(settings.protectedAppIds)
+    synchronized (PROTECTED_APPS_LOCK) {
+        if (atomicState.protectedAppsInitialized == true) return _protectedAppSelection(settings.protectedAppIds)
+        def selected = _protectedAppSelection(settings.protectedAppIds)
+        String selfId = _protectedAppId(app?.id)
+        if (!selfId) return selected
+        boolean hasSelection = settings.containsKey('protectedAppIds')
+        if (!hasSelection) selected.add(selfId)
+        try {
+            if (!hasSelection) app.updateSetting('protectedAppIds', [type: 'enum', value: selected as List])
+            atomicState.protectedAppsInitialized = true
+        } catch (Exception e) {
+            // Keep enforcing the default even if persistence fails; the next request retries.
+            mcpLog('warn', 'server', "Could not save protected-app defaults; protection remains active and initialization will retry: ${e.message}")
+        }
+        return selected
+    }
+}
+
+private Map _protectedAppOptions() {
+    def selected = _protectedAppIds()
+    def options = [:]
+    def apps = _collectLiveApps()
+    (apps ?: [:]).each { id, details ->
+        String key = _protectedAppId(id)
+        if (key) {
+            String label = details.name?.toString()?.replaceAll(/<[^>]+>/, '')?.trim() ?: 'Installed app'
+            options[key] = "${label} (ID ${key})".toString()
+        }
+    }
+    String selfId = _protectedAppId(app?.id)
+    if (selfId && !options.containsKey(selfId)) options[selfId] = "${app?.label ?: 'MCP Rule Server'} (ID ${selfId})".toString()
+    selected.each { id ->
+        if (!options.containsKey(id)) options[id] = "Unavailable app (ID ${id})".toString()
+    }
+    return options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) }
+}
+
+private void _requireUnprotectedAppMutation(Object targetId, String operation) {
+    String id = _protectedAppId(targetId)
+    if (id && _protectedAppIds().contains(id)) {
+        throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps in the MCP server's Hubitat app UI. Developer Mode does not bypass this protection for generic tools.")
+    }
+}
+
+private void _requireUnprotectedAppDeletion(Integer appId) {
+    _requireUnprotectedAppMutation(appId, "delete")
+    if (_protectedAppIds().isEmpty()) return
+    def parsed
+    try {
+        def text = hubInternalGet("/hub2/appsList")
+        parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: ${e.message}. No app was deleted.")
+    }
+    if (!(parsed instanceof Map) || !(parsed.apps instanceof List)) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is unavailable. No app was deleted.")
+    }
+    boolean found = false
+    boolean complete = true
+    def walk
+    walk = { node, boolean belowTarget ->
+        if (!(node instanceof Map) || (node.data != null && !(node.data instanceof Map)) ||
+                (node.children != null && !(node.children instanceof List))) {
+            complete = false
+            return
+        }
+        def rawId = node.data?.id != null ? node.data.id : node.id
+        Integer id = null
+        if (rawId != null) {
+            try {
+                if (!(rawId.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
+                id = rawId.toString().toInteger()
+            } catch (Exception ignored) { complete = false; return }
+        } else if (node.data) {
+            complete = false
+            return
+        }
+        boolean affected = belowTarget || id == appId
+        if (id == appId) found = true
+        if (affected && id != null) _requireUnprotectedAppMutation(id, "delete through parent app ${appId}")
+        (node.children ?: []).each { walk(it, affected) }
+    }
+    parsed.apps.each { walk(it, false) }
+    if (!found || !complete) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is incomplete or the target is missing. No app was deleted.")
+    }
+}
+
+
 def initialize() {
+    _protectedAppIds()
     // Stamp when THIS app instance came up. Any op record still marked "running" that
     // started before this stamp was written by an instance that no longer exists: its
     if (!state.accessToken) {
@@ -815,6 +927,7 @@ def handleMcpRequest() {
 
     _cleanupRetiredToolState()
     _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
+    _protectedAppIds()
     _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
@@ -10279,6 +10392,8 @@ Only query devices the user has mentioned or that are relevant to their request.
 ''',
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
+
+Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule mutations even with Developer Mode enabled. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list only in the Hubitat UI.
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 

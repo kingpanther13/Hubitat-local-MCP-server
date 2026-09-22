@@ -840,6 +840,8 @@ Additionally, tools that modify or delete existing apps/drivers automatically ba
 
 Under **Settings > Advanced: Per-tool Overrides**, you can disable individual tools or whole gateways **below** the masters — these only turn things OFF, never re-enable. A disabled tool (or every tool inside a disabled gateway, including tools shared across gateways) drops from `tools/list` and `hub_search_tools`, and a cached call returns a distinct error: "…is disabled in Advanced settings (Per-tool Overrides)…". A disabled tool stays documented in `hub_get_tool_guide`. Use **Reset all overrides** to clear them.
 
+The **Protected apps** picker on the main app page blocks generic app and native-rule mutations for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Manage the selection in the Hubitat app UI.
+
 Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[write]` marker, and a one-sentence description — so you can tell what you're disabling without decoding the bare names. The same friendly names are published on `tools/list` as MCP `annotations.title`, so clients that honor that field — claude.ai among them — display them in their tool lists too.
 
 **Tool name number** (off by default) inserts a digit after `hub` in every tool name the client sees (`hub_get_info` → `hub3_get_info`, including gateway sub-tools), so more than one hub's MCP server can be connected to the same client without name collisions. Reconnect the client after changing it.
