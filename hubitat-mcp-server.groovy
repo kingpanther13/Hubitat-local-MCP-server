@@ -716,10 +716,14 @@ private Set<String> _protectedAppIds() {
         def selected = _protectedAppSelection(settings.protectedAppIds)
         String selfId = _protectedAppId(app?.id)
         if (!selfId) return selected
-        boolean hasSelection = settings.containsKey('protectedAppIds')
+        boolean hasSelection = settings.protectedAppIds != null
         if (!hasSelection) selected.add(selfId)
         try {
-            if (!hasSelection) app.updateSetting('protectedAppIds', [type: 'enum', value: selected as List])
+            if (!hasSelection) {
+                app.updateSetting('protectedAppIds', [type: 'enum', value: selected as List])
+                // A handler can retain its old settings snapshot after updateSetting returns.
+                if (_protectedAppSelection(settings.protectedAppIds) != selected) return selected
+            }
             atomicState.protectedAppsInitialized = true
         } catch (Exception e) {
             // Keep enforcing the default even if persistence fails; the next request retries.
@@ -737,13 +741,13 @@ private Map _protectedAppOptions() {
         String key = _protectedAppId(id)
         if (key) {
             String label = details.name?.toString()?.replaceAll(/<[^>]+>/, '')?.trim() ?: 'Installed app'
-            options[key] = "${label} (ID ${key})".toString()
+            options.put(key, "${label} (ID ${key})".toString())
         }
     }
     String selfId = _protectedAppId(app?.id)
-    if (selfId && !options.containsKey(selfId)) options[selfId] = "${app?.label ?: 'MCP Rule Server'} (ID ${selfId})".toString()
+    if (selfId && !options.containsKey(selfId)) options.put(selfId, "${app?.label ?: 'MCP Rule Server'} (ID ${selfId})".toString())
     selected.each { id ->
-        if (!options.containsKey(id)) options[id] = "Unavailable app (ID ${id})".toString()
+        if (!options.containsKey(id)) options.put(id, "Unavailable app (ID ${id})".toString())
     }
     return options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) }
 }

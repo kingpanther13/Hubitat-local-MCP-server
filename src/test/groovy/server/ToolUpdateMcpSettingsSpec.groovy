@@ -42,6 +42,12 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         appExecutor.getApp() >> sharedAppStub
     }
 
+    def setup() {
+        // Validation assertions isolate settings writes from the one-time installation migration.
+        atomicStateMap.protectedAppsInitialized = true
+        settingsMap.protectedAppIds = [sharedAppStub.id.toString()]
+    }
+
     def cleanup() {
         sharedAppStub.settingsStore.clear()
     }

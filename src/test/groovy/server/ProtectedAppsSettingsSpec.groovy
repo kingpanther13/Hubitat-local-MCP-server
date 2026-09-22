@@ -17,6 +17,7 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
         ownApp.settingsStore.clear()
         ownApp.liveSettings = settingsMap
         ownApp.failUpdates = false
+        ownApp.publishUpdates = true
     }
 
     @Unroll
@@ -38,6 +39,29 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
 
         where:
         instanceId << [194L, 902L]
+    }
+
+    def "a delayed settings snapshot cannot leave the first request unprotected"() {
+        given:
+        ownApp.publishUpdates = false
+        settingsMap.protectedAppIds = null
+
+        expect:
+        script._protectedAppIds() == ['194'] as Set
+        atomicStateMap.protectedAppsInitialized != true
+
+        when:
+        script._requireUnprotectedAppMutation(194, 'edit')
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when:
+        settingsMap.protectedAppIds = ['194']
+
+        then:
+        script._protectedAppIds() == ['194'] as Set
+        atomicStateMap.protectedAppsInitialized == true
     }
 
     @Unroll
@@ -134,12 +158,13 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
     static class ProtectedSettingsApp extends TestChildApp {
         Map liveSettings
         boolean failUpdates
+        boolean publishUpdates = true
 
         @Override
         void updateSetting(String key, Map value) {
             if (failUpdates) throw new IllegalStateException('setting persistence failed')
             super.updateSetting(key, value)
-            liveSettings[key] = value.value
+            if (publishUpdates) liveSettings[key] = value.value
         }
     }
 }

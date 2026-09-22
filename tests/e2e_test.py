@@ -3140,7 +3140,7 @@ class TestRunner:
                     "args": {"appId": app_id, "disabled": disabled}})
                 assert result.get("success") is True, f"disable toggle failed: {result}"
                 assert result.get("disabled") is disabled, f"disable read-back wrong: {result}"
-                status = self._rm_rule_status_when(app_id, lambda row: row.get("disabled") is disabled)
+                status = self._rm_rule_status_when(app_id, lambda row, expected=disabled: row.get("disabled") is expected)
                 assert status.get("disabled") is disabled, f"rule listing has wrong disabled state: {status}"
         finally:
             self._delete_native(app_id)
