@@ -417,8 +417,10 @@ private Map _createLegacyDashboard(Map args) {
     try {
         resp = hubInternalGetRaw("/installedapp/createchild/hubitat/Dashboard/parent/${parentId}")
     } catch (Exception e) {
-        mcpLogError("dashboard", "legacy dashboard createchild failed", e)
-        return [success: false, error: "Failed to create the legacy dashboard: ${e.message}", note: "Nothing was created."]
+        mcpLogError("dashboard", "legacy dashboard createchild outcome unknown under parent ${parentId}", e)
+        return [success: false, outcome: "unknown", parentAppId: parentId,
+                error: "The legacy dashboard create request did not return successfully: ${e.message}",
+                note: "A dashboard may have been created under parent app ${parentId}. Inspect hub_list_dashboards and hub_list_apps for an unnamed Dashboard before retrying; retrying blindly may create a duplicate."]
     }
     def loc = resp?.location?.toString()
     // != null, not truthiness: Groovy coerces a Matcher to boolean via find(), which would consume

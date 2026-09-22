@@ -13,7 +13,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.enableRead = true
         settingsMap.protectedAppIds = ['42']
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: ['42']]
         stateMap.lastBackupTimestamp = 1234567890000L
         script.metaClass.hubInternalPostJson = { String path, String body, Integer timeout = 420 ->
             writes << path; '{}'
@@ -86,7 +86,8 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         def result = script.toolSetRule([appId: 42, addTrigger: [discover: true]])
 
         then:
-        result != null
+        result.discriminator == 'capability'
+        result.capabilities.find { it.name == 'Switch' }?.requiredFields*.name == ['deviceIds', 'state']
         writes.empty
     }
 
@@ -292,6 +293,117 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         result.route == 'createchild'
         writes == ['/installedapp/createchild/hubitat/Visual Rule Builder 2.0/parent/70']
         hubGet.calls.count { it.path == '/hub2/appsList' } == 1
+    }
+
+    def 'native creation refuses its discovered protected parent before creating a child'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":42,"type":"Rule Machine","installed":true},"children":[]}]}'
+        }
+
+        when:
+        script.toolSetNativeApp([appType: 'rule_machine', name: 'New rule', confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('protected')
+        e.message.contains('42')
+        hubGet.calls.any { it.path == '/hub2/appsList' }
+        writes.empty
+    }
+
+    @Unroll
+    def 'initial #operation refuses protected destination parent (resumable #resumable)'() {
+        given:
+        hubGet.register('/installedapp/configure/json/100') {
+            '{"app":{"id":100,"parentAppId":42,"label":"Source"},"settings":{},"configPage":{"sections":[]}}'
+        }
+        def args = operation == 'clone' ? [sourceAppId: 100, confirm: true] :
+            [parentHintAppId: 100, jsonContent: '{"appReplacements":{"100":{"appLabel":"Source"}}}', confirm: true]
+        def tool = "hub_${operation}_native_app".toString()
+        def rec = [outerTool: tool, leafTool: tool]
+
+        when:
+        if (resumable) {
+            if (operation == 'clone') script._mrtrCloneNativeAppSlice(rec, args)
+            else script._mrtrImportNativeAppSlice(rec, args)
+        } else {
+            if (operation == 'clone') script.toolCloneNativeApp(args)
+            else script.toolImportNativeApp(args)
+        }
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('protected')
+        e.message.contains('42')
+        writes.empty
+
+        where:
+        [operation, resumable] << [['clone', 'import'], [false, true]].combinations()
+    }
+
+    def 'restoring a deleted native rule refuses its protected replacement parent'() {
+        given:
+        hubGet.register('/installedapp/configure/json/100') { throw new IOException('404 deleted') }
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":42,"type":"Rule Machine","installed":true},"children":[]}]}'
+        }
+
+        when:
+        script._rmRestoreFromBackup([fileName: 'deleted-rule.json'],
+            [ruleId: 100, appType: 'rule_machine', appLabel: 'Deleted', configJson: [settings: [:]]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('protected')
+        e.message.contains('42')
+        writes.empty
+    }
+
+    @Unroll
+    def 'deletion refuses #problem app inventory before backup or deletion'() {
+        given:
+        hubGet.register('/hub2/appsList') { inventory }
+
+        when:
+        script.toolDeleteNativeApp([appId: 21, force: true, confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('protection')
+        writes.empty
+
+        where:
+        problem              | inventory
+        'non-list children'  | '{"apps":[{"data":{"id":21},"children":{}}]}'
+        'invalid child ID'   | '{"apps":[{"data":{"id":21},"children":[{"data":{"id":"bad"}}]}]}'
+        'missing target'     | '{"apps":[{"data":{"id":43}}]}'
+        'missing apps'       | '{}'
+        'non-list apps'      | '{"apps":{}}'
+    }
+
+    def 'unrelated protection still permits backed-up deletion of an unprotected app'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":42}},{"data":{"id":43},"children":[]}]}'
+        }
+        hubGet.register('/installedapp/configure/json/43') {
+            '{"app":{"id":43,"label":"Allowed","appType":{"name":"Rule-5.1"}},"settings":{},"configPage":{"sections":[]}}'
+        }
+        hubGet.register('/installedapp/statusJson/43') { '{"appState":[]}' }
+        def files = [:]
+        script.metaClass.uploadHubFile = { String name, byte[] content -> files[name] = content; writes << name }
+        script.metaClass.downloadHubFile = { String name -> files[name] }
+
+        when:
+        def result = script.toolDeleteNativeApp([appId: 43, force: true, confirm: true])
+
+        then:
+        result.success == true
+        result.backup.type == 'rm-rule'
+        !files.isEmpty()
+        writes.last() == '/installedapp/forcedelete/43/quiet'
+        !writes.contains('/installedapp/forcedelete/42/quiet')
     }
 
 }

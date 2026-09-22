@@ -265,7 +265,7 @@ def mainPage() {
             input "protectedAppIds", "enum", title: "Protect installed apps from generic mutations",
                   options: _protectedAppOptions(), multiple: true, required: false, submitOnChange: true,
                   description: "Selected apps cannot be edited, controlled, disabled, or deleted through generic app/native-rule tools, even with Developer Mode on. Reads and dedicated Developer Mode maintenance remain available."
-            paragraph "The MCP server is selected by default. You can remove it or clear the list; later updates preserve your choice. Manage this list here in the Hubitat app UI."
+            paragraph "The MCP server is selected by default. You can remove it or clear the list; later updates preserve your choice. Click Done to apply protection changes."
         }
 
         section("Best-Practice Guidance") {
@@ -628,6 +628,7 @@ def installed() {
 
 def updated() {
     log.info "MCP Rule Server updated"
+    _protectedAppIds(true)
     _invalidateToolMetadata()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         RETIRED_TOOL_STATE_CLEANED.clear()
@@ -709,10 +710,20 @@ private Set<String> _protectedAppSelection(value) {
     return values.collect { _protectedAppId(it) }.findAll { it != null } as Set
 }
 
-private Set<String> _protectedAppIds() {
-    if (atomicState.protectedAppsInitialized == true) return _protectedAppSelection(settings.protectedAppIds)
+private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
+    def policy = atomicState.protectedAppsPolicy
+    if (!applyUiSelection && policy instanceof Map && policy.ids instanceof List) {
+        return _protectedAppSelection(policy.ids)
+    }
     synchronized (PROTECTED_APPS_LOCK) {
-        if (atomicState.protectedAppsInitialized == true) return _protectedAppSelection(settings.protectedAppIds)
+        policy = atomicState.protectedAppsPolicy
+        if (policy instanceof Map && policy.ids instanceof List) {
+            if (applyUiSelection) {
+                policy = [ids: _protectedAppSelection(settings.protectedAppIds) as List]
+                atomicState.protectedAppsPolicy = policy
+            }
+            return _protectedAppSelection(policy.ids)
+        }
         def selected = _protectedAppSelection(settings.protectedAppIds)
         String selfId = _protectedAppId(app?.id)
         if (!selfId) return selected
@@ -721,10 +732,10 @@ private Set<String> _protectedAppIds() {
         try {
             if (!hasSelection) {
                 app.updateSetting('protectedAppIds', [type: 'enum', value: selected as List])
-                // A handler can retain its old settings snapshot after updateSetting returns.
-                if (_protectedAppSelection(settings.protectedAppIds) != selected) return selected
             }
-            atomicState.protectedAppsInitialized = true
+            // Publish initialization and its effective selection together: concurrent handlers
+            // may retain older settings snapshots. Only the UI's Done callback replaces it.
+            atomicState.protectedAppsPolicy = [ids: selected as List]
         } catch (Exception e) {
             // Keep enforcing the default even if persistence fails; the next request retries.
             mcpLog('warn', 'server', "Could not save protected-app defaults; protection remains active and initialization will retry: ${e.message}")
@@ -10397,7 +10408,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
 
-Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule mutations even with Developer Mode enabled. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list only in the Hubitat UI.
+Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule mutations even with Developer Mode enabled. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list in the Hubitat UI and click Done to apply it.
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 

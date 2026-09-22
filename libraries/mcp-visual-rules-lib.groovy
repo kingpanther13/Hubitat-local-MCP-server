@@ -125,8 +125,8 @@ private Map _vrbWithBareName(Map data, boolean graph) {
 private Map _vrbParentNode(boolean allowMissing = false) {
     // The "Visual Rules Builder" parent node in the /hub2/appsList installed-app tree. Its
     // children are the rules; its id is the parent every child-create route needs. Throws
-    // IllegalStateException when the parent app is not installed so the caller can return an
-    // actionable note.
+    // IllegalStateException when absent unless allowMissing is true; that mode returns null
+    // only after validating the inventory, so creation can safely distinguish absence from a failed read.
     def text = hubInternalGet("/hub2/appsList")
     if (!text) throw new IllegalStateException("Empty response from /hub2/appsList")
     def parsed = new groovy.json.JsonSlurper().parseText(text)

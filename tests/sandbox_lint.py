@@ -561,7 +561,7 @@ PERSISTED_STATE_INVENTORY = {
         "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy",
         "hubSecurityCookie", "hubSecurityCookieExpiry", "itemBackupManifest",
         "debugLogGeneration", "parentAppIds", "inUseHubVars", "variableHistory",
-        "hubVarsAppId", "predClearPending", "protectedAppsInitialized",
+        "hubVarsAppId", "predClearPending", "protectedAppsPolicy",
     },
 }
 # `(?<![.\w])` keeps a member chain such as node.state.x from reading as app state.

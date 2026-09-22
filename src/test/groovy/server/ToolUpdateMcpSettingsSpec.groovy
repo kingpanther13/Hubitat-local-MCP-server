@@ -44,7 +44,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     def setup() {
         // Validation assertions isolate settings writes from the one-time installation migration.
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: [sharedAppStub.id.toString()]]
         settingsMap.protectedAppIds = [sharedAppStub.id.toString()]
     }
 
@@ -902,7 +902,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         enableDeveloperModeAndAdminWrite()
         settingsMap.enableDeveloperMode = developerMode
         settingsMap.protectedAppIds = ['1']
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: ['1']]
 
         when:
         script.executeTool('hub_update_mcp_settings', [settings: [debugLogging: true, protectedAppIds: []], confirm: true])
@@ -921,7 +921,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         given:
         enableDeveloperModeAndAdminWrite()
         settingsMap.protectedAppIds = ['1']
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: ['1']]
 
         when:
         def result = script.executeTool('hub_update_mcp_settings', [settings: [debugLogging: true], confirm: true])
@@ -937,7 +937,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         given:
         enableDeveloperModeAndAdminWrite()
         settingsMap.protectedAppIds = ['1']
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: ['1']]
         if (gate == 'write') settingsMap.enableWrite = false
         if (gate == 'backup') stateMap.remove('lastBackupTimestamp')
 

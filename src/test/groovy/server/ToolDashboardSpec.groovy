@@ -1958,4 +1958,32 @@ class ToolDashboardSpec extends ToolSpecBase {
         inner.type == 'legacy'
         inner.applied == ['name']
     }
+    def "create legacy reports unknown outcome when the hub commits then loses the response"() {
+        given:
+        enableWrite()
+        registerLegacyParent(21)
+        def rawPaths = []
+        def committed = false
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int timeout = 30, boolean raw = false ->
+            rawPaths << path
+            committed = true
+            throw new IOException('connection reset after create')
+        }
+
+        when:
+        def result = script.toolCreateDashboard([name: 'Patio', type: 'legacy'])
+
+        then:
+        committed
+        result.success == false
+        result.outcome == 'unknown'
+        result.parentAppId == 21
+        result.note.contains('may have been created')
+        result.note.contains('hub_list_dashboards')
+        result.note.contains('hub_list_apps')
+        result.note.contains('before retrying')
+        !result.note.contains('Nothing was created')
+        rawPaths == ['/installedapp/createchild/hubitat/Dashboard/parent/21']
+    }
+
 }

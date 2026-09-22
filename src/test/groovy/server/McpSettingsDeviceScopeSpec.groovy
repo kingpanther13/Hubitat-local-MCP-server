@@ -41,7 +41,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
 
     def setup() {
         // Validation assertions isolate settings writes from the one-time installation migration.
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: [sharedAppStub.id.toString()]]
         settingsMap.protectedAppIds = [sharedAppStub.id.toString()]
     }
 

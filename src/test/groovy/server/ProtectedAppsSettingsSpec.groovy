@@ -28,10 +28,11 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
         expect:
         script._protectedAppIds() == [instanceId.toString()] as Set
         settingsMap.protectedAppIds == [instanceId.toString()]
-        atomicStateMap.protectedAppsInitialized == true
+        atomicStateMap.protectedAppsPolicy == [ids: [instanceId.toString()]]
 
         when:
         settingsMap.protectedAppIds = ['82']
+        script._protectedAppIds(true)
 
         then:
         script._protectedAppIds() == ['82'] as Set
@@ -48,7 +49,7 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
 
         expect:
         script._protectedAppIds() == ['194'] as Set
-        atomicStateMap.protectedAppsInitialized != true
+        atomicStateMap.protectedAppsPolicy == [ids: ['194']]
 
         when:
         script._requireUnprotectedAppMutation(194, 'edit')
@@ -61,31 +62,33 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
 
         then:
         script._protectedAppIds() == ['194'] as Set
-        atomicStateMap.protectedAppsInitialized == true
+        atomicStateMap.protectedAppsPolicy == [ids: ['194']]
     }
 
     @Unroll
     def "an initialized empty selection #selection stays empty"() {
         given:
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: ['194']]
         settingsMap.protectedAppIds = selection
+        script._protectedAppIds(true)
 
         expect:
         script._protectedAppIds().isEmpty()
+        atomicStateMap.protectedAppsPolicy == [ids: []]
         ownApp.settingsStore.isEmpty()
 
         where:
         selection << [[], null, '']
     }
 
-    def "an existing explicit selection is preserved when initializing the marker"() {
+    def "an existing explicit selection is preserved when initializing the policy"() {
         given:
         settingsMap.protectedAppIds = ['82', '91']
 
         expect:
         script._protectedAppIds() == ['82', '91'] as Set
         settingsMap.protectedAppIds == ['82', '91']
-        atomicStateMap.protectedAppsInitialized == true
+        atomicStateMap.protectedAppsPolicy == [ids: ['82', '91']]
     }
 
     def "failed default persistence still protects self and retries later"() {
@@ -94,21 +97,21 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
 
         expect:
         script._protectedAppIds() == ['194'] as Set
-        atomicStateMap.protectedAppsInitialized != true
+        atomicStateMap.protectedAppsPolicy == null
 
         when:
         ownApp.failUpdates = false
 
         then:
         script._protectedAppIds() == ['194'] as Set
-        atomicStateMap.protectedAppsInitialized == true
+        atomicStateMap.protectedAppsPolicy == [ids: ['194']]
         settingsMap.protectedAppIds == ['194']
     }
 
     @Unroll
     def "protection canonicalizes target #target and ignores developer mode #developer"() {
         given:
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: ['194']]
         settingsMap.protectedAppIds = ['194']
         settingsMap.enableDeveloperMode = developer
 
@@ -127,7 +130,7 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
 
     def "picker includes nested installed apps and preserves selected unavailable IDs"() {
         given:
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: ['194', '999']]
         settingsMap.protectedAppIds = ['194', '999']
         script.metaClass.hubInternalGet = { String path ->
             assert path == '/hub2/appsList'
@@ -146,13 +149,64 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
 
     def "unavailable inventory preserves current picker selections"() {
         given:
-        atomicStateMap.protectedAppsInitialized = true
+        atomicStateMap.protectedAppsPolicy = [ids: ['194', '82']]
         settingsMap.protectedAppIds = ['194', '82']
         script.metaClass.hubInternalGet = { String path -> throw new IOException('offline') }
 
         expect:
         script._protectedAppOptions().keySet().containsAll(['194', '82'])
         settingsMap.protectedAppIds == ['194', '82']
+    }
+
+    def "a pre-initialization request snapshot cannot bypass another request's published policy"() {
+        given:
+        def olderSnapshot = [:] + settingsMap
+        def currentSnapshot = [:] + settingsMap
+        currentSnapshot.protectedAppIds = ['194']
+        settingsMap.clear()
+        settingsMap.putAll(currentSnapshot)
+
+        when: 'the newer request publishes initialization'
+        script._protectedAppIds()
+        settingsMap.clear()
+        settingsMap.putAll(olderSnapshot)
+        script._requireUnprotectedAppMutation(194, 'edit')
+
+        then: 'the older handler reads the shared effective selection, not its stale null'
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('194')
+        atomicStateMap.protectedAppsPolicy == [ids: ['194']]
+        ownApp.settingsStore.isEmpty()
+    }
+
+    def "an old nonempty request snapshot cannot restore a selection cleared through the UI"() {
+        given:
+        atomicStateMap.protectedAppsPolicy = [ids: ['194']]
+        settingsMap.protectedAppIds = []
+
+        when:
+        script._protectedAppIds(true)
+        settingsMap.protectedAppIds = ['194']
+
+        then:
+        script._protectedAppIds().isEmpty()
+        atomicStateMap.protectedAppsPolicy == [ids: []]
+    }
+
+    def "Done publishes the UI selection and later request snapshots cannot override it"() {
+        given:
+        atomicStateMap.protectedAppsPolicy = [ids: ['194']]
+        settingsMap.protectedAppIds = ['82']
+        stateMap.customEngineMigrated = true
+        script.metaClass.initialize = { -> }
+
+        when:
+        script.updated()
+        settingsMap.protectedAppIds = ['194']
+
+        then:
+        atomicStateMap.protectedAppsPolicy == [ids: ['82']]
+        script._protectedAppIds() == ['82'] as Set
     }
 
     static class ProtectedSettingsApp extends TestChildApp {
