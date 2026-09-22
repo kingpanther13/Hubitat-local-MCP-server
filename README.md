@@ -818,8 +818,9 @@ Every MCP tool is gated by two universal masters — **Read** and **Write** — 
 2. Under **Tool Access (Read / Write masters)**, toggle:
    - **Enable Read Tools** — exposes every read-only / non-destructive tool (list/get/search/diagnostics, hub info, app/driver/source reads). With it OFF, those tools vanish from the client and a cached call is rejected with "Read tools are disabled…".
    - **Enable Write Tools** — exposes every state-changing tool (device control, modes, variables, rooms, files, native rules, hub admin). With it OFF, those tools vanish and a cached call is rejected with "Write tools are disabled…".
-3. If your hub has **Hub Security** enabled, also configure:
+3. On firmware **older than 2.5.0**, if your hub has **Hub Security** enabled, also configure:
    - **Hub Security Username** and **Password** under the Hub Security section
+   - On 2.5.0 and later this section is not shown, and no credentials are needed — see *Hub Security* below
 
 Both masters default ON — only an explicit OFF hides or blocks a class. (This replaces the former separate "Enable Hub Admin Read/Write Tools" and "Enable Built-in App Tools" toggles.)
 
@@ -872,15 +873,15 @@ When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hu
 </details>
 
 <details>
-<summary><b>Hub Security Support</b></summary>
+<summary><b>Hub Security</b></summary>
 
-If your hub has Hub Security enabled (login required for the web UI), the MCP server handles authentication automatically:
-- Configure your Hub Security username and password in the app settings
-- The server caches the session cookie for 30 minutes
-- Stale cookies are automatically cleared and re-authenticated
-- If Hub Security is not enabled, no credentials are needed
+**On firmware 2.5.0 and later, Hub Security has no effect on this server and no credentials are needed** — even with Hub Login Security enabled on your hub. Hubitat exempts an app's own loopback requests (`http://127.0.0.1:8080`) from the admin-UI login, and every hub tool here reaches the hub that way. The same admin routes that redirect a LAN browser to `/login` return data to this app.
 
-Native API authentication uses HTTP over loopback (`127.0.0.1`) inside the hub. Credentials and cookies are plaintext on that local connection, so it relies on a trusted hub operating system and installed code. Install only trusted apps/drivers and restrict hub administration; this connection does not protect credentials from a process able to inspect local traffic. The helper uses a fixed loopback address, not the LAN or cloud endpoint.
+Because those credentials did nothing, the Hub Security section is hidden on 2.5.0+. Any username and password previously stored are wiped and the toggle is forced off automatically -- on the first app save, or the first request from your MCP client, whichever comes first. You do not need to do anything; if you are looking for the section you configured before upgrading, this is where it went.
+
+**On firmware older than 2.5.0** the section still appears and still works. The exemption's exact introduction point is unknown, so the cutoff sits at a version that has been tested rather than the earliest that might work. If your hub is below 2.5.0 and has Hub Login Security enabled, configure the username and password there; the server caches the session cookie for 30 minutes and re-authenticates when it goes stale.
+
+Requests use the fixed loopback address inside the hub, never the LAN or cloud endpoint. That connection is plaintext, so it relies on a trusted hub operating system and installed code: install only trusted apps/drivers and restrict hub administration.
 
 </details>
 
@@ -1660,6 +1661,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.3.11** - chore: retire the Hub Security credential settings on firmware 2.5.0+. PRs: [#450](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/450)
 - **v4.3.10** - feat: rework hub_report_issue and record MCP client identity. PRs: [#442](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/442)
 - **v4.3.9** - fix: copy a variable into a String target through valStringOp. PRs: [#445](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/445)
 - **v4.3.8** - feat: optional digit suffix on hub tool names. PRs: [#444](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/444)

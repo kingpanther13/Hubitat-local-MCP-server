@@ -116,7 +116,7 @@ Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hu
 
 **Device allowlist bypass (`bypassDeviceAllowlist`, default OFF):**
 
-Native device operations require the MCP app's Hub Security credentials when Hub Security is enabled; without them, native reads and writes cannot authenticate.
+On firmware older than 2.5.0, native device operations use the MCP app's Hub Security credentials when Hub Security is enabled. On 2.5.0 and later no credentials are involved -- an app's loopback requests are exempt from the hub login.
 
 - The device tools normally resolve a `deviceId` only against the operator-selected device list (`selectedDevices`) plus MCP-managed virtual devices; an id outside that set returns `Device not found`.
 - Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope.

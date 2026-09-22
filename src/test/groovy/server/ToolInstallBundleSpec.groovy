@@ -395,6 +395,8 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         '2.4.0.0'    | true
         '3.0.0.0'    | true
         '2.3.10.0'   | true   // numeric: 10 > 8 (a lexical compare would wrongly say false)
+        'abc'        | false  // non-numeric segment scores 0 -> compares BELOW any real target
+        'v2.5.0'     | false  // ...including a 'v' prefix: blank is the only assume-modern case
         '2.3.8'      | false  // shorter -> trailing segment treated as 0, 0 < 108
         null         | true   // unreadable -> assume modern
         ''           | true

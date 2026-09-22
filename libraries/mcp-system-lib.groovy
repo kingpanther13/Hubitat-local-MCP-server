@@ -145,6 +145,9 @@ def toolGetHubInfo(args = null) {
 
     // Settings visibility (always available)
     info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    // Distinguishes a hub whose credentials were shed from one that never configured any --
+    // hubSecurityConfigured reads false for both, and the shed's log line can be filtered out.
+    info.hubSecurityRetired = (state.hubSecurityRetired == true)
     info.readEnabled = settings.enableRead != false
     info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true

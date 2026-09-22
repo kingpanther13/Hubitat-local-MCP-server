@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.3.10 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.3.11 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -284,15 +284,20 @@ def mainPage() {
             }
         }
 
-        section("Hub Security") {
-            paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
-                      "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
-            input "hubSecurityEnabled", "bool", title: "Hub Security Enabled",
-                  description: "Turn on if your hub has Hub Security (login) enabled",
-                  defaultValue: false, submitOnChange: true
-            if (settings.hubSecurityEnabled) {
-                input "hubSecurityUser", "text", title: "Hub Security Username", required: false
-                input "hubSecurityPassword", "password", title: "Hub Security Password", required: false
+        // Hidden on firmware >= hubSecurityRetiredFw() -- see that helper for why. Anything still
+        // stored is shed by the next save or MCP request; hiding it here only stops new entries.
+        // Older hubs still see and use the section.
+        if (!_hubSecurityObsolete()) {
+            section("Hub Security") {
+                paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
+                          "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
+                input "hubSecurityEnabled", "bool", title: "Hub Security Enabled",
+                      description: "Turn on if your hub has Hub Security (login) enabled",
+                      defaultValue: false, submitOnChange: true
+                if (settings.hubSecurityEnabled) {
+                    input "hubSecurityUser", "text", title: "Hub Security Username", required: false
+                    input "hubSecurityPassword", "password", title: "Hub Security Password", required: false
+                }
             }
         }
 
@@ -621,6 +626,7 @@ def updated() {
     // Shed the retired publication toggle and its migration marker on upgraded hubs.
     app.removeSetting("publishOutputSchemas")
     atomicState.remove("publishOutputSchemasForcedOff")
+    _retireHubSecuritySettings()
     _cleanupRetiredToolState()
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
     synchronized (TOOL_SEARCH_INDEX) { TOOL_SEARCH_INDEX.clear() }   // ...and the in-JVM index itself
@@ -808,6 +814,7 @@ def handleMcpRequest() {
     }
 
     _cleanupRetiredToolState()
+    _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
     _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
@@ -6580,13 +6587,28 @@ def getSelectedDevices() {
 
 // ==================== HUB SECURITY & INTERNAL API HELPERS ====================
 
-/**
- * Authenticate with Hub Security and return a session cookie.
- * Returns null if Hub Security is not enabled or credentials are not configured.
- * Caches the cookie for 30 minutes to avoid excessive login requests.
- */
 // Single source for the hub's internal API base URI (was an 11x-repeated literal).
 def hubBaseUri() { "http://127.0.0.1:8080" }
+
+def _firmwareAtLeast(fw, String target) {
+    // Compare dotted firmware versions segment-by-segment, numerically. Returns true when fw >=
+    // target. Missing/BLANK fw returns true (assume modern) -- safe where a newer endpoint is the
+    // right fallback. A non-numeric segment scores 0, so a wholly unparseable string compares BELOW
+    // any real target. A caller that must not assume modern gates the blank case itself
+    // (see _hubSecurityObsolete).
+    if (fw == null || !fw.toString().trim()) return true
+    def fwParts = fw.toString().trim().split("\\.")
+    def tgtParts = target.split("\\.")
+    int n = Math.max(fwParts.size(), tgtParts.size())
+    for (int i = 0; i < n; i++) {
+        String fwSeg = (i < fwParts.size()) ? fwParts[i] : "0"
+        String tgtSeg = (i < tgtParts.size()) ? tgtParts[i] : "0"
+        int a = fwSeg.isInteger() ? fwSeg.toInteger() : 0
+        int b = tgtSeg.isInteger() ? tgtSeg.toInteger() : 0
+        if (a != b) return a > b
+    }
+    return true  // all segments equal -> >= holds
+}
 
 // Timeout rationale: reads are fast localhost fetches; writes (native-RM wizard steps,
 // large app/driver/library save+compile) can legitimately take minutes.
@@ -6663,7 +6685,68 @@ def _parseSinceArg(since) {
     return null
 }
 
+// Firmware at which the Hub Security credential settings are retired. Hubitat exempts an
+// app's own loopback requests to 127.0.0.1:8080 from the admin-UI login (Hubitat staff,
+// community topic 143694, 2024-10-14), so these credentials do nothing: verified live on
+// 2.5.1.181 with Hub Login Security enforcing -- /hub/advanced/*, /hub2/hubData and
+// /hub/details/json all 302 a LAN browser to /login while returning real data through
+// hubInternal*. The exact firmware that introduced the exemption is unknown, so the gate sits
+// at a version we have actually tested rather than the earliest that might work.
+def hubSecurityRetiredFw() { "2.5.0" }
+
+// Blank/unreadable firmware must NOT count as modern here: _firmwareAtLeast assumes modern for a
+// blank string, which would wipe a working install's credentials on a hub we could not identify.
+private boolean _hubSecurityObsolete() {
+    String fw = null
+    def readErr = null
+    try { fw = location?.hub?.firmwareVersionString?.toString()?.trim() } catch (Exception e) { readErr = e }
+    if (!fw) {
+        // Announce a THROWN read once -- an absent/blank version is a normal unknown, but an
+        // exception is the case the catch would otherwise swallow. Once, because this runs on
+        // every hubInternal* call.
+        if (readErr != null && state.hubSecurityFwUnreadable != true) {
+            state.hubSecurityFwUnreadable = true
+            mcpLog("warn", "hub-admin", "Could not read the firmware version (${readErr.class.simpleName}: ${readErr.message}); keeping the Hub Security credential path (it retires on ${hubSecurityRetiredFw()}+)")
+        }
+        return false
+    }
+    return _firmwareAtLeast(fw, hubSecurityRetiredFw())
+}
+
+// Also called from every MCP request, not only updated(): updated() fires on a manual save, so a
+// hub whose package or firmware crossed the cutoff and whose page is never opened would keep the
+// dead credentials on disk. state.hubSecurityRetired makes it one-shot on a retired hub; below the
+// cutoff the marker is never stamped, so each request re-reads the firmware string.
+private void _retireHubSecuritySettings() {
+    if (state.hubSecurityRetired == true) return
+    if (!_hubSecurityObsolete()) return
+    boolean had = (settings.hubSecurityEnabled == true) || settings.hubSecurityUser || settings.hubSecurityPassword
+    try {
+        // Credentials first: a partial failure then errs toward "secrets gone, toggle still on"
+        // rather than "toggle off, password still on disk".
+        app.removeSetting("hubSecurityUser")
+        app.removeSetting("hubSecurityPassword")
+        app.updateSetting("hubSecurityEnabled", [type: "bool", value: false])
+        atomicState.remove("hubSecurityCookie")
+        atomicState.remove("hubSecurityCookieExpiry")
+        state.hubSecurityRetired = true
+    } catch (Exception e) {
+        // This rides the request path; a cosmetic shed must never fail the request it arrived on.
+        _cleanupError("hub-admin", "Hub Security credential shed failed; stored credentials may remain on disk (they are inert on firmware ${hubSecurityRetiredFw()}+): ${_cleanupFailureDetail(e)}")
+        return
+    }
+    if (had) {
+        // warn, not info: an irreversible deletion the user did not ask for. The default log level
+        // is "error", so even this can be filtered out -- hub_get_info.hubSecurityRetired and the
+        // bug report carry the durable, level-independent record.
+        mcpLog("warn", "hub-admin", "Hub Security credentials retired on firmware ${hubSecurityRetiredFw()}+ (an app's loopback requests are exempt from hub login; the stored credentials were unused)")
+    }
+}
+
+// Returns null on retired firmware, when Hub Security is off, or when credentials are not
+// configured; otherwise a session cookie cached for 30 minutes.
 def getHubSecurityCookie() {
+    if (_hubSecurityObsolete()) return null
     if (!settings.hubSecurityEnabled) return null
     if (!settings.hubSecurityUser || !settings.hubSecurityPassword) {
         mcpLog("warn", "hub-admin", "Hub Security is enabled but credentials are not configured")
@@ -9384,7 +9467,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.3.10"
+    return "4.3.11"
 }
 
 
@@ -9789,7 +9872,7 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
-`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. Native device operations require the MCP app's Hub Security credentials when Hub Security is enabled; without them, native reads and writes cannot authenticate. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; only a device the bulk read does not cover costs a per-device read (capped at 20 for the resources, with the rest reported as state unavailable). One unreadable device no longer fails `hub_list_devices`: it is listed with `metadataUnavailable: true`, excluded from any active filter, named in `metadataUnavailableIds`, and the response carries `partial: true`; a bypass inventory whose id set could not be vouched for is returned with `idsComplete: false` instead of an error. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
+`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. On firmware older than 2.5.0, native device operations use the MCP app's Hub Security credentials when Hub Security is enabled. On 2.5.0 and later no credentials are involved -- an app's loopback requests are exempt from the hub login. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; only a device the bulk read does not cover costs a per-device read (capped at 20 for the resources, with the rest reported as state unavailable). One unreadable device no longer fails `hub_list_devices`: it is listed with `metadataUnavailable: true`, excluded from any active filter, named in `metadataUnavailableIds`, and the response carries `partial: true`; a bypass inventory whose id set could not be vouched for is returned with `idsComplete: false` instead of an error. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
 
 **selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
 
