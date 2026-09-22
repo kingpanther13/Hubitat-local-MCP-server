@@ -122,7 +122,7 @@ private Map _vrbWithBareName(Map data, boolean graph) {
     return data
 }
 
-private Map _vrbParentNode() {
+private Map _vrbParentNode(boolean allowMissing = false) {
     // The "Visual Rules Builder" parent node in the /hub2/appsList installed-app tree. Its
     // children are the rules; its id is the parent every child-create route needs. Throws
     // IllegalStateException when the parent app is not installed so the caller can return an
@@ -130,8 +130,13 @@ private Map _vrbParentNode() {
     def text = hubInternalGet("/hub2/appsList")
     if (!text) throw new IllegalStateException("Empty response from /hub2/appsList")
     def parsed = new groovy.json.JsonSlurper().parseText(text)
+    if (allowMissing && (!(parsed instanceof Map) || !(parsed.apps instanceof List) ||
+            !parsed.apps.every { it instanceof Map && it.data instanceof Map &&
+                (it.data.id?.toString() ==~ /[1-9][0-9]*/) && it.data.type instanceof String && it.data.type })) {
+        throw new IllegalStateException("Cannot verify Visual Rules Builder parent: the app inventory is malformed.")
+    }
     def parent = (parsed?.apps ?: []).find { it?.data?.type == "Visual Rules Builder" }
-    if (parent == null) {
+    if (parent == null && !allowMissing) {
         throw new IllegalStateException("The Visual Rules Builder parent app is not installed on this hub. Install it via Apps -> Add Built-In App -> Visual Rules Builder, then retry.")
     }
     return parent
@@ -174,9 +179,12 @@ private List _vrbNewChildIds(Collection before) {
 }
 
 private Map _vrbCreateChild(String version) {
-    // Check outside the fallback catch: an authorization refusal must not trigger another create route.
-    if (!_protectedAppIds().isEmpty()) {
-        _requireUnprotectedAppMutation(_vrbParentNode().data.id, "create a visual rule under")
+    // Resolve once outside the fallback catch: unknown inventory or an authorization refusal
+    // must not trigger another create route, while a confirmed absent parent may bootstrap.
+    boolean checkProtection = !_protectedAppIds().isEmpty()
+    def checkedParent = checkProtection ? _vrbParentNode(true) : null
+    if (checkedParent != null) {
+        _requireUnprotectedAppMutation(checkedParent.data.id, "create a visual rule under")
     }
     // The VRB parent offers a per-VERSION child-create route, so the DEFINITION picks which
     // builder the new rule runs instead of the firmware picking for us:
@@ -193,7 +201,8 @@ private Map _vrbCreateChild(String version) {
     def before = [] as Set
     def parentSeen = false
     try {
-        def parent = _vrbParentNode()
+        def parent = checkProtection ? checkedParent : _vrbParentNode()
+        if (parent == null) throw new IllegalStateException("The Visual Rules Builder parent is not installed yet")
         parentSeen = true
         before = ((parent.children ?: []).collect { it?.data?.id?.toString() }.findAll { it }) as Set
         def path = "/installedapp/createchild/hubitat/Visual Rule Builder ${version}/parent/${parent.data.id}".toString()

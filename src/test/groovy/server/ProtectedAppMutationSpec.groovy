@@ -215,4 +215,83 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         writes.contains('/dashboard/update')
     }
 
+    def 'visual child creation bootstraps a confirmed absent parent with default self protection'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}}]}'
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
+            writes << path
+            [status: 200, data: '<script>HubitatRuleBuilder20AppId = 73;</script>']
+        }
+
+        when:
+        def result = script._vrbCreateChild('2.0')
+
+        then:
+        result.appId == 73
+        result.route == 'createVisualRuleBuilderRule'
+        writes == ['/app/createVisualRuleBuilderRule']
+        hubGet.calls.count { it.path == '/hub2/appsList' } == 1
+    }
+
+    @Unroll
+    def 'visual child creation cannot bootstrap through #failure inventory when app protection is enabled'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            if (failure == 'unreadable') throw new IOException('offline')
+            response
+        }
+
+        when:
+        script._vrbCreateChild('2.0')
+
+        then:
+        thrown(Exception)
+        writes.empty
+
+        where:
+        failure       | response
+        'unreadable'  | null
+        'empty'       | ''
+        'malformed'   | '{"apps":null}'
+        'incomplete'  | '{"apps":[{"data":{"id":42}}]}'
+    }
+
+    def 'visual child creation refuses a protected parent without fallback'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":42,"type":"Visual Rules Builder"},"children":[]}]}'
+        }
+
+        when:
+        script._vrbCreateChild('2.0')
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('protected')
+        writes.empty
+        hubGet.calls.count { it.path == '/hub2/appsList' } == 1
+    }
+
+    def 'visual child creation checks an existing unprotected parent once'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":70,"type":"Visual Rules Builder"},"children":[]}]}'
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
+            writes << path
+            [status: 302, location: '/installedapp/configure/73']
+        }
+
+        when:
+        def result = script._vrbCreateChild('2.0')
+
+        then:
+        result.appId == 73
+        result.route == 'createchild'
+        writes == ['/installedapp/createchild/hubitat/Visual Rule Builder 2.0/parent/70']
+        hubGet.calls.count { it.path == '/hub2/appsList' } == 1
+    }
+
 }
