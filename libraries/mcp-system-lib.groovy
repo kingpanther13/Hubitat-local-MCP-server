@@ -507,30 +507,90 @@ private List _meshRefreshIntervals() {
     return [0, 120, 300, 3600]
 }
 
+// Structured failure envelope shared by the four hub_update_hub_mesh legs (each an independent
+// hub call, so a mid-way failure leaves the earlier legs committed). `whatFailed` is the human
+// phrase for the error line; `recoveryNote` is appended after the already-applied prefix. `detail`
+// may be a Throwable (its message is used) or a plain string (e.g. an _unparseable body message).
+private Map _meshLegFailure(List applied, String whatFailed, detail, String recoveryNote) {
+    def msg = (detail instanceof Throwable) ? detail.message : detail?.toString()
+    return [success: false,
+            error: "${whatFailed}: ${msg}",
+            applied: applied,
+            note: (applied ? "Already applied: ${applied.join(', ')}. " : "") + recoveryNote]
+}
+
+// Detect a Hub-Security auth redirect that hubInternalGet silently FOLLOWED to a 200 login page.
+// The mesh GET legs (enable/disable, followModes, setHubMeshFullRefreshInterval) succeed with an
+// EMPTY body or a short plain-text message ("Hub mesh enabled, please reboot the hub."), never HTML
+// -- so a body carrying login-page markup means the session cookie was stale (the hub 302s to
+// /login, which is NOT a 401/403, so shouldRetryWithFreshCookie never refreshes it) and the "success"
+// is really an unauthenticated redirect. hubInternalPostJson already flags this as _unparseable for
+// the POST leg; the GETs return the raw string, so they need this explicit check to avoid recording a
+// false success. NOTE: this is a systemic hubInternalGet behaviour (every GET caller shares it), not
+// mesh-specific -- flagged upstream for a possible central fix; this guard covers the mesh legs today.
+private boolean _meshResponseIsAuthPage(body) {
+    if (!body) return false
+    def s = body.toString().toLowerCase()
+    return s.contains("<html") || s.contains("<!doctype") || s.contains("loginredirect") ||
+           (s.contains("password") && s.contains("<form"))
+}
+
 def toolGetHubMesh(args = null) {
     args = args ?: [:]
+    // include_token must be an actual boolean -- a string "true" must not silently return no token
+    // (mirror hub_update_hub_mesh's strict boolean handling for `enabled`).
+    if (args.containsKey("include_token") && !(args.include_token instanceof Boolean)) {
+        throw new IllegalArgumentException("include_token must be a boolean (true or false), got: ${args.include_token}")
+    }
     boolean includeToken = (args.include_token == true)
 
-    def parsed = null
+    // A degraded Hub Mesh read is not a hard tool failure -- it returns the structured success:false
+    // contract below -- but an operator watching logs still needs to see WHY it degraded, so these use
+    // warn (the codebase's common level for a handled degradation). The three failure modes get
+    // distinct diagnoses instead of one catch conflating them.
+
+    // (a) HTTP round-trip: a throw here is an unreachable endpoint or a firmware that lacks the
+    // /hub2/hubMeshJson surface entirely -- NOT a body that came back and failed to parse.
+    String raw
     try {
-        def raw = hubInternalGet("/hub2/hubMeshJson")
-        parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        raw = hubInternalGet("/hub2/hubMeshJson")
     } catch (Exception e) {
-        // warn, not debug: the default log threshold is "error", so a debug line would be
-        // invisible -- and an unreachable/changed /hub2/hubMeshJson is exactly the cause an
-        // operator needs when the Hub Mesh read degrades.
-        mcpLog("warn", "server", "hub_get_hub_mesh /hub2/hubMeshJson read/parse failed: ${e.message}")
+        mcpLog("warn", "server", "hub_get_hub_mesh /hub2/hubMeshJson request failed: ${e.message}")
         return [success: false,
                 error: "Could not read Hub Mesh config (/hub2/hubMeshJson): ${e.message}",
                 note: "The hub firmware may predate Hub Mesh, or the endpoint was unreachable. " +
                       "Verify the hub responds and that this is a Hub Mesh-capable firmware; " +
                       "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
     }
-    if (!(parsed instanceof Map)) {
-        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson returned an unrecognized shape")
+
+    // (b) Empty body: the request succeeded but returned nothing -- its own branch so it is not
+    // mis-diagnosed as a firmware/parse problem.
+    if (!raw?.trim()) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson returned an empty body")
         return [success: false,
-                error: "Unexpected /hub2/hubMeshJson response; it did not parse as a JSON object.",
-                note: "The hub firmware may predate Hub Mesh, or the endpoint was unreachable. " +
+                error: "The /hub2/hubMeshJson response was empty.",
+                note: "The endpoint returned no data -- the hub may be busy or mid-reboot; retry shortly. " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+
+    // (c) Non-empty body that does not parse as JSON: a changed shape or a non-JSON page (e.g. an
+    // auth/login redirect), NOT "firmware predates Hub Mesh".
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(raw)
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson body did not parse as JSON: ${e.message}")
+        return [success: false,
+                error: "The /hub2/hubMeshJson response did not parse as JSON: ${e.message}",
+                note: "The hub returned a non-JSON body (often an auth/login redirect); verify Hub Security " +
+                      "credentials and that the hub is reachable. " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+    if (!(parsed instanceof Map)) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson parsed to a non-object shape")
+        return [success: false,
+                error: "Unexpected /hub2/hubMeshJson response; it parsed as JSON but not as an object.",
+                note: "The endpoint returned an unrecognized shape (a JSON array or scalar). " +
                       "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
     }
 
@@ -561,16 +621,30 @@ def toolGetHubMesh(args = null) {
         privateDeviceCount: privateDevices.size(),
         localHubVariableCount: localHubVariables.size()
     ]
-    // The mesh token authenticates a peer hub against THIS hub -- a credential, so it is
-    // opt-in rather than part of the default read.
-    if (includeToken) result.hubMeshToken = parsed.hubMeshToken?.toString()
-
     String note = "privateDeviceCount/localHubVariableCount are counts only: use hub_list_devices " +
                   "for the full device inventory and hub_list_variables for hub variables."
     if (enabled == false) {
         note = "Hub Mesh is DISABLED on this hub. Enable it with hub_update_hub_mesh(enabled=true), " +
                "then reboot the hub (hub_reboot) for the change to take effect. " + note
     }
+    // Signal which scalars the hub reported as null/wrong-typed (mapped to null above) so a caller can
+    // tell "unreadable" from a confident value -- same intent as _platformUpdateFromHub2's null signal.
+    def unreadable = []
+    if (enabled == null) unreadable << "hubMeshEnabled"
+    if (interval == null) unreadable << "fullRefreshInterval"
+    if (unreadable) {
+        note += " Reported null by this firmware (unreadable, not confirmed): ${unreadable.join(', ')}."
+    }
+
+    // The mesh token authenticates a peer hub against THIS hub -- a credential, so it is
+    // opt-in rather than part of the default read.
+    if (includeToken) {
+        result.hubMeshToken = parsed.hubMeshToken?.toString()
+        if (result.hubMeshToken == null) {
+            note += " include_token was set but the hub reported no mesh token (hubMeshToken is null)."
+        }
+    }
+
     result.note = note
     return result
 }
@@ -579,7 +653,7 @@ def toolUpdateHubMesh(args) {
     args = args ?: [:]
     def settable = ["enabled", "full_refresh_interval", "mode_hub_id", "peer_hub_id", "peer_token"]
 
-    // VALIDATION FIRST -- every check below runs before ANY hub call, so a -32602 rejection
+    // VALIDATION FIRST -- every check below runs before ANY hub call, so a validation rejection
     // can be corrected and retried without having half-applied something.
     if (!settable.any { args.containsKey(it) }) {
         throw new IllegalArgumentException(
@@ -594,9 +668,17 @@ def toolUpdateHubMesh(args) {
     if (args.containsKey("full_refresh_interval")) {
         def raw = args.full_refresh_interval
         if (raw instanceof Number) {
+            // Reject a fractional value rather than silently truncating it into the enum
+            // (300.7 -> 300), consistent with the strict string branch below.
+            if (raw != raw.intValue()) {
+                throw new IllegalArgumentException(
+                    "full_refresh_interval must be a whole number of seconds " +
+                    "(one of ${_meshRefreshIntervals().join(', ')}), got: ${raw}")
+            }
             interval = raw.intValue()
-        } else if (raw != null && raw.toString().trim().isInteger()) {
-            interval = raw.toString().trim().toInteger()
+        } else if (raw != null) {
+            def s = raw.toString().trim()
+            if (s.isInteger()) interval = s.toInteger()
         }
         if (!(interval in _meshRefreshIntervals())) {
             throw new IllegalArgumentException(
@@ -620,9 +702,22 @@ def toolUpdateHubMesh(args) {
     }
 
     String modeHubId = args.mode_hub_id?.toString()?.trim()
-    if (args.containsKey("mode_hub_id") && !modeHubId) {
-        throw new IllegalArgumentException(
-            "mode_hub_id must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
+    if (args.containsKey("mode_hub_id")) {
+        if (!modeHubId) {
+            throw new IllegalArgumentException(
+                "mode_hub_id must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
+        }
+        // Shape-gate before it reaches the /device/followModes/<x> path: accept only 'none', a UUID,
+        // or an all-digits id -- the forms peers[].hubId takes. This rejects path-traversal / injection
+        // payloads up front (the segment is also URL-encoded at the call site as defence in depth).
+        boolean validMode = (modeHubId == "none") ||
+                            modeHubId.matches(/\d+/) ||
+                            modeHubId.matches(/(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)
+        if (!validMode) {
+            throw new IllegalArgumentException(
+                "mode_hub_id must be 'none', a UUID, or an all-digits hubId (from hub_get_hub_mesh " +
+                "peers[].hubId), got: ${args.mode_hub_id}")
+        }
     }
 
     def applied = []
@@ -632,60 +727,90 @@ def toolUpdateHubMesh(args) {
     if (args.containsKey("enabled")) {
         boolean on = (args.enabled == true)
         try {
-            hubInternalGet(on ? "/hub/advanced/enableHubMesh" : "/hub/advanced/disableHubMesh")
+            def resp = hubInternalGet(on ? "/hub/advanced/enableHubMesh" : "/hub/advanced/disableHubMesh")
+            if (_meshResponseIsAuthPage(resp)) {
+                mcpLogError("hub-admin", "hub_update_hub_mesh enable/disable got an auth/login page (stale Hub Security session)")
+                return _meshLegFailure(applied, "Failed to ${on ? 'enable' : 'disable'} Hub Mesh",
+                        "the hub returned a login page (Hub Security session expired), so the change was NOT applied",
+                        "Verify Hub Security credentials, then retry. Read the current state with hub_get_hub_mesh.")
+            }
             applied << "enabled"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh enable/disable failed", e)
-            return [success: false, error: "Failed to ${on ? 'enable' : 'disable'} Hub Mesh: ${e.message}",
-                    applied: applied, note: "Nothing else was attempted. Read the current state with hub_get_hub_mesh."]
+            return _meshLegFailure(applied, "Failed to ${on ? 'enable' : 'disable'} Hub Mesh", e,
+                    "Nothing else was attempted. Read the current state with hub_get_hub_mesh.")
         }
     }
 
     if (interval != null) {
         try {
-            hubInternalGet("/device/setHubMeshFullRefreshInterval/${interval}")
+            def resp = hubInternalGet("/device/setHubMeshFullRefreshInterval/${interval}")
+            if (_meshResponseIsAuthPage(resp)) {
+                mcpLogError("hub-admin", "hub_update_hub_mesh full-refresh interval got an auth/login page (stale Hub Security session)")
+                return _meshLegFailure(applied, "Failed to set the Hub Mesh full-refresh interval",
+                        "the hub returned a login page (Hub Security session expired), so the interval was NOT changed",
+                        "Verify Hub Security credentials, then retry. Read the current state with hub_get_hub_mesh.")
+            }
             applied << "full_refresh_interval"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh full-refresh interval failed", e)
-            return [success: false, error: "Failed to set the Hub Mesh full-refresh interval: ${e.message}",
-                    applied: applied,
-                    note: (applied ? "Already applied: ${applied}. " : "") +
-                          "The interval was not changed. Read the current state with hub_get_hub_mesh."]
+            return _meshLegFailure(applied, "Failed to set the Hub Mesh full-refresh interval", e,
+                    "The interval was not changed. Read the current state with hub_get_hub_mesh.")
         }
     }
 
-    if (modeHubId) {
+    if (args.containsKey("mode_hub_id")) {
         try {
-            hubInternalGet("/device/followModes/${modeHubId}")
+            // URL-encode the segment as defence in depth (the value is already shape-validated to
+            // 'none' / UUID / digits, which all encode to themselves).
+            def resp = hubInternalGet("/device/followModes/${java.net.URLEncoder.encode(modeHubId, 'UTF-8')}")
+            if (_meshResponseIsAuthPage(resp)) {
+                mcpLogError("hub-admin", "hub_update_hub_mesh followModes got an auth/login page (stale Hub Security session)")
+                return _meshLegFailure(applied, "Failed to set the mode-following hub",
+                        "the hub returned a login page (Hub Security session expired), so mode following was NOT changed",
+                        "Verify Hub Security credentials, then retry. Valid values are a peer hubId from " +
+                        "hub_get_hub_mesh peers[].hubId, or 'none'.")
+            }
             applied << "mode_hub_id"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh followModes failed", e)
-            return [success: false, error: "Failed to set the mode-following hub: ${e.message}",
-                    applied: applied,
-                    note: (applied ? "Already applied: ${applied}. " : "") +
-                          "Mode following was not changed. Valid values are a peer hubId from " +
-                          "hub_get_hub_mesh peers[].hubId, or 'none'."]
+            return _meshLegFailure(applied, "Failed to set the mode-following hub", e,
+                    "Mode following was not changed. Valid values are a peer hubId from " +
+                    "hub_get_hub_mesh peers[].hubId, or 'none'.")
         }
     }
 
     if (hasPeerId) {
         // The Vue page posts the hubId as the NUMBER it read out of hubMeshJson, so preserve that
-        // type for an all-digits id -- a quoted string is a different JSON value to the hub.
-        def hubIdValue = peerHubId.matches(/\d+/) ? peerHubId.toLong() : peerHubId
+        // type for an all-digits id -- a quoted string is a different JSON value to the hub. isLong()
+        // (not a \d+ match) so an OVERSIZED all-digits id passes through as a string instead of
+        // throwing NumberFormatException after earlier legs have already committed.
+        def hubIdValue = peerHubId.isLong() ? peerHubId.toLong() : peerHubId
+        def postResult
         try {
-            hubInternalPostJson("/device/setHubMeshToken",
+            postResult = hubInternalPostJson("/device/setHubMeshToken",
                 groovy.json.JsonOutput.toJson([hubId: hubIdValue, token: peerToken]))
-            applied << "peer_token"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken failed", e)
-            return [success: false, error: "Failed to store the peer hub's mesh token: ${e.message}",
-                    applied: applied,
-                    note: (applied ? "Already applied: ${applied}. " : "") +
-                          "The peer token was not stored. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId."]
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token", e,
+                    "The peer token was not stored. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
         }
+        // setHubMeshToken returns HTTP 200 with an empty {} JSON body on real success. An _unparseable
+        // result means a non-JSON body (e.g. an HTML login page from an unauthenticated redirect) -- a
+        // failure, so do NOT record peer_token as applied.
+        if (postResult instanceof Map && postResult._unparseable == true) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned a non-JSON body: ${postResult.message}")
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token", postResult.message,
+                    "The hub returned a non-JSON response (often an auth/login redirect); the token was not stored. " +
+                    "Verify Hub Security credentials and peer_hub_id against hub_get_hub_mesh peers[].hubId.")
+        }
+        applied << "peer_token"
     }
 
-    String note = "Read back the current values with hub_get_hub_mesh."
+    // `applied` lists what was SENT to the hub (a 2xx), not read back as changed -- the GET legs
+    // return no post-change value to confirm against, so steer the caller to the read-back.
+    String note = "Each entry in `applied` was sent to the hub (accepted with a 2xx), not confirmed as " +
+                  "changed -- read back the current values with hub_get_hub_mesh."
     if (args.containsKey("enabled")) {
         note += " Enabling/disabling Hub Mesh requires a hub REBOOT to take effect " +
                 "(hub_reboot in hub_manage_destructive_ops) -- the tool itself does not reboot."
@@ -1207,7 +1332,7 @@ def _getAllToolDefinitions_partSystem() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    include_token: [type: "boolean", description: "Also return this hub's mesh token (a credential; off by default).[[FLAT_TRIM]] Needed when a peer hub has UI login security and must be given this hub's token.[[/FLAT_TRIM]]"]
+                    include_token: [type: "boolean", description: "Also return this hub's mesh token (a credential; off by default).[[FLAT_TRIM]] A peer hub needs it to reach THIS hub when THIS hub has UI login security.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
@@ -1218,7 +1343,7 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     enabled: [type: "boolean", description: "Hub Mesh on/off. ⚠️ Needs a hub reboot to take effect."],
-                    full_refresh_interval: [type: "integer", enum: [0, 120, 300, 3600], description: "Full-sync interval in seconds; 0 = never."],
+                    full_refresh_interval: [type: "integer", enum: _meshRefreshIntervals(), description: "Full-sync interval in seconds; 0 = never."],
                     mode_hub_id: [type: "string", description: "Peer hubId whose modes to follow, or 'none' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
                     peer_hub_id: [type: "string", description: "Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
                     peer_token: [type: "string", description: "That peer's mesh token; send with peer_hub_id.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]]"]

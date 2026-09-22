@@ -12081,6 +12081,14 @@ class TestRunner:
         assert "hubMeshToken" not in res, \
             "hub_get_hub_mesh returned hubMeshToken without include_token=true"
 
+        # include_token=true surfaces the credential KEY. Prove the flag works by presence ONLY --
+        # the token is a secret, so its value is never asserted, printed, or otherwise captured.
+        with_token = self.client.call_tool("hub_get_hub_mesh", {"include_token": True})
+        assert isinstance(with_token, dict) and with_token.get("success") is True, \
+            f"hub_get_hub_mesh(include_token=true) did not succeed: {sorted(with_token) if isinstance(with_token, dict) else type(with_token).__name__}"
+        assert "hubMeshToken" in with_token, \
+            "hub_get_hub_mesh(include_token=true) did not surface the hubMeshToken key"
+
     @test("system_tools")
     def test_hub_mesh_update_validation(self) -> None:
         # NO state-changing Hub Mesh write is ever made against the shared CI hub: enable/disable
@@ -12095,6 +12103,7 @@ class TestRunner:
             ({}, "at least one field", "no settable field"),
             ({"full_refresh_interval": 42}, "full_refresh_interval", "out-of-set interval"),
             ({"peer_hub_id": "12"}, "peer_", "peer_hub_id without peer_token"),
+            ({"enabled": "true"}, "enabled", "non-boolean enabled"),
         ):
             try:
                 detail = self.client.call_tool("hub_update_hub_mesh", args)

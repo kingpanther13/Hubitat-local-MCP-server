@@ -153,6 +153,37 @@ class ToolHubMeshSpec extends ToolSpecBase {
         withToken.hubMeshToken == 'tok-abc-123'
     }
 
+    @Unroll
+    def "hub_get_hub_mesh rejects a non-boolean include_token (#bad) rather than silently withholding the token"() {
+        given:
+        hubGet.register('/hub2/hubMeshJson') { params -> MESH_JSON }
+
+        when:
+        script.toolGetHubMesh([include_token: bad])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('include_token')
+        hubGet.calls.isEmpty()   // rejected before the read
+
+        where:
+        bad << ['true', 1, 'yes']
+    }
+
+    def "hub_get_hub_mesh notes when include_token was set but the hub reports no token"() {
+        given: 'a payload with no hubMeshToken key'
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"hubMeshEnabled": true, "hubList": []}' }
+
+        when:
+        def result = script.toolGetHubMesh([include_token: true])
+
+        then: 'the key is present-but-null and the note explains why'
+        result.success == true
+        result.containsKey('hubMeshToken')
+        result.hubMeshToken == null
+        result.note.contains('no mesh token')
+    }
+
     def "hub_get_hub_mesh is null-safe: a firmware that omits every optional key still returns a usable shape"() {
         given: 'a minimal payload -- no lists, no modeHubId, no scalars'
         hubGet.register('/hub2/hubMeshJson') { params -> '{}' }
@@ -202,40 +233,33 @@ class ToolHubMeshSpec extends ToolSpecBase {
         then: 'structured error, NOT a throw -- the AI needs something actionable back'
         result.success == false
         result.error
-        result.note.contains('firmware')
         result.note.contains('hub_get_radio_details')   // steer away from the radio-mesh confusion
 
+        and: 'the note diagnoses THIS failure mode -- an empty/parse/shape failure is NOT the same as a'
+        // round-trip failure, so only the round-trip branch may say "firmware predates Hub Mesh".
+        result.note.contains(noteNeedle)
+        !result.note.contains('firmware')
+
         where:
-        label            | response
-        'an empty body'  | ''
-        'null'           | null
-        'a JSON array'   | '[1, 2, 3]'
+        label                  | response                 | noteNeedle
+        'an empty body'        | ''                       | 'retry shortly'
+        'null'                 | null                     | 'retry shortly'
+        'a JSON array'         | '[1, 2, 3]'              | 'unrecognized shape'
+        'a non-JSON HTML page' | '<html>Not Found</html>' | 'non-JSON'
     }
 
-    def "hub_get_hub_mesh returns the runtime-error contract when the endpoint throws"() {
+    def "hub_get_hub_mesh keeps the firmware/unreachable diagnosis when the round-trip itself throws"() {
         given:
         hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('404 Not Found') }
 
         when:
         def result = script.toolGetHubMesh([:])
 
-        then:
+        then: 'only the round-trip branch cites firmware-may-predate / unreachable'
         result.success == false
         result.error.contains('404 Not Found')
         result.note.contains('firmware')
-    }
-
-    def "hub_get_hub_mesh returns the runtime-error contract when the body is not JSON"() {
-        given:
-        hubGet.register('/hub2/hubMeshJson') { params -> '<html>Not Found</html>' }
-
-        when:
-        def result = script.toolGetHubMesh([:])
-
-        then:
-        result.success == false
-        result.error
-        result.note.contains('firmware')
+        result.note.contains('hub_get_radio_details')
     }
 
     // -----------------------------------------------------------------------
@@ -285,7 +309,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.calls.isEmpty()
 
         where:
-        bad << [42, -1, 60, 'soon', null, 3601]
+        bad << [42, -1, 60, 'soon', null, 3601, 300.7]   // 300.7: a fractional Number must not silently truncate to 300
     }
 
     @Unroll
@@ -340,6 +364,26 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.calls.isEmpty()
     }
 
+    @Unroll
+    def "a mode_hub_id that is not 'none' / UUID / digits is rejected before any hub call (#label)"() {
+        given: 'the shape gate stops a path-traversal / injection payload reaching /device/followModes/<x>'
+        enableWrite()
+
+        when:
+        script.toolUpdateHubMesh([mode_hub_id: bad])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('mode_hub_id')
+        hubGet.calls.isEmpty()   // never reaches the hub
+
+        where:
+        label                  | bad
+        'path traversal'       | 'none/../hub/advanced/reboot'
+        'a slash-bearing id'   | '12/34'
+        'arbitrary text'       | 'the-loft-hub'
+    }
+
     def "validation fires before ANY leg runs even when an earlier field is valid"() {
         given: 'a valid enabled leg paired with a bad interval'
         enableWrite()
@@ -348,7 +392,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         when:
         script.toolUpdateHubMesh([enabled: true, full_refresh_interval: 42])
 
-        then: 'the -32602 fires first, so the enable leg never reached the hub (safe to retry)'
+        then: 'the validation throw fires first, so the enable leg never reached the hub (safe to retry)'
         thrown(IllegalArgumentException)
         hubGet.calls.isEmpty()
     }
@@ -371,6 +415,38 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.calls.any { it.path == '/hub/advanced/enableHubMesh' }
         result.note.contains('REBOOT')
         result.note.contains('hub_reboot')
+    }
+
+    def "a GET leg's real plain-text success body ('please reboot') is NOT mistaken for an auth page"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/enableHubMesh') { params -> "Hub mesh enabled, please reboot the hub." }
+
+        when:
+        def result = script.toolUpdateHubMesh([enabled: true])
+
+        then: 'the short plain-text success message carries no HTML/login markers, so it applies'
+        result.success == true
+        result.applied == ['enabled']
+    }
+
+    def "a GET leg that hubInternalGet followed to a 200 login page is a failure, not a false success"() {
+        given: 'a stale Hub Security cookie 302s to /login; hubInternalGet follows it to the 200 login HTML'
+        enableWrite()
+        hubGet.register('/hub/advanced/enableHubMesh') { params ->
+            '<!DOCTYPE html><html><head><title>Login</title></head><body>' +
+            '<form action="/login?loginRedirect=%2Fhub%2Fadvanced%2FenableHubMesh">' +
+            '<input type="password" name="password"></form></body></html>'
+        }
+
+        when:
+        def result = script.toolUpdateHubMesh([enabled: true])
+
+        then: 'the login-page body is detected -- success:false, nothing recorded as applied'
+        result.success == false
+        result.applied == []
+        result.error.toLowerCase().contains('login page')
+        result.note.toLowerCase().contains('hub security')
     }
 
     def "enabled=false fires GET /hub/advanced/disableHubMesh"() {
@@ -457,9 +533,8 @@ class ToolHubMeshSpec extends ToolSpecBase {
 
         and: 'the Vue page sends the number it read out of hubMeshJson -- preserve that JSON type'
         posted.body.hubId == 12
-        posted.body.hubId instanceof Number
-        posted.raw.contains('"hubId":12')
-        !posted.raw.contains('"hubId":"12"')
+        posted.body.hubId instanceof Number   // the parsed body decides the type; not coupled to JsonOutput spacing
+        !posted.raw.contains('"hubId":"12"')   // and it is NOT quoted as a string
     }
 
     def "a non-numeric peer_hub_id is posted as a string"() {
@@ -555,6 +630,53 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.applied == ['mode_hub_id']
         result.error.contains('500 Server Error')
         result.note.contains('peers')
+    }
+
+    def "an _unparseable setHubMeshToken body (e.g. a login page) is a failure -- peer_token is NOT applied"() {
+        given: 'the POST returns the hubInternalPostJson non-JSON sentinel instead of throwing'
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            return [_unparseable: true, message: 'hub returned a non-JSON body from /device/setHubMeshToken: <html>login</html>']
+        }
+
+        when:
+        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+
+        then: 'treated as a runtime failure -- a 2xx serving a login page must not count as stored'
+        result.success == false
+        result.applied == []
+        !result.applied.contains('peer_token')
+        result.error.contains('Failed to store the peer hub')
+        result.note.contains('non-JSON')
+    }
+
+    def "an empty-map setHubMeshToken body is SUCCESS (the endpoint answers 200 {} on success)"() {
+        given: 'the real hub returns HTTP 200 with an empty {} JSON body -> hubInternalPostJson yields [:]'
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return [:] }
+
+        when:
+        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+
+        then:
+        result.success == true
+        result.applied == ['peer_token']
+    }
+
+    def "an oversized all-digits peer_hub_id passes through as a STRING and earlier legs survive"() {
+        given: 'a mode leg commits first, then a 20+ digit peer id that overflows Long'
+        enableWrite()
+        hubGet.register('/device/followModes/none') { params -> "" }
+        def bigId = '1' * 25   // far beyond Long.MAX_VALUE -- toLong() would throw NumberFormatException
+
+        when:
+        def result = script.toolUpdateHubMesh([mode_hub_id: 'none', peer_hub_id: bigId, peer_token: 'tok'])
+
+        then: 'no uncaught throw -- the id falls through to a JSON string, and the mode leg still counts'
+        result.success == true
+        result.applied == ['mode_hub_id', 'peer_token']
+        posted.body.hubId == bigId       // sent as a string, not coerced to a (overflowing) number
+        posted.body.hubId instanceof String
     }
 
     // -----------------------------------------------------------------------
