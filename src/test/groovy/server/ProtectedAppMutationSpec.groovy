@@ -124,6 +124,23 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         writes.empty
     }
 
+    def 'cascading delete uses the same protection snapshot before and after the inventory read'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            atomicStateMap.protectedAppsPolicy = [ids: []]
+            '{"apps":[{"data":{"id":21},"children":[{"data":{"id":42}}]}]}'
+        }
+
+        when:
+        script.toolDeleteNativeApp([appId: 21, force: true, confirm: true])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('App 42 is protected')
+        atomicStateMap.protectedAppsPolicy.ids.empty
+        writes.empty
+    }
+
     @Unroll
     def '#appType backup restore checks the embedded target before applying settings'() {
         when:
@@ -206,19 +223,123 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         'toolSetRmRuleBoolean'   | [value: true]
     }
 
-    def 'Easy Dashboard with a protected installed-app numeric ID reaches its own update endpoint'() {
+    @Unroll
+    def 'protected #type dashboard refuses #operation through #gateway dispatch'() {
         given:
-        hubGet.register('/installedapp/statusJson/42') { '{"installedApp":{"id":42,"name":"Other app","systemAppType":false}}' }
-        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"id":42}' }
+        settingsMap.enableMandatoryBPS = false
+        settingsMap.useGateways = gateway
+        hubGet.register('/installedapp/statusJson/42') {
+            JsonOutput.toJson([installedApp: [id: 42, name: type, systemAppType: true]])
+        }
+        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true}' }
+        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":true}' }
+        def leaf = "hub_${operation}_dashboard".toString()
+        def args = [dashboardId: '42', name: 'Changed', deviceIds: ['1'], confirm: true]
+
+        when:
+        script.executeTool(gateway ? 'hub_manage_dashboards' : leaf,
+            gateway ? [tool: leaf, args: args] : args)
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('App 42 is protected')
+        writes.empty
+
+        where:
+        [type, operation, gateway] << [['Easy Dashboard', 'Dashboard'], ['update', 'delete'], [false, true]].combinations()
+    }
+
+    def 'Easy Dashboard creation refuses a protected parent before creating a child'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":42,"type":"Easy Dashboard Parent"},"children":[]}]}'
+        }
+        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true}' }
         settingsMap.bypassDeviceAllowlist = true
 
         when:
-        def result = script.toolUpdateDashboard([dashboardId: '42', name: 'Easy', deviceIds: ['1'],
+        script.toolCreateDashboard([name: 'Easy', deviceIds: ['1']])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('App 42 is protected')
+        writes.empty
+    }
+
+    @Unroll
+    def 'unprotected Easy Dashboard still allows #operation with unrelated protection'() {
+        given:
+        hubGet.register('/installedapp/statusJson/43') {
+            '{"installedApp":{"id":43,"name":"Easy Dashboard","systemAppType":true}}'
+        }
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}},{"data":{"id":43,"type":"Easy Dashboard"}}]}'
+        }
+        hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true,"installedAppId":43}' }
+        hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":true}' }
+        settingsMap.bypassDeviceAllowlist = true
+        def method = operation == 'update' ? 'toolUpdateDashboard' : 'toolDeleteDashboard'
+
+        when:
+        def result = script."$method"([dashboardId: '43', name: 'Easy', deviceIds: ['1'], confirm: true,
             options: [dashboardPin: '', hsmPin: '']])
 
         then:
-        noExceptionThrown()
-        writes.contains('/dashboard/update')
+        result.success == true
+        writes == ["/dashboard/${operation}".toString()]
+
+        where:
+        operation << ['update', 'delete']
+    }
+
+    @Unroll
+    def 'Easy Dashboard creation permits #condition with unrelated app protection'() {
+        given:
+        hubGet.register('/hub2/appsList') { inventory }
+        hubGet.register('/dashboard/create') {
+            writes << '/dashboard/create'; '{"success":true,"installedAppId":73}'
+        }
+        settingsMap.bypassDeviceAllowlist = true
+
+        when:
+        def result = script.toolCreateDashboard([name: 'Easy', deviceIds: ['1']])
+
+        then:
+        result.success == true
+        writes == ['/dashboard/create']
+
+        where:
+        condition           | inventory
+        'unprotected parent'| '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}},{"data":{"id":21,"type":"Easy Dashboard Parent"}}]}'
+        'absent parent'     | '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}}]}'
+    }
+
+    @Unroll
+    def 'Easy Dashboard creation refuses #condition inventory before creating a child'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            if (inventory == null) throw new IOException('offline')
+            inventory
+        }
+        hubGet.register('/dashboard/create') { writes << '/dashboard/create'; '{"success":true}' }
+        settingsMap.bypassDeviceAllowlist = true
+
+        when:
+        script.toolCreateDashboard([name: 'Easy', deviceIds: ['1']])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('Cannot verify Easy Dashboard parent protection')
+        writes.empty
+
+        where:
+        condition             | inventory
+        'unreadable'           | null
+        'missing apps'         | '{}'
+        'non-list children'    | '{"apps":[{"data":{"id":42,"type":"Easy Dashboard Parent"},"children":{}}]}'
+        'missing app type'     | '{"apps":[{"data":{"id":42}}]}'
+        'empty app data'       | '{"apps":[{"data":{}}]}'
+        'invalid app ID'       | '{"apps":[{"id":"bad","type":"Easy Dashboard Parent"}]}'
     }
 
     def 'visual child creation bootstraps a confirmed absent parent with default self protection'() {
@@ -375,16 +496,17 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.toLowerCase().contains('protection')
+        e.message.contains(diagnostic)
         writes.empty
 
         where:
-        problem              | inventory
-        'non-list children'  | '{"apps":[{"data":{"id":21},"children":{}}]}'
-        'invalid child ID'   | '{"apps":[{"data":{"id":21},"children":[{"data":{"id":"bad"}}]}]}'
-        'missing target'     | '{"apps":[{"data":{"id":43}}]}'
-        'missing apps'       | '{}'
-        'non-list apps'      | '{"apps":{}}'
+        problem              | inventory                                                                           | diagnostic
+        'non-list children'  | '{"apps":[{"data":{"id":21},"children":{}}]}'                                      | 'app tree is incomplete'
+        'invalid child ID'   | '{"apps":[{"data":{"id":21},"children":[{"data":{"id":"bad"}}]}]}'               | 'app tree is incomplete'
+        'empty app data'     | '{"apps":[{"data":{"id":21},"children":[{"data":{},"children":[]}]}]}'            | 'app tree is incomplete'
+        'missing target'     | '{"apps":[{"data":{"id":43}}]}'                                                     | 'App 21 is absent'
+        'missing apps'       | '{}'                                                                                | 'app tree is unavailable'
+        'non-list apps'      | '{"apps":{}}'                                                                       | 'app tree is unavailable'
     }
 
     def 'unrelated protection still permits backed-up deletion of an unprotected app'() {

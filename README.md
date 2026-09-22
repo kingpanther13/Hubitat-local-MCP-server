@@ -849,7 +849,7 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 <details>
 <summary><b>Protected apps</b></summary>
 
-The **Protected apps** picker on the main app page blocks generic app and native-rule mutations for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Manage the selection in the Hubitat app UI and click **Done** to apply it.
+The **Protected apps** picker on the main app page blocks generic app, native-rule, and Dashboard mutations (Easy and legacy) for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Manage the selection in the Hubitat app UI and click **Done** to apply it.
 
 </details>
 

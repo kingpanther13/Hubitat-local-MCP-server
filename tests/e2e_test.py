@@ -13143,7 +13143,7 @@ class TestRunner:
         try:
             self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"protectedAppIds": []}, "confirm": True}})
+                "args": {"settings": {"protectedAppIds": before["protectedAppIds"]}, "confirm": True}})
             raise AssertionError("self-admin accepted the UI-only protection setting")
         except (McpError, McpToolError) as exc:
             assert "protectedAppIds" in str(exc) and "not allowed" in str(exc), str(exc)

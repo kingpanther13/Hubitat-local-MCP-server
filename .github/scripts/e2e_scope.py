@@ -60,9 +60,12 @@ FILE_GROUP_MAP = {
     # devices + diagnostics: _flattenHub2DeviceTree (bulk inventory, health) and _parseSinceArg
     # (changedSince / lastActivity parsing) live here; a change to either is only observable
     # through those groups.
+    # Protected-app policy also gates dashboard/visual-rule writes and dedicated self-admin
+    # regression probes; keep those groups selected when only the shared guard changes.
     "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
                                                  "native_apps", "best_practice_gating",
-                                                 "devices", "diagnostics", "system_tools"],
+                                                 "devices", "diagnostics", "system_tools",
+                                                 "developer_mode", "dashboards", "visual_rules"],
 }
 
 

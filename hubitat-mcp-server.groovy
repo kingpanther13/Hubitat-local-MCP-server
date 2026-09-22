@@ -262,9 +262,13 @@ def mainPage() {
         }
 
         section("Protected apps") {
+            def choices = _protectedAppChoices()
             input "protectedAppIds", "enum", title: "Protect installed apps from generic mutations",
-                  options: _protectedAppOptions(), multiple: true, required: false, submitOnChange: true,
-                  description: "Selected apps cannot be edited, controlled, disabled, or deleted through generic app/native-rule tools, even with Developer Mode on. Reads and dedicated Developer Mode maintenance remain available."
+                  options: choices.options, multiple: true, required: false,
+                  description: "Selected apps cannot be edited, controlled, disabled, deleted, or have children created beneath them through generic app/native-rule/dashboard tools, even with Developer Mode on. Reads and dedicated Developer Mode maintenance remain available."
+            if (choices.inventoryUnavailable) {
+                paragraph "The installed-app list could not be loaded completely. Only the MCP server and previously protected apps are shown. Existing protection remains active; reopen this page to retry loading the full list."
+            }
             paragraph "The MCP server is selected by default. You can remove it or clear the list; later updates preserve your choice. Click Done to apply protection changes."
         }
 
@@ -744,14 +748,14 @@ private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
     }
 }
 
-private Map _protectedAppOptions() {
+private Map _protectedAppChoices() {
     def selected = _protectedAppIds()
     def options = [:]
     def apps = _collectLiveApps()
     (apps ?: [:]).each { id, details ->
         String key = _protectedAppId(id)
         if (key) {
-            String label = details.name?.toString()?.replaceAll(/<[^>]+>/, '')?.trim() ?: 'Installed app'
+            String label = stripAppConfigHtml(details.name) ?: 'Installed app'
             options.put(key, "${label} (ID ${key})".toString())
         }
     }
@@ -760,19 +764,22 @@ private Map _protectedAppOptions() {
     selected.each { id ->
         if (!options.containsKey(id)) options.put(id, "Unavailable app (ID ${id})".toString())
     }
-    return options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) }
+    return [options: options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) },
+            inventoryUnavailable: apps == null]
 }
 
-private void _requireUnprotectedAppMutation(Object targetId, String operation) {
+private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
     String id = _protectedAppId(targetId)
-    if (id && _protectedAppIds().contains(id)) {
+    if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
         throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps in the MCP server's Hubitat app UI. Developer Mode does not bypass this protection for generic tools.")
     }
 }
 
 private void _requireUnprotectedAppDeletion(Integer appId) {
-    _requireUnprotectedAppMutation(appId, "delete")
-    if (_protectedAppIds().isEmpty()) return
+    // Use one policy snapshot for the entire cascading delete, not a DB read per node.
+    def protectedIds = _protectedAppIds()
+    _requireUnprotectedAppMutation(appId, "delete", protectedIds)
+    if (protectedIds.isEmpty()) return
     def parsed
     try {
         def text = hubInternalGet("/hub2/appsList")
@@ -799,18 +806,21 @@ private void _requireUnprotectedAppDeletion(Integer appId) {
                 if (!(rawId.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
                 id = rawId.toString().toInteger()
             } catch (Exception ignored) { complete = false; return }
-        } else if (node.data) {
+        } else if (node.data != null) {
             complete = false
             return
         }
         boolean affected = belowTarget || id == appId
         if (id == appId) found = true
-        if (affected && id != null) _requireUnprotectedAppMutation(id, "delete through parent app ${appId}")
+        if (affected && id != null) _requireUnprotectedAppMutation(id, "delete through parent app ${appId}", protectedIds)
         (node.children ?: []).each { walk(it, affected) }
     }
     parsed.apps.each { walk(it, false) }
-    if (!found || !complete) {
-        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is incomplete or the target is missing. No app was deleted.")
+    if (!complete) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is incomplete. Retry after the full app inventory is available. No app was deleted.")
+    }
+    if (!found) {
+        throw new IllegalArgumentException("App ${appId} is absent from the installed-app tree. Refresh hub_list_apps to confirm the target ID; no app was deleted.")
     }
 }
 
@@ -10406,7 +10416,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
 
-Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule mutations even with Developer Mode enabled. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list in the Hubitat UI and click Done to apply it.
+Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule and Easy/legacy Dashboard mutations even with Developer Mode enabled. Creating children under protected parents is also refused. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list in the Hubitat UI and click Done to apply it.
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 

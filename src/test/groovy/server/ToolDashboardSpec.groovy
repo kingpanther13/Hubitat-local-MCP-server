@@ -1977,15 +1977,13 @@ class ToolDashboardSpec extends ToolSpecBase {
         inner.type == 'legacy'
         inner.applied == ['name']
     }
-    def "create legacy reports unknown outcome when the hub commits then loses the response"() {
+    def "create legacy reports unknown outcome when the create response is lost"() {
         given:
         enableWrite()
         registerLegacyParent(21)
         def rawPaths = []
-        def committed = false
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int timeout = 30, boolean raw = false ->
             rawPaths << path
-            committed = true
             throw new IOException('connection reset after create')
         }
 
@@ -1993,9 +1991,8 @@ class ToolDashboardSpec extends ToolSpecBase {
         def result = script.toolCreateDashboard([name: 'Patio', type: 'legacy'])
 
         then:
-        committed
         result.success == false
-        result.outcome == 'unknown'
+        result.outcomeUnknown == true
         result.parentAppId == 21
         result.note.contains('may have been created')
         result.note.contains('hub_list_dashboards')
@@ -2003,6 +2000,24 @@ class ToolDashboardSpec extends ToolSpecBase {
         result.note.contains('before retrying')
         !result.note.contains('Nothing was created')
         rawPaths == ['/installedapp/createchild/hubitat/Dashboard/parent/21']
+    }
+
+    def "create Easy reports unknown outcome when the create response is lost"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/dashboard/create') { throw new IOException('connection reset after create') }
+
+        when:
+        def result = script.toolCreateDashboard([name: 'Patio', deviceIds: ['1']])
+
+        then:
+        result.success == false
+        result.outcomeUnknown == true
+        result.note.contains('may have been created')
+        result.note.contains('hub_list_dashboards')
+        result.note.contains('before retrying')
+        !result.note.contains('Nothing was created')
+        hubGet.calls.count { it.path == '/dashboard/create' } == 1
     }
 
 }

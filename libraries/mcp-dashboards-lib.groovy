@@ -302,6 +302,7 @@ def toolCreateDashboard(args) {
     def q = _buildDashboardConfigQuery(args, deviceCsv)
     // CREATE-ONLY: the Vue editor sends version=2.0 on create (stripped on update) for an Easy Dashboard.
     q.version = (args.version ?: "2.0").toString()
+    _requireUnprotectedEasyDashboardParent()
     try {
         def raw = hubInternalGet("/dashboard/create", q)
         return _dashboardWriteResult(raw, "create", null)
@@ -309,8 +310,43 @@ def toolCreateDashboard(args) {
         throw iae
     } catch (Exception e) {
         mcpLogError("dashboard", "create dashboard failed", e)
-        return [success: false, error: "Failed to create dashboard: ${e.message}", note: "Nothing was created."]
+        return [success: false, outcomeUnknown: true, error: "Failed to confirm dashboard creation: ${e.message}",
+                note: "A dashboard may have been created. Inspect hub_list_dashboards before retrying; retrying blindly may create a duplicate."]
     }
+}
+
+private void _requireUnprotectedEasyDashboardParent() {
+    def protectedIds = _protectedAppIds()
+    if (protectedIds.isEmpty()) return
+    def parsed
+    try {
+        def raw = hubInternalGet("/hub2/appsList")
+        parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot verify Easy Dashboard parent protection: ${e.message}. No create request was sent.")
+    }
+    if (!(parsed instanceof Map) || !(parsed.apps instanceof List)) {
+        throw new IllegalArgumentException("Cannot verify Easy Dashboard parent protection: the app inventory is unavailable. No create request was sent.")
+    }
+    def walk
+    walk = { node ->
+        if (!(node instanceof Map) || (node.data != null && !(node.data instanceof Map)) ||
+                (node.children != null && !(node.children instanceof List))) {
+            throw new IllegalArgumentException("Cannot verify Easy Dashboard parent protection: the app inventory is malformed. No create request was sent.")
+        }
+        def rawId = node.data?.id != null ? node.data.id : node.id
+        def id = _protectedAppId(rawId)
+        def type = node.data?.type ?: node.type
+        if (((node.data != null || rawId != null) && !id) || (id && !(type instanceof String && type)) ||
+                (type == "Easy Dashboard Parent" && !id)) {
+            throw new IllegalArgumentException("Cannot verify Easy Dashboard parent protection: an app ID or type is missing. No create request was sent.")
+        }
+        if (type == "Easy Dashboard Parent") {
+            _requireUnprotectedAppMutation(id, "create a dashboard under", protectedIds)
+        }
+        (node.children ?: []).each { walk(it) }
+    }
+    parsed.apps.each { walk(it) }
 }
 
 // type arg: easy (default) | legacy. Rejects anything else so a typo can't silently create the wrong kind.
@@ -418,7 +454,7 @@ private Map _createLegacyDashboard(Map args) {
         resp = hubInternalGetRaw("/installedapp/createchild/hubitat/Dashboard/parent/${parentId}")
     } catch (Exception e) {
         mcpLogError("dashboard", "legacy dashboard createchild outcome unknown under parent ${parentId}", e)
-        return [success: false, outcome: "unknown", parentAppId: parentId,
+        return [success: false, outcomeUnknown: true, parentAppId: parentId,
                 error: "The legacy dashboard create request did not return successfully: ${e.message}",
                 note: "A dashboard may have been created under parent app ${parentId}. Inspect hub_list_dashboards and hub_list_apps for an unnamed Dashboard before retrying; retrying blindly may create a duplicate."]
     }
@@ -465,6 +501,7 @@ private Map _createLegacyDashboard(Map args) {
 def toolUpdateDashboard(args) {
     args = args ?: [:]
     def updateId = _requireDashboardId(args.dashboardId, " to update")
+    _requireUnprotectedAppMutation(updateId, "edit dashboard")
     def probe = _legacyDashboardProbe(updateId)
     if (probe == null) {
         // Unknown target type: the Easy path's wholesale /dashboard/update MUST NOT be blind-fired
@@ -474,7 +511,6 @@ def toolUpdateDashboard(args) {
                 note: "Transient hub error (details logged); retry."]
     }
     if (probe.legacy == true) {
-        _requireUnprotectedAppMutation(updateId, "edit dashboard")
         return _updateLegacyDashboard(updateId, probe, args)
     }
     def legacyOnlyArgs = ["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
@@ -727,6 +763,7 @@ def toolDeleteDashboard(args) {
     args = args ?: [:]
     requireDestructiveConfirm(args.confirm)
     def dashId = _requireDashboardId(args.dashboardId, " to delete")
+    _requireUnprotectedAppDeletion(dashId.toInteger())
     def legacyProbe = _legacyDashboardProbe(dashId)
     if (legacyProbe == null) {
         // Unknown target type (status read failed): don't route by guess. The Easy /dashboard/delete
@@ -737,7 +774,6 @@ def toolDeleteDashboard(args) {
                 note: "Transient hub error (details logged); retry."]
     }
     if (legacyProbe.legacy == true) {
-        _requireUnprotectedAppDeletion(dashId.toInteger())
         // /dashboard/delete does NOT remove a legacy child (verified live: success:false and the app
         // stays), so route through the classic force-delete. That endpoint can answer 500 for a
         // delete that actually committed -- confirm by effect, same as the Easy path.

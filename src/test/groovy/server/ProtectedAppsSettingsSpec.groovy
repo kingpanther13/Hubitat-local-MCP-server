@@ -134,17 +134,19 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
         settingsMap.protectedAppIds = ['194', '999']
         script.metaClass.hubInternalGet = { String path ->
             assert path == '/hub2/appsList'
-            '{"apps":[{"data":{"id":82,"name":"Parent"},"children":[{"data":{"id":91,"name":"Child"}}]}]}'
+            '{"apps":[{"data":{"id":82,"name":"<b>Parent</b>"},"children":[{"data":{"id":91,"name":"Heat On &lt;67"}}]}]}'
         }
 
         when:
-        def options = script._protectedAppOptions()
+        def choices = script._protectedAppChoices()
+        def options = choices.options
 
         then:
         options['82'].contains('Parent')
-        options['91'].contains('Child')
+        options['91'] == 'Heat On <67 (ID 91)'
         options['194'].contains('MCP Rule Server')
         options['999'].contains('999')
+        choices.inventoryUnavailable == false
     }
 
     def "unavailable inventory preserves current picker selections"() {
@@ -154,7 +156,8 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
         script.metaClass.hubInternalGet = { String path -> throw new IOException('offline') }
 
         expect:
-        script._protectedAppOptions().keySet().containsAll(['194', '82'])
+        script._protectedAppChoices().options.keySet().containsAll(['194', '82'])
+        script._protectedAppChoices().inventoryUnavailable == true
         settingsMap.protectedAppIds == ['194', '82']
     }
 
