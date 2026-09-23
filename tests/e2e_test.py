@@ -11404,6 +11404,101 @@ class TestRunner:
             self._delete_native(app_id)
             self._delete_variable_safe(var_name)
 
+    @test("hub_variables")
+    def test_hub_set_variable_mesh_validation(self) -> None:
+        # #448: hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation
+        # contract LIVE with NO mesh state change -- every rejection fires before any hub call and
+        # surfaces as an isError validation result the caller can correct and retry.
+        absent = f"{PREFIX}NoSuchMeshVar_{int(time.time())}"
+        for args, needle, label in (
+            ({"name": absent, "mesh_shared": True}, "hub variable", "mesh_shared on a non-hub-variable"),
+            ({"name": absent}, "value, mesh_shared", "neither value nor mesh_shared"),
+            ({"name": absent, "mesh_shared": "yes"}, "boolean", "non-boolean mesh_shared"),
+        ):
+            try:
+                detail = self.client.call_tool("hub_set_variable", args)
+            except McpError as exc:  # McpToolError subclass -> the isError validation envelope
+                assert needle.lower() in str(exc).lower(), f"{label}: expected '{needle}', got: {exc}"
+                continue
+            raise AssertionError(f"{label}: hub_set_variable({args}) must be rejected, got: {detail}")
+
+    @test("hub_variables")
+    def test_hub_create_variable_mesh_link_validation(self) -> None:
+        # #448: hub_create_variable gained a Hub Mesh LINK form (mesh_source_hub_id + mesh_source_name),
+        # mutually exclusive with the create forms. Prove the rejections live -- validation fires before
+        # any variable is created (requireDestructiveConfirm may reject first when no recent backup
+        # exists; either way NOTHING is created, which the absence check below confirms).
+        probe = f"{PREFIX}MeshLinkProbe_{int(time.time())}"
+        for args, needles, label in (
+            ({"mesh_source_hub_id": "HUB-A", "mesh_source_name": probe, "name": probe, "confirm": True},
+             ("not both", "backup", "confirm"), "link mixed with a create field"),
+            ({"mesh_source_hub_id": "HUB-A", "confirm": True},
+             ("both mesh_source", "backup", "confirm"), "link with only the hub id"),
+        ):
+            rejected = False
+            detail: Any = None
+            try:
+                detail = self.client.call_tool("hub_create_variable", args)
+            except McpError as exc:
+                detail = str(exc)
+                rejected = any(n.lower() in detail.lower() for n in needles)
+            assert rejected, f"{label}: expected one of {needles}, got: {detail}"
+        assert self._hub_variable_absent(probe), f"a rejected mesh-link create left {probe} behind"
+
+    @test("hub_variables")
+    def test_hub_variable_mesh_share_cycle(self) -> None:
+        # #448 self-contained cycle: create a THROWAWAY hub variable, share it into the mesh, confirm it
+        # appears in sharedHubVariables, unshare it, confirm it drops off, then delete it. Leaves NO
+        # standing mesh state. Requires Hub Mesh enabled; skips cleanly otherwise so the shared CI hub's
+        # mesh config is never a hard dependency.
+        mesh = self.client.call_tool("hub_get_hub_mesh")
+        if not (isinstance(mesh, dict) and mesh.get("hubMeshEnabled") is True):
+            raise SkipTest("Hub Mesh is not enabled on this hub; the share/unshare cycle is skipped")
+        var_name = f"{PREFIX}MeshShareVar"
+        self._create_hub_variable_visible(var_name, "String", "shareme")
+
+        def _is_shared() -> bool:
+            m = self.client.call_tool("hub_get_hub_mesh")
+            names = [(v or {}).get("name") for v in (m.get("sharedHubVariables") or [])]
+            return var_name in names
+
+        try:
+            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": True})
+            assert isinstance(shared, dict) and shared.get("success") is True and shared.get("meshShared") is True, \
+                f"mesh share did not succeed: {shared}"
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not _is_shared():
+                time.sleep(1.0)
+            assert _is_shared(), f"{var_name} not listed in sharedHubVariables after share"
+
+            un = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+            assert isinstance(un, dict) and un.get("success") is True and un.get("meshShared") is False, \
+                f"mesh unshare did not succeed: {un}"
+            deadline = time.time() + 10.0
+            while time.time() < deadline and _is_shared():
+                time.sleep(1.0)
+            assert not _is_shared(), f"{var_name} still in sharedHubVariables after unshare"
+        finally:
+            self._delete_variable_safe(var_name)
+
+    @test("devices")
+    def test_hub_create_device_mesh_link_validation(self) -> None:
+        # #448: hub_create_device can LINK a Hub Mesh device (mesh_source_hub_id + mesh_source_device_id),
+        # mutually exclusive with deviceTypeId. Prove the rejections live -- validation fires before any
+        # hub call, so NOTHING is created (a real link needs a peer sharing a device; not a dependency here).
+        for args, needle, label in (
+            ({"deviceTypeId": "1", "mesh_source_hub_id": "HUB-A", "mesh_source_device_id": "42", "confirm": True},
+             "not both", "deviceTypeId mixed with the mesh pair"),
+            ({"mesh_source_hub_id": "HUB-A", "confirm": True},
+             "both mesh_source", "mesh link with only the hub id"),
+        ):
+            try:
+                detail = self.client.call_tool("hub_create_device", args)
+            except McpError as exc:
+                assert needle.lower() in str(exc).lower(), f"{label}: expected '{needle}', got: {exc}"
+                continue
+            raise AssertionError(f"{label}: hub_create_device({args}) must be rejected, got: {detail}")
+
     @test("native_apps")
     def test_set_rule_update_with_false_required_expression_is_suppressed(self) -> None:
         # RM drops trigger subscriptions while the Required Expression is false. updateRule must

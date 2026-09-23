@@ -542,7 +542,31 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_hub_mesh` with `full_refresh_interval: 300` and reports `applied: ["full_refresh_interval"]`. Does NOT require `confirm` (the change is reversible). Other legs, each optional and applied in a stable order: `enabled: true|false` (⚠️ reports that a hub REBOOT via `hub_reboot` is required before it takes effect — the tool never reboots on its own), `mode_hub_id` (a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `"none"` to go back to local modes), and `peer_hub_id` + `peer_token` TOGETHER (stores a peer hub's mesh token, needed when that peer has UI login security). Rejected by validation (an `isError` result) before any hub call: no settable field at all, a `full_refresh_interval` outside `0|120|300|3600`, a non-boolean `enabled`, and `peer_hub_id` without `peer_token` (or vice versa). Peer hubs are auto-discovered on the LAN so there is no add-peer operation, and per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool.
+**Expected**: Calls `hub_update_hub_mesh` with `full_refresh_interval: 300` and reports `applied: ["full_refresh_interval"]`. Does NOT require `confirm` (the change is reversible). Other legs, each optional and applied in a stable order: `enabled: true|false` (⚠️ reports that a hub REBOOT via `hub_reboot` is required before it takes effect — the tool never reboots on its own), `mode_hub_id` (a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `"none"` to go back to local modes), and `peer_hub_id` + `peer_token` TOGETHER (stores a peer hub's mesh token, needed when that peer has UI login security). Rejected by validation (an `isError` result) before any hub call: no settable field at all, a `full_refresh_interval` outside `0|120|300|3600`, a non-boolean `enabled`, and `peer_hub_id` without `peer_token` (or vice versa). Peer hubs are auto-discovered on the LAN so there is no add-peer operation, and per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool. A dropped/empty response, a non-JSON body, and an explicit `success:false` from the peer-token store are each fail-closed with a case-specific note (unconfirmed vs non-JSON vs rejected).
+
+### T14k — share a hub variable over Hub Mesh (hub_set_variable mesh_shared)
+
+> **DO NOT run on a hub whose mesh peers matter** — sharing/unsharing a variable briefly changes what peers see. Use a throwaway variable and unshare it afterwards.
+
+```json
+{
+  "test_prompt": "Share the hub variable 'vacationMode' with my other hubs over Hub Mesh, then stop sharing it."
+}
+```
+
+**Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `mesh_shared: true` (no `value` needed — mesh_shared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `mesh_shared: false` to stop. `mesh_shared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `mesh_shared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
+
+### T14l — link a device or variable a peer hub shares (hub_create_device / hub_create_variable mesh link)
+
+> **Conditional** — only runnable when a peer hub is actually sharing something (`hub_get_hub_mesh` `availableLinkedDevices[]` / `availableLinkedHubVariables[]` non-empty). Otherwise verify the validation contract only.
+
+```json
+{
+  "test_prompt": "Link the device 'Garage Door' that my other hub is sharing over Hub Mesh onto this hub."
+}
+```
+
+**Expected**: Reads `hub_get_hub_mesh` to find the peer's `hubId` + `deviceId` in `availableLinkedDevices[]`, then calls `hub_create_device` with `mesh_source_hub_id` + `mesh_source_device_id` + `confirm: true` (NOT `deviceTypeId`). Returns the new local `deviceId` (resolved by a `localLinkedDevices` diff; a read-back lag returns a `warning`, not a failure). The variable analogue is `hub_create_variable` with `mesh_source_hub_id` + `mesh_source_name`. Validation (an `isError` result before any hub call): passing both `deviceTypeId` and the mesh pair, or only one half of the pair, is rejected ("not both" / "BOTH mesh_source_..."). If the peer has UI login security, its mesh token must be stored first via `hub_update_hub_mesh(peer_hub_id, peer_token)` or the link no-ops. Unlink a linked device (local proxy only; peer source untouched) with `hub_delete_device`.
 
 ### T15 — hub_list_modes
 
@@ -668,7 +692,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected** (conditional): Calls `hub_create_device` with the chosen `deviceTypeId`, `label="BAT Create From Driver"`, and `confirm=true`. Returns the new `deviceId`. If the picked driver is radio-type, the response carries a radio orphan-shell `warning`. Without `confirm` the call is rejected (`-32602`).
+**Expected** (conditional): Calls `hub_create_device` with the chosen `deviceTypeId`, `label="BAT Create From Driver"`, and `confirm=true`. Returns the new `deviceId`. If the picked driver is radio-type, the response carries a radio orphan-shell `warning`. Without `confirm` the call is rejected (`-32602`). `hub_create_device` also LINKS a Hub Mesh device via `mesh_source_hub_id` + `mesh_source_device_id` instead of `deviceTypeId` (see T14l); passing both, or only one half of the pair, is rejected by validation.
 
 ### T19i — hub_get_compatible_devices (pairing instructions lookup)
 
@@ -2648,6 +2672,9 @@ These operations are too destructive for automated testing. Test manually with e
 | Cloud controller disable/enable | `hub_call_destructive_ops` (target=cloud, disable\|enable) | hub_manage_destructive_ops | Disabling severs Alexa/Google, cloud dashboards, cloud firmware updates, subscriptions |
 | Network config (static IP / DHCP / Ethernet autoneg / WiFi) | `hub_set_system_settings` (network=...) | core | Can disconnect the hub; confirm-gated |
 | Enable/disable Hub Mesh | `hub_update_hub_mesh` (enabled=...) | hub_manage_devices | Needs a hub reboot to take effect; hub-wide sharing change |
+| Share a device / variable over Hub Mesh | `hub_update_device` (meshEnabled) / `hub_set_variable` (mesh_shared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
+| Link a peer hub's shared device / variable | `hub_create_device` / `hub_create_variable` (mesh_source_*) | hub_manage_devices | Creates a local proxy; needs the peer's mesh token if it has UI login security |
+| Unlink a Hub Mesh linked device | `hub_delete_device` | hub_manage_destructive_ops | Removes only the local link; the peer's source device is untouched |
 | Install app | `hub_create_app` | hub_manage_code | Modifies hub code |
 | Install driver | `hub_create_driver` | hub_manage_code | Modifies hub code |
 | Update app code | `hub_update_app` | hub_manage_code | Modifies production code |

@@ -781,13 +781,26 @@ def toolUpdateHubMesh(args) {
         // non-JSON body. An explicit [success:false] is a rejection. All three mean "not stored", so
         // do NOT record peer_token. An empty {} / non-error Map IS this endpoint's proven success
         // shape (it returns 200 {} on success), so success is NOT gated on success==true.
-        if (postResult == null ||
-            (postResult instanceof Map && postResult._unparseable == true) ||
-            (postResult instanceof Map && postResult.success == false)) {
+        if (postResult == null) {
+            // Empty/dropped body: a truncated response is an UNKNOWN commit, not a proven one.
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned no body (dropped/unknown commit)", null)
             return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
-                    "the hub returned an unexpected or dropped response",
-                    "The hub returned an unexpected/non-JSON response; the token was not stored. " +
-                    "Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
+                    "the hub returned no response body (dropped connection); whether the token was stored is unknown",
+                    "The response was empty, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying.")
+        }
+        if (postResult instanceof Map && postResult._unparseable == true) {
+            // Non-JSON body (e.g. an HTML error/login page): the endpoint did not answer as itself.
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned a non-JSON body", null)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub returned a non-JSON response; the token was not stored",
+                    "The hub returned an unexpected (non-JSON) body. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId, then retry.")
+        }
+        if (postResult instanceof Map && postResult.success == false) {
+            // Explicit rejection: the endpoint parsed and said no (e.g. an unknown peer id).
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken was rejected by the hub (success:false)", null)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub rejected the request (success:false)",
+                    "The hub rejected the token store. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId and that the token was read from that PEER via its own hub_get_hub_mesh(include_token=true).")
         }
         applied << "peer_token"
     }

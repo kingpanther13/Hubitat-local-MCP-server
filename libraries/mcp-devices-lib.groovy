@@ -4454,12 +4454,33 @@ def toolCreateDevice(args) {
     // software/component drivers that have no pairing flow. Radio drivers created this way
     // are orphan shells (no node), so we warn. MCP-managed virtual devices have their own
     // tool (hub_manage_virtual_device); this is the broader catalog path.
-    if (args?.confirm != true) {
+    args = args ?: [:]
+    if (args.confirm != true) {
         throw new IllegalArgumentException("confirm=true is required to create a device.")
     }
-    def typeId = args?.deviceTypeId
+
+    // Hub Mesh LINK vs driver-based CREATE are two mutually-exclusive shapes of this tool.
+    // Validation runs before any hub call so a bad shape can be corrected and retried cleanly.
+    String meshHubId = args.mesh_source_hub_id?.toString()?.trim()
+    String meshDeviceId = args.mesh_source_device_id?.toString()?.trim()
+    boolean wantsMeshLink = args.containsKey("mesh_source_hub_id") || args.containsKey("mesh_source_device_id")
+    boolean hasType = args.deviceTypeId != null && args.deviceTypeId.toString().trim() != ""
+    if (wantsMeshLink) {
+        if (hasType) {
+            throw new IllegalArgumentException(
+                "Provide EITHER deviceTypeId (driver-based create) OR mesh_source_hub_id + mesh_source_device_id (Hub Mesh link) -- not both.")
+        }
+        if (!meshHubId || !meshDeviceId) {
+            throw new IllegalArgumentException(
+                "Linking a Hub Mesh device needs BOTH mesh_source_hub_id and mesh_source_device_id " +
+                "(the hubId + deviceId of one hub_get_hub_mesh availableLinkedDevices[] row).")
+        }
+        return _createLinkedMeshDevice(meshHubId, meshDeviceId)
+    }
+
+    def typeId = args.deviceTypeId
     if (typeId == null || typeId.toString().trim() == "") {
-        throw new IllegalArgumentException("deviceTypeId is required -- the driver-type id from hub_list_drivers(include='all') (the 'id' field).")
+        throw new IllegalArgumentException("deviceTypeId is required -- the driver-type id from hub_list_drivers(include='all') (the 'id' field). To link a device shared by a peer hub instead, pass mesh_source_hub_id + mesh_source_device_id.")
     }
     typeId = typeId.toString().trim()
 
@@ -4584,6 +4605,75 @@ def toolCreateDevice(args) {
         message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
         note: "Set room/preferences/showOnHome with hub_update_device once the device is selectable, or delete it with hub_delete_device."
     ]
+}
+
+// Hub Mesh: create a LOCAL linked device from a device a peer hub shares (GET
+// /device/createLinked/<hubId>/<deviceId>). The endpoint returns an empty/plaintext body (the Vue
+// page just reloads), so the new local id is discovered by diffing localLinkedDevices before/after.
+// A read-back lag or an unreadable mesh list is a WARNING, not a failure -- the hub already accepted
+// the link. Segments are URL-encoded so an unexpected id cannot inject extra path segments.
+private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
+    def beforeList = _meshLocalLinkedDevices()
+    def before = (beforeList != null) ? (beforeList.collect { it.id?.toString() } as Set) : null
+
+    String encHub = java.net.URLEncoder.encode(meshHubId, 'UTF-8')
+    String encDev = java.net.URLEncoder.encode(meshDeviceId, 'UTF-8')
+    try {
+        hubInternalGet("/device/createLinked/${encHub}/${encDev}", null, 30)
+    } catch (Exception e) {
+        mcpLogError("device", "hub_create_device Hub Mesh link failed (hub ${meshHubId}, device ${meshDeviceId})", e)
+        return [success: false, isError: true,
+                error: "Hub call failed linking the shared device (hub ${meshHubId}, device ${meshDeviceId}): ${e.message}",
+                note: "Verify the pair against hub_get_hub_mesh availableLinkedDevices[] (hubId + deviceId). " +
+                      "If the peer hub has UI login security, store its mesh token here first with " +
+                      "hub_update_hub_mesh(peer_hub_id, peer_token)."]
+    }
+
+    // Read-back diff with a short backoff for propagation lag.
+    def warnings = []
+    String newId = null
+    String newName = null
+    for (int attempt = 0; attempt < 3; attempt++) {
+        def after = _meshLocalLinkedDevices()
+        if (before != null && after != null) {
+            def added = after.findAll { !before.contains(it.id?.toString()) }
+            if (added.size() == 1) { newId = added[0].id?.toString(); newName = added[0].name?.toString(); break }
+            if (added.size() > 1) break   // ambiguous; do not guess which one is ours
+        }
+        if (attempt < 2) pauseExecution(500)
+    }
+    if (newId == null) {
+        warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag, an ambiguous diff, or an unreadable mesh list). Find it with hub_get_hub_mesh."
+    }
+
+    mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
+    return [
+        success: true,
+        deviceId: newId,
+        name: newName,
+        sourceHubId: meshHubId,
+        sourceDeviceId: meshDeviceId,
+        linkedDevice: true,
+        warnings: warnings ?: null,
+        message: "Linked the Hub Mesh device shared by hub ${meshHubId}${newId ? " as local device ${newId}" : ''}." + (warnings ? " WARNING: see warnings." : ""),
+        note: "This is a local proxy for a device on the peer hub; unlink it (local only) with hub_delete_device. Read all linked devices via hub_get_hub_mesh."
+    ]
+}
+
+// Reads /hub2/hubMeshJson and returns the localLinkedDevices list (remote devices linked ONTO this
+// hub: id, name, childCount, appsUsing). Returns null when the mesh JSON is unreachable/unparseable
+// or the section is missing/misshaped -- callers treat null as "unreadable" (warn, never fail).
+private List _meshLocalLinkedDevices() {
+    try {
+        def raw = hubInternalGet("/hub2/hubMeshJson")
+        if (!raw?.trim()) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        if (!(parsed instanceof Map) || !(parsed.localLinkedDevices instanceof List)) return null
+        return parsed.localLinkedDevices
+    } catch (Exception e) {
+        mcpLog("warn", "device", "Could not read Hub Mesh localLinkedDevices: ${e.message}")
+        return null
+    }
 }
 
 def toolGetCompatibleDevices(args) {
@@ -4780,6 +4870,22 @@ def toolDeleteDevice(args) {
         }
     }
 
+    // Step 4b: Hub Mesh linked device. Deleting a linked device removes ONLY the local proxy;
+    // the source device on the peer hub is untouched. Mirror the Vue page's appsUsing warning so
+    // the caller knows which local apps reference the link and will break.
+    if (_deviceFlag(deviceInfo.linkedDevice)) {
+        warnings << "LINKED MESH DEVICE: This is a Hub Mesh linked device (a local proxy for a device shared by a peer hub). Deleting it removes ONLY the local link; the source device on the peer hub is untouched."
+        try {
+            def linkedRow = _meshLocalLinkedDevices()?.find { it.id?.toString() == deviceId }
+            def apps = (linkedRow?.appsUsing instanceof List) ? linkedRow.appsUsing : []
+            if (apps) {
+                warnings << "IN USE BY ${apps.size()} APP(S): ${apps.join(', ')}. These apps reference the linked device and WILL BREAK after deletion."
+            }
+        } catch (Exception e) {
+            mcpLog("debug", "hub-admin", "Could not read Hub Mesh appsUsing for linked device ${deviceId}: ${e.message}")
+        }
+    }
+
     // Step 5: Check if any MCP rules reference this device
     try {
         def childApps = getChildApps()
@@ -4812,7 +4918,11 @@ def toolDeleteDevice(args) {
     // Step 6: Full audit log BEFORE deletion
     mcpLog("warn", "hub-admin", "DELETE DEVICE AUDIT: Deleting '${deviceName}' (ID: ${deviceId}, DNI: ${deviceDNI}, Type: ${deviceType}). Warnings: ${warnings.size() > 0 ? warnings.join(' | ') : 'none'}")
 
-    // Step 7: Execute force delete via hub internal API
+    // Step 7: Execute force delete via hub internal API.
+    // TODO(live-verify): the Vue Hub Mesh page force-deletes a LINKED device via
+    // /device/forceDelete/<id>/json (parses {status:"success"}); this reuses the /yes variant that
+    // works for ordinary devices. Confirm on hardware whether /yes also unlinks a linked device, or
+    // whether the linked case needs the /json branch. Coordinator to live-verify (#448).
     try {
         def responseText = hubInternalGet("/device/forceDelete/${deviceId}/yes", null, 30)
         mcpLog("debug", "hub-admin", "Force delete response for device ${deviceId}: ${responseText?.take(500)}")
@@ -5340,10 +5450,9 @@ Only modify devices user explicitly requested. Pre-flight: read configuration, c
         // Device Admin
         [
             name: "hub_delete_device",
-            description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO. For ghost/orphaned/stuck devices only.
+            description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO. Requires Write master + confirm.[[FLAT_TRIM]] For ghost/orphaned/stuck devices only.
 
-PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation
-Device + history lost, automations break. Requires Write master.""",
+PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation. Device + history lost, automations break. A Hub Mesh LINKED device unlinks locally only (the peer's source device is untouched) and warns on appsUsing. See hub_get_tool_guide(section='hub_admin_write_destructive').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -5389,15 +5498,17 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
         ],
         [
             name: "hub_create_device",
-            description: """Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device.[[/FLAT_TRIM]]""",
+            description: """Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device. Or LINK a peer hub's shared device over Hub Mesh: pass mesh_source_hub_id + mesh_source_device_id from hub_get_hub_mesh availableLinkedDevices[] instead of deviceTypeId; see hub_get_tool_guide(section='update_device').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceTypeId: [type: "string", description: "Driver-type id to instantiate (the 'id' from hub_list_drivers(include='all'))."],
-                    label: [type: "string", description: "Optional display label for the new device."],
+                    deviceTypeId: [type: "string", description: "Driver-type id to instantiate (the 'id' from hub_list_drivers(include='all')).[[FLAT_TRIM]] Omit when linking a Hub Mesh device.[[/FLAT_TRIM]]"],
+                    label: [type: "string", description: "Optional display label for the new device.[[FLAT_TRIM]] Driver-based create only.[[/FLAT_TRIM]]"],
+                    mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedDevices[]; send with mesh_source_device_id, omit deviceTypeId.[[/FLAT_TRIM]]"],
+                    mesh_source_device_id: [type: "string", description: "Hub Mesh: peer device id.[[FLAT_TRIM]] From the same availableLinkedDevices[] row.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to create the device."]
                 ],
-                required: ["deviceTypeId", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
@@ -5452,7 +5563,7 @@ def _toolDisplayMeta_partDevices() {
         hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
         hub_update_device: [title: "Update Device Properties", summary: "Update applicable device identity, preferences, display, driver, history limits, or integration assignments."],
-        hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id (LAN/integration/software drivers; not radio hardware)."],
+        hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."],
         hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
     ]

@@ -651,6 +651,10 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.applied == []
         !result.applied.contains('peer_token')
         result.error.contains('Failed to store the peer hub')
+
+        and: 'the note is case-specific: a dropped/empty body is an UNKNOWN commit (#448 nit 6a)'
+        result.error.contains('no response body')
+        result.note.contains('unconfirmed')
     }
 
     def "an explicit [success:false] setHubMeshToken body is a failure -- peer_token is NOT applied"() {
@@ -666,6 +670,10 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.applied == []
         !result.applied.contains('peer_token')
         result.error.contains('Failed to store the peer hub')
+
+        and: 'the note is case-specific: an explicit success:false is a hub REJECTION (#448 nit 6a)'
+        result.error.contains('rejected the request')
+        result.note.contains('rejected')
     }
 
     def "an oversized all-digits peer_hub_id passes through as a STRING and earlier legs survive"() {

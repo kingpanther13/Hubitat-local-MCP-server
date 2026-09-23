@@ -1240,6 +1240,102 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     }
 
     // ============================================================
+    // hub_create_device -- Hub Mesh link (#448)
+    // ============================================================
+
+    def "toolCreateDevice links a Hub Mesh device and resolves the new local id via a localLinkedDevices diff"() {
+        given: 'before the link there are no local linked devices; after, exactly one appears'
+        def linked = []
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> linked = [[id: 900, name: 'Kitchen Bridge']]; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedDevices: linked])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+        result.success == true
+        result.deviceId == '900'
+        result.name == 'Kitchen Bridge'
+        result.sourceHubId == 'HUB-A'
+        result.sourceDeviceId == '42'
+        result.linkedDevice == true
+        result.warnings == null
+    }
+
+    def "toolCreateDevice mesh link warns (not fails) when the new local id cannot be resolved"() {
+        given: 'the link is accepted but the localLinkedDevices list never changes (read-back lag)'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedDevices":[]}' }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == null
+        result.warnings != null
+        result.warnings.any { it.contains('could not resolve its new local id') }
+    }
+
+    def "toolCreateDevice mesh link returns a structured error when createLinked throws"() {
+        given:
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> throw new RuntimeException('Hub API 500') }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('linking the shared device')
+        result.note.contains('availableLinkedDevices')
+    }
+
+    def "toolCreateDevice rejects mixing deviceTypeId with the mesh_source pair"() {
+        when:
+        script.toolCreateDevice([deviceTypeId: '500', mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('not both')
+    }
+
+    def "toolCreateDevice mesh link requires BOTH hub id and device id"() {
+        when:
+        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('BOTH mesh_source_hub_id and mesh_source_device_id')
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_create_device mesh link passes through (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def linked = []
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> linked = [[id: 900, name: 'Kitchen Bridge']]; '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> groovy.json.JsonOutput.toJson([localLinkedDevices: linked]) }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_device', [mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.deviceId == '900'
+        inner.linkedDevice == true
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ============================================================
     // hub_get_compatible_devices
     // ============================================================
 

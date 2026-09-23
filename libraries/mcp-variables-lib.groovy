@@ -390,6 +390,26 @@ def _findHubVariablesAppId() {
 
 def toolCreateVariable(args) {
     requireDestructiveConfirm(args.confirm)
+    args = args ?: [:]
+
+    // Hub Mesh LINK form: create a local variable linked to one a peer hub shares. Mutually exclusive
+    // with every create form (single and bulk). Validation before any hub call.
+    boolean wantsMeshLink = args.containsKey("mesh_source_hub_id") || args.containsKey("mesh_source_name")
+    if (wantsMeshLink) {
+        if (args.name != null || args.type != null || args.value != null || args.variables != null) {
+            throw new IllegalArgumentException(
+                "Provide EITHER a new-variable create (name/type/value or the variables array) OR a Hub Mesh link " +
+                "(mesh_source_hub_id + mesh_source_name) -- not both.")
+        }
+        String meshHubId = args.mesh_source_hub_id?.toString()?.trim()
+        String meshName = args.mesh_source_name?.toString()?.trim()
+        if (!meshHubId || !meshName) {
+            throw new IllegalArgumentException(
+                "Linking a Hub Mesh variable needs BOTH mesh_source_hub_id and mesh_source_name " +
+                "(the hubId + name of one hub_get_hub_mesh availableLinkedHubVariables[] row).")
+        }
+        return _createLinkedMeshVariable(meshHubId, meshName)
+    }
 
     // Bulk form: variables=[{name,type,value}, ...]. Mutually exclusive with
     // the single name/type/value form. Each item is created SEQUENTIALLY
@@ -426,6 +446,68 @@ def toolCreateVariable(args) {
 
     def appId = _findHubVariablesAppId()
     return _createOneVariable(appId, name, type, value)
+}
+
+// Hub Mesh: create a LOCAL linked variable from one a peer hub shares (GET
+// /hub2/createLinkedHubVar/<hubId>/<name>). The endpoint returns an empty/plaintext body (the Vue
+// page just reloads), so the new local variable is discovered by diffing localLinkedHubVariables
+// before/after. A read-back lag or an unreadable mesh list is a WARNING, not a failure -- the hub
+// already accepted the link. Both segments are URL-encoded (the name may carry spaces/punctuation).
+private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
+    def beforeList = _meshLocalLinkedHubVarNames()
+    def before = (beforeList != null) ? (beforeList as Set) : null
+
+    String encHub = java.net.URLEncoder.encode(meshHubId, 'UTF-8')
+    String encName = java.net.URLEncoder.encode(meshName, 'UTF-8')
+    try {
+        hubInternalGet("/hub2/createLinkedHubVar/${encHub}/${encName}", null, 30)
+    } catch (Exception e) {
+        mcpLogError("variables", "hub_create_variable Hub Mesh link failed (hub ${meshHubId}, variable ${meshName})", e)
+        return [success: false, isError: true,
+                error: "Hub call failed linking the shared variable (hub ${meshHubId}, name ${meshName}): ${e.message}",
+                note: "Verify the pair against hub_get_hub_mesh availableLinkedHubVariables[] (hubId + name). " +
+                      "If the peer hub has UI login security, store its mesh token here first with " +
+                      "hub_update_hub_mesh(peer_hub_id, peer_token)."]
+    }
+
+    def warnings = []
+    boolean confirmed = false
+    for (int attempt = 0; attempt < 3; attempt++) {
+        def after = _meshLocalLinkedHubVarNames()
+        if (after != null && after.contains(meshName)) { confirmed = true; break }
+        if (before != null && after != null && (after.size() > before.size())) { confirmed = true; break }
+        if (attempt < 2) pauseExecution(500)
+    }
+    if (!confirmed) {
+        warnings << "Linked the shared variable, but could not confirm it in hub_get_hub_mesh localLinkedHubVariables (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
+    }
+
+    mcpLog("info", "variables", "hub_create_variable: linked Hub Mesh variable '${meshName}' from hub ${meshHubId}")
+    return [
+        success: true,
+        name: meshName,
+        sourceHubId: meshHubId,
+        linked: true,
+        warnings: warnings ?: null,
+        message: "Linked the Hub Mesh variable '${meshName}' shared by hub ${meshHubId}." + (warnings ? " WARNING: see warnings." : ""),
+        note: "This is a local mirror of a variable on the peer hub. Read all linked variables via hub_get_hub_mesh."
+    ]
+}
+
+// Reads /hub2/hubMeshJson and returns the NAMES of variables linked ONTO this hub from peers
+// (localLinkedHubVariables[].name). Returns null when the mesh JSON is unreachable/unparseable or the
+// section is missing/misshaped -- callers treat null as "unreadable" (warn, never fail).
+private List _meshLocalLinkedHubVarNames() {
+    try {
+        def raw = hubInternalGet("/hub2/hubMeshJson")
+        if (!raw?.trim()) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        if (!(parsed instanceof Map) || !(parsed.localLinkedHubVariables instanceof List)) return null
+        return parsed.localLinkedHubVariables.collect { it?.name?.toString() }
+    } catch (Exception e) {
+        logDebug("hub_create_variable: could not read Hub Mesh localLinkedHubVariables: ${e.message}")
+        return null
+    }
 }
 
 // Bulk create driver: requires a non-empty List at the batch level, resolves the
@@ -717,12 +799,78 @@ def toolRemoveConnector(args) {
     ]
 }
 
-def toolSetVariable(name, value) {
-    // setGlobalVar returns true on success, false when the variable doesn't
-    // exist (Hubitat will not auto-create vars from setGlobalVar — creation
-    // requires the Hub Variables UI or our toolCreateVariable tool). Falling
-    // back to rule_engine namespace on false OR exception preserves the
-    // legacy behavior callers depend on.
+def toolSetVariable(Map args) {
+    args = args ?: [:]
+    def name = args.name
+    if (name == null || name.toString().trim() == "") {
+        throw new IllegalArgumentException("name is required")
+    }
+    // A `value` key that is PRESENT (even null) is a value write -- omitting the key entirely is the
+    // only way to skip the value leg. This preserves the legacy "set a rule_engine var to null" path
+    // while still letting mesh_shared stand alone.
+    boolean hasValue = args.containsKey("value")
+    boolean hasMeshShared = args.containsKey("mesh_shared")
+
+    // VALIDATION FIRST -- everything below throws before any hub call / state write, so a rejected
+    // call can be corrected and retried without a half-applied change.
+    if (!hasValue && !hasMeshShared) {
+        throw new IllegalArgumentException("Provide value, mesh_shared, or both.")
+    }
+    if (hasMeshShared && !(args.mesh_shared instanceof Boolean)) {
+        throw new IllegalArgumentException("mesh_shared must be a boolean (true or false), got: ${args.mesh_shared}")
+    }
+    // Hub Mesh sharing applies only to HUB variables -- reject it on a rule-only var up front (before
+    // the value leg runs), so mesh_shared never silently no-ops against a rule_engine variable.
+    if (hasMeshShared) {
+        def hv = null
+        try { hv = getGlobalVar(name) } catch (Exception e) {
+            logDebug("hub_set_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        }
+        if (hv == null) {
+            throw new IllegalArgumentException(
+                "mesh_shared applies only to hub variables; '${name}' is not a hub variable. " +
+                "Create it with hub_create_variable first, or drop mesh_shared.")
+        }
+    }
+
+    def result = hasValue ? _setVariableValueLeg(name, args.value) : [success: true, name: name, source: "hub"]
+
+    if (hasMeshShared) {
+        boolean share = (args.mesh_shared == true)
+        String enc = java.net.URLEncoder.encode(name.toString(), 'UTF-8')
+        try {
+            hubInternalGet(share ? "/hub2/addVarToMesh/${enc}" : "/hub2/removeVarFromMesh/${enc}", null, 30)
+        } catch (Exception e) {
+            mcpLogError("variables", "hub_set_variable Hub Mesh ${share ? 'share' : 'unshare'} failed for '${name}'", e)
+            return [success: false,
+                    error: "Failed to ${share ? 'share' : 'unshare'} hub variable '${name}' over Hub Mesh: ${e.message}",
+                    name: name,
+                    valueApplied: hasValue ? result.value : null,
+                    note: "The value leg${hasValue ? ' committed' : ' was not requested'}; the mesh ${share ? 'share' : 'unshare'} did not. " +
+                          "Verify Hub Mesh is enabled and read the state with hub_get_hub_mesh."]
+        }
+        result.meshShared = share
+        // Read-back (warn-not-fail): the endpoint returns an empty/plaintext body, so confirm against
+        // the sharedHubVariables list. An unreadable list leaves meshShareConfirmed null.
+        def sharedNames = _meshSharedHubVarNames()
+        if (sharedNames != null) {
+            boolean present = sharedNames.contains(name.toString())
+            result.meshShareConfirmed = (present == share)
+            if (!result.meshShareConfirmed) {
+                result.note = "Hub Mesh ${share ? 'share' : 'unshare'} was sent but the sharedHubVariables read-back did not yet reflect it (propagation lag). Re-check with hub_get_hub_mesh."
+            }
+        } else {
+            result.meshShareConfirmed = null
+        }
+    }
+    return result
+}
+
+// Value-write leg extracted from the legacy toolSetVariable: setGlobalVar returns true on success,
+// false when the variable doesn't exist (Hubitat will not auto-create vars from setGlobalVar --
+// creation requires the Hub Variables UI or our toolCreateVariable tool). Falling back to the
+// rule_engine namespace on false OR exception preserves the legacy behavior callers depend on.
+private Map _setVariableValueLeg(name, value) {
     try {
         if (setGlobalVar(name, value)) {
             return [success: true, name: name, value: value, source: "hub"]
@@ -733,6 +881,22 @@ def toolSetVariable(name, value) {
     if (!state.ruleVariables) state.ruleVariables = [:]
     state.ruleVariables.put(name, value)
     return [success: true, name: name, value: value, source: "rule_engine"]
+}
+
+// Reads /hub2/hubMeshJson and returns the NAMES of hub variables shared INTO the mesh
+// (sharedHubVariables[].name). Returns null when the mesh JSON is unreachable/unparseable or the
+// section is missing/misshaped -- callers treat null as "unreadable" (warn, never fail).
+private List _meshSharedHubVarNames() {
+    try {
+        def raw = hubInternalGet("/hub2/hubMeshJson")
+        if (!raw?.trim()) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        if (!(parsed instanceof Map) || !(parsed.sharedHubVariables instanceof List)) return null
+        return parsed.sharedHubVariables.collect { it?.name?.toString() }
+    } catch (Exception e) {
+        logDebug("hub_set_variable: could not read Hub Mesh sharedHubVariables: ${e.message}")
+        return null
+    }
 }
 
 def toolDeleteHubVariable(args) {
@@ -935,25 +1099,28 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_set_variable",
-            description: "Set an existing variable's value. For hub variables, value type must match the variable's declared type.[[FLAT_TRIM]] Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create.[[/FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches.",
+            description: "Set an existing variable's value. For hub variables, value type must match the variable's declared type.[[FLAT_TRIM]] Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches.",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name"],
-                    value: [type: "string", description: "Variable value (string, number, or boolean as string)"]
+                    value: [type: "string", description: "Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"],
+                    mesh_shared: [type: "boolean", description: "Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]
                 ],
-                required: ["name", "value"]
+                required: ["name"]
             ]
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call. Single form: name + type + value.",
+            description: "Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call. Single form: name + type + value.[[FLAT_TRIM]] Or LINK a variable a peer hub shares over Hub Mesh: mesh_source_hub_id + mesh_source_name from hub_get_hub_mesh availableLinkedHubVariables[], instead of name/type/value/variables; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Omit when using variables."],
+                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Omit when using variables or the Hub Mesh link form."],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type. Omit when using variables."],
                     value: [description: "Initial value, must match the type; for DateTime e.g. 2026-02-04T14:00. Omit when using variables."],
+                    mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"],
+                    mesh_source_name: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
                     variables: [type: "array", description: "Bulk form: several variables in one call.", items: [
                         type: "object",
                         properties: [
@@ -983,7 +1150,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_create_connector",
-            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it. No-op if a connector already exists.",
+            description: "Create a virtual-device connector for an existing hub variable[[FLAT_TRIM]] so apps that only consume devices can read/write it. No-op if a connector already exists; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -996,7 +1163,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_delete_connector",
-            description: "Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. confirm=true required. No-op if the variable has no connector.",
+            description: "Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable. confirm=true required.[[FLAT_TRIM]] The connector device is removed, but the hub variable itself and its value are unchanged. No-op if the variable has no connector; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

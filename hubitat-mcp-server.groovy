@@ -5771,7 +5771,7 @@ def executeTool(toolName, args) {
         case "hub_set_mode_manager": return toolSetModeManager(args)
         case "hub_list_variables": return toolListVariables(args)
         case "hub_get_variable": return toolGetVariable(args.name)
-        case "hub_set_variable": return toolSetVariable(args.name, args.value)
+        case "hub_set_variable": return toolSetVariable(args)
         case "hub_create_variable": return toolCreateVariable(args)
         case "hub_delete_variable": return toolDeleteHubVariable(args)
         case "hub_create_connector": return toolCreateConnector(args)
@@ -9860,6 +9860,18 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 
 Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool.
 
+### Per-device and per-variable Hub Mesh linking & sharing
+
+The hub-LEVEL settings above are `hub_update_hub_mesh`; the per-entity share/link operations are folded into the device and variable tools (no dedicated tools):
+
+- **Share a device** into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)` (+ `meshFullSync`). Its full reference is `hub_get_tool_guide(section='update_device')`.
+- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`.
+- **Unlink a device**: `hub_delete_device(deviceId, confirm=true)` — removes only the local proxy; warns on `appsUsing`.
+- **Share a variable**: `hub_set_variable(name, mesh_shared=true|false)` (hub variables only).
+- **Link a variable** a peer shares: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
+
+A peer with UI login security must have its mesh token stored here first via `hub_update_hub_mesh(peer_hub_id, peer_token)`, or the link no-ops.
+
 ### hub_update_package
 
 Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response, #237). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
@@ -9963,6 +9975,16 @@ Omitted properties are preserved. The complete patch is validated before writes 
 Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
 
 If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
+
+### Hub Mesh: sharing, linking, and unlinking devices
+
+Hub Mesh shares devices between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Three device operations, split across tools:
+
+- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)` (and `meshFullSync` to keep a shared device synced on the periodic refresh). No dedicated tool — it is a device property.
+- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff; a read-back lag returns a warning, not a failure). If the peer hub has UI login security, store its mesh token first with `hub_update_hub_mesh(peer_hub_id, peer_token)`.
+- **Unlink** a linked device: `hub_delete_device(deviceId, confirm=true)`. This removes ONLY the local proxy; the source device on the peer hub is untouched. The tool warns when the linked device is in use by local apps (`appsUsing`), which will break.
+
+Read the current mesh state (shared/linked/available lists, per-device `appsUsing`) with `hub_get_hub_mesh`; the hub-level mesh settings are in `hub_update_hub_mesh`.
 ''',
 
         rules: '''## Rule Structure Reference
@@ -10872,6 +10894,19 @@ Audit/debug what changed a hub variable and when, without polling hub_get_variab
 ### hub_create_connector
 
 For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped. The full Number/Decimal `connectorType` set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
+
+### hub_delete_connector
+
+Deletes the connector DEVICE backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. `confirm=true` required. No-op if the variable has no connector.
+
+### Hub Mesh: sharing and linking hub variables
+
+Hub Mesh shares hub variables between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Two variable operations, folded into the existing tools:
+
+- **Share / unshare** one of THIS hub's variables into the mesh: `hub_set_variable(name, mesh_shared=true|false)`. `mesh_shared` may stand alone or accompany a `value` write. It applies only to HUB variables — a rule_engine-only name is rejected. The result reports `meshShared` and `meshShareConfirmed` (null when the `sharedHubVariables` read-back is unavailable).
+- **Link** a variable a PEER hub shares onto this hub: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedHubVariables[]` (`hubId` + `name`), and is mutually exclusive with the create forms (`name`/`type`/`value` or `variables`). A read-back lag returns a warning, not a failure. If the peer hub has UI login security, store its mesh token first with `hub_update_hub_mesh(peer_hub_id, peer_token)`.
+
+Read the current mesh variable state (shared/linked/available lists) with `hub_get_hub_mesh`.
 '''
     ,
         dashboards: '''## Dashboards
@@ -11065,7 +11100,8 @@ def getToolGuideSubSections() {
             hub_admin_write_system: ["hub_get_info", "hub_list_modes", "hub_manage_mode",
                                      "hub_set_mode_manager", "hub_get_hsm_status",
                                      "hub_set_system_settings", "hub_update_mcp_settings",
-                                     "hub_get_hub_mesh", "hub_update_hub_mesh"]
+                                     "hub_get_hub_mesh", "hub_update_hub_mesh",
+                                     "Per-device and per-variable Hub Mesh"]
         ],
         performance: [
             performance_overview: [],
