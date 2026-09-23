@@ -493,6 +493,316 @@ private _validateCoordinate(String key, Map args, Number lo, Number hi) {
     return v
 }
 
+// ---------------------------------------------------------------------------
+// Hub Mesh (hub-to-hub device/variable sharing). Endpoints RE'd from the Vue
+// Hub Mesh page in resources/hub2-source/vue-hub2.min.js -- see that folder's
+// README endpoint inventory. NOT the Z-Wave/Zigbee radio mesh.
+// ---------------------------------------------------------------------------
+
+// Null-safe list passthrough: firmware variations omit whole sections of
+// /hub2/hubMeshJson, and a null would be indistinguishable from "none shared".
+private List _meshList(v) {
+    return (v instanceof List) ? v : []
+}
+
+// The allowed full-sync intervals the hub's own picker offers (seconds; 0 = Never).
+private List _meshRefreshIntervals() {
+    return [0, 120, 300, 3600]
+}
+
+// Structured failure envelope shared by the four hub_update_hub_mesh legs (each an independent
+// hub call, so a mid-way failure leaves the earlier legs committed). `whatFailed` is the human
+// phrase for the error line; `recoveryNote` is appended after the already-applied prefix. `detail`
+// may be a Throwable (its message is used) or a plain string (e.g. an _unparseable body message).
+private Map _meshLegFailure(List applied, String whatFailed, detail, String recoveryNote) {
+    def msg = (detail instanceof Throwable) ? detail.message : detail?.toString()
+    return [success: false,
+            error: "${whatFailed}: ${msg}",
+            applied: applied,
+            note: (applied ? "Already applied: ${applied.join(', ')}. " : "") + recoveryNote]
+}
+
+def toolGetHubMesh(args = null) {
+    args = args ?: [:]
+    // include_token must be an actual boolean -- a string "true" must not silently return no token
+    // (mirror hub_update_hub_mesh's strict boolean handling for `enabled`).
+    if (args.containsKey("include_token") && !(args.include_token instanceof Boolean)) {
+        throw new IllegalArgumentException("include_token must be a boolean (true or false), got: ${args.include_token}")
+    }
+    boolean includeToken = (args.include_token == true)
+
+    // A degraded Hub Mesh read is not a hard tool failure -- it returns the structured success:false
+    // contract below -- and it also logs WHY it degraded at warn: the codebase's level for a handled
+    // degradation, visible once the log level is set to warn or lower (the default error threshold
+    // drops it). The three failure modes get distinct diagnoses instead of one catch conflating them.
+
+    // (a) HTTP round-trip: a throw here is an unreachable endpoint or a firmware that lacks the
+    // /hub2/hubMeshJson surface entirely -- NOT a body that came back and failed to parse.
+    String raw
+    try {
+        raw = hubInternalGet("/hub2/hubMeshJson")
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_hub_mesh /hub2/hubMeshJson request failed: ${e.message}")
+        return [success: false,
+                error: "Could not read Hub Mesh config (/hub2/hubMeshJson): ${e.message}",
+                note: "The hub firmware may predate Hub Mesh, or the endpoint was unreachable. " +
+                      "Verify the hub responds and that this is a Hub Mesh-capable firmware; " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+
+    // (b) Empty body: the request succeeded but returned nothing -- its own branch so it is not
+    // mis-diagnosed as a firmware/parse problem.
+    if (!raw?.trim()) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson returned an empty body")
+        return [success: false,
+                error: "The /hub2/hubMeshJson response was empty.",
+                note: "The endpoint returned no data -- the hub may be busy or mid-reboot; retry shortly. " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+
+    // (c) Non-empty body that does not parse as JSON: a changed shape, NOT "firmware predates Hub
+    // Mesh". (This is a loopback call the hub exempts from login, so it is never an auth/login page.)
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(raw)
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson body did not parse as JSON: ${e.message}")
+        return [success: false,
+                error: "The /hub2/hubMeshJson response did not parse as JSON: ${e.message}",
+                note: "The hub returned a non-JSON body (unexpected -- a transient error or a changed " +
+                      "response shape); retry, and if it persists the response shape may have changed. " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+    if (!(parsed instanceof Map)) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson parsed to a non-object shape")
+        return [success: false,
+                error: "Unexpected /hub2/hubMeshJson response; it parsed as JSON but not as an object.",
+                note: "The endpoint returned an unrecognized shape (a JSON array or scalar). " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+
+    def enabled = (parsed.hubMeshEnabled instanceof Boolean) ? parsed.hubMeshEnabled : null
+    def interval = (parsed.fullRefreshInterval instanceof Number) ? parsed.fullRefreshInterval : null
+    // The UI maps an absent/null modeHubId to "none" (local modes); mirror that so the value
+    // round-trips straight back into hub_update_hub_mesh(mode_hub_id).
+    String modeHubId = parsed.modeHubId ? parsed.modeHubId.toString() : "none"
+
+    def privateDevices = _meshList(parsed.privateDevices)
+    def localHubVariables = _meshList(parsed.localHubVariables)
+
+    // A list section that is PRESENT but not a List (e.g. a firmware shape change turning hubList
+    // into a Map) is silently read as [] by _meshList, which would report "meshed with nothing"
+    // where the truth is "unreadable". Track those so the note can flag them -- an ABSENT section
+    // stays silent, since absent is a legitimate "none shared". Result-facing names, mirroring the
+    // scalar `unreadable` signal below.
+    def listSections = [hubList: 'peers',
+                        sharedDevices: 'sharedDevices',
+                        localLinkedDevices: 'localLinkedDevices',
+                        availableLinkedDevices: 'availableLinkedDevices',
+                        sharedHubVariables: 'sharedHubVariables',
+                        localLinkedHubVariables: 'localLinkedHubVariables',
+                        availableLinkedHubVariables: 'availableLinkedHubVariables',
+                        privateDevices: 'privateDeviceCount',
+                        localHubVariables: 'localHubVariableCount']
+    def misShapedLists = listSections.findAll { k, v -> parsed.containsKey(k) && !(parsed.get(k) instanceof List) }.values()
+
+    def result = [
+        success: true,
+        hubMeshEnabled: enabled,
+        fullRefreshInterval: interval,
+        modeHubId: modeHubId,
+        peers: _meshList(parsed.hubList),
+        sharedDevices: _meshList(parsed.sharedDevices),
+        localLinkedDevices: _meshList(parsed.localLinkedDevices),
+        availableLinkedDevices: _meshList(parsed.availableLinkedDevices),
+        sharedHubVariables: _meshList(parsed.sharedHubVariables),
+        localLinkedHubVariables: _meshList(parsed.localLinkedHubVariables),
+        availableLinkedHubVariables: _meshList(parsed.availableLinkedHubVariables),
+        // Counts only -- privateDevices is every UNshared device on the hub (hundreds on a
+        // real hub) and localHubVariables duplicates hub_list_variables; returning either in
+        // full would blow the response budget for no information the dedicated tools lack.
+        privateDeviceCount: privateDevices.size(),
+        localHubVariableCount: localHubVariables.size()
+    ]
+    String note = "privateDeviceCount/localHubVariableCount are counts only: use hub_list_devices " +
+                  "for the full device inventory and hub_list_variables for hub variables."
+    if (enabled == false) {
+        note = "Hub Mesh is DISABLED on this hub. Enable it with hub_update_hub_mesh(enabled=true), " +
+               "then reboot the hub (hub_reboot) for the change to take effect. " + note
+    }
+    // Signal which scalars the hub reported as null/wrong-typed (mapped to null above) so a caller can
+    // tell "unreadable" from a confident value -- same intent as _platformUpdateFromHub2's null signal.
+    def unreadable = []
+    if (enabled == null) unreadable << "hubMeshEnabled"
+    if (interval == null) unreadable << "fullRefreshInterval"
+    if (unreadable) {
+        note += " Reported null by this firmware (unreadable, not confirmed): ${unreadable.join(', ')}."
+    }
+    if (misShapedLists) {
+        note += " Reported an unexpected shape (read as empty): ${misShapedLists.join(', ')}."
+    }
+
+    // The mesh token authenticates a peer hub against THIS hub -- a credential, so it is
+    // opt-in rather than part of the default read.
+    if (includeToken) {
+        result.hubMeshToken = parsed.hubMeshToken?.toString()
+        if (result.hubMeshToken == null) {
+            note += " include_token was set but the hub reported no mesh token (hubMeshToken is null)."
+        }
+    }
+
+    result.note = note
+    return result
+}
+
+def toolUpdateHubMesh(args) {
+    args = args ?: [:]
+    def settable = ["enabled", "full_refresh_interval", "mode_hub_id", "peer_hub_id", "peer_token"]
+
+    // VALIDATION FIRST -- every check below runs before ANY hub call, so a validation rejection
+    // can be corrected and retried without having half-applied something.
+    if (!settable.any { args.containsKey(it) }) {
+        throw new IllegalArgumentException(
+            "Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes. " +
+            "Read the current config with hub_get_hub_mesh.")
+    }
+    if (args.containsKey("enabled") && !(args.enabled instanceof Boolean)) {
+        throw new IllegalArgumentException("enabled must be a boolean (true or false), got: ${args.enabled}")
+    }
+
+    Integer interval = null
+    if (args.containsKey("full_refresh_interval")) {
+        def raw = args.full_refresh_interval
+        if (raw instanceof Number) {
+            // Reject anything that is not exactly one of the allowed values. `raw != raw.intValue()`
+            // catches BOTH a fractional value (300.7, which would otherwise truncate to 300) AND an
+            // out-of-int-range value (3000000000, whole but wraps under intValue()), so the message
+            // is framed by the value set rather than "whole number" -- correct for both cases.
+            if (raw != raw.intValue()) {
+                throw new IllegalArgumentException(
+                    "full_refresh_interval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
+                    "(0 = never full-sync), got: ${raw}")
+            }
+            interval = raw.intValue()
+        } else if (raw != null) {
+            def s = raw.toString().trim()
+            if (s.isInteger()) interval = s.toInteger()
+        }
+        if (!(interval in _meshRefreshIntervals())) {
+            throw new IllegalArgumentException(
+                "full_refresh_interval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
+                "(0 = never full-sync), got: ${args.full_refresh_interval}")
+        }
+    }
+
+    boolean hasPeerId = args.containsKey("peer_hub_id")
+    boolean hasPeerToken = args.containsKey("peer_token")
+    if (hasPeerId != hasPeerToken) {
+        throw new IllegalArgumentException(
+            "peer_hub_id and peer_token must be provided TOGETHER (they store one peer hub's mesh auth token). " +
+            "Got only ${hasPeerId ? 'peer_hub_id' : 'peer_token'}.")
+    }
+    String peerHubId = args.peer_hub_id?.toString()?.trim()
+    String peerToken = args.peer_token?.toString()?.trim()
+    if (hasPeerId && (!peerHubId || !peerToken)) {
+        throw new IllegalArgumentException(
+            "peer_hub_id and peer_token must both be non-empty. Read peer hub ids from hub_get_hub_mesh peers[].hubId.")
+    }
+
+    String modeHubId = args.mode_hub_id?.toString()?.trim()
+    if (args.containsKey("mode_hub_id") && !modeHubId) {
+        throw new IllegalArgumentException(
+            "mode_hub_id must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
+    }
+
+    def applied = []
+
+    // Each leg is its own independent hub call (NOT one atomic POST), so a failure part-way
+    // returns the structured error with `applied` carrying what already committed.
+    if (args.containsKey("enabled")) {
+        boolean on = (args.enabled == true)
+        try {
+            hubInternalGet(on ? "/hub/advanced/enableHubMesh" : "/hub/advanced/disableHubMesh")
+            applied << "enabled"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh enable/disable failed", e)
+            return _meshLegFailure(applied, "Failed to ${on ? 'enable' : 'disable'} Hub Mesh", e,
+                    "Nothing else was attempted. Read the current state with hub_get_hub_mesh.")
+        }
+    }
+
+    if (interval != null) {
+        try {
+            hubInternalGet("/device/setHubMeshFullRefreshInterval/${interval}")
+            applied << "full_refresh_interval"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh full-refresh interval failed", e)
+            return _meshLegFailure(applied, "Failed to set the Hub Mesh full-refresh interval", e,
+                    "The interval was not changed. Read the current state with hub_get_hub_mesh.")
+        }
+    }
+
+    if (args.containsKey("mode_hub_id")) {
+        try {
+            // URL-encode the segment before it reaches the /device/followModes/<x> path -- the real
+            // safety fix, so an unexpected value cannot inject extra path segments (matches repo
+            // precedent for interpolated path segments).
+            hubInternalGet("/device/followModes/${java.net.URLEncoder.encode(modeHubId, 'UTF-8')}")
+            applied << "mode_hub_id"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh followModes failed", e)
+            return _meshLegFailure(applied, "Failed to set the mode-following hub", e,
+                    "Mode following was not changed. Valid values are a peer hubId from " +
+                    "hub_get_hub_mesh peers[].hubId, or 'none'.")
+        }
+    }
+
+    if (hasPeerId) {
+        // The Vue page posts the hubId as the NUMBER it read out of hubMeshJson, so preserve that
+        // type for an all-digits id -- a quoted string is a different JSON value to the hub. isLong()
+        // (not a \d+ match) so an OVERSIZED all-digits id passes through as a string instead of
+        // throwing NumberFormatException after earlier legs have already committed. isLong() also
+        // accepts a leading sign, so peer_hub_id "-12" posts as the JSON number -12 (a strict \d+
+        // would have kept it a string) -- harmless, hub ids are non-negative and the hub ignores a
+        // non-matching id.
+        def hubIdValue = peerHubId.isLong() ? peerHubId.toLong() : peerHubId
+        def postResult
+        try {
+            postResult = hubInternalPostJson("/device/setHubMeshToken",
+                groovy.json.JsonOutput.toJson([hubId: hubIdValue, token: peerToken]))
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken failed", e)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token", e,
+                    "The peer token was not stored. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
+        }
+        // FAIL-CLOSED on anything that is not a positive commit (repo precedent: the /device/runmethod
+        // handler in mcp-devices-lib.groovy). hubInternalPostJson returns null for an EMPTY/dropped
+        // body -- a truncated response is an unknown commit, not a success. An _unparseable Map is a
+        // non-JSON body. An explicit [success:false] is a rejection. All three mean "not stored", so
+        // do NOT record peer_token. An empty {} / non-error Map IS this endpoint's proven success
+        // shape (it returns 200 {} on success), so success is NOT gated on success==true.
+        if (postResult == null ||
+            (postResult instanceof Map && postResult._unparseable == true) ||
+            (postResult instanceof Map && postResult.success == false)) {
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub returned an unexpected or dropped response",
+                    "The hub returned an unexpected/non-JSON response; the token was not stored. " +
+                    "Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
+        }
+        applied << "peer_token"
+    }
+
+    // `applied` lists what was SENT to the hub (a 2xx), not read back as changed -- the GET legs
+    // return no post-change value to confirm against, so steer the caller to the read-back.
+    String note = "Each entry in `applied` was sent to the hub (accepted with a 2xx), not confirmed as " +
+                  "changed -- read back the current values with hub_get_hub_mesh."
+    if (args.containsKey("enabled")) {
+        note += " Enabling/disabling Hub Mesh requires a hub REBOOT to take effect " +
+                "(hub_reboot in hub_manage_destructive_ops) -- the tool itself does not reboot."
+    }
+    return [success: true, applied: applied, note: note]
+}
+
 def toolGetModes() {
     def currentMode = location.mode
     def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
@@ -1002,6 +1312,30 @@ def _getAllToolDefinitions_partSystem() {
             ]
         ],
         [
+            name: "hub_get_hub_mesh",
+            description: """Read Hub Mesh config: enabled state, peer hubs, shared/linked devices + variables (hub-to-hub sharing, NOT the Z-Wave/Zigbee radio mesh).[[FLAT_TRIM]] Radio topology is hub_get_radio_details. Peers auto-discover on the LAN (no "add peer" op). Unshared devices and local hub variables come back as counts only (privateDeviceCount / localHubVariableCount — hub_list_devices / hub_list_variables carry the full lists); modeHubId 'none' = local modes. Full field reference: hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    include_token: [type: "boolean", description: "Also return this hub's mesh token (a credential; off by default).[[FLAT_TRIM]] A peer hub needs it to reach THIS hub when THIS hub has UI login security.[[/FLAT_TRIM]]"]
+                ]
+            ]
+        ],
+        [
+            name: "hub_update_hub_mesh",
+            description: """Change Hub Mesh settings (hub-to-hub sharing, NOT the Z-Wave/Zigbee radios). All optional — pass only what changes. ⚠️ An `enabled` change needs a hub REBOOT (hub_reboot) to take effect.[[FLAT_TRIM]] The tool never reboots on its own. Applied fields are echoed in `applied`. Peers auto-discover on the LAN (no "add peer" write); per-DEVICE sharing is hub_update_device (meshEnabled / meshFullSync). Read current config + valid peer hubIds via hub_get_hub_mesh; full write model in hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    enabled: [type: "boolean", description: "Hub Mesh on/off. ⚠️ Needs a hub reboot to take effect."],
+                    full_refresh_interval: [type: "integer", enum: _meshRefreshIntervals(), description: "Full-sync interval in seconds; 0 = never."],
+                    mode_hub_id: [type: "string", description: "Peer hubId whose modes to follow, or 'none' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    peer_hub_id: [type: "string", description: "Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    peer_token: [type: "string", description: "That peer's mesh token; send with peer_hub_id.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]]"]
+                ]
+            ]
+        ],
+        [
             name: "hub_reboot",
             description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware. Requires Write master.[[FLAT_TRIM]]
 
@@ -1049,7 +1383,7 @@ def _readOnlyToolNames_partSystem() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Hub state reads
-        "hub_get_info", "hub_list_modes", "hub_get_hsm_status"
+        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_hub_mesh"
     ]
 }
 
@@ -1058,7 +1392,13 @@ def _idempotentWriteToolNames_partSystem() {
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
         // Hub state
-        "hub_set_hsm", "hub_set_mode_manager"
+        "hub_set_hsm", "hub_set_mode_manager",
+        // hub_update_hub_mesh: every leg assigns a value or flips a persistent flag
+        // (enable/disable, sync interval, mode-following hub, a peer's stored token), so an
+        // identical retry converges on the same state with no additional effect. The tool
+        // itself never reboots -- the reboot an `enabled` change needs is the caller's own
+        // separate hub_reboot -- so retrying it cannot re-trigger one.
+        "hub_update_hub_mesh"
         // hub_set_system_settings is deliberately OMITTED here (non-idempotent): its timeZone leg
         // reboots the hub, so a retry with the same args re-triggers the reboot -- not "no additional
         // effect" -- which is the conservative, accurate idempotentHint for this tool.
@@ -1087,6 +1427,9 @@ def _toolDisplayMeta_partSystem() {
         hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
         hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, location, zip, temperature scale, admin-UI dark mode, or network config."],
+        // Hub Mesh (hub-to-hub sharing; NOT the Z-Wave/Zigbee radio mesh)
+        hub_get_hub_mesh: [title: "Get Hub Mesh", summary: "Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."],
+        hub_update_hub_mesh: [title: "Update Hub Mesh", summary: "Enable/disable Hub Mesh, set the sync interval, follow a peer's modes, or store a peer's mesh token."],
         // Hub utilities
         hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],
         // Destructive hub ops
