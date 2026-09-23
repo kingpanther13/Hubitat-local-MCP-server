@@ -4252,8 +4252,9 @@ class TestRunner:
             )
 
             # Event provenance: MCP commands go through /device/runmethod, which records no
-            # command-<name> event, so the switch's own state events are what carry producedBy --
-            # hub HTML that must come back parsed as the device itself.
+            # command-<name> event, so the switch's own state events carry producedBy -- hub HTML
+            # that must come back parsed. Command-driven rows name the device itself; the initial
+            # state the MCP app set at creation names that app instead.
             own_label = self.client.call_tool("hub_get_device", {"deviceId": dev_id}).get("label")
             ev = self.client.call_tool("hub_list_device_events", {
                 "deviceId": dev_id, "attribute": "switch", "hoursBack": 1,
@@ -4262,8 +4263,14 @@ class TestRunner:
             assert switch_rows, f"no switch events recorded for the commanded switch {dev_id}: {ev}"
             assert all("<" not in json.dumps(row) for row in switch_rows), \
                 f"raw hub HTML leaked into switch events: {switch_rows}"
-            assert all(row.get("producedBy") == {"name": own_label, "deviceId": dev_id} for row in switch_rows), \
-                f"switch events must name the device itself as producedBy: {switch_rows}"
+            itself = {"name": own_label, "deviceId": dev_id}
+            assert switch_rows[0].get("producedBy") == itself, \
+                f"the newest (command-driven) switch event must name the device itself: {switch_rows}"
+            assert all(row.get("producedBy") == itself
+                       or (isinstance(row.get("producedBy"), dict) and isinstance(row["producedBy"].get("appId"), int)
+                           and row["producedBy"].get("name"))
+                       for row in switch_rows), \
+                f"every switch event must name the device itself or a parsed producing app: {switch_rows}"
         finally:
             # Best-effort inline delete (the tracked DNI + cleanup sweep backstop a
             # miss); delete-contract assertions live in test_delete_virtual_switch.
