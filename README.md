@@ -1661,6 +1661,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.4.0** - feat: add hub-level Hub Mesh tools (hub_get_hub_mesh, hub_update_hub_mesh). PRs: [#438](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/438)
 - **v4.3.11** - chore: retire the Hub Security credential settings on firmware 2.5.0+. PRs: [#450](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/450)
 - **v4.3.10** - feat: rework hub_report_issue and record MCP client identity. PRs: [#442](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/442)
 - **v4.3.9** - fix: copy a variable into a String target through valStringOp. PRs: [#445](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/445)
