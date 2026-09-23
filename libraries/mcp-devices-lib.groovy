@@ -5330,10 +5330,10 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location. Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
+            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location.
 
 [[FLAT_TRIM]]
-Default: most-recent events for a device (deviceId + optional limit).
+Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
