@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 115 tools (36 on tools/list + gateways)│  │
+│  │  - 118 tools (36 on tools/list + gateways)│  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │

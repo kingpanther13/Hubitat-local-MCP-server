@@ -522,22 +522,6 @@ private Map _meshLegFailure(List applied, String whatFailed, detail, String reco
             note: (applied ? "Already applied: ${applied.join(', ')}. " : "") + recoveryNote]
 }
 
-// Detect a Hub-Security auth redirect that hubInternalGet silently FOLLOWED to a 200 login page.
-// The mesh GET legs (enable/disable, followModes, setHubMeshFullRefreshInterval) succeed with an
-// EMPTY body or a short plain-text message ("Hub mesh enabled, please reboot the hub."), never HTML
-// -- so a body carrying login-page markup means the session cookie was stale (the hub 302s to
-// /login, which is NOT a 401/403, so shouldRetryWithFreshCookie never refreshes it) and the "success"
-// is really an unauthenticated redirect. hubInternalPostJson already flags this as _unparseable for
-// the POST leg; the GETs return the raw string, so they need this explicit check to avoid recording a
-// false success. NOTE: this is a systemic hubInternalGet behaviour (every GET caller shares it), not
-// mesh-specific -- flagged upstream for a possible central fix; this guard covers the mesh legs today.
-private boolean _meshResponseIsAuthPage(body) {
-    if (!body) return false
-    def s = body.toString().toLowerCase()
-    return s.contains("<html") || s.contains("<!doctype") || s.contains("loginredirect") ||
-           (s.contains("password") && s.contains("<form"))
-}
-
 def toolGetHubMesh(args = null) {
     args = args ?: [:]
     // include_token must be an actual boolean -- a string "true" must not silently return no token
@@ -548,9 +532,9 @@ def toolGetHubMesh(args = null) {
     boolean includeToken = (args.include_token == true)
 
     // A degraded Hub Mesh read is not a hard tool failure -- it returns the structured success:false
-    // contract below -- but an operator watching logs still needs to see WHY it degraded, so these use
-    // warn (the codebase's common level for a handled degradation). The three failure modes get
-    // distinct diagnoses instead of one catch conflating them.
+    // contract below -- and it also logs WHY it degraded at warn: the codebase's level for a handled
+    // degradation, visible once the log level is set to warn or lower (the default error threshold
+    // drops it). The three failure modes get distinct diagnoses instead of one catch conflating them.
 
     // (a) HTTP round-trip: a throw here is an unreachable endpoint or a firmware that lacks the
     // /hub2/hubMeshJson surface entirely -- NOT a body that came back and failed to parse.
@@ -576,8 +560,8 @@ def toolGetHubMesh(args = null) {
                       "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
     }
 
-    // (c) Non-empty body that does not parse as JSON: a changed shape or a non-JSON page (e.g. an
-    // auth/login redirect), NOT "firmware predates Hub Mesh".
+    // (c) Non-empty body that does not parse as JSON: a changed shape, NOT "firmware predates Hub
+    // Mesh". (This is a loopback call the hub exempts from login, so it is never an auth/login page.)
     def parsed
     try {
         parsed = new groovy.json.JsonSlurper().parseText(raw)
@@ -585,8 +569,8 @@ def toolGetHubMesh(args = null) {
         mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson body did not parse as JSON: ${e.message}")
         return [success: false,
                 error: "The /hub2/hubMeshJson response did not parse as JSON: ${e.message}",
-                note: "The hub returned a non-JSON body (often an auth/login redirect); verify Hub Security " +
-                      "credentials and that the hub is reachable. " +
+                note: "The hub returned a non-JSON body (unexpected -- a transient error or a changed " +
+                      "response shape); retry, and if it persists the response shape may have changed. " +
                       "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
     }
     if (!(parsed instanceof Map)) {
@@ -605,6 +589,22 @@ def toolGetHubMesh(args = null) {
 
     def privateDevices = _meshList(parsed.privateDevices)
     def localHubVariables = _meshList(parsed.localHubVariables)
+
+    // A list section that is PRESENT but not a List (e.g. a firmware shape change turning hubList
+    // into a Map) is silently read as [] by _meshList, which would report "meshed with nothing"
+    // where the truth is "unreadable". Track those so the note can flag them -- an ABSENT section
+    // stays silent, since absent is a legitimate "none shared". Result-facing names, mirroring the
+    // scalar `unreadable` signal below.
+    def listSections = [hubList: 'peers',
+                        sharedDevices: 'sharedDevices',
+                        localLinkedDevices: 'localLinkedDevices',
+                        availableLinkedDevices: 'availableLinkedDevices',
+                        sharedHubVariables: 'sharedHubVariables',
+                        localLinkedHubVariables: 'localLinkedHubVariables',
+                        availableLinkedHubVariables: 'availableLinkedHubVariables',
+                        privateDevices: 'privateDeviceCount',
+                        localHubVariables: 'localHubVariableCount']
+    def misShapedLists = listSections.findAll { k, v -> parsed.containsKey(k) && !(parsed.get(k) instanceof List) }.values()
 
     def result = [
         success: true,
@@ -637,6 +637,9 @@ def toolGetHubMesh(args = null) {
     if (interval == null) unreadable << "fullRefreshInterval"
     if (unreadable) {
         note += " Reported null by this firmware (unreadable, not confirmed): ${unreadable.join(', ')}."
+    }
+    if (misShapedLists) {
+        note += " Reported an unexpected shape (read as empty): ${misShapedLists.join(', ')}."
     }
 
     // The mesh token authenticates a peer hub against THIS hub -- a credential, so it is
@@ -671,12 +674,14 @@ def toolUpdateHubMesh(args) {
     if (args.containsKey("full_refresh_interval")) {
         def raw = args.full_refresh_interval
         if (raw instanceof Number) {
-            // Reject a fractional value rather than silently truncating it into the enum
-            // (300.7 -> 300), consistent with the strict string branch below.
+            // Reject anything that is not exactly one of the allowed values. `raw != raw.intValue()`
+            // catches BOTH a fractional value (300.7, which would otherwise truncate to 300) AND an
+            // out-of-int-range value (3000000000, whole but wraps under intValue()), so the message
+            // is framed by the value set rather than "whole number" -- correct for both cases.
             if (raw != raw.intValue()) {
                 throw new IllegalArgumentException(
-                    "full_refresh_interval must be a whole number of seconds " +
-                    "(one of ${_meshRefreshIntervals().join(', ')}), got: ${raw}")
+                    "full_refresh_interval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
+                    "(0 = never full-sync), got: ${raw}")
             }
             interval = raw.intValue()
         } else if (raw != null) {
@@ -705,22 +710,9 @@ def toolUpdateHubMesh(args) {
     }
 
     String modeHubId = args.mode_hub_id?.toString()?.trim()
-    if (args.containsKey("mode_hub_id")) {
-        if (!modeHubId) {
-            throw new IllegalArgumentException(
-                "mode_hub_id must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
-        }
-        // Shape-gate before it reaches the /device/followModes/<x> path: accept only 'none', a UUID,
-        // or an all-digits id -- the forms peers[].hubId takes. This rejects path-traversal / injection
-        // payloads up front (the segment is also URL-encoded at the call site as defence in depth).
-        boolean validMode = (modeHubId == "none") ||
-                            modeHubId.matches(/\d+/) ||
-                            modeHubId.matches(/(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)
-        if (!validMode) {
-            throw new IllegalArgumentException(
-                "mode_hub_id must be 'none', a UUID, or an all-digits hubId (from hub_get_hub_mesh " +
-                "peers[].hubId), got: ${args.mode_hub_id}")
-        }
+    if (args.containsKey("mode_hub_id") && !modeHubId) {
+        throw new IllegalArgumentException(
+            "mode_hub_id must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
     }
 
     def applied = []
@@ -730,13 +722,7 @@ def toolUpdateHubMesh(args) {
     if (args.containsKey("enabled")) {
         boolean on = (args.enabled == true)
         try {
-            def resp = hubInternalGet(on ? "/hub/advanced/enableHubMesh" : "/hub/advanced/disableHubMesh")
-            if (_meshResponseIsAuthPage(resp)) {
-                mcpLogError("hub-admin", "hub_update_hub_mesh enable/disable got an auth/login page (stale Hub Security session)")
-                return _meshLegFailure(applied, "Failed to ${on ? 'enable' : 'disable'} Hub Mesh",
-                        "the hub returned a login page (Hub Security session expired), so the change was NOT applied",
-                        "Verify Hub Security credentials, then retry. Read the current state with hub_get_hub_mesh.")
-            }
+            hubInternalGet(on ? "/hub/advanced/enableHubMesh" : "/hub/advanced/disableHubMesh")
             applied << "enabled"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh enable/disable failed", e)
@@ -747,13 +733,7 @@ def toolUpdateHubMesh(args) {
 
     if (interval != null) {
         try {
-            def resp = hubInternalGet("/device/setHubMeshFullRefreshInterval/${interval}")
-            if (_meshResponseIsAuthPage(resp)) {
-                mcpLogError("hub-admin", "hub_update_hub_mesh full-refresh interval got an auth/login page (stale Hub Security session)")
-                return _meshLegFailure(applied, "Failed to set the Hub Mesh full-refresh interval",
-                        "the hub returned a login page (Hub Security session expired), so the interval was NOT changed",
-                        "Verify Hub Security credentials, then retry. Read the current state with hub_get_hub_mesh.")
-            }
+            hubInternalGet("/device/setHubMeshFullRefreshInterval/${interval}")
             applied << "full_refresh_interval"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh full-refresh interval failed", e)
@@ -764,16 +744,10 @@ def toolUpdateHubMesh(args) {
 
     if (args.containsKey("mode_hub_id")) {
         try {
-            // URL-encode the segment as defence in depth (the value is already shape-validated to
-            // 'none' / UUID / digits, which all encode to themselves).
-            def resp = hubInternalGet("/device/followModes/${java.net.URLEncoder.encode(modeHubId, 'UTF-8')}")
-            if (_meshResponseIsAuthPage(resp)) {
-                mcpLogError("hub-admin", "hub_update_hub_mesh followModes got an auth/login page (stale Hub Security session)")
-                return _meshLegFailure(applied, "Failed to set the mode-following hub",
-                        "the hub returned a login page (Hub Security session expired), so mode following was NOT changed",
-                        "Verify Hub Security credentials, then retry. Valid values are a peer hubId from " +
-                        "hub_get_hub_mesh peers[].hubId, or 'none'.")
-            }
+            // URL-encode the segment before it reaches the /device/followModes/<x> path -- the real
+            // safety fix, so an unexpected value cannot inject extra path segments (matches repo
+            // precedent for interpolated path segments).
+            hubInternalGet("/device/followModes/${java.net.URLEncoder.encode(modeHubId, 'UTF-8')}")
             applied << "mode_hub_id"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_update_hub_mesh followModes failed", e)
@@ -787,7 +761,10 @@ def toolUpdateHubMesh(args) {
         // The Vue page posts the hubId as the NUMBER it read out of hubMeshJson, so preserve that
         // type for an all-digits id -- a quoted string is a different JSON value to the hub. isLong()
         // (not a \d+ match) so an OVERSIZED all-digits id passes through as a string instead of
-        // throwing NumberFormatException after earlier legs have already committed.
+        // throwing NumberFormatException after earlier legs have already committed. isLong() also
+        // accepts a leading sign, so peer_hub_id "-12" posts as the JSON number -12 (a strict \d+
+        // would have kept it a string) -- harmless, hub ids are non-negative and the hub ignores a
+        // non-matching id.
         def hubIdValue = peerHubId.isLong() ? peerHubId.toLong() : peerHubId
         def postResult
         try {
@@ -798,14 +775,19 @@ def toolUpdateHubMesh(args) {
             return _meshLegFailure(applied, "Failed to store the peer hub's mesh token", e,
                     "The peer token was not stored. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
         }
-        // setHubMeshToken returns HTTP 200 with an empty {} JSON body on real success. An _unparseable
-        // result means a non-JSON body (e.g. an HTML login page from an unauthenticated redirect) -- a
-        // failure, so do NOT record peer_token as applied.
-        if (postResult instanceof Map && postResult._unparseable == true) {
-            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned a non-JSON body: ${postResult.message}")
-            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token", postResult.message,
-                    "The hub returned a non-JSON response (often an auth/login redirect); the token was not stored. " +
-                    "Verify Hub Security credentials and peer_hub_id against hub_get_hub_mesh peers[].hubId.")
+        // FAIL-CLOSED on anything that is not a positive commit (repo precedent: the /device/runmethod
+        // handler in mcp-devices-lib.groovy). hubInternalPostJson returns null for an EMPTY/dropped
+        // body -- a truncated response is an unknown commit, not a success. An _unparseable Map is a
+        // non-JSON body. An explicit [success:false] is a rejection. All three mean "not stored", so
+        // do NOT record peer_token. An empty {} / non-error Map IS this endpoint's proven success
+        // shape (it returns 200 {} on success), so success is NOT gated on success==true.
+        if (postResult == null ||
+            (postResult instanceof Map && postResult._unparseable == true) ||
+            (postResult instanceof Map && postResult.success == false)) {
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub returned an unexpected or dropped response",
+                    "The hub returned an unexpected/non-JSON response; the token was not stored. " +
+                    "Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
         }
         applied << "peer_token"
     }

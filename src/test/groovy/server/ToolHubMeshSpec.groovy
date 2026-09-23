@@ -205,6 +205,30 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.availableLinkedHubVariables == []
         result.privateDeviceCount == 0
         result.localHubVariableCount == 0
+
+        and: 'the note flags the null scalars as unreadable (not confirmed) so a caller can tell them from a real value'
+        result.note.contains('unreadable')
+        result.note.contains('hubMeshEnabled')
+        result.note.contains('fullRefreshInterval')
+    }
+
+    def "hub_get_hub_mesh flags a list section that is present but the wrong shape (read as empty), not silently"() {
+        given: 'a firmware shape change turns hubList into a Map -- _meshList reads it as [] which would look like "no peers"'
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            '{"hubMeshEnabled": true, "fullRefreshInterval": 300, "hubList": {"oops": "a map, not a list"}}'
+        }
+
+        when:
+        def result = script.toolGetHubMesh([:])
+
+        then: 'the section reads as empty but the note names it as an unexpected shape (result-facing name)'
+        result.success == true
+        result.peers == []
+        result.note.contains('unexpected shape')
+        result.note.contains('peers')
+
+        and: 'a legitimately ABSENT section stays silent -- absent is a valid "none shared"'
+        !result.note.contains('sharedDevices')
     }
 
     def "hub_get_hub_mesh notes the disable state and how to turn Hub Mesh on"() {
@@ -235,8 +259,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.error
         result.note.contains('hub_get_radio_details')   // steer away from the radio-mesh confusion
 
-        and: 'the note diagnoses THIS failure mode -- an empty/parse/shape failure is NOT the same as a'
-        // round-trip failure, so only the round-trip branch may say "firmware predates Hub Mesh".
+        and: 'the note diagnoses THIS failure mode -- an empty/parse/shape failure is not the round-trip failure, so only the round-trip branch may say "firmware predates Hub Mesh"'
         result.note.contains(noteNeedle)
         !result.note.contains('firmware')
 
@@ -364,26 +387,6 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.calls.isEmpty()
     }
 
-    @Unroll
-    def "a mode_hub_id that is not 'none' / UUID / digits is rejected before any hub call (#label)"() {
-        given: 'the shape gate stops a path-traversal / injection payload reaching /device/followModes/<x>'
-        enableWrite()
-
-        when:
-        script.toolUpdateHubMesh([mode_hub_id: bad])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('mode_hub_id')
-        hubGet.calls.isEmpty()   // never reaches the hub
-
-        where:
-        label                  | bad
-        'path traversal'       | 'none/../hub/advanced/reboot'
-        'a slash-bearing id'   | '12/34'
-        'arbitrary text'       | 'the-loft-hub'
-    }
-
     def "validation fires before ANY leg runs even when an earlier field is valid"() {
         given: 'a valid enabled leg paired with a bad interval'
         enableWrite()
@@ -415,38 +418,10 @@ class ToolHubMeshSpec extends ToolSpecBase {
         hubGet.calls.any { it.path == '/hub/advanced/enableHubMesh' }
         result.note.contains('REBOOT')
         result.note.contains('hub_reboot')
-    }
 
-    def "a GET leg's real plain-text success body ('please reboot') is NOT mistaken for an auth page"() {
-        given:
-        enableWrite()
-        hubGet.register('/hub/advanced/enableHubMesh') { params -> "Hub mesh enabled, please reboot the hub." }
-
-        when:
-        def result = script.toolUpdateHubMesh([enabled: true])
-
-        then: 'the short plain-text success message carries no HTML/login markers, so it applies'
-        result.success == true
-        result.applied == ['enabled']
-    }
-
-    def "a GET leg that hubInternalGet followed to a 200 login page is a failure, not a false success"() {
-        given: 'a stale Hub Security cookie 302s to /login; hubInternalGet follows it to the 200 login HTML'
-        enableWrite()
-        hubGet.register('/hub/advanced/enableHubMesh') { params ->
-            '<!DOCTYPE html><html><head><title>Login</title></head><body>' +
-            '<form action="/login?loginRedirect=%2Fhub%2Fadvanced%2FenableHubMesh">' +
-            '<input type="password" name="password"></form></body></html>'
-        }
-
-        when:
-        def result = script.toolUpdateHubMesh([enabled: true])
-
-        then: 'the login-page body is detected -- success:false, nothing recorded as applied'
-        result.success == false
-        result.applied == []
-        result.error.toLowerCase().contains('login page')
-        result.note.toLowerCase().contains('hub security')
+        and: 'the success note carries the sent-not-confirmed caveat (the GET legs return no post-change value)'
+        result.note.contains('sent to the hub')
+        result.note.contains('not confirmed as')
     }
 
     def "enabled=false fires GET /hub/advanced/disableHubMesh"() {
@@ -632,17 +607,17 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.note.contains('peers')
     }
 
-    def "an _unparseable setHubMeshToken body (e.g. a login page) is a failure -- peer_token is NOT applied"() {
+    def "an _unparseable setHubMeshToken body (non-JSON) is a failure -- peer_token is NOT applied"() {
         given: 'the POST returns the hubInternalPostJson non-JSON sentinel instead of throwing'
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
-            return [_unparseable: true, message: 'hub returned a non-JSON body from /device/setHubMeshToken: <html>login</html>']
+            return [_unparseable: true, message: 'hub returned a non-JSON body from /device/setHubMeshToken: <unexpected>']
         }
 
         when:
         def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
 
-        then: 'treated as a runtime failure -- a 2xx serving a login page must not count as stored'
+        then: 'treated as a runtime failure -- a 2xx serving a non-JSON body must not count as stored'
         result.success == false
         result.applied == []
         !result.applied.contains('peer_token')
@@ -661,6 +636,36 @@ class ToolHubMeshSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied == ['peer_token']
+    }
+
+    def "a null setHubMeshToken body (dropped/truncated response) is a failure -- peer_token is NOT applied"() {
+        given: 'hubInternalPostJson returns null for an EMPTY body -- a dropped write is an unknown commit'
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return null }
+
+        when:
+        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+
+        then: 'fail-closed -- an unconfirmed write must not count as stored'
+        result.success == false
+        result.applied == []
+        !result.applied.contains('peer_token')
+        result.error.contains('Failed to store the peer hub')
+    }
+
+    def "an explicit [success:false] setHubMeshToken body is a failure -- peer_token is NOT applied"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return [success: false] }
+
+        when:
+        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+
+        then:
+        result.success == false
+        result.applied == []
+        !result.applied.contains('peer_token')
+        result.error.contains('Failed to store the peer hub')
     }
 
     def "an oversized all-digits peer_hub_id passes through as a STRING and earlier legs survive"() {

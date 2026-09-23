@@ -681,24 +681,28 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // These four tools deliberately fold their entire guide pointer INSIDE [[FLAT_TRIM]], so the
         // flat catalog stays lean and the pointer only shows in gateway mode. That is a choice, not an
         // accident -- pin it so a future edit that either (a) surfaces a flat pointer or (b) drops the
-        // gateway pointer trips CI and gets a deliberate re-decision. (Most base tools DO keep a flat
-        // pointer; these are the intentional exceptions.)
+        // gateway pointer trips CI and gets a deliberate re-decision.
         given:
         enableEveryToggle()
         settingsMap.enableDeveloperMode = true
 
-        when: 'the flat-mode (dropContent=true) description vs the raw authored definition'
+        when: 'the flat-mode (dropContent=true) description, the gateway-mode render, and the raw authored def'
         settingsMap.useGateways = false
         def flatDesc = script.getToolDefinitions().find { it.name == tool }?.description as String
+        def gwDesc = script.applyDescriptionTransform(script.getAllToolDefinitions(), false)
+            .find { it.name == tool }?.description as String
         def rawDesc = script.getAllToolDefinitions().find { it.name == tool }?.description as String
 
-        then: 'the tool is present flat and its raw def is found'
+        then: 'the tool is present flat, the gateway render is found, and its raw def is found'
         flatDesc != null
+        gwDesc != null
         rawDesc != null
 
-        and: 'flat has NO pointer (lean) -- but the pointer DOES exist in the raw def, wrapped in FLAT_TRIM'
-        // so it is merely deferred to gateway mode + the served guide, not lost entirely.
+        and: 'flat has NO pointer (lean), but the pointer SURVIVES into the gateway-mode render -- deferred, not lost'
         !flatDesc.contains('hub_get_tool_guide(')
+        gwDesc.contains('hub_get_tool_guide(')
+
+        and: 'the raw def wraps that pointer in FLAT_TRIM -- which is why the flat render drops it'
         rawDesc.contains('hub_get_tool_guide(')
         rawDesc.contains('[[FLAT_TRIM]]')
 
