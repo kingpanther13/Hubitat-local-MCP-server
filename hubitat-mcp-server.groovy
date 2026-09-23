@@ -4715,7 +4715,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub"
             ]
@@ -4783,7 +4783,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub",
                 hub_update_hub_mesh: "enable disable hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval full refresh linked device hub to hub"
             ]
@@ -10299,6 +10299,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
 
 - `attribute` filters by event name. For a device it is an attribute (e.g. `switch`); for location-level events it accepts one of `mode`, `hsmStatus`, `hsmAlert`, or a hub-variable name.
+- Device event rows add `type` (e.g. `command`, `physical`, `digital`), `producedBy` (what caused the event: `{name, appId}` for an app or rule, `{name, deviceId}` for a device, or `{name}` alone such as `Unknown app`), and `triggered` (the app subscriptions the event fired: `[{name, appId, handler}]`) whenever the hub records them. Commands appear as `command-<name>` events (e.g. `attribute: 'command-on'`); their `producedBy` answers "why did this device turn on". A button's own `pushed` row lists the rule it fired in `triggered`, and the device that rule commanded carries that same `appId` in its `producedBy`. Button Controller rules are auto-named like `<button>: button 1 pushed`, so `name` is the app's label, not a description of the event.
 
 ### hub_get_compatible_devices
 

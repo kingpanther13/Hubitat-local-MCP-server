@@ -1345,11 +1345,11 @@ private String _bypassDeviceLabel(Map fj, deviceId) {
     return fj?.device?.label ?: fj?.device?.name ?: "Device ${deviceId}".toString()
 }
 
-// Map one /device/eventsJson row to the SAME shape the Groovy-device event paths return
-// (description <- descriptionText; the ISO date string passes through). Single source for both the
-// recent-N (toolGetDeviceEvents) and the windowed (_deviceHistoryBypass) bypass branches.
+// Map one /device/eventsJson row (description <- descriptionText; the ISO date string passes
+// through). Single source for both the recent-N (toolGetDeviceEvents) and the windowed
+// (_deviceHistoryBypass) branches. type/producedBy/triggered are added only when the hub supplies them.
 private Map _mapBypassEventRow(evt) {
-    return [
+    def row = [
         name: evt.name,
         value: evt.value,
         unit: evt.unit,
@@ -1357,6 +1357,56 @@ private Map _mapBypassEventRow(evt) {
         date: evt.date,
         isStateChange: evt.isStateChange
     ]
+    if (evt.type != null) row.type = evt.type
+    def producedBy = _parseEventProducer(evt.producedBy)
+    if (producedBy) row.producedBy = producedBy
+    def triggered = _parseEventTriggered(evt.triggered)
+    if (triggered) row.triggered = triggered
+    return row
+}
+
+// producedBy arrives as hub-rendered HTML: one <a> to /installedapp/configure/<id> or
+// /device/edit/<id>, or bare text such as "Unknown app". The ids are typed to match what
+// hub_list_device_events / hub_get_app_config accept (appId integer, deviceId string).
+private Map _parseEventProducer(html) {
+    def s = html?.toString()?.trim()
+    if (!s) return null
+    def m = s =~ /href=['"]\/(installedapp\/configure|device\/edit)\/(\d+)['"][^>]*>(.*?)<\/a>/
+    if (m.find()) {
+        def entry = [name: m.group(3).trim()]
+        if (m.group(1) == 'device/edit') entry.deviceId = m.group(2)
+        else entry.appId = m.group(2) as Integer
+        return entry
+    }
+    def text = s.replaceAll(/<[^>]+>/, '').trim()
+    return text ? [name: text] : null
+}
+
+// triggered is a hub-rendered <ul> with one <li> per app subscription the event fired:
+// "<a href='/installedapp/configure/<id>'>Name</a> (handlerMethod)", or bare text ("Unknown app").
+private List _parseEventTriggered(html) {
+    def s = html?.toString()
+    if (!s?.trim()) return null
+    def items = []
+    def li = s =~ /(?s)<li[^>]*>(.*?)<\/li>/
+    while (li.find()) {
+        def item = li.group(1)
+        def a = item =~ /href=['"]\/installedapp\/configure\/(\d+)['"][^>]*>(.*?)<\/a>\s*(?:\((\w+)\))?/
+        if (a.find()) {
+            def entry = [name: a.group(2).trim(), appId: a.group(1) as Integer]
+            if (a.group(3)) entry.handler = a.group(3)
+            items << entry
+        } else {
+            def text = item.replaceAll(/<[^>]+>/, '').trim()
+            if (text) items << [name: text]
+        }
+    }
+    // A markup change must not silently drop the provenance: fall back to the stripped text.
+    if (!items) {
+        def text = s.replaceAll(/<[^>]+>/, ' ').replaceAll(/\s+/, ' ').trim()
+        if (text) items << [name: text]
+    }
+    return items ?: null
 }
 
 // The attribute names a fullJson device exposes. currentStates is an OBJECT keyed by attribute
@@ -5283,7 +5333,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
             description: """Get event history for a device, an app or rule (the automation events it emitted), or the location.
 
 [[FLAT_TRIM]]
-Default: most-recent events for a device (deviceId + optional limit).
+Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
 [[/FLAT_TRIM]]
 """,
             inputSchema: [

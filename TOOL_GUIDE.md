@@ -579,6 +579,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 **hub_list_device_events:**
 - Default limit 10, recommended max 50
 - Higher values (100+) may cause delays on busy devices
+- Device event rows add `type`, `producedBy` (`{name, appId}` / `{name, deviceId}` / `{name}`), and `triggered` (`[{name, appId, handler}]`) when the hub records them -- filter `attribute: 'command-on'` to see what sent a command
 
 **hub_get_device_attribute (poll mode):**
 - Poll mode activates when any of `expectedValue`/`expectedValues`/`comparator`/`stableForMs`/`timeoutMs`/`pollIntervalMs` is supplied, OR `deviceIds`/`mode` is present (the multi-device keys route on key presence, so a present-but-null `deviceIds`/`mode` still reaches poll mode and is rejected with an actionable null-guard rather than silently falling to a one-shot read). An expected value is REQUIRED in poll mode -- supplying only `comparator`/`stableForMs` (or only a timing arg) still routes to poll mode and is then rejected for the missing `expectedValue`/`expectedValues`. A bare one-shot call (no poll args) still requires `deviceId` -- omitting both `deviceId` and `deviceIds` is rejected with an actionable message. BLOCKS the MCP request up to `timeoutMs` MILLISECONDS (default 5000ms = 5 seconds, max 60000ms = 60 seconds). Use sparingly; prefer event-driven flows when available.

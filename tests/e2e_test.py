@@ -4250,6 +4250,27 @@ class TestRunner:
             assert applied.get("success") is True and applied.get("finalValue") == first, (
                 f"The command must execute even though its missing wait attribute times out: {applied}"
             )
+
+            # Event provenance: MCP commands go through /device/runmethod, which records no
+            # command-<name> event, so the switch's own state events carry producedBy -- hub HTML
+            # that must come back parsed. Command-driven rows name the device itself; the initial
+            # state the MCP app set at creation names that app instead.
+            own_label = self.client.call_tool("hub_get_device", {"deviceId": dev_id}).get("label")
+            ev = self.client.call_tool("hub_list_device_events", {
+                "deviceId": dev_id, "attribute": "switch", "hoursBack": 1,
+            })
+            switch_rows = ev.get("events", []) if isinstance(ev, dict) else []
+            assert switch_rows, f"no switch events recorded for the commanded switch {dev_id}: {ev}"
+            assert all("<" not in json.dumps(row) for row in switch_rows), \
+                f"raw hub HTML leaked into switch events: {switch_rows}"
+            itself = {"name": own_label, "deviceId": dev_id}
+            assert switch_rows[0].get("producedBy") == itself, \
+                f"the newest (command-driven) switch event must name the device itself: {switch_rows}"
+            assert all(row.get("producedBy") == itself
+                       or (isinstance(row.get("producedBy"), dict) and isinstance(row["producedBy"].get("appId"), int)
+                           and row["producedBy"].get("name"))
+                       for row in switch_rows), \
+                f"every switch event must name the device itself or a parsed producing app: {switch_rows}"
         finally:
             # Best-effort inline delete (the tracked DNI + cleanup sweep backstop a
             # miss); delete-contract assertions live in test_delete_virtual_switch.
@@ -6084,6 +6105,60 @@ class TestRunner:
                 f"ifThen Lock codes reject left an orphan block opener (structuralIssues not empty): {health_after_if}"
             assert "never closed" not in str(health_after_if).lower() and "end-if" not in str(health_after_if).lower(), \
                 f"ifThen Lock codes reject left a missing-END-IF structural marker: {health_after_if}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("devices")
+    def test_button_rule_command_provenance(self) -> None:
+        # The provenance chain a client uses to answer "why did this turn on": the button's pushed
+        # event lists the rule it fired in `triggered`, and the command that rule sent is recorded
+        # as command-<name> with the same rule as `producedBy` (both arrive as hub HTML and must come
+        # back parsed). MCP's own commands go through /device/runmethod and record no command-<name>
+        # event, so the command has to come from a rule. PERMANENT non-child fixtures, and the
+        # action is derived from the switch's CURRENT value so it drives a real transition.
+        button = self._ensure_perm_fixture("button")
+        switch = self._ensure_perm_fixture("switch_b")
+        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": switch, "attribute": "switch"})
+        target = "off" if (cur.get("value") if isinstance(cur, dict) else None) == "on" else "on"
+        app_id = self._create_native_rule("BtnProvenance", {
+            "addTrigger": {"capability": "Button", "deviceIds": [int(button)], "buttonNumber": 1, "state": "pushed"},
+            "addActions": [{"capability": "switch", "action": target, "deviceIds": [int(switch)]}],
+        })
+        try:
+            rule_label = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}).get("app", {}).get("label")
+            assert rule_label, f"could not read the provenance rule's label (app {app_id})"
+            pressed = self.client.call_tool("hub_call_device_command", {
+                "deviceId": button, "command": "push", "parameters": [1]})
+            assert isinstance(pressed, dict) and pressed.get("success") is True, f"button push failed: {pressed}"
+            pushed_at = (pressed.get("state") or {}).get("pushed", {}).get("timestamp")
+
+            def _latest(device_id: str, attribute: str) -> dict:
+                ev = self.client.call_tool("hub_list_device_events", {
+                    "deviceId": device_id, "attribute": attribute, "hoursBack": 1, "limit": 1})
+                rows = ev.get("events", []) if isinstance(ev, dict) else []
+                return rows[0] if rows else {}
+
+            want = {"name": rule_label, "appId": int(app_id)}
+            command = {}
+            deadline = time.time() + 15.0
+            while time.time() < deadline:
+                command = _latest(switch, f"command-{target}")
+                if command.get("producedBy") == want:
+                    break
+                time.sleep(1.0)
+            print(f"    command provenance: {json.dumps(command)} (button pushed at {pushed_at})")
+            assert command.get("producedBy") == want, \
+                f"command-{target} on {switch} must name rule {app_id} as producedBy: {command}"
+            assert command.get("type") == "command", f"command event lost its type: {command}"
+
+            push = _latest(button, "pushed")
+            fired = [t for t in push.get("triggered", []) if t.get("appId") == int(app_id)]
+            assert fired and fired[0].get("name") == rule_label and fired[0].get("handler"), \
+                f"the button's pushed event must list rule {app_id} in triggered: {push}"
+            assert push.get("producedBy") == {"name": self.PERM_FIXTURES["button"][0], "deviceId": button}, \
+                f"the pushed event must name the button itself as producedBy: {push}"
+            assert "<" not in json.dumps([command, push]), f"raw hub HTML leaked: {command} {push}"
         finally:
             self._delete_native(app_id)
 
