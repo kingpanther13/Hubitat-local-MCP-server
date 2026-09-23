@@ -2701,7 +2701,7 @@ These operations are too destructive for automated testing. Test manually with e
 | 8. Comparison | T110-T116 | v0.7.7 vs v0.8.0 regression |
 | 9. Stress | T120-T122 | Many calls, rapid cycles, pagination |
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
-| 12. Developer Mode | T219-T226, T660-T663 | Self-administration: hub_update_mcp_settings (incl. selectedDevices device-access scope) + hub_delete_variable |
+| 12. Developer Mode | T219-T226, T660-T663, T667 | Self-administration: hub_update_mcp_settings (incl. selectedDevices device-access scope) + hub_delete_variable |
 | 13. Driver Code Lifecycle | T400-T406 | hub_create_driver (single + bulk), hub_update_driver (bulk), delete |
 | 14. Library Management | T500-T508 | Library CRUD: install, update, delete, hub_get_source |
 
@@ -2726,7 +2726,7 @@ All 118 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 270 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 5 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof) plus 13 excluded destructive operations documented for manual testing
+**Total: 271 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 5 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof + 1 protected-app policy proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3030,7 +3030,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 **Expected**: Tool returns an `isError: true` MCP response with a message containing "Developer Mode tools are disabled" and pointing the user to the toggle. No setting is written. AI surfaces the message and asks the user to enable the toggle in the UI before retrying.
 
-### T663 — Protected apps: generic mutations versus dedicated self-administration
+### T667 — Protected apps: generic mutations versus dedicated self-administration
 
 Run on a dedicated test hub. Record the original Developer Mode, logging level and Protected apps selections. Do not use self-disable or self-delete as failure probes: a missing guard would terminate the endpoint needed for verification and cleanup. Fresh-install and upgrade default initialization, preservation of an intentionally empty list, and Developer Mode off/on refusal are also covered by the direct/dispatch specs.
 
