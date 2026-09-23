@@ -1570,6 +1570,9 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 }
                 successResult.triggerUpdated = triggerId
                 try {
+                    if (!settings.enableDeveloperMode && _protectedAppIds().contains(triggerId.toString())) {
+                        throw new IllegalArgumentException("App ${triggerId} is protected: triggerUpdated requires Developer Mode. Enable Developer Mode or refresh the app manually through its Hubitat UI.")
+                    }
                     // Submitting Done on an already-installed instance is what fires
                     // updated(). Goes through the SAME _submitAppDoneForm the install-commit
                     // uses -- one Done-submit implementation, one endpoint. The status check
@@ -2799,7 +2802,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() on after the code save, so its subscriptions/schedules/atomicState re-initialize against the new code. Mechanically this submits the app's mainPage 'Done' form, which RE-SENDS EVERY input on that page -- the tool rebuilds them from the instance's live settings so nothing is blanked, and REFUSES to submit (updatedFired:false, partial:true) if it cannot read them, rather than risk clearing device selections. On failure the code save still stands: success stays true with partial:true, updatedFired:false and repairHints. Omit it to match what the hub's own editor Save does (no lifecycle call)."],
+                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() on after the code save, so its subscriptions/schedules/atomicState re-initialize against the new code. Protected targets require Developer Mode. Mechanically this submits the app's mainPage 'Done' form, which RE-SENDS EVERY input on that page -- the tool rebuilds them from the instance's live settings so nothing is blanked, and REFUSES to submit (updatedFired:false, partial:true) if it cannot read them, rather than risk clearing device selections. On failure the code save still stands: success stays true with partial:true, updatedFired:false and repairHints. Omit it to match what the hub's own editor Save does (no lifecycle call)."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],

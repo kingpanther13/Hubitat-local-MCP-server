@@ -26,7 +26,9 @@ Both masters are enforced centrally at the dispatch chokepoint; only an explicit
 
 The protected-app boundary covers generic installed-app/native-rule tools and both Easy and legacy Dashboard app mutations. Dashboard IDs are installed-app instance IDs. Copying/exporting a protected app remains possible when the source is only read; creating a child under a protected parent is refused. The frozen legacy `custom_*` engine is unchanged.
 
-Authorized code maintenance remains outside this boundary, including `hub_update_app(triggerUpdated=...)`: its optional lifecycle refresh can re-submit the Done form and settings of any named instance, including a protected one. Device maintenance also retains its existing behavior: `hub_call_device_swap` can rewrite device bindings inside protected apps, and `hub_call_device_replace` can change the hardware behind a device those apps reference. Their existing master, confirmation, backup, device-access, and per-tool gates still apply; Protected apps does not add a gate to these operations.
+Authorized code maintenance retains its existing gates. The optional `hub_update_app(triggerUpdated=...)` lifecycle refresh additionally requires Developer Mode when its target instance is protected, because it re-submits that instance's Done form and settings. If the refresh is refused, the preceding code save still stands and the result reports `partial:true`, `updatedFired:false`, and repair guidance. Unprotected instances retain their existing refresh behavior.
+
+Device maintenance retains its existing behavior: `hub_call_device_swap` can rewrite device bindings inside protected apps, and `hub_call_device_replace` can change the hardware behind a device those apps reference. Their existing master, confirmation, backup, device-access, and per-tool gates still apply; Protected apps does not add a gate to these device operations.
 
 ### Intentional change: `hub_get_info` PII default
 
