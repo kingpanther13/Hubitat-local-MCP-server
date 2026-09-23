@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 116 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 118 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -521,6 +521,28 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```
 
 **Expected**: Warns that disabling the cloud controller stops Alexa/Google, cloud dashboards, cloud firmware updates, and subscription features, ensures a recent backup, then calls `hub_call_destructive_ops` with `target: "cloud"`, `action: "disable"`, `confirm: true`. Re-enable with `target:"cloud", action:"enable"`. The network variants are `target:"network", action:"disconnect_wifi"` (→ `GET /hub/advanced/disconnectWiFi`) and `action:"disconnect_ethernet"` (→ `/hub/advanced/disconnectEthernet`). All require `confirm: true`; without it the destructive gate rejects the call and nothing changes.
+
+### T14i — read the Hub Mesh configuration
+
+```json
+{
+  "test_prompt": "Is Hub Mesh turned on? Which other Hubitat hubs does this one see, and what devices are shared between them? Don't change anything."
+}
+```
+
+**Expected**: Recognizes Hub Mesh as Hubitat's hub-to-hub device/variable sharing over the LAN — NOT the Z-Wave/Zigbee radio mesh (that would be `hub_get_radio_details`) — and calls `hub_get_hub_mesh`. Reports `hubMeshEnabled`, the auto-discovered `peers` (name / ipAddress / hubId, plus any `warning`), the full-sync interval, whether the hub follows a peer's modes (`modeHubId`, `"none"` = local modes), and the shared/linked device + hub-variable lists. `privateDeviceCount` / `localHubVariableCount` are counts only — for the full lists it should point at `hub_list_devices` / `hub_list_variables`. `hubMeshToken` is NOT returned unless `include_token: true` was asked for (it is a credential). Read-only. On firmware without Hub Mesh the call returns `success:false` with an `error` + `note` rather than throwing.
+
+### T14j — change Hub Mesh settings (⚠️ enable/disable is reboot-gated and hub-wide)
+
+> **DO NOT run the enable/disable or follow-modes variants on the e2e/CI test hub.** Turning Hub Mesh on or off only takes effect after a hub reboot, and follow-modes / peer tokens are hub-wide settings other tests inherit.
+
+```json
+{
+  "test_prompt": "Set Hub Mesh to do a full sync every 5 minutes."
+}
+```
+
+**Expected**: Calls `hub_update_hub_mesh` with `full_refresh_interval: 300` and reports `applied: ["full_refresh_interval"]`. Does NOT require `confirm` (the change is reversible). Other legs, each optional and applied in a stable order: `enabled: true|false` (⚠️ reports that a hub REBOOT via `hub_reboot` is required before it takes effect — the tool never reboots on its own), `mode_hub_id` (a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `"none"` to go back to local modes), and `peer_hub_id` + `peer_token` TOGETHER (stores a peer hub's mesh token, needed when that peer has UI login security). Rejected by validation (an `isError` result) before any hub call: no settable field at all, a `full_refresh_interval` outside `0|120|300|3600`, a non-boolean `enabled`, and `peer_hub_id` without `peer_token` (or vice versa). Peer hubs are auto-discovered on the LAN so there is no add-peer operation, and per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool.
 
 ### T15 — hub_list_modes
 
@@ -2625,6 +2647,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Network disconnect (WiFi/Ethernet) | `hub_call_destructive_ops` (target=network, disconnect_wifi\|disconnect_ethernet) | hub_manage_destructive_ops | Can make the hub unreachable over that link |
 | Cloud controller disable/enable | `hub_call_destructive_ops` (target=cloud, disable\|enable) | hub_manage_destructive_ops | Disabling severs Alexa/Google, cloud dashboards, cloud firmware updates, subscriptions |
 | Network config (static IP / DHCP / Ethernet autoneg / WiFi) | `hub_set_system_settings` (network=...) | core | Can disconnect the hub; confirm-gated |
+| Enable/disable Hub Mesh | `hub_update_hub_mesh` (enabled=...) | hub_manage_devices | Needs a hub reboot to take effect; hub-wide sharing change |
 | Install app | `hub_create_app` | hub_manage_code | Modifies hub code |
 | Install driver | `hub_create_driver` | hub_manage_code | Modifies hub code |
 | Update app code | `hub_update_app` | hub_manage_code | Modifies production code |
@@ -2689,17 +2712,17 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 116 |
+| Total distinct tools in codebase | 118 |
 
-**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (8), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (6), `hub_read_diagnostics` (8), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (5), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (5), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 116 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 118 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
