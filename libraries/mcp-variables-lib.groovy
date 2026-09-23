@@ -450,9 +450,10 @@ def toolCreateVariable(args) {
 
 // Hub Mesh: create a LOCAL linked variable from one a peer hub shares (GET
 // /hub2/createLinkedHubVar/<hubId>/<name>). The endpoint returns HTTP 200 with an empty/plaintext
-// body EVEN WHEN the link silently does not happen (a peer with UI login security when this hub holds
-// no mesh token for it -- the row stays in availableLinkedHubVariables with linkedLocally:false and
-// localLinkedHubVariables is unchanged). So a 200 is NOT proof of success; the read-back keys on the
+// body EVEN WHEN the link silently does not happen (observed live: while the mesh was still
+// re-establishing its connection to a peer that had recently rebooted -- the row stays in
+// availableLinkedHubVariables with linkedLocally:false and localLinkedHubVariables is unchanged; it
+// clears once the peer reconnects. A persistently missing peer mesh token would look the same). So a 200 is NOT proof of success; the read-back keys on the
 // SOURCE pair and distinguishes three outcomes: linked (success), a confirmed no-op (FAILURE, not a
 // warning), and a genuinely unreadable mesh list (the only warn-not-fail case). A linked variable
 // keeps its source NAME, so localLinkedHubVariables presence by name is the confirmation signal.
@@ -500,9 +501,11 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
         mcpLogError("variables", "hub_create_variable Hub Mesh link was a silent no-op (hub ${meshHubId}, variable ${meshName}): source still in availableLinkedHubVariables with linkedLocally=false", null)
         return [success: false, isError: true,
                 error: "Linking the shared variable (hub ${meshHubId}, name ${meshName}) did not take: the hub accepted the request but the variable is still unlinked (availableLinkedHubVariables shows linkedLocally=false).",
-                note: "Most likely this hub does not hold the peer hub's mesh token. Get the peer's token from " +
-                      "ITS OWN hub_get_hub_mesh(include_token=true), store it here with " +
-                      "hub_update_hub_mesh(peer_hub_id, peer_token), then retry. Inspect mesh state with hub_get_hub_mesh."]
+                note: "This is usually transient: Hub Mesh takes time to re-establish a peer connection after that peer " +
+                      "reboots or updates, and a link briefly no-ops during that window before clearing itself. Wait a bit " +
+                      "and retry. Check the peer in hub_get_hub_mesh peers[] (offline=false, warning=null). If it persists, " +
+                      "confirm this hub holds the peer's mesh token: get it from the peer's OWN hub_get_hub_mesh(include_token=true) " +
+                      "and store it with hub_update_hub_mesh(peer_hub_id, peer_token)."]
     }
 
     // Outcome 3: could not prove linked OR not-linked (mesh list unreadable) -- warn, don't fail.

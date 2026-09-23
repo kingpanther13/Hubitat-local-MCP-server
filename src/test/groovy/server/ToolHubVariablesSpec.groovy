@@ -1259,6 +1259,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.success == false
         result.isError == true
         result.error.contains('did not take')
+        and: 'the note leads with the transient re-establish/retry guidance, with the peer-token store as the persistent-cause fallback'
+        result.note.toLowerCase().contains('retry')
+        result.note.toLowerCase().contains('re-establish')
         result.note.contains('mesh token')
         result.note.contains('hub_update_hub_mesh(peer_hub_id, peer_token)')
     }

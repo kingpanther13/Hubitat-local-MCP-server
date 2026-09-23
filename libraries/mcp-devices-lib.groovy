@@ -4609,9 +4609,10 @@ def toolCreateDevice(args) {
 
 // Hub Mesh: create a LOCAL linked device from a device a peer hub shares (GET
 // /device/createLinked/<hubId>/<deviceId>). The endpoint returns HTTP 200 with an empty/plaintext
-// body EVEN WHEN the link silently does not happen (observed live: a peer with UI login security when
-// this hub holds no mesh token for it -- the row stays in availableLinkedDevices with
-// linkedLocally:false and localLinkedDevices is unchanged). So a 200 is NOT proof of success; the
+// body EVEN WHEN the link silently does not happen (observed live: while the mesh was still
+// re-establishing its connection to a peer that had recently rebooted -- the row stays in
+// availableLinkedDevices with linkedLocally:false and localLinkedDevices is unchanged; it clears once
+// the peer reconnects. A persistently missing peer mesh token would look the same). So a 200 is NOT proof of success; the
 // read-back must key on the SOURCE pair and distinguish three outcomes: linked (success), a confirmed
 // no-op (FAILURE, not a warning), and a genuinely unreadable mesh list (the only warn-not-fail case).
 // Segments are URL-encoded so an unexpected id cannot inject extra path segments.
@@ -4667,9 +4668,11 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         mcpLogError("device", "hub_create_device Hub Mesh link was a silent no-op (hub ${meshHubId}, device ${meshDeviceId}): source still in availableLinkedDevices with linkedLocally=false", null)
         return [success: false, isError: true,
                 error: "Linking the shared device (hub ${meshHubId}, device ${meshDeviceId}) did not take: the hub accepted the request but the device is still unlinked (availableLinkedDevices shows linkedLocally=false).",
-                note: "Most likely this hub does not hold the peer hub's mesh token. Get the peer's token from " +
-                      "ITS OWN hub_get_hub_mesh(include_token=true), store it here with " +
-                      "hub_update_hub_mesh(peer_hub_id, peer_token), then retry. Inspect mesh state with hub_get_hub_mesh."]
+                note: "This is usually transient: Hub Mesh takes time to re-establish a peer connection after that peer " +
+                      "reboots or updates, and a link briefly no-ops during that window before clearing itself. Wait a bit " +
+                      "and retry. Check the peer in hub_get_hub_mesh peers[] (offline=false, warning=null). If it persists, " +
+                      "confirm this hub holds the peer's mesh token: get it from the peer's OWN hub_get_hub_mesh(include_token=true) " +
+                      "and store it with hub_update_hub_mesh(peer_hub_id, peer_token)."]
     }
 
     // Outcome 3: could not prove linked OR not-linked (mesh list unreadable / ambiguous) -- warn, don't fail.
@@ -4970,11 +4973,10 @@ def toolDeleteDevice(args) {
     // Step 6: Full audit log BEFORE deletion
     mcpLog("warn", "hub-admin", "DELETE DEVICE AUDIT: Deleting '${deviceName}' (ID: ${deviceId}, DNI: ${deviceDNI}, Type: ${deviceType}). Warnings: ${warnings.size() > 0 ? warnings.join(' | ') : 'none'}")
 
-    // Step 7: Execute force delete via hub internal API.
-    // TODO(live-verify): the Vue Hub Mesh page force-deletes a LINKED device via
-    // /device/forceDelete/<id>/json (parses {status:"success"}); this reuses the /yes variant that
-    // works for ordinary devices. Confirm on hardware whether /yes also unlinks a linked device, or
-    // whether the linked case needs the /json branch. Coordinator to live-verify (#448).
+    // Step 7: Execute force delete via hub internal API. The /yes variant unlinks a Hub Mesh LINKED
+    // device too (live-verified #448: deleting a linked proxy via /yes removed only the local link and
+    // returned the source to availableLinkedDevices; the peer's source device was untouched), so the
+    // linked case needs no separate /json branch.
     try {
         def responseText = hubInternalGet("/device/forceDelete/${deviceId}/yes", null, 30)
         mcpLog("debug", "hub-admin", "Force delete response for device ${deviceId}: ${responseText?.take(500)}")
