@@ -853,6 +853,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         allowed || (result.partial == true && result.repairHints.join(' ').contains('App 194 is protected') &&
             result.repairHints.join(' ').contains('requires Developer Mode'))
         allowed || !hubGet.calls.any { it.path == '/installedapp/configure/json/194' }
+        allowed || (result.repairHints.join(' ').contains('No Done submit was sent') &&
+            !result.repairHints.join(' ').contains('failed:'))
 
         where:
         [protectedTarget, developerMode] << [[true, false], [true, false, null]].combinations()

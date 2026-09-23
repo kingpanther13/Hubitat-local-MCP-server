@@ -775,11 +775,11 @@ private void _requireUnprotectedAppMutation(Object targetId, String operation, S
     }
 }
 
-private void _requireUnprotectedAppDeletion(Integer appId) {
+private boolean _requireUnprotectedAppDeletion(Integer appId, boolean allowMissing = false) {
     // Use one policy snapshot for the entire cascading delete, not a DB read per node.
     def protectedIds = _protectedAppIds()
     _requireUnprotectedAppMutation(appId, "delete", protectedIds)
-    if (protectedIds.isEmpty()) return
+    if (protectedIds.isEmpty()) return true
     def parsed
     try {
         def text = hubInternalGet("/hub2/appsList")
@@ -820,8 +820,11 @@ private void _requireUnprotectedAppDeletion(Integer appId) {
         throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is incomplete. Retry after the full app inventory is available. No app was deleted.")
     }
     if (!found) {
+        // Dashboard deletion is retry-safe; absence is conclusive only after the full walk.
+        if (allowMissing) return false
         throw new IllegalArgumentException("App ${appId} is absent from the installed-app tree. Refresh hub_list_apps to confirm the target ID; no app was deleted.")
     }
+    return true
 }
 
 

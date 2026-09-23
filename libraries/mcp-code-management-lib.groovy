@@ -1571,7 +1571,11 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 successResult.triggerUpdated = triggerId
                 try {
                     if (!settings.enableDeveloperMode && _protectedAppIds().contains(triggerId.toString())) {
-                        throw new IllegalArgumentException("App ${triggerId} is protected: triggerUpdated requires Developer Mode. Enable Developer Mode or refresh the app manually through its Hubitat UI.")
+                        successResult.updatedFired = false
+                        successResult.partial = true
+                        successResult.repairHints = ["App ${triggerId} is protected: triggerUpdated requires Developer Mode. No Done submit was sent. The new code is deployed (success:true); enable Developer Mode or refresh the app manually through its Hubitat UI."]
+                        mcpLog("warn", "hub-admin", "triggerUpdated refused for protected instance ${triggerId}: Developer Mode is required; no Done submit was sent")
+                        return successResult
                     }
                     // Submitting Done on an already-installed instance is what fires
                     // updated(). Goes through the SAME _submitAppDoneForm the install-commit

@@ -764,7 +764,9 @@ def toolDeleteDashboard(args) {
     args = args ?: [:]
     requireDestructiveConfirm(args.confirm)
     def dashId = _requireDashboardId(args.dashboardId, " to delete")
-    _requireUnprotectedAppDeletion(dashId.toInteger())
+    if (!_requireUnprotectedAppDeletion(dashId.toInteger(), true)) {
+        return [success: true, id: dashId, message: "Dashboard ${dashId} is already absent; no delete was needed."]
+    }
     def legacyProbe = _legacyDashboardProbe(dashId)
     if (legacyProbe == null) {
         // Unknown target type (status read failed): don't route by guess. The Easy /dashboard/delete

@@ -249,6 +249,83 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         [type, operation, gateway] << [['Easy Dashboard', 'Dashboard'], ['update', 'delete'], [false, true]].combinations()
     }
 
+    @Unroll
+    def '#type dashboard delete can be retried after removal through gateway=#gateway'() {
+        given:
+        settingsMap.enableMandatoryBPS = false
+        settingsMap.useGateways = gateway
+        boolean present = true
+        hubGet.register('/hub2/appsList') {
+            JsonOutput.toJson([apps: [[data: [id: 42, type: 'MCP Rule Server']],
+                [data: [id: 21, type: parentType], children: present ? [[data: [id: 43, type: type]]] : []]]])
+        }
+        hubGet.register('/installedapp/statusJson/43') {
+            JsonOutput.toJson([installedApp: [id: 43, name: type, systemAppType: true]])
+        }
+        hubGet.register('/dashboard/delete') {
+            writes << '/dashboard/delete'
+            present = false
+            '{"success":true}'
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
+            writes << path
+            present = false
+            [status: 302]
+        }
+        def delete = {
+            def args = [dashboardId: '43', confirm: true]
+            script.executeTool(gateway ? 'hub_manage_dashboards' : 'hub_delete_dashboard',
+                gateway ? [tool: 'hub_delete_dashboard', args: args] : args)
+        }
+
+        when: 'the first response could be lost after the delete commits'
+        def first = delete()
+
+        then:
+        first.success == true
+        !present
+        writes.size() == 1
+
+        when: 'the client retries with the target absent from the complete inventory'
+        writes.clear()
+        hubGet.calls.clear()
+        def retry = delete()
+
+        then:
+        retry.success == true
+        retry.id == '43'
+        retry.message.contains('already absent')
+        writes.empty
+        !hubGet.calls.any { it.path == '/installedapp/statusJson/43' }
+
+        where:
+        [type, gateway] << [['Easy Dashboard', 'Dashboard'], [false, true]].combinations()
+        parentType = type == 'Dashboard' ? 'Hubitat® Dashboard' : 'Easy Dashboard Parent'
+    }
+
+    @Unroll
+    def 'dashboard delete refuses #problem inventory instead of claiming absence'() {
+        given:
+        hubGet.register('/hub2/appsList') { inventory }
+
+        when:
+        script.toolDeleteDashboard([dashboardId: '43', confirm: true])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains(diagnostic)
+        writes.empty
+        !hubGet.calls.any { it.path == '/installedapp/statusJson/43' }
+
+        where:
+        problem              | inventory                                                                   | diagnostic
+        'empty app data'     | '{"apps":[{"data":{}}]}'                                                   | 'app tree is incomplete'
+        'invalid child ID'   | '{"apps":[{"data":{"id":21},"children":[{"data":{"id":"bad"}}]}]}'       | 'app tree is incomplete'
+        'non-list children'  | '{"apps":[{"data":{"id":21},"children":{}}]}'                            | 'app tree is incomplete'
+        'unavailable'        | '{}'                                                                        | 'app tree is unavailable'
+        'protected child'    | '{"apps":[{"data":{"id":43},"children":[{"data":{"id":42}}]}]}'          | 'App 42 is protected'
+    }
+
     def 'Easy Dashboard creation refuses a protected parent before creating a child'() {
         given:
         hubGet.register('/hub2/appsList') {
