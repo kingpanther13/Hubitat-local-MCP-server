@@ -312,6 +312,8 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         condition           | inventory
         'unprotected parent'| '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}},{"data":{"id":21,"type":"Easy Dashboard Parent"}}]}'
         'absent parent'     | '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}}]}'
+        'unrelated typeless app' | '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}},{"data":{"id":99}},{"data":{"id":21,"type":"Easy Dashboard Parent"}}]}'
+        'unrelated blank type' | '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}},{"data":{"id":99,"type":""}}]}'
     }
 
     @Unroll
@@ -338,6 +340,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         'missing apps'         | '{}'
         'non-list children'    | '{"apps":[{"data":{"id":42,"type":"Easy Dashboard Parent"},"children":{}}]}'
         'missing app type'     | '{"apps":[{"data":{"id":42}}]}'
+        'blank protected type' | '{"apps":[{"data":{"id":42,"type":""}}]}'
         'empty app data'       | '{"apps":[{"data":{}}]}'
         'invalid app ID'       | '{"apps":[{"id":"bad","type":"Easy Dashboard Parent"}]}'
     }

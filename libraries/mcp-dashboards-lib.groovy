@@ -337,7 +337,8 @@ private void _requireUnprotectedEasyDashboardParent() {
         def rawId = node.data?.id != null ? node.data.id : node.id
         def id = _protectedAppId(rawId)
         def type = node.data?.type ?: node.type
-        if (((node.data != null || rawId != null) && !id) || (id && !(type instanceof String && type)) ||
+        // Only protected IDs need a known type; unrelated apps cannot be a protected parent.
+        if (((node.data != null || rawId != null) && !id) || (protectedIds.contains(id) && !(type instanceof String && type)) ||
                 (type == "Easy Dashboard Parent" && !id)) {
             throw new IllegalArgumentException("Cannot verify Easy Dashboard parent protection: an app ID or type is missing. No create request was sent.")
         }
