@@ -765,7 +765,8 @@ def toolDeleteDashboard(args) {
     requireDestructiveConfirm(args.confirm)
     def dashId = _requireDashboardId(args.dashboardId, " to delete")
     if (!_requireUnprotectedAppDeletion(dashId.toInteger(), true)) {
-        return [success: true, id: dashId, message: "Dashboard ${dashId} is already absent; no delete was needed."]
+        return [success: true, id: dashId, alreadyAbsent: true,
+                message: "Dashboard ${dashId} is already absent; no delete was needed."]
     }
     def legacyProbe = _legacyDashboardProbe(dashId)
     if (legacyProbe == null) {

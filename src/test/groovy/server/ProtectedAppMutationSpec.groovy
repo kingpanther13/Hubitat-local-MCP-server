@@ -283,6 +283,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         then:
         first.success == true
+        first.alreadyAbsent != true
         !present
         writes.size() == 1
 
@@ -293,6 +294,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         then:
         retry.success == true
+        retry.alreadyAbsent == true
         retry.id == '43'
         retry.message.contains('already absent')
         writes.empty
@@ -301,6 +303,23 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         where:
         [type, gateway] << [['Easy Dashboard', 'Dashboard'], [false, true]].combinations()
         parentType = type == 'Dashboard' ? 'Hubitat® Dashboard' : 'Easy Dashboard Parent'
+    }
+
+    def 'dashboard delete marks a never-installed target as already absent without a write'() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":42,"type":"MCP Rule Server"}}]}'
+        }
+
+        when:
+        def result = script.toolDeleteDashboard([dashboardId: '999', confirm: true])
+
+        then:
+        result.success == true
+        result.id == '999'
+        result.alreadyAbsent == true
+        writes.empty
+        !hubGet.calls.any { it.path == '/installedapp/statusJson/999' }
     }
 
     @Unroll

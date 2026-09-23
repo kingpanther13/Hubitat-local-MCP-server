@@ -614,6 +614,7 @@ def getChildAppById(appId) {
 
 def installed() {
     log.info "MCP Rule Server installed"
+    _protectedAppIds(true)
     _invalidateToolMetadata()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         RETIRED_TOOL_STATE_CLEANED.clear()
@@ -738,7 +739,7 @@ private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
                 app.updateSetting('protectedAppIds', [type: 'enum', value: selected as List])
             }
             // Publish initialization and its effective selection together: concurrent handlers
-            // may retain older settings snapshots. Only updated() republishes saved choices.
+            // may retain older settings snapshots. Only installed()/updated() publish UI saves.
             atomicState.protectedAppsPolicy = [ids: selected as List]
         } catch (Exception e) {
             // Keep enforcing the default even if persistence fails; the next request retries.
@@ -11079,6 +11080,7 @@ Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
 
 - `confirm` (param) — Confirms a recent backup + user approval.
 - A legacy dashboard is removed through the classic force-delete (the Easy `/dashboard/delete` endpoint is a no-op for it); removal is confirmed by effect and the result carries its `type`.
+- If the protected-app inventory check confirms the target is already absent, returns `success: true, alreadyAbsent: true` without a delete. This also covers an ID that never existed; it does not prove a previous call deleted it.
 
 ### hub_clone_dashboard
 

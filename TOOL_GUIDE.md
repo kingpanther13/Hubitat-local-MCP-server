@@ -1381,6 +1381,7 @@ Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
 
 - `confirm` (param) — Confirms a recent backup + user approval.
 - A legacy dashboard is removed through the classic force-delete (the Easy `/dashboard/delete` endpoint is a no-op for it); removal is confirmed by effect and the result carries its `type`.
+- If the protected-app inventory check confirms the target is already absent, returns `success: true, alreadyAbsent: true` without a delete. This also covers an ID that never existed; it does not prove a previous call deleted it.
 
 ### hub_clone_dashboard
 

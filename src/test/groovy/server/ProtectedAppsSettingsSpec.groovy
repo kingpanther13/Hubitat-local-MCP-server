@@ -196,6 +196,66 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
         atomicStateMap.protectedAppsPolicy == [ids: []]
     }
 
+    @Unroll
+    def "first-install Done applies #selection after the picker has published defaults"() {
+        given:
+        hubGet.register('/hub2/appsList') {
+            '{"apps":[{"data":{"id":194,"name":"MCP"}},{"data":{"id":82,"name":"Rule"}}]}'
+        }
+        script._protectedAppChoices()
+        assert atomicStateMap.protectedAppsPolicy == [ids: ['194']]
+        settingsMap.protectedAppIds = selection
+        ownApp.settingsStore.clear()
+        def policyAtInitialize = null
+        script.metaClass.initialize = { -> policyAtInitialize = script._protectedAppIds() }
+
+        when:
+        script.installed()
+
+        then:
+        policyAtInitialize == expected as Set
+        atomicStateMap.protectedAppsPolicy == [ids: expected]
+        ownApp.settingsStore.isEmpty()
+
+        when: 'a request still holds the preview settings'
+        settingsMap.protectedAppIds = ['194']
+
+        then:
+        script._protectedAppIds() == expected as Set
+
+        where:
+        selection     | expected
+        ['194', '82'] | ['194', '82']
+        ['82']        | ['82']
+        []            | []
+        null          | []
+        ''            | []
+    }
+
+    @Unroll
+    def "runtime initialization preserves saved #selection despite a stale settings snapshot"() {
+        given:
+        atomicStateMap.protectedAppsPolicy = [ids: selection]
+        settingsMap.protectedAppIds = ['194']
+        stateMap.accessToken = 'existing-token'
+        stateMap.updateCheck = [checkedAt: 1L]
+        script.metaClass._subscribeToAllHubVariables = { -> }
+        script.metaClass._refreshHubVarInUseRegistrations = { -> }
+
+        when:
+        script.initialize()
+        script.initialize()
+
+        then:
+        script._protectedAppIds() == selection as Set
+        atomicStateMap.protectedAppsPolicy == [ids: selection]
+        ownApp.settingsStore.isEmpty()
+        stateMap.accessToken == 'existing-token'
+
+        where:
+        selection << [['82'], []]
+    }
+
     def "Done publishes the UI selection and later request snapshots cannot override it"() {
         given:
         atomicStateMap.protectedAppsPolicy = [ids: ['194']]
