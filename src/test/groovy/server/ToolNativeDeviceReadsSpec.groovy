@@ -160,4 +160,97 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         attribute.neverReported == true
         !attribute.error
     }
+
+    // Real /device/eventsJson wire shapes: producedBy is one hub-rendered <a> (or bare text) and
+    // triggered is a <ul> of app links, each followed by the subscribed handler method.
+    private static final String BUTTON_RULE_LINK = "<a href='/installedapp/configure/173' target='_blank' class='text-base'>Test Button: button 1 pushed</a>"
+    private static final String BUTTON_TRIGGERED = "<ul class='pr-0 mb-0 -mx-2'><li class='pb-1'><a href='/installedapp/configure/173' target='_blank'>Test Button: button 1 pushed</a> (allHandlerX)</li><li>\n<a href='/installedapp/configure/62' target='_blank'>Maker API</a> (eventHandler)</li><li>\nUnknown app</li></ul>"
+
+    private void registerEvents(List rows) {
+        hubGet.register('/device/eventsJson/10') { JsonOutput.toJson(rows) }
+    }
+
+    def 'command events keep the producing app as a structured producedBy'() {
+        given:
+        fixture('selected')
+        registerEvents([
+            [id: 2, name: 'switch', value: 'on', unit: null, descriptionText: 'Lamp was turned on', source: 'DEVICE', type: 'digital',
+             date: '2026-09-23T07:20:37.330-0400', producedBy: BUTTON_RULE_LINK, triggered: '', isStateChange: true,
+             physical: false, digital: false, deviceId: 10],
+            [id: 1, name: 'command-on', value: null, unit: null, descriptionText: 'Command called: on()', source: 'DEVICE', type: 'command',
+             date: '2026-09-23T07:20:37.300-0400', producedBy: BUTTON_RULE_LINK, triggered: '', isStateChange: false,
+             physical: false, digital: false, deviceId: 10]
+        ])
+
+        when:
+        def recent = script.toolGetDeviceEvents('10', 10)
+        def windowed = script.toolGetDeviceHistory([deviceId: '10', since: '2026-09-23T07:00:00.000-0400', attribute: 'command-on'])
+
+        then: 'the rule app is named and chainable by appId; an empty triggered is omitted'
+        recent.events[1].name == 'command-on'
+        recent.events[1].type == 'command'
+        recent.events[1].producedBy == [name: 'Test Button: button 1 pushed', appId: 173]
+        !recent.events[1].containsKey('triggered')
+        recent.events[0].type == 'digital'
+        recent.events[0].producedBy == [name: 'Test Button: button 1 pushed', appId: 173]
+
+        and: 'the windowed branch maps rows through the same shape'
+        windowed.count == 1
+        windowed.events[0].producedBy == [name: 'Test Button: button 1 pushed', appId: 173]
+        windowed.events[0].type == 'command'
+    }
+
+    def 'a button event lists the apps it fired in triggered and its producing device'() {
+        given:
+        fixture('selected')
+        registerEvents([
+            [id: 3, name: 'pushed', value: '1', unit: null, descriptionText: 'Test Button button 1 was pushed', source: 'DEVICE', type: 'physical',
+             date: '2026-09-23T07:20:36.920-0400', producedBy: "<a href='/device/edit/10' target='_blank' class='text-base'>Test Button</a>",
+             triggered: BUTTON_TRIGGERED, isStateChange: true, physical: false, digital: false, deviceId: 10]
+        ])
+
+        when:
+        def event = script.toolGetDeviceEvents('10', 10).events[0]
+
+        then: 'device producers carry a string deviceId; anchorless list items keep their text'
+        event.type == 'physical'
+        event.producedBy == [name: 'Test Button', deviceId: '10']
+        event.triggered == [
+            [name: 'Test Button: button 1 pushed', appId: 173, handler: 'allHandlerX'],
+            [name: 'Maker API', appId: 62, handler: 'eventHandler'],
+            [name: 'Unknown app']
+        ]
+    }
+
+    def 'bare-text producers and unrecognized triggered markup are kept as text'() {
+        given:
+        fixture('selected')
+        registerEvents([
+            [name: 'command-push', value: null, descriptionText: 'Command called: push(1)', type: 'command',
+             date: '2026-09-23T07:20:36.000-0400', producedBy: 'Unknown app', triggered: '<div>Some <b>App</b> (handler)</div>']
+        ])
+
+        when:
+        def event = script.toolGetDeviceEvents('10', 10).events[0]
+
+        then:
+        event.producedBy == [name: 'Unknown app']
+        event.triggered == [[name: 'Some App (handler)']]
+    }
+
+    def 'rows without provenance keep the base event shape'() {
+        given:
+        fixture('selected')
+        registerEvents([
+            [name: 'switch', value: 'off', unit: null, descriptionText: 'turned off', source: 'DEVICE', type: null,
+             date: '2026-09-23T07:00:00.000-0400', producedBy: '', triggered: '', isStateChange: true],
+            [name: 'switch', value: 'on', descriptionText: 'turned on', date: '2026-09-23T06:00:00.000-0400']
+        ])
+
+        when:
+        def events = script.toolGetDeviceEvents('10', 10).events
+
+        then:
+        events.every { it.keySet() == ['name', 'value', 'unit', 'description', 'date', 'isStateChange'] as Set }
+    }
 }
