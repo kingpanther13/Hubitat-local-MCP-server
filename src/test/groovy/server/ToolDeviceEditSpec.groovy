@@ -1243,12 +1243,17 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     // hub_create_device -- Hub Mesh link (#448)
     // ============================================================
 
-    def "toolCreateDevice links a Hub Mesh device and resolves the new local id via a localLinkedDevices diff"() {
-        given: 'before the link there are no local linked devices; after, exactly one appears'
-        def linked = []
-        hubGet.register('/device/createLinked/HUB-A/42') { params -> linked = [[id: 900, name: 'Kitchen Bridge']]; '' }
+    // Outcome 1 (linked): the source appears in localLinkedDevices with sourceHubId AND its
+    // availableLinkedDevices row flips linkedLocally -> success with the resolved local id.
+    def "toolCreateDevice links a Hub Mesh device and resolves the new local id (outcome: linked)"() {
+        given: 'before: source offered unlinked; after createLinked it is linked locally'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
         hubGet.register('/hub2/hubMeshJson') { params ->
-            groovy.json.JsonOutput.toJson([localLinkedDevices: linked])
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: done ? [[id: 900, name: 'Kitchen Bridge', sourceHubId: 'HUB-A']] : [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: done]]
+            ])
         }
 
         when:
@@ -1265,10 +1270,35 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.warnings == null
     }
 
-    def "toolCreateDevice mesh link warns (not fails) when the new local id cannot be resolved"() {
-        given: 'the link is accepted but the localLinkedDevices list never changes (read-back lag)'
+    // Outcome 2 (silent no-op): the GET returns 200 but the source stays in availableLinkedDevices
+    // with linkedLocally:false and localLinkedDevices never changes -> FAILURE, not a warning.
+    def "toolCreateDevice mesh link FAILS on a silent no-op (source stays unlinked)"() {
+        given: 'the createLinked GET is accepted but no link ever appears'
         hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
-        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedDevices":[]}' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('did not take')
+        result.note.contains('mesh token')
+        result.note.contains('hub_update_hub_mesh(peer_hub_id, peer_token)')
+    }
+
+    // Outcome 3 (unresolvable): the link GET is accepted but the mesh list cannot be read back at all
+    // -- we can prove neither linked nor not-linked -> warn, don't fail.
+    def "toolCreateDevice mesh link warns (not fails) when the mesh list is unreadable"() {
+        given: 'the link is accepted but hubMeshJson cannot be read back'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
 
         when:
         def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
@@ -1277,7 +1307,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.success == true
         result.deviceId == null
         result.warnings != null
-        result.warnings.any { it.contains('could not resolve its new local id') }
+        result.warnings.any { it.contains('could not confirm') }
     }
 
     def "toolCreateDevice mesh link returns a structured error when createLinked throws"() {

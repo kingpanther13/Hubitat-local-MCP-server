@@ -1214,7 +1214,58 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.success == true
     }
 
-    def "hub_create_variable mesh link warns (not fails) when the read-back cannot confirm"() {
+    // Outcome 1 (linked) via the availableLinkedHubVariables row flag, even when the name has not yet
+    // surfaced in localLinkedHubVariables.
+    def "hub_create_variable mesh link confirms via the availableLinkedHubVariables linkedLocally flag (outcome: linked)"() {
+        given:
+        enableWrite()
+        def done = false
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: done]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then:
+        result.success == true
+        result.name == 'porchTemp'
+        result.sourceHubId == 'HUB-A'
+        result.linked == true
+        result.warnings == null
+    }
+
+    // Outcome 2 (silent no-op): 200 from the GET but the source stays in availableLinkedHubVariables
+    // with linkedLocally:false and the name never surfaces locally -> FAILURE, not a warning.
+    def "hub_create_variable mesh link FAILS on a silent no-op (source stays unlinked)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('did not take')
+        result.note.contains('mesh token')
+        result.note.contains('hub_update_hub_mesh(peer_hub_id, peer_token)')
+    }
+
+    // Outcome 3 (unresolvable): the link GET is accepted but the mesh list is unreadable -- we can
+    // prove neither linked nor not-linked -> warn, don't fail.
+    def "hub_create_variable mesh link warns (not fails) when the mesh list is unreadable"() {
         given:
         enableWrite()
         hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }

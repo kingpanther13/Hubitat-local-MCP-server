@@ -449,14 +449,15 @@ def toolCreateVariable(args) {
 }
 
 // Hub Mesh: create a LOCAL linked variable from one a peer hub shares (GET
-// /hub2/createLinkedHubVar/<hubId>/<name>). The endpoint returns an empty/plaintext body (the Vue
-// page just reloads), so the new local variable is discovered by diffing localLinkedHubVariables
-// before/after. A read-back lag or an unreadable mesh list is a WARNING, not a failure -- the hub
-// already accepted the link. Both segments are URL-encoded (the name may carry spaces/punctuation).
+// /hub2/createLinkedHubVar/<hubId>/<name>). The endpoint returns HTTP 200 with an empty/plaintext
+// body EVEN WHEN the link silently does not happen (a peer with UI login security when this hub holds
+// no mesh token for it -- the row stays in availableLinkedHubVariables with linkedLocally:false and
+// localLinkedHubVariables is unchanged). So a 200 is NOT proof of success; the read-back keys on the
+// SOURCE pair and distinguishes three outcomes: linked (success), a confirmed no-op (FAILURE, not a
+// warning), and a genuinely unreadable mesh list (the only warn-not-fail case). A linked variable
+// keeps its source NAME, so localLinkedHubVariables presence by name is the confirmation signal.
+// Both segments are URL-encoded (the name may carry spaces/punctuation).
 private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
-    def beforeList = _meshLocalLinkedHubVarNames()
-    def before = (beforeList != null) ? (beforeList as Set) : null
-
     String encHub = java.net.URLEncoder.encode(meshHubId, 'UTF-8')
     String encName = java.net.URLEncoder.encode(meshName, 'UTF-8')
     try {
@@ -470,16 +471,44 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
                       "hub_update_hub_mesh(peer_hub_id, peer_token)."]
     }
 
-    def warnings = []
-    boolean confirmed = false
+    // Read-back with a short backoff. Tri-state `linked`: true (proven linked), false (proven still
+    // unlinked = silent no-op), null (could not decide -- mesh list unreadable). The link took if the
+    // name shows up in localLinkedHubVariables OR the source's availableLinkedHubVariables row is gone
+    // / flagged linkedLocally; it did NOT take if that row is still present-and-unlinked.
+    Boolean linked = null
     for (int attempt = 0; attempt < 3; attempt++) {
-        def after = _meshLocalLinkedHubVarNames()
-        if (after != null && after.contains(meshName)) { confirmed = true; break }
-        if (before != null && after != null && (after.size() > before.size())) { confirmed = true; break }
+        def afterNames = _meshLocalLinkedHubVarNames()
+        def avail = _meshAvailableLinkedHubVars()
+        boolean localHasName = (afterNames != null && afterNames.contains(meshName))
+        Boolean availLinked = null
+        if (avail != null) {
+            def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
+            availLinked = (srcRow == null) ? true : (srcRow.linkedLocally == true)
+        }
+        if (localHasName || availLinked == true) {
+            linked = true; break
+        } else if (availLinked == false) {
+            // available list is readable and still offers this source as unlinked, and the name has
+            // not appeared locally -> confirmed no-op.
+            linked = false
+        }
         if (attempt < 2) pauseExecution(500)
     }
-    if (!confirmed) {
-        warnings << "Linked the shared variable, but could not confirm it in hub_get_hub_mesh localLinkedHubVariables (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
+
+    // Outcome 2: confirmed silent no-op.
+    if (linked == false) {
+        mcpLogError("variables", "hub_create_variable Hub Mesh link was a silent no-op (hub ${meshHubId}, variable ${meshName}): source still in availableLinkedHubVariables with linkedLocally=false", null)
+        return [success: false, isError: true,
+                error: "Linking the shared variable (hub ${meshHubId}, name ${meshName}) did not take: the hub accepted the request but the variable is still unlinked (availableLinkedHubVariables shows linkedLocally=false).",
+                note: "Most likely this hub does not hold the peer hub's mesh token. Get the peer's token from " +
+                      "ITS OWN hub_get_hub_mesh(include_token=true), store it here with " +
+                      "hub_update_hub_mesh(peer_hub_id, peer_token), then retry. Inspect mesh state with hub_get_hub_mesh."]
+    }
+
+    // Outcome 3: could not prove linked OR not-linked (mesh list unreadable) -- warn, don't fail.
+    def warnings = []
+    if (linked == null) {
+        warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
     }
 
     mcpLog("info", "variables", "hub_create_variable: linked Hub Mesh variable '${meshName}' from hub ${meshHubId}")
@@ -506,6 +535,23 @@ private List _meshLocalLinkedHubVarNames() {
         return parsed.localLinkedHubVariables.collect { it?.name?.toString() }
     } catch (Exception e) {
         logDebug("hub_create_variable: could not read Hub Mesh localLinkedHubVariables: ${e.message}")
+        return null
+    }
+}
+
+// Reads /hub2/hubMeshJson and returns the availableLinkedHubVariables list (remote shared variables
+// offered to this hub: hubId, name, hubName, linkedLocally). Returns null when the mesh JSON is
+// unreachable/unparseable or the section is missing/misshaped -- callers treat null as "unreadable"
+// (cannot decide linked vs not-linked, so warn rather than fail).
+private List _meshAvailableLinkedHubVars() {
+    try {
+        def raw = hubInternalGet("/hub2/hubMeshJson")
+        if (!raw?.trim()) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        if (!(parsed instanceof Map) || !(parsed.availableLinkedHubVariables instanceof List)) return null
+        return parsed.availableLinkedHubVariables
+    } catch (Exception e) {
+        logDebug("hub_create_variable: could not read Hub Mesh availableLinkedHubVariables: ${e.message}")
         return null
     }
 }

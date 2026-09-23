@@ -4608,10 +4608,13 @@ def toolCreateDevice(args) {
 }
 
 // Hub Mesh: create a LOCAL linked device from a device a peer hub shares (GET
-// /device/createLinked/<hubId>/<deviceId>). The endpoint returns an empty/plaintext body (the Vue
-// page just reloads), so the new local id is discovered by diffing localLinkedDevices before/after.
-// A read-back lag or an unreadable mesh list is a WARNING, not a failure -- the hub already accepted
-// the link. Segments are URL-encoded so an unexpected id cannot inject extra path segments.
+// /device/createLinked/<hubId>/<deviceId>). The endpoint returns HTTP 200 with an empty/plaintext
+// body EVEN WHEN the link silently does not happen (observed live: a peer with UI login security when
+// this hub holds no mesh token for it -- the row stays in availableLinkedDevices with
+// linkedLocally:false and localLinkedDevices is unchanged). So a 200 is NOT proof of success; the
+// read-back must key on the SOURCE pair and distinguish three outcomes: linked (success), a confirmed
+// no-op (FAILURE, not a warning), and a genuinely unreadable mesh list (the only warn-not-fail case).
+// Segments are URL-encoded so an unexpected id cannot inject extra path segments.
 private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     def beforeList = _meshLocalLinkedDevices()
     def before = (beforeList != null) ? (beforeList.collect { it.id?.toString() } as Set) : null
@@ -4629,21 +4632,53 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
                       "hub_update_hub_mesh(peer_hub_id, peer_token)."]
     }
 
-    // Read-back diff with a short backoff for propagation lag.
-    def warnings = []
+    // Read-back with a short backoff for propagation lag. Three-way classification keyed on the
+    // SOURCE pair: `linked` is a tri-state -- true (proven linked), false (proven still unlinked =
+    // silent no-op), null (could not read the availableLinkedDevices list to decide either way).
+    // The new local id is resolved by diffing localLinkedDevices (preferring the added row whose
+    // sourceHubId matches this peer), not by a bare size diff.
+    Boolean linked = null
     String newId = null
     String newName = null
     for (int attempt = 0; attempt < 3; attempt++) {
         def after = _meshLocalLinkedDevices()
-        if (before != null && after != null) {
+        def avail = _meshAvailableLinkedDevices()
+        if (newId == null && before != null && after != null) {
             def added = after.findAll { !before.contains(it.id?.toString()) }
-            if (added.size() == 1) { newId = added[0].id?.toString(); newName = added[0].name?.toString(); break }
-            if (added.size() > 1) break   // ambiguous; do not guess which one is ours
+            def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
+            def pick = (fromSource.size() == 1) ? fromSource[0] : (added.size() == 1 ? added[0] : null)
+            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString() }
         }
+        if (avail != null) {
+            // The source's own row is authoritative: gone from the available pool OR flagged
+            // linkedLocally means the link took; still present-and-unlinked means it did not.
+            def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
+            linked = (srcRow == null) ? true : (srcRow.linkedLocally == true)
+        } else if (after != null && newId != null) {
+            // available list unreadable, but a new local link for THIS source showed up.
+            linked = true
+        }
+        if (linked == true) break
         if (attempt < 2) pauseExecution(500)
     }
-    if (newId == null) {
-        warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag, an ambiguous diff, or an unreadable mesh list). Find it with hub_get_hub_mesh."
+
+    // Outcome 2: confirmed silent no-op -- the hub accepted the GET but no link appeared.
+    if (linked == false) {
+        mcpLogError("device", "hub_create_device Hub Mesh link was a silent no-op (hub ${meshHubId}, device ${meshDeviceId}): source still in availableLinkedDevices with linkedLocally=false", null)
+        return [success: false, isError: true,
+                error: "Linking the shared device (hub ${meshHubId}, device ${meshDeviceId}) did not take: the hub accepted the request but the device is still unlinked (availableLinkedDevices shows linkedLocally=false).",
+                note: "Most likely this hub does not hold the peer hub's mesh token. Get the peer's token from " +
+                      "ITS OWN hub_get_hub_mesh(include_token=true), store it here with " +
+                      "hub_update_hub_mesh(peer_hub_id, peer_token), then retry. Inspect mesh state with hub_get_hub_mesh."]
+    }
+
+    // Outcome 3: could not prove linked OR not-linked (mesh list unreadable / ambiguous) -- warn, don't fail.
+    def warnings = []
+    if (linked == null) {
+        warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh availableLinkedDevices (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
+    } else if (newId == null) {
+        // Proven linked, but the new local id could not be resolved from the localLinkedDevices diff.
+        warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
     }
 
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
@@ -4661,8 +4696,8 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
 }
 
 // Reads /hub2/hubMeshJson and returns the localLinkedDevices list (remote devices linked ONTO this
-// hub: id, name, childCount, appsUsing). Returns null when the mesh JSON is unreachable/unparseable
-// or the section is missing/misshaped -- callers treat null as "unreadable" (warn, never fail).
+// hub: id, name, sourceHubId, childCount, appsUsing). Returns null when the mesh JSON is
+// unreachable/unparseable or the section is missing/misshaped -- callers treat null as "unreadable".
 private List _meshLocalLinkedDevices() {
     try {
         def raw = hubInternalGet("/hub2/hubMeshJson")
@@ -4672,6 +4707,23 @@ private List _meshLocalLinkedDevices() {
         return parsed.localLinkedDevices
     } catch (Exception e) {
         mcpLog("warn", "device", "Could not read Hub Mesh localLinkedDevices: ${e.message}")
+        return null
+    }
+}
+
+// Reads /hub2/hubMeshJson and returns the availableLinkedDevices list (remote shared devices offered
+// to this hub: hubId, deviceId, deviceDisplayName, linkedLocally). Returns null when the mesh JSON is
+// unreachable/unparseable or the section is missing/misshaped -- callers treat null as "unreadable"
+// (cannot decide linked vs not-linked, so warn rather than fail).
+private List _meshAvailableLinkedDevices() {
+    try {
+        def raw = hubInternalGet("/hub2/hubMeshJson")
+        if (!raw?.trim()) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        if (!(parsed instanceof Map) || !(parsed.availableLinkedDevices instanceof List)) return null
+        return parsed.availableLinkedDevices
+    } catch (Exception e) {
+        mcpLog("warn", "device", "Could not read Hub Mesh availableLinkedDevices: ${e.message}")
         return null
     }
 }
