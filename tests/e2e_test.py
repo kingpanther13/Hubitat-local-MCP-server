@@ -6101,56 +6101,59 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
-    @test("native_apps")
-    def test_rule_command_provenance(self) -> None:
-        # A command sent by an app is recorded as a command-<name> event whose producedBy names
-        # that app (MCP's own /device/runmethod commands record none). A one-action rule run via
-        # hub_call_rule must therefore show up, parsed, as the producer of the target's command-on.
-        # Own throwaway switch: the shared scaffold's event history is unpredictable.
-        dev_id = self._create_virtual_switch_device(f"{PREFIX}Provenance")
-        assert dev_id, "Failed to create the provenance throwaway switch"
-        dni = ""
+    @test("devices")
+    def test_button_rule_command_provenance(self) -> None:
+        # The provenance chain a client uses to answer "why did this turn on": the button's pushed
+        # event lists the rule it fired in `triggered`, and the command that rule sent is recorded
+        # as command-<name> with the same rule as `producedBy` (both arrive as hub HTML and must come
+        # back parsed). MCP's own commands go through /device/runmethod and record no command-<name>
+        # event, so the command has to come from a rule. PERMANENT non-child fixtures, and the
+        # action is derived from the switch's CURRENT value so it drives a real transition.
+        button = self._ensure_perm_fixture("button")
+        switch = self._ensure_perm_fixture("switch_b")
+        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": switch, "attribute": "switch"})
+        target = "off" if (cur.get("value") if isinstance(cur, dict) else None) == "on" else "on"
+        app_id = self._create_native_rule("BtnProvenance", {
+            "addTrigger": {"capability": "Button", "deviceIds": [int(button)], "buttonNumber": 1, "state": "pushed"},
+            "addActions": [{"capability": "switch", "action": target, "deviceIds": [int(switch)]}],
+        })
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}Provenance"})
-            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-                dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                if dni:
-                    self.created_device_dnis.append(dni)
-                    break
-        except Exception:
-            pass
-        app_id = None
-        try:
-            app_id = self._create_native_rule("CmdProvenance", {
-                "addActions": [{"capability": "switch", "action": "on", "deviceIds": [int(dev_id)]}]})
             rule_label = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}).get("app", {}).get("label")
-            self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_call_rule", "args": {"ruleId": app_id, "action": "actions"}})
-            rows: list = []
+            assert rule_label, f"could not read the provenance rule's label (app {app_id})"
+            pressed = self.client.call_tool("hub_call_device_command", {
+                "deviceId": button, "command": "push", "parameters": [1]})
+            assert isinstance(pressed, dict) and pressed.get("success") is True, f"button push failed: {pressed}"
+            pushed_at = (pressed.get("state") or {}).get("pushed", {}).get("timestamp")
+
+            def _latest(device_id: str, attribute: str) -> dict:
+                ev = self.client.call_tool("hub_list_device_events", {
+                    "deviceId": device_id, "attribute": attribute, "hoursBack": 1, "limit": 1})
+                rows = ev.get("events", []) if isinstance(ev, dict) else []
+                return rows[0] if rows else {}
+
+            want = {"name": rule_label, "appId": int(app_id)}
+            command = {}
             deadline = time.time() + 15.0
             while time.time() < deadline:
-                ev = self.client.call_tool("hub_list_device_events", {
-                    "deviceId": dev_id, "attribute": "command-on", "hoursBack": 1})
-                rows = ev.get("events", []) if isinstance(ev, dict) else []
-                if rows:
+                command = _latest(switch, f"command-{target}")
+                if command.get("producedBy") == want:
                     break
                 time.sleep(1.0)
-            assert rows, f"running rule {app_id} recorded no command-on event on switch {dev_id}"
-            print(f"    command provenance: {json.dumps(rows[0])}")
-            assert rows[0].get("type") == "command", f"command event lost its type: {rows[0]}"
-            assert rows[0].get("producedBy") == {"name": rule_label, "appId": int(app_id)}, \
-                f"command-on must name rule {app_id} ({rule_label!r}) as producedBy: {rows[0]}"
+            print(f"    command provenance: {json.dumps(command)} (button pushed at {pushed_at})")
+            assert command.get("producedBy") == want, \
+                f"command-{target} on {switch} must name rule {app_id} as producedBy: {command}"
+            assert command.get("type") == "command", f"command event lost its type: {command}"
+
+            push = _latest(button, "pushed")
+            fired = [t for t in push.get("triggered", []) if t.get("appId") == int(app_id)]
+            assert fired and fired[0].get("name") == rule_label and fired[0].get("handler"), \
+                f"the button's pushed event must list rule {app_id} in triggered: {push}"
+            assert push.get("producedBy") == {"name": self.PERM_FIXTURES["button"][0], "deviceId": button}, \
+                f"the pushed event must name the button itself as producedBy: {push}"
+            assert "<" not in json.dumps([command, push]), f"raw hub HTML leaked: {command} {push}"
         finally:
-            if app_id:
-                self._delete_native(app_id)
-            if dni:
-                try:
-                    self.client.call_tool("hub_manage_virtual_device", {
-                        "action": "delete", "deviceNetworkId": dni, "confirm": True,
-                    })
-                except Exception as exc:
-                    print(f"  [WARN] could not delete the provenance switch ({dni}): {exc}")
+            self._delete_native(app_id)
 
     @test("native_apps")
     def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
