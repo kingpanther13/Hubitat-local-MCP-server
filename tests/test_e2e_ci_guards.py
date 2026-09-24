@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -19,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize("succeed_on", [0, 2])
 def test_live_label_read_retries_failed_gh(step_name, flag, succeed_on, tmp_path):
     workflow = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
-    step = workflow.split(step_name, 1)[1].split("\n      - ", 1)[0]
+    step = workflow.split(step_name + "\n", 1)[1].split("\n      - ", 1)[0]
     loop = re.search(r"            for attempt in 1 2 3; do\n.*?\n            done", step, re.S)
     if loop is None:
         loop = re.search(r"          for attempt in 1 2 3; do\n.*?\n          done", step, re.S)
@@ -46,7 +45,7 @@ PR=42
 {command}
 echo "label_read_ok=${{{flag}}}"
 '''
-    result = subprocess.run(shell + ["-c", script], capture_output=True, text=True, check=True)
+    result = subprocess.run([*shell, "-c", script], capture_output=True, text=True, check=True)
     assert attempts.read_text().splitlines() == ["called"] * (succeed_on or 3)
     assert f"label_read_ok={'true' if succeed_on else 'false'}" in result.stdout
 
