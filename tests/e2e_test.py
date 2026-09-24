@@ -11445,45 +11445,11 @@ class TestRunner:
             assert rejected, f"{label}: expected one of {needles}, got: {detail}"
         assert self._hub_variable_absent(probe), f"a rejected mesh-link create left {probe} behind"
 
-    @test("hub_variables")
-    def test_hub_variable_mesh_share_cycle(self) -> None:
-        # #448 self-contained cycle: create a THROWAWAY hub variable, share it into the mesh, confirm it
-        # appears in sharedHubVariables, unshare it, confirm it drops off, then delete it. Leaves NO
-        # standing mesh state. Requires Hub Mesh enabled; skips cleanly otherwise so the shared CI hub's
-        # mesh config is never a hard dependency.
-        mesh = self.client.call_tool("hub_get_hub_mesh")
-        if not (isinstance(mesh, dict) and mesh.get("hubMeshEnabled") is True):
-            raise SkipTest("Hub Mesh is not enabled on this hub; the share/unshare cycle is skipped")
-        var_name = f"{PREFIX}MeshShareVar"
-        self._create_hub_variable_visible(var_name, "String", "shareme")
-
-        def _is_shared() -> bool:
-            m = self.client.call_tool("hub_get_hub_mesh")
-            names = [(v or {}).get("name") for v in (m.get("sharedHubVariables") or [])]
-            return var_name in names
-
-        try:
-            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": True})
-            assert isinstance(shared, dict) and shared.get("success") is True and shared.get("meshShared") is True, \
-                f"mesh share did not succeed: {shared}"
-            deadline = time.time() + 10.0
-            while time.time() < deadline and not _is_shared():
-                time.sleep(1.0)
-            assert _is_shared(), f"{var_name} not listed in sharedHubVariables after share"
-
-            un = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
-            assert isinstance(un, dict) and un.get("success") is True and un.get("meshShared") is False, \
-                f"mesh unshare did not succeed: {un}"
-            # #448 fix (b): the unshare result must carry the stale-copy / unlink-first caution (the owner
-            # hub cannot see who linked its var). Non-peer-dependent -- fires on every successful unshare.
-            assert "unlink the copy on those hubs first" in str(un.get("note") or ""), \
-                f"unshare is missing the stale-copy caution note: {un}"
-            deadline = time.time() + 10.0
-            while time.time() < deadline and _is_shared():
-                time.sleep(1.0)
-            assert not _is_shared(), f"{var_name} still in sharedHubVariables after unshare"
-        finally:
-            self._delete_variable_safe(var_name)
+    # NOTE (#462 F8): the full mesh share/unshare CYCLE requires Hub Mesh enabled with a peer, which the
+    # single shared CI/e2e hub does not have. A SkipTest here would FAIL the whole e2e run (a skip counts
+    # as a failure in _print_summary), so the cycle is NOT an e2e test. The share/unshare/caution path is
+    # covered by the Spock unit/integration suite and the live BAT runs (tests/BAT-v2.md T14k/T14m); only
+    # the mesh-INDEPENDENT validation-first assertions live in e2e (above / below).
 
     @test("devices")
     def test_hub_create_device_mesh_link_validation(self) -> None:

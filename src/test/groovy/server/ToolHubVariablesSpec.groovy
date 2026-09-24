@@ -1220,10 +1220,11 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         when:
         def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
 
-        then:
+        then: 'name is the DECORATED local name (feed-able to hub_get/delete_variable); the bare source name is sourceName (#462 F5)'
         hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
         result.success == true
-        result.name == 'porchTemp'
+        result.name == 'porchTemp on Peer'
+        result.sourceName == 'porchTemp'
         result.sourceHubId == 'HUB-A'
         result.linked == true
         result.warnings == null
@@ -1260,9 +1261,10 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         when:
         def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
 
-        then:
+        then: 'local row not yet surfaced, so name falls back to the source name; sourceName always carries it (#462 F5)'
         result.success == true
         result.name == 'porchTemp'
+        result.sourceName == 'porchTemp'
         result.sourceHubId == 'HUB-A'
         result.linked == true
         result.warnings == null
@@ -1350,6 +1352,29 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('BOTH mesh_source_hub_id and mesh_source_name')
     }
 
+    // #462 F4: a readable availableLinkedHubVariables list that does NOT offer the pair (typo/stale/
+    // peer stopped sharing) must throw BEFORE the createLinkedHubVar GET -- validation-before-side-
+    // effect -- rather than let the absent source row read as a false success.
+    def "hub_create_variable mesh link throws (no GET) when the pair is not offered in a readable available list"() {
+        given: 'the available list is readable but offers a DIFFERENT variable, not HUB-A/porchTemp'
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'otherVar', hubName: 'Peer', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'rejected as a validation error and the createLinkedHubVar GET was never called'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('availableLinkedHubVariables')
+        !hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
+    }
+
     @spock.lang.Unroll
     def "via dispatch: hub_create_variable mesh link passes through (useGateways=#useGateways)"() {
         given:
@@ -1367,7 +1392,8 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.name == 'porchTemp'
+        inner.name == 'porchTemp on Peer'
+        inner.sourceName == 'porchTemp'
 
         where:
         useGateways << [true, false]

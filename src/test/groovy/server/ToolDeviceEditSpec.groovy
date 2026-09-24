@@ -1345,6 +1345,28 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         ex.message.contains('BOTH mesh_source_hub_id and mesh_source_device_id')
     }
 
+    // #462 F2: an available list that is READABLE but does NOT offer the pair (typo/stale/peer
+    // stopped sharing) must throw BEFORE the createLinked GET -- validation-before-side-effect --
+    // rather than let srcRow==null read as a false success.
+    def "toolCreateDevice mesh link throws (no GET) when the pair is not offered in a readable available list"() {
+        given: 'the available list is readable but offers a DIFFERENT device, not HUB-A/42'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 99, deviceDisplayName: 'Other', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then: 'rejected as a validation error and the createLinked GET was never called'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('availableLinkedDevices')
+        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+    }
+
     @spock.lang.Unroll
     def "via dispatch: hub_create_device mesh link passes through (useGateways=#useGateways)"() {
         given:

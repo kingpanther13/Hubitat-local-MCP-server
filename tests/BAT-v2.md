@@ -570,7 +570,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 ### T14m — unlink a Hub Mesh linked variable (hub_delete_variable, mesh-aware)
 
-> **Conditional** — only runnable when this hub actually has a linked mirror (`hub_get_hub_mesh` `localLinkedHubVariables[]` non-empty). Creating one needs a live peer sharing a variable, so on a hub without a peer just verify the ordinary-variable guard is unchanged (T14k / T224 already cover the non-mesh delete path). Never assume the CI/e2e hub has a peer.
+> **Conditional** — only runnable when this hub actually has a linked mirror (`hub_get_hub_mesh` `localLinkedHubVariables[]` non-empty). Creating one needs a live peer sharing a variable, so on a hub without a peer just verify the ordinary-variable delete path is unchanged (T224/T225/T226 already cover the non-mesh `hub_delete_variable` path). Never assume the CI/e2e hub has a peer.
 
 ```json
 {

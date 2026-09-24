@@ -4620,6 +4620,22 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     def beforeList = _meshLocalLinkedDevices()
     def before = (beforeList != null) ? (beforeList.collect { it.id?.toString() } as Set) : null
 
+    // Pre-validate the source pair against the offered pool BEFORE the GET (validation-before-
+    // side-effect, like this tool's other mutually-exclusive throws). A pair that was never offered
+    // (typo/stale/peer stopped sharing) leaves srcRow==null in the read-back, which would otherwise
+    // read as "linked" and report a false success. When the pool is readable and does NOT offer the
+    // pair, reject up front; when it is unreadable we cannot pre-validate, so proceed as before.
+    def availBefore = _meshAvailableLinkedDevices()
+    def srcBefore = (availBefore != null)
+        ? availBefore.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
+        : null
+    if (availBefore != null && srcBefore == null) {
+        throw new IllegalArgumentException(
+            "No shared device with hubId ${meshHubId} + deviceId ${meshDeviceId} is offered in " +
+            "hub_get_hub_mesh availableLinkedDevices[]. Copy the hubId + deviceId from an " +
+            "availableLinkedDevices[] row and retry.")
+    }
+
     String encHub = java.net.URLEncoder.encode(meshHubId, 'UTF-8')
     String encDev = java.net.URLEncoder.encode(meshDeviceId, 'UTF-8')
     try {
@@ -4651,15 +4667,23 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString() }
         }
         if (avail != null) {
-            // The source's own row is authoritative: gone from the available pool OR flagged
-            // linkedLocally means the link took; still present-and-unlinked means it did not.
+            // The source's own row is authoritative: still present-and-unlinked means the link did
+            // NOT take. Its ABSENCE means "took" only when the pair was offered before this call
+            // (srcBefore != null) -- a pair that was never offered is absent for a different reason,
+            // so treat that absence as inconclusive (null) rather than a false success.
             def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
-            linked = (srcRow == null) ? true : (srcRow.linkedLocally == true)
+            if (srcRow == null) {
+                linked = (srcBefore != null) ? true : null
+            } else {
+                linked = (srcRow.linkedLocally == true)
+            }
         } else if (after != null && newId != null) {
             // available list unreadable, but a new local link for THIS source showed up.
             linked = true
         }
-        if (linked == true) break
+        // Break once proven linked, but keep polling if the new local id is still unresolved and a
+        // before-list existed to diff against (the id should appear within the backoff window).
+        if (linked == true && (newId != null || before == null)) break
         if (attempt < 2) pauseExecution(500)
     }
 

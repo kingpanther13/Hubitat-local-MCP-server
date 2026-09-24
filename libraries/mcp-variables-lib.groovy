@@ -455,10 +455,26 @@ def toolCreateVariable(args) {
 // availableLinkedHubVariables with linkedLocally:false and localLinkedHubVariables is unchanged; it
 // clears once the peer reconnects. A persistently missing peer mesh token would look the same). So a 200 is NOT proof of success; the read-back keys on the
 // SOURCE pair and distinguishes three outcomes: linked (success), a confirmed no-op (FAILURE, not a
-// warning), and a genuinely unreadable mesh list (the only warn-not-fail case). A linked variable
-// keeps its source NAME, so localLinkedHubVariables presence by name is the confirmation signal.
-// Both segments are URL-encoded (the name may carry spaces/punctuation).
+// warning), and a genuinely unreadable mesh list (the only warn-not-fail case). A local linked row's
+// display `name` is DECORATED ("<name> on <peer>"); the bare source name is in `sourceVarName`, so the
+// confirmation signal is a localLinkedHubVariables row whose sourceVarName + sourceHubId match this
+// source pair (NOT a name match). Both URL segments are encoded (the name may carry spaces/punctuation).
 private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
+    // Pre-validate the source pair against the offered pool BEFORE the GET (validation-before-side-
+    // effect, like this tool's other mutually-exclusive throws). A pair that was never offered
+    // (typo/stale/peer stopped sharing) leaves the source row absent in the read-back, which would
+    // otherwise read as "linked" and report a false success. When the pool is readable and does NOT
+    // offer the pair, reject up front; when it is unreadable we cannot pre-validate, so proceed.
+    def availBefore = _meshAvailableLinkedHubVars()
+    boolean sourceWasOffered = (availBefore != null) && availBefore.any {
+        it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
+    if (availBefore != null && !sourceWasOffered) {
+        throw new IllegalArgumentException(
+            "No shared variable with hubId ${meshHubId} + name '${meshName}' is offered in " +
+            "hub_get_hub_mesh availableLinkedHubVariables[]. Copy the hubId + name from an " +
+            "availableLinkedHubVariables[] row and retry.")
+    }
+
     String encHub = java.net.URLEncoder.encode(meshHubId, 'UTF-8')
     String encName = java.net.URLEncoder.encode(meshName, 'UTF-8')
     try {
@@ -479,15 +495,25 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
     // NOTE: a local linked row's `name` is DECORATED ("<name> on <peer>"); the bare source name is in
     // `sourceVarName` and the peer id in `sourceHubId` -- match on those, not on `name`.
     Boolean linked = null
+    def matchedLocalRow = null
     for (int attempt = 0; attempt < 3; attempt++) {
         def afterRows = _meshLocalLinkedHubVars()
         def avail = _meshAvailableLinkedHubVars()
-        boolean localHasLink = (afterRows != null && afterRows.any {
-            it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId })
+        def localRow = afterRows?.find {
+            it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId }
+        boolean localHasLink = (localRow != null)
+        if (localRow != null) matchedLocalRow = localRow
         Boolean availLinked = null
         if (avail != null) {
             def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
-            availLinked = (srcRow == null) ? true : (srcRow.linkedLocally == true)
+            if (srcRow == null) {
+                // Source row absent: "took" only when the pair was offered before this call
+                // (sourceWasOffered). A pair that was never offered is absent for a different reason,
+                // so its absence is inconclusive here -- fall back to the local-link signal.
+                availLinked = sourceWasOffered ? true : null
+            } else {
+                availLinked = (srcRow.linkedLocally == true)
+            }
         }
         if (localHasLink || availLinked == true) {
             linked = true; break
@@ -517,10 +543,15 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
         warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
     }
 
+    // The local mirror is stored under a DECORATED name ("<name> on <peer>"); return THAT as `name`
+    // so it can be fed straight to hub_get_variable / hub_delete_variable (the bare source name would
+    // not resolve locally). Fall back to the source name only if the decorated row was unresolved.
+    def localName = matchedLocalRow?.name?.toString()
     mcpLog("info", "variables", "hub_create_variable: linked Hub Mesh variable '${meshName}' from hub ${meshHubId}")
     return [
         success: true,
-        name: meshName,
+        name: localName ?: meshName,
+        sourceName: meshName,
         sourceHubId: meshHubId,
         linked: true,
         warnings: warnings ?: null,

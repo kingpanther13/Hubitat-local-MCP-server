@@ -623,6 +623,10 @@ class ToolHubMeshSpec extends ToolSpecBase {
         !result.applied.contains('peer_token')
         result.error.contains('Failed to store the peer hub')
         result.note.contains('non-JSON')
+
+        and: 'the store is described as UNCONFIRMED (a non-JSON body does not establish the outcome), not proven-not-stored, and steers to the read-back (#462 F3)'
+        result.note.contains('unconfirmed')
+        result.note.contains('hub_get_hub_mesh peers[]')
     }
 
     def "an empty-map setHubMeshToken body is SUCCESS (the endpoint answers 200 {} on success)"() {

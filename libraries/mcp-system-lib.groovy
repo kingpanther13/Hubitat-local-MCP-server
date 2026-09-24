@@ -789,11 +789,13 @@ def toolUpdateHubMesh(args) {
                     "The response was empty, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying.")
         }
         if (postResult instanceof Map && postResult._unparseable == true) {
-            // Non-JSON body (e.g. an HTML error/login page): the endpoint did not answer as itself.
-            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned a non-JSON body", null)
+            // Non-JSON body (e.g. an HTML error/login page): the endpoint did not answer as itself, so
+            // the write outcome is UNKNOWN -- fail-closed (do NOT record peer_token), same as the
+            // empty-body branch above, but the store is unconfirmed rather than proven-not-stored.
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned a non-JSON body (unconfirmed commit)", null)
             return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
-                    "the hub returned a non-JSON response; the token was not stored",
-                    "The hub returned an unexpected (non-JSON) body. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId, then retry.")
+                    "the hub returned a non-JSON response; whether the token was stored is unknown",
+                    "The hub returned an unexpected (non-JSON) body, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying, and verify peer_hub_id against peers[].hubId.")
         }
         if (postResult instanceof Map && postResult.success == false) {
             // Explicit rejection: the endpoint parsed and said no (e.g. an unknown peer id).
