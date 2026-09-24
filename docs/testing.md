@@ -18,8 +18,9 @@ runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
   closures with null parameters (`{ -> ... }`), including nested expressions and GString interpolation;
   empty parameter arrays (implicit `it`) remain allowed. Findings retain original library locations.
   This is the authoritative closure guard; `sandbox_lint.py` only points to this lane. Stock Groovy
-  processes the same AST successfully; a hub-specific transform is not exercised locally, and null
-  parameters have not been proven to cause the observed hub failure. The lane also checks syntax
+  processes the same AST successfully. An isolated app on firmware 2.5.1.181 rejected `{ -> 42 }`
+  with HTTP 500 while identical source using `{ 42 }` compiled; the private compiler mechanism
+  remains unproven. See [the live evidence](issue-407-findings.md). The lane also checks syntax
   and sandbox-blocked classes. `parse24` runs its positive/negative fixtures first;
   they can also run directly via `parse_check.groovy --self-test <absolute-repo-root>`.
 - **Groovy 2.5 Spock** (`ci/groovy2x-spock/`) — runs this same spec corpus against a Groovy 2.5
