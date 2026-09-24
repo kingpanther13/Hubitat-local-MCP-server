@@ -541,6 +541,12 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
     def warnings = []
     if (linked == null) {
         warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
+    } else if (matchedLocalRow == null) {
+        // linked==true via the availableLinkedHubVariables "source row disappeared" path, but the local
+        // mirror row never resolved in the retry window -- so `name` below falls back to the bare source
+        // name, which does NOT identify the decorated mirror (and could collide with an unrelated local
+        // var of the same name). Warn the caller to confirm the real name before using it.
+        warnings << "The link was confirmed, but the local mirror name did not resolve within the retry window; the returned name is the bare source name and may not identify the mirror in hub_get_variable / hub_delete_variable. Verify the mirror's actual name with hub_get_hub_mesh (localLinkedHubVariables[])."
     }
 
     // The local mirror is stored under a DECORATED name ("<name> on <peer>"); return THAT as `name`

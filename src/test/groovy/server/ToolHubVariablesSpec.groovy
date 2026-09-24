@@ -1261,13 +1261,38 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         when:
         def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
 
-        then: 'local row not yet surfaced, so name falls back to the source name; sourceName always carries it (#462 F5)'
+        then: 'linked via the linkedLocally flag, but no local row resolved -> name falls back to the source name WITH a caution that it may not identify the mirror (#462 CodeRabbit)'
         result.success == true
         result.name == 'porchTemp'
         result.sourceName == 'porchTemp'
         result.sourceHubId == 'HUB-A'
         result.linked == true
-        result.warnings == null
+        result.warnings != null
+        result.warnings.any { it.toLowerCase().contains('mirror name') }
+    }
+
+    def "hub_create_variable mesh link warns when the source row disappears but no local mirror resolves"() {
+        given: 'the source is offered pre-call, then leaves availableLinkedHubVariables after the link, with no local row surfacing'
+        enableWrite()
+        def done = false
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: done ? [] : [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'row-disappeared (offered pre-call) proves the link, but the bare source name comes back with a mirror-name caution'
+        result.success == true
+        result.linked == true
+        result.name == 'porchTemp'
+        result.sourceName == 'porchTemp'
+        result.warnings != null
+        result.warnings.any { it.toLowerCase().contains('mirror name') }
     }
 
     // Outcome 2 (silent no-op): 200 from the GET but the source stays in availableLinkedHubVariables
