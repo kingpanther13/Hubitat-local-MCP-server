@@ -1184,8 +1184,11 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         enableWrite()
         def linked = []
         hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> linked << 'porchTemp'; '' }
+        // Real localLinkedHubVariables rows carry a DECORATED display name plus the bare sourceVarName
+        // and sourceHubId; the read-back must match the latter two, not `name`.
         hubGet.register('/hub2/hubMeshJson') { params ->
-            groovy.json.JsonOutput.toJson([localLinkedHubVariables: linked.collect { [name: it] }])
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: linked.collect {
+                [name: "${it} on Peer", sourceVarName: it, sourceHubId: 'HUB-A', type: 'string'] }])
         }
 
         when:
@@ -1204,7 +1207,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         given: 'a non-ASCII name (URLEncoder renders it %XX, unambiguously)'
         enableWrite()
         hubGet.register('/hub2/createLinkedHubVar/HUB-A/caf%C3%A9') { params -> '' }
-        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedHubVariables":[{"name":"café"}]}' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedHubVariables":[{"name":"café on Peer","sourceVarName":"café","sourceHubId":"HUB-A"}]}' }
 
         when:
         def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'café', confirm: true])
@@ -1327,7 +1330,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
-        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedHubVariables":[{"name":"porchTemp"}]}' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedHubVariables":[{"name":"porchTemp on Peer","sourceVarName":"porchTemp","sourceHubId":"HUB-A"}]}' }
 
         when:
         def response = mcpDriver.callTool('hub_create_variable',

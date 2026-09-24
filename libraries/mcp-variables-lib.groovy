@@ -473,20 +473,23 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
     }
 
     // Read-back with a short backoff. Tri-state `linked`: true (proven linked), false (proven still
-    // unlinked = silent no-op), null (could not decide -- mesh list unreadable). The link took if the
-    // name shows up in localLinkedHubVariables OR the source's availableLinkedHubVariables row is gone
-    // / flagged linkedLocally; it did NOT take if that row is still present-and-unlinked.
+    // unlinked = silent no-op), null (could not decide -- mesh list unreadable). The link took if a
+    // localLinkedHubVariables row now mirrors this source OR the source's availableLinkedHubVariables
+    // row is gone / flagged linkedLocally; it did NOT take if that row is still present-and-unlinked.
+    // NOTE: a local linked row's `name` is DECORATED ("<name> on <peer>"); the bare source name is in
+    // `sourceVarName` and the peer id in `sourceHubId` -- match on those, not on `name`.
     Boolean linked = null
     for (int attempt = 0; attempt < 3; attempt++) {
-        def afterNames = _meshLocalLinkedHubVarNames()
+        def afterRows = _meshLocalLinkedHubVars()
         def avail = _meshAvailableLinkedHubVars()
-        boolean localHasName = (afterNames != null && afterNames.contains(meshName))
+        boolean localHasLink = (afterRows != null && afterRows.any {
+            it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId })
         Boolean availLinked = null
         if (avail != null) {
             def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
             availLinked = (srcRow == null) ? true : (srcRow.linkedLocally == true)
         }
-        if (localHasName || availLinked == true) {
+        if (localHasLink || availLinked == true) {
             linked = true; break
         } else if (availLinked == false) {
             // available list is readable and still offers this source as unlinked, and the name has
@@ -526,16 +529,17 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
     ]
 }
 
-// Reads /hub2/hubMeshJson and returns the NAMES of variables linked ONTO this hub from peers
-// (localLinkedHubVariables[].name). Returns null when the mesh JSON is unreachable/unparseable or the
-// section is missing/misshaped -- callers treat null as "unreadable" (warn, never fail).
-private List _meshLocalLinkedHubVarNames() {
+// Reads /hub2/hubMeshJson and returns the localLinkedHubVariables ROWS (variables linked ONTO this hub
+// from peers). Each row carries a DECORATED display `name` ("<name> on <peer>"), the bare `sourceVarName`,
+// and `sourceHubId` -- match on the latter two, not `name`. Returns null when the mesh JSON is
+// unreachable/unparseable or the section is missing/misshaped -- callers treat null as "unreadable".
+private List _meshLocalLinkedHubVars() {
     try {
         def raw = hubInternalGet("/hub2/hubMeshJson")
         if (!raw?.trim()) return null
         def parsed = new groovy.json.JsonSlurper().parseText(raw)
         if (!(parsed instanceof Map) || !(parsed.localLinkedHubVariables instanceof List)) return null
-        return parsed.localLinkedHubVariables.collect { it?.name?.toString() }
+        return parsed.localLinkedHubVariables
     } catch (Exception e) {
         logDebug("hub_create_variable: could not read Hub Mesh localLinkedHubVariables: ${e.message}")
         return null
