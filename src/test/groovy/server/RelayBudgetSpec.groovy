@@ -47,12 +47,33 @@ class RelayBudgetSpec extends ToolSpecBase {
         script._relayBudgetMs() == 6000L
     }
 
-    def "_relayBudgetMs honours settings.relayBudgetMs"() {
+    def "_relayBudgetMs honours a supported settings.relayBudgetMs"() {
         given:
-        settingsMap.relayBudgetMs = 5000
+        settingsMap.relayBudgetMs = 7000
 
         expect:
-        script._relayBudgetMs() == 5000L
+        script._relayBudgetMs() == 7000L
+    }
+
+    @Unroll
+    def "both transport budgets preserve off and floor positive #configured to #effective"() {
+        given:
+        settingsMap.relayBudgetMs = configured
+        settingsMap.lanBudgetMs = configured
+
+        expect:
+        script._relayBudgetMs() == effective
+        script._lanBudgetMs() == effective
+
+        where:
+        configured | effective
+        0          | 0L
+        1          | 6000L
+        1500       | 6000L
+        1501       | 6000L
+        5999       | 6000L
+        6000       | 6000L
+        12000      | 12000L
     }
 
     def "_isCloudRequest defaults to false when no cloud request marker is present"() {

@@ -77,6 +77,104 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         script.metaClass.mcpClientIdentity = { -> [client: null, error: error] }
     }
 
+    def "retained errors survive missing native history and supply explicit tool context"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'retained failure access_token=private-token', null,
+            [details: [tool: 'hub_set_rule']])
+        (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
+        script.metaClass.getDebugLogReadResult = { Map args ->
+            [entries: null, error: 'native history unavailable', retryable: true]
+        }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.success
+        result.failingTool == 'hub_set_rule'
+        result.logs.retainedErrorCount == 1
+        result.logs.relevantCount == null
+        result.report.contains('retained failure access_token=<redacted>')
+        !result.report.contains('private-token')
+        result.report.indexOf('Retained Server Errors') < result.report.indexOf('Recent Error/Warning Logs')
+        result.submitUrl.contains('failing_tool=hub_set_rule')
+    }
+
+    def "retained errors can produce a report while native history is loading"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'retained loading evidence')
+        script.metaClass.getDebugLogReadResult = { Map args -> [status: 'in_progress'] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.success
+        result.logs.retainedErrorCount == 1
+        result.logs.error.contains('still loading')
+        result.report.contains('retained loading evidence')
+        !result.containsKey('failingTool')
+    }
+
+    @Unroll
+    def "retained errors honor explicit caller scope #scope"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'matching retained failure', '42',
+            [details: [tool: 'hub_set_rule', appId: '123']])
+        script.mcpLog('error', 'server', 'unrelated retained failure', '99',
+            [details: [tool: 'hub_update_app', appId: '456']])
+        script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs(scope))
+
+        then:
+        result.failingTool == 'hub_set_rule'
+        result.logs.retainedErrorCount == 1
+        result.report.contains('matching retained failure')
+        !result.report.contains('unrelated retained failure')
+
+        where:
+        scope << [[failingTool: 'hub_set_rule'], [ruleId: '42'], [nativeAppId: '123']]
+    }
+
+    def "unmatched explicit scope cannot borrow an unrelated retained tool"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'unrelated failure', null, [details: [tool: 'hub_update_app', appId: '456']])
+        script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([nativeAppId: '123']))
+
+        then:
+        !result.containsKey('failingTool')
+        result.logs.retainedErrorCount == 0
+        !result.report.contains('unrelated failure')
+    }
+
+    @Unroll
+    def "retained raw evidence is withheld with #privacy"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'retained private evidence', null, [details: [tool: 'hub_set_rule']])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs(privacy))
+
+        then:
+        result.logs.retainedErrorCount == 1
+        result.report.contains('Retained Server Errors')
+        !result.report.contains('retained private evidence')
+        result.report.contains('omitted')
+
+        where:
+        privacy << [[privacyMode: 'public'], [includeRawLogs: false]]
+    }
+
     // ---------- default invocation ----------
 
     def "default invocation returns success with split env counts and a [bug] title"() {

@@ -31,6 +31,31 @@ class IncludeResolverSpec extends Specification {
         IncludeResolver.resolve(src, libsDir()) == src
     }
 
+    def "unknown or out-of-bounds AST positions do not map to an unrelated source line"() {
+        given:
+        def resolved = IncludeResolver.resolveWithOrigins('first\nsecond\n', libsDir(), new File('app.groovy'))
+
+        expect:
+        IncludeResolver.sourceLocation(resolved, line, column) == "resolved source:${line}:${column}"
+
+        where:
+        line | column
+        -1   | 1
+        0    | 1
+        1    | -1
+        1    | 99
+        99   | 1
+        3    | 1
+    }
+
+    def "valid AST positions still map to their original source"() {
+        given:
+        def resolved = IncludeResolver.resolveWithOrigins('first\nsecond\n', libsDir(), new File('app.groovy'))
+
+        expect:
+        IncludeResolver.sourceLocation(resolved, 2, 3) == 'app.groovy:2:3'
+    }
+
     def "resolves a #include by namespace+name and inlines the library body with library() stripped"() {
         given:
         def libs = libsDir()

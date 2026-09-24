@@ -8949,9 +8949,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
         appeared.isEmpty() && disappeared.isEmpty() &&
         valueEcho?.match == false
 
-    // The page the op landed on carried RM's own render error. That is a FAILED op, not an
-    // advisory: an agent branching on success must not go on writing into a page RM could not
-    // build.
+    // A render error must stop the drive even when the operation committed: subsequent
+    // steps must not write into a page RM could not build.
     def pageError = afterCfg?.configPage?.error
     def result = [
         success: pageError == null && _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false)),
@@ -8980,8 +8979,10 @@ Map _rmWalkStep(Integer appId, Map spec) {
         // An error page that still returned inputs is a different animal from one that returned
         // nothing: only the second one explains an empty `after` schema.
         def emptyAfter = afterSchema.inputs.isEmpty() && afterSchema.hrefs.isEmpty()
-        result.repairHints = (result.repairHints ?: []) + [((emptyAfter ?
-                "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, not because the op committed." :
+        def committed = commitSignal in ["action_committed", "trigger_committed"]
+        result.repairHints = (result.repairHints ?: []) + [((committed ?
+                "The operation committed (${commitSignal}), but the page '${page}' rendered with an error (${pageError}). Do not repeat the operation; repair the page before continuing." : emptyAfter ?
+                "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, and no new action or trigger was observed." :
                 "The page '${page}' rendered with an error (${pageError}) alongside its inputs, so what it shows may not reflect what RM stored.") +
                 " Enter the page the way the wizard does (the href or button on its parent page) rather than by name.").toString()]
     }

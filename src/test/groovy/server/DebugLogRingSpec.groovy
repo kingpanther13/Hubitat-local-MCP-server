@@ -29,6 +29,77 @@ class DebugLogRingSpec extends ToolSpecBase {
         }
     }
 
+    def "only errors retain a bounded scrubbed recovery record across reload"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+
+        when:
+        ['debug', 'info', 'warn'].each { script.mcpLog(it, 'server', 'ordinary log') }
+
+        then:
+        !stateMap.containsKey('reportErrors')
+
+        when:
+        (1..12).each { n ->
+            script.mcpLog('error', 'server', "failure ${n} access_token=private-token", '42',
+                [details: [tool: 'hub_set_rule', appId: '123', arguments: [password: 'private-password']],
+                 stackTrace: 'private stack'])
+        }
+        reload()
+
+        then:
+        stateMap.reportErrors.size() == 10
+        stateMap.reportErrors.first().message == 'failure 3 access_token=<redacted>'
+        stateMap.reportErrors.last().details == [tool: 'hub_set_rule', appId: '123']
+        stateMap.reportErrors.last().ruleId == '42'
+        !JsonOutput.toJson(stateMap.reportErrors).contains('private-')
+        !JsonOutput.toJson(stateMap.reportErrors).contains('stackTrace')
+
+        when:
+        script.toolClearDebugLogs([:])
+
+        then:
+        stateMap.reportErrors == []
+    }
+
+    def "retention scrubs quoted secrets before truncating the message"() {
+        when:
+        script.mcpLog('error', 'server', ('x' * 475) + ' password="' + ('secret' * 100) + '"')
+
+        then:
+        stateMap.reportErrors.last().message.endsWith('password="<redacted>"')
+        !stateMap.reportErrors.last().message.contains('secret')
+    }
+
+    def "retained errors cap every variable string independently"() {
+        when:
+        script.mcpLog('error', 'c' * 400, 'm' * 1000, 'r' * 400,
+            [details: [tool: 't' * 400, appId: 'a' * 400]])
+
+        then:
+        def entry = stateMap.reportErrors.last()
+        entry.message.size() == 500
+        entry.component.size() == 80
+        entry.ruleId.size() == 80
+        entry.details.tool.size() == 120
+        entry.details.appId.size() == 120
+    }
+
+    def "failed error retention does not suppress the original native error"() {
+        given:
+        script.initDebugLogs()
+        def peer = newCompiledScriptInstance(app: loggingApp,
+            state: { -> throw new IllegalStateException('unavailable state') })
+
+        when:
+        peer.mcpLog('error', 'server', 'original failure')
+
+        then:
+        noExceptionThrown()
+        script.log.messages.any { it.startsWith('warn:') && it.contains('could not be retained') }
+        script.log.messages.any { it.startsWith('error:') && it.contains('original failure') }
+    }
+
     def "first suppressed log discards legacy history but preserves configuration and later native history"() {
         given:
         stateMap.debugLogs = [config: [logLevel: 'warn', maxEntries: 100], entries: [

@@ -1026,12 +1026,10 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.revision == 'r-2'
     }
 
-    def "a save whose activation threw on the hub reports activated=false with the hub's activationError"() {
+    def "a save whose activation threw reports the error even when paused=#paused"() {
         given: 'storage succeeded, validation passed, activation raised -- validationErrors is EMPTY on this path'
         enableWrite()
-        registerAppsList([])
-        stubCreateChild(831)
-        def state = [name: null, ruleJson: null]
+        def state = [name: 'Activation threw', ruleJson: json(validGraph())]
         stubPostJson { path, body ->
             def b = new JsonSlurper().parseText(body)
             state.name = b.name
@@ -1040,11 +1038,11 @@ class ToolVisualRule20Spec extends ToolSpecBase {
              validationErrors: [], validationIssues: [], referencedDeviceIds: [101], activationError: 'scheduler unavailable', storageError: null]
         }
         hubGet.register('/app/ruleBuilder20Json/831') { params ->
-            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, validationErrors: [], runtimeGraph: null])
+            json([name: state.name, rulePaused: paused, ruleJson: state.ruleJson, validationErrors: [], runtimeGraph: null])
         }
 
         when:
-        def result = script.toolSetVisualRule([name: 'Activation threw', definition: editorDefinition(), confirm: true])
+        def result = script.toolSetVisualRule([appId: 831, definition: editorDefinition(), confirm: true])
 
         then: 'verified write, not running, and the ONLY diagnostic the hub gave is kept'
         result.success == true
@@ -1054,6 +1052,9 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.note.contains('Stored but NOT activated')
         result.note.contains('scheduler unavailable')
         !result.containsKey('validationErrors')
+
+        where:
+        paused << [false, true]
     }
 
     def "a graph read with no active runtime reports activated=false even when validationErrors is empty"() {
@@ -1376,6 +1377,28 @@ class ToolVisualRule20Spec extends ToolSpecBase {
 
         and: 'the confirmed read-back still hands back what the hub holds'
         result.definition != null
+    }
+
+    def "pause-only redundant refusal is verified against the read-back for paused=#paused"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ruleBuilder20Json/874') { params ->
+            json([name: 'Idem', rulePaused: paused, ruleJson: json(validGraph()), validationErrors: []])
+        }
+        hubGet.register("/app/ruleBuilderPause/874/${paused}") { params -> '{"success":false,"message":"already in requested state"}' }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 874, confirm: true, paused: paused])
+
+        then:
+        result.success == true
+        result.verified == true
+        result.rulePaused == paused
+        result.note.contains('already in requested state')
+        !result.containsKey('error')
+
+        where:
+        paused << [true, false]
     }
 
     def "a definition edit whose real pause change the hub refuses fails but keeps the confirmed definition"() {

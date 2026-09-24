@@ -1095,7 +1095,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.relayBudgetMs = 3000
 
         then:
-        script._mrtrContentionWaitMs() == 1500L
+        script._mrtrContentionWaitMs() == 3000L
     }
 
     def "cloud worker contention waits within safe relay headroom"() {
@@ -1122,21 +1122,21 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._mrtrContentionWaitMs('hub_call_rule') == 4000L
         script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
 
-        when: 'an operator configures a smaller cloud leg budget'
+        when: 'an operator configures a cloud budget below the supported minimum'
         settingsMap.relayBudgetMs = 5000
 
-        then: 'the worker path keeps 2000ms for parsing, scheduling, and rendering'
-        script._mrtrContentionWaitMs('hub_set_rule') == 3000L
-        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3000L
-        script._mrtrContentionWaitMs('hub_call_rule') == 2500L
+        then: 'the effective minimum preserves 2000ms for parsing, scheduling, and rendering'
+        script._mrtrContentionWaitMs('hub_set_rule') == 4000L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
+        script._mrtrContentionWaitMs('hub_call_rule') == 3000L
 
         when: 'the same explicit budget is applied to a LAN request'
         script.metaClass._isCloudRequest = { -> false }
         settingsMap.lanBudgetMs = 5000
 
         then: 'LAN retains its prior 1500ms reserve because the measured defect is cloud-only'
-        script._mrtrContentionWaitMs('hub_set_rule') == 3500L
-        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
+        script._mrtrContentionWaitMs('hub_set_rule') == 4500L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 4500L
     }
 
     def "a gateway first request observes the resolved leaf terminal result"() {

@@ -555,7 +555,7 @@ PERSISTED_STATE_INVENTORY = {
     "state": {
         "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
         "headersReadable", "originLocalIpReadable", "updateCheck",
-        "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable",
+        "lastBackupTimestamp", "debugLogs", "reportErrors", "hubSecurityRetired", "hubSecurityFwUnreadable",
     },
     "atomicState": {
         "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy",
@@ -1885,7 +1885,8 @@ def check_tool_guide_pointers(src_override: str | None = None,
                                   sections_block, re.MULTILINE):
         section_keys.add(key)
         method_body = re.search(
-            r"String\s+" + re.escape(method) + r"\(\)\s*\{\s*return\s+'''(.*?)'''",
+            r"(?:String|def)\s+" + re.escape(method)
+            + r"\(\)\s*\{(?:\s|//[^\n]*\n|/\*.*?\*/)*return\s+'''(.*?)'''",
             lib_src,
             re.DOTALL,
         )
@@ -1897,9 +1898,9 @@ def check_tool_guide_pointers(src_override: str | None = None,
                 "rule": "tool-guide-section-method-unresolved",
                 "message": (
                     f"getToolGuideSections key '{key}' delegates to {method}(), but no "
-                    f"`String {method}()` returning a ''' literal was found in "
-                    f"libraries/*.groovy. hub_get_tool_guide(section='{key}') would serve "
-                    f"nothing, and the content-anchor check cannot run for it."
+                    f"String/def method returning a ''' literal was found in "
+                    f"libraries/*.groovy. The content-anchor check cannot resolve this "
+                    f"body; check the method exists and uses a supported literal return."
                 ),
                 "source": "",
             })
@@ -5559,7 +5560,8 @@ def check_logs_json_snapshot_guard() -> list[dict]:
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
     if not server.is_file():
         return findings
-    sources = [server, *sorted((REPO_ROOT / "libraries").glob("*.groovy"))]
+    sources = {f: f.read_text(encoding="utf-8") for f in
+               [server, *sorted((REPO_ROOT / "libraries").glob("*.groovy"))]}
     fn_re = re.compile(r"^(?:private\s+|static\s+)*(?:def|void|boolean|Map|List|String|Set|Long|long|int|Integer)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
 
     def enclosing_fn(src: str, pos: int) -> str | None:
@@ -5577,8 +5579,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
         return out
 
     # (1) the raw fetch has exactly one home.
-    for f in sources:
-        src = f.read_text(encoding="utf-8")
+    for f, src in sources.items():
         rel = str(f.relative_to(REPO_ROOT))
         for m in re.finditer(r"""hubInternalGet(?:Raw)?\(\s*(["'])/logs/json\1""", src):
             fn = enclosing_fn(src, m.start())
@@ -5588,7 +5589,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
                                  "message": f"`{fn}` fetches /logs/json directly. That page grows with hub size and outruns the cloud relay; read it through _logsJsonSnapshot(args) so the fetch runs in the background worker and is cached."})
 
     # (2) every snapshot reader is a continuation-eligible, budget-aware tool.
-    server_src = server.read_text(encoding="utf-8")
+    server_src = sources[server]
 
     def set_literal(name: str) -> set[str] | None:
         m = re.search(rf"def {re.escape(name)}\(\)\s*\{{\s*return\s*\[(.*?)\]\s*as\s+Set", server_src, re.S)
@@ -5604,12 +5605,11 @@ def check_logs_json_snapshot_guard() -> list[dict]:
                          "message": "Could not parse _mrtrReadTools() / _budgetAwareTools() set literals -- has their shape changed?"})
         return findings
     dispatch: dict[str, set[str]] = {}
-    for f in sources:
+    for src in sources.values():
         for tool, fn in re.findall(r'case "(hub_[a-z0-9_]+)":\s*return\s+([A-Za-z_][A-Za-z0-9_]*)\(',
-                                   f.read_text(encoding="utf-8")):
+                                   src):
             dispatch.setdefault(fn, set()).add(tool)
-    for f in sources:
-        src = f.read_text(encoding="utf-8")
+    for f, src in sources.items():
         rel = str(f.relative_to(REPO_ROOT))
         for fn, line, body in fn_bodies(src):
             if fn.startswith("_logsJson") or "_logsJsonSnapshot(" not in body:

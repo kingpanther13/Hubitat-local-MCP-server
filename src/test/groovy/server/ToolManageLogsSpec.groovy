@@ -1399,9 +1399,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     def "a LAN request with lanBudgetMs set also uses the background fetch, with the LAN observe window"() {
-        given: 'not a cloud request (harness default), LAN budget 6000: window = 6000 - 1500, under the 6000 LAN cap'
+        given: 'LAN budget 10000 hits the 6000 LAN cap, distinct from the cloud cap of 4500'
         settingsMap.enableRead = true
-        settingsMap.lanBudgetMs = 6000
+        settingsMap.lanBudgetMs = 10000
         def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
         hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(2) }
         def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
@@ -1418,7 +1418,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         script._isCloudRequest() == false
         script._mrtrReadContinuationActive() == true
         first.status == 'in_progress'
-        waitedMs.get() == 4500L
+        waitedMs.get() == 6000L
         runInMillisCalls.size() == 1
         fetches.get() == 1
         second.scheduledJobs.count == 2

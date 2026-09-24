@@ -503,11 +503,11 @@ def advancedOverridesPage() {
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
-            input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, 0 = off)",
+            input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, minimum 6000, 0 = off)",
                   description: "Pause a slow multi-step write over the cloud relay once this many ms have elapsed (default: 6000). A leg runs to this budget PLUS the step already in flight when it trips (1-2s for a wizard POST on a loaded hub), plus relay overhead, so 6000 lands legs near 8s -- headroom under the ~10s relay ceiling even on a hub whose per-app load limiter is already tripping.",
                   defaultValue: 6000, range: "0..30000", required: false
-            input "lanBudgetMs", "number", title: "LAN time budget (ms, 0 = off)",
-                  description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; set just under your MCP client's request timeout).",
+            input "lanBudgetMs", "number", title: "LAN time budget (ms, minimum 6000, 0 = off)",
+                  description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; positive values below 6000 use 6000; set below your MCP client's request timeout).",
                   defaultValue: 0, range: "0..300000", required: false
         }
         section("Native app edit backups") {
@@ -2079,16 +2079,19 @@ def _isCloudRequest() {
 // a loaded hub, ~0.9s more when the hub's per-app load limiter is tripping) + ~0.35s relay
 // overhead. Measured on the e2e MRTR proof: 8000 -> 9.855s max leg (over the 9.5s bound), 7000 ->
 // 8.844s; 6000 lands legs near 8s healthy and ~8.75s throttled.
-// The budget is a setting, never a literal elsewhere -- read it here.
+// Positive budgets have a 6000 ms floor so eight Logs-page observation slices cover
+// the native fetch timeout. Zero still disables budgeting; read the effective value here.
 def _relayBudgetMs() {
-    return settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 6000L
+    long configured = settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 6000L
+    return configured > 0L ? Math.max(6000L, configured) : configured
 }
 
 // LAN time budget in ms. Default 0 = off: LAN has no fixed transport ceiling, so
 // the pause is opt-in for clients whose own request timeout kills slow multi-step
 // writes (set it just under that client timeout).
 def _lanBudgetMs() {
-    return settings.lanBudgetMs != null ? (settings.lanBudgetMs as Long) : 0L
+    long configured = settings.lanBudgetMs != null ? (settings.lanBudgetMs as Long) : 0L
+    return configured > 0L ? Math.max(6000L, configured) : configured
 }
 
 def _maxConcurrentWrites() {
@@ -6924,6 +6927,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             if (resp != null && st != null && st >= 300 && st < 400) {
                 def b = null
                 try { b = _readRespText(resp) } catch (Exception ignore) { b = null }
+                _hubRtOutcome = "ok"
                 return [status: st, location: resp.headers?."Location"?.toString(), data: b]
             }
         }
@@ -7833,6 +7837,7 @@ def clearDebugLogEntries(Map args = [:]) {
         int count = buffer.entries.size()
         String generation = java.util.UUID.randomUUID().toString()
         atomicState.debugLogGeneration = generation
+        state.reportErrors = []
         buffer.generation = generation
         buffer.entries = []
         buffer.hydrated = true
@@ -7900,6 +7905,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
+        if (level == "error") _retainReportError(raw as Map)
         _emitNativeDebugLog(buffer, record, message)
         _appendDebugLogRecord(buffer, record)
     }
@@ -10231,6 +10237,8 @@ Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable cle
 
 ### hub_report_issue
 
+Reports include up to ten retained server errors before rolling native history. If failingTool is omitted, the latest retained explicit tool context supplies it within the requested rule/app scope. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
+
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
 Issue-type routing: `issueType` picks the GitHub issue template behind `submitUrl` -- `bug` opens the bug-report template, `enhancement` the feature template, `agent_behavior` the agent-behavior template -- and sets the report heading and the title prefix (`[bug]` / `[feature]` / `[agent-behavior]`) with it. Filing a feature request as a bug lands the user on the wrong form, so pick the type before you call.
@@ -11025,7 +11033,7 @@ Native log reads through `hub_get_logs` and cold MCP log recovery use the same c
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
-The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
+The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. Both transport budgets automatically use at least 6000 ms when enabled. `lanBudgetMs` defaults to 0; enable it only when the LAN client timeout leaves room for that minimum plus request overhead.
 
 ### Package deployment
 

@@ -959,6 +959,44 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['11']]
     }
 
+    def "degraded inventory permits adding an already-authorized device but not a new unseen device"() {
+        given:
+        enableDevModeAndWrite()
+        settingsMap.selectedDevices = [dev(12)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
+
+        when:
+        def result = setScopeStructured([mode: 'add', ids: [12]])
+
+        then:
+        result.success == true
+
+        when:
+        def unknown = setScopeStructured([mode: 'add', ids: [12, 13]])
+
+        then:
+        unknown.success == false
+        unknown.error.contains('13')
+        !unknown.error.contains('12')
+    }
+
+    def "complete inventory still rejects an already-authorized id that no longer exists"() {
+        given:
+        enableDevModeAndWrite()
+        settingsMap.selectedDevices = [dev(12)]
+        registerHubDevices([11])
+
+        when:
+        setScopeStructured([mode: 'add', ids: [12]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown device id(s): 12')
+        sharedAppStub.settingsStore.isEmpty()
+    }
+
     def "selectedDevices validation errors when ALL THREE inventory endpoints fail"() {
         given:
         enableDevModeAndWrite()

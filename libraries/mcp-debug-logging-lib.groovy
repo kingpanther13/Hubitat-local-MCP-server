@@ -120,6 +120,42 @@ def toolGetLoggingStatus(args) {
     return result
 }
 
+// Called under the debug-buffer monitor, on errors only. Keep the recovery evidence
+// independent of the hub's rolling log without retaining tool arguments or stack traces.
+void _retainReportError(Map entry) {
+    try {
+        def retained = [timestamp: entry.timestamp, level: "error",
+                        component: _bugReportScrubSecrets(entry.component?.toString())?.take(80),
+                        message: _bugReportScrubSecrets(entry.message?.toString())?.take(500)]
+        if (entry.ruleId) retained.ruleId = _bugReportScrubSecrets(entry.ruleId.toString()).take(80)
+        def details = [:]
+        ["tool", "appId"].each { key ->
+            if (entry.details?.get(key)) details[key] = _bugReportScrubSecrets(entry.details[key].toString()).take(120)
+        }
+        if (details) retained.details = details
+        def previous = state.reportErrors instanceof List ? state.reportErrors : []
+        state.reportErrors = previous.takeRight(9) + [retained]
+    } catch (Exception ignored) {
+        log.warn "MCP error evidence could not be retained; the original error still follows in native logs."
+    }
+}
+
+private List _reportErrorSnapshot() {
+    def buffer = initDebugLogs()
+    synchronized (buffer) {
+        def entries = state.reportErrors instanceof List ? state.reportErrors : []
+        return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(entries.takeRight(10)))
+    }
+}
+
+private List _reportErrorsForScope(args, List entries) {
+    return entries.findAll { entry ->
+        (!args.failingTool || entry.details?.tool == args.failingTool) &&
+        (!args.ruleId || entry.ruleId?.toString() == args.ruleId.toString()) &&
+        (!args.nativeAppId || entry.details?.appId?.toString() == args.nativeAppId.toString())
+    }
+}
+
 def toolGenerateBugReport(args) {
     // Validation first: a caller may correct and retry, so nothing may have happened yet.
     def blankArg = { value -> !(value?.toString()?.trim()) }
@@ -132,9 +168,17 @@ def toolGenerateBugReport(args) {
     def includeRawLogs = privacyMode == "private" && (args.includeRawLogs == null || args.includeRawLogs == true)
     def windowMs = ((args.logWindowSeconds == null ? 120 : args.logWindowSeconds) as Integer) * 1000L
 
-    initDebugLogs()
+    def retainedErrors = _reportErrorsForScope(args, _reportErrorSnapshot())
+    if (!args.failingTool) {
+        def retainedTool = retainedErrors.reverse().find { it.details?.tool }?.details?.tool
+        if (retainedTool) args = args + [failingTool: retainedTool]
+    }
+    retainedErrors = _reportErrorsForScope(args, retainedErrors)
     def history = getDebugLogReadResult(args)
-    if (history.status == "in_progress") return history + [tool: "hub_report_issue"]
+    if (history.status == "in_progress") {
+        if (!retainedErrors) return history + [tool: "hub_report_issue"]
+        history = [error: "Native MCP log history is still loading; retained errors are available below.", retryable: true]
+    }
     def allEntries = (history.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
     def anchor = _bugReportResolveAnchor(args, allEntries)
     def scopedLogs = _bugReportScopedLogs(args, allEntries, anchor, windowMs)
@@ -151,6 +195,7 @@ def toolGenerateBugReport(args) {
         env: env,
         ruleInfo: ruleInfo,
         scopedLogs: scopedLogs,
+        retainedErrors: retainedErrors,
         logReadError: history.error
     )
 
@@ -162,6 +207,7 @@ def toolGenerateBugReport(args) {
         submitUrl: submitUrl,
         report: report,
         logs: [
+            retainedErrorCount: retainedErrors.size(),
             scoped: scopedLogs.scoped,
             relevantCount: scopedLogs.relevant.size(),
             otherRecentLogCount: scopedLogs.scoped && !scopedLogs.includedUnrelated ? scopedLogs.otherCount : 0
@@ -170,6 +216,7 @@ def toolGenerateBugReport(args) {
         preflight: _bugReportPreflight(issueType, includeRawLogs, privacyMode),
         instructions: "1. Work through preflight and missingContext: gather what is missing; where an item asks you to confirm llmClient or llmModel with the user, ask them rather than guessing. 2. Open submitUrl; the GitHub issue title is pre-filled. 3. Type a short description of what you were doing in the free-text field at the top of the form ('What happened' on the bug template). 4. Paste the 'report' content into the 'Agent report output' field. Privacy: if you are an LLM, attempt to replace any identifiable hub names, rule names, device names, app IDs, hub variable names, IPs, filenames, access tokens, MCP endpoint URLs and any credentials with placeholders before sharing this report. Either way, the user MUST review the final report for sensitive details before submitting -- public mode is a best-effort assist, not a guarantee."
     ]
+    if (args.failingTool) result.failingTool = args.failingTool
     if (history.error) {
         result.logs.error = history.error
         result.logs.retryable = history.retryable
@@ -632,9 +679,12 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Execution Count:** ${ruleInfo.executionCount}
 """
     }
+    def retainedLines = (params.retainedErrors ?: []).collect { _bugReportFormatLogEntry(it) }
+    def retainedSection = _bugReportRawSection("Retained Server Errors", retainedLines.join("\n"),
+        includeRawLogs, false, privacyMode)
     def logSection
     if (params.logReadError) {
-        logSection = "## Recent Error/Warning Logs\n_MCP log history unavailable. Log counts and evidence could not be recovered; retry after native logging is available._"
+        logSection = "## Recent Error/Warning Logs\n_MCP log history unavailable. Rolling-log counts and evidence could not be recovered; retry after native logging is available._"
     } else if (!includeRawLogs) {
         def n = relevantLines.size()
         // Steering a private-mode caller at privacyMode='private' would be advice they already took.
@@ -703,7 +753,7 @@ _Add any other context, screenshots, or transcripts when filing._
     // can legitimately contain a marker, and stripping it would corrupt that evidence.
     // _stripLibraryMarkers lives in the main app (it also cleans tool descriptions).
     return titleLine + _stripLibraryMarkers(headPart) + proseSections +
-        verbatimSection + clientLogSection + _stripLibraryMarkers(tailPart) + logSection +
+        verbatimSection + clientLogSection + _stripLibraryMarkers(tailPart) + retainedSection + logSection +
         _stripLibraryMarkers(contextPart)
 }
 
@@ -789,7 +839,7 @@ def _getAllToolDefinitions_partDebugLogging() {
                     actual: [type: "string", description: "What actually happened."],
                     stepsToReproduce: [type: "string", description: "Exact repro sequence."],
                     issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
-                    failingTool: [type: "string", description: "MCP tool that failed; scopes logs + titles issue."],
+                    failingTool: [type: "string", description: "MCP tool that failed; scopes logs + titles issue. Defaults to the latest retained error with explicit tool context."],
                     ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
                     nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
                     llmClient: [type: "string", description: "Host app + version, e.g. Claude Code 2.1 or Claude Desktop; ask the user, never guess."],

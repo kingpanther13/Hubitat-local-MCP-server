@@ -482,6 +482,7 @@ jobs:
         #    cannot green-wash a change e2e should test; detection fails SAFE (run on any doubt);
         #    workflow_dispatch always runs the real suite.
         id: gate
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TESTS_INPUT: ${{ inputs.tests }}
@@ -927,6 +928,7 @@ jobs:
       #                             PENDING (fail-closed: it can't rule the label out); the status POST
       #                             below uses the same API, so it would most likely fail too.
       - name: Post e2e gate status
+        shell: bash
         # always() EXCEPT on cancel: a focused run cancelled by the FIRST-full-label promote shares the
         # PR head SHA with the full run it spawned (a label add doesn't change the SHA, unlike a commit),
         # so its PENDING post could land AFTER the full run's success/failure on the SAME status context

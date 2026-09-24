@@ -4332,9 +4332,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction budget pause returns finish-up guidance and never claims success"() {
         given: "two moves needed but the response budget is already exhausted"
-        // Real _timeBudgetExceeded: a 1ms LAN budget against a t0 of 1 is past due at the
+        // Real _timeBudgetExceeded: a 6000ms LAN budget against a t0 of 1 is past due at the
         // harness's fixed now(), so the first move-loop checkpoint pauses.
-        settingsMap.lanBudgetMs = 1
+        settingsMap.lanBudgetMs = 6000
         def ma = wireModifyActionTransport(100, [1, 2, 3],
             ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
         def specs = []
@@ -10610,9 +10610,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "walkStep navigate does not re-read when the time budget is spent"() {
-        given: 'the LAN budget is 1 ms and the request clock started at epoch 1'
+        given: 'the LAN budget is 6000 ms and the request clock started at epoch 1'
         enableWrite()
-        settingsMap.lanBudgetMs = 1
+        settingsMap.lanBudgetMs = 6000
         def rereads = 0
         registerEmptyRenderRule(100) { params ->
             rereads++
@@ -10706,7 +10706,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.after?.inputs == []
     }
 
-    def "walkStep navigate reports a target page that rendered an ERROR as pageError, and never re-reads it"() {
+    def "walkStep render error preserves commit evidence without retrying navigation (committed=#committed)"() {
         given: 'RM answers the navigate with its own render error and no sections'
         enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -10721,11 +10721,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         def targetGets = 0
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> targetGets++; JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", error: "Cannot invoke method startsWith() on null object", sections: []]]) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        def navigated = false
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, committed && navigated ? [[name: 'actType.1', value: 'messageActs']] : [])
+        }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.pauseExecution = { Long ms -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (!(body?.any { k, v -> k.toString().startsWith("_action_href_") })) return [status: 200, location: null, data: "{}"]
+            navigated = true
             [status: 200, location: null, data: JsonOutput.toJson([app: [id: 100, version: 7],
                 configPage: [name: "doActPage", error: "Cannot invoke method startsWith() on null object", sections: []]])]
         }
@@ -10748,7 +10752,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
 
         and: 'the hint says the schema is empty, because this page returned nothing at all'
-        result.repairHints.any { it.contains("its schema is empty because RM could not build it") }
+        if (committed) {
+            assert result.commitSignal == 'action_committed'
+            assert result.repairHints.any { it.contains('operation committed') && it.contains('Do not repeat') }
+            assert !result.repairHints.any { it.contains('not because the op committed') }
+        } else {
+            assert result.repairHints.any { it.contains("its schema is empty because RM could not build it") }
+        }
+
+        where:
+        committed << [false, true]
     }
 
     def "walkStep drive carries the page forward: a step omitting page inherits the navigate target"() {
@@ -12676,10 +12689,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "stageDisabled pauses at the response-budget checkpoint and hands back the un-attempted ids"() {
         given: "a three-app subtree and an already-spent budget clock"
-        // Real _timeBudgetExceeded: a 1ms LAN budget against a t0 of 1 is past due at the
+        // Real _timeBudgetExceeded: a 6000ms LAN budget against a t0 of 1 is past due at the
         // harness's fixed now(). The loop deliberately skips the check on the FIRST target,
         // so the new app itself is always attempted before any pause.
-        settingsMap.lanBudgetMs = 1
+        settingsMap.lanBudgetMs = 6000
         def disabledIds = wireStagedCloneHarness([])
         hubGet.register('/hub2/appsList') { params -> stagingAppsList([
             [data: [id: 250, name: "Source Rule clone", disabled: false], children: [

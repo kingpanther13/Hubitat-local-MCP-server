@@ -146,12 +146,12 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
     /** hubInternalGetRaw stub for firmware WITHOUT the versioned child types: createchild is REFUSED
      *  (the transport throws the status), so the legacy builder-page route creates the child. */
-    private void stubLegacyCreateOnly(String html) {
+    private void stubLegacyCreateOnly(String html, int status = 404) {
         def paths = rawPaths
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             paths << path
             if (path.startsWith('/installedapp/createchild/')) {
-                throw new FakeHttpException(404, 'No such app type')
+                throw new FakeHttpException(status, 'No such app type')
             }
             [status: 200, location: null, data: html]
         }
@@ -500,6 +500,29 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         and: 'the label stays honest: the id came off a builder-page redirect, not the configure Location'
         result.createRouteNote.contains('builder page')
         result.createRouteNote.contains('read from that URL')
+    }
+
+    def "definitive createchild status #status falls back once without duplicating the child"() {
+        given:
+        enableWrite()
+        registerAppsList([])
+        stubLegacyCreateOnly('<html>window.HubitatRuleBuilderAppId = 1235</html>', status)
+        def savedState = [:]
+        stubPostJson { path, body -> savedState.putAll(new JsonSlurper().parseText(body) as Map); null }
+        hubGet.register('/app/ruleBuilder20Json/1235') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/1235') { params -> json(savedState) }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Legacy fallback', definition: classicDefinition(), confirm: true])
+
+        then:
+        result.success == true
+        result.appId == 1235
+        rawPaths == [CREATE_1_0, '/app/createVisualRuleBuilderRule']
+        posts.size() == 1
+
+        where:
+        status << [404, 405, 501]
     }
 
     def "a graph definition on a hub that can only create 1.0 children is refused and the orphan shell force-deleted"() {

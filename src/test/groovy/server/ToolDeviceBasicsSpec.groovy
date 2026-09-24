@@ -1696,16 +1696,16 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     def "a batch nearing the relay time budget stops early and hands back the untried tail"() {
         given: 'a cloud request whose budget was already spent before the loop started'
-        settingsMap.relayBudgetMs = 100
+        settingsMap.relayBudgetMs = 6000
         script.metaClass._isCloudRequest = { -> true }
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
         childDevicesList.each { registerNativeCommandDevice(it) }
         def tail = [[deviceId: '10', command: 'off'], [deviceId: '10', command: 'on']]
 
-        when: 'the request clock reads 200ms ago against a 100ms budget'
+        when: 'the request clock reads 7000ms ago against a 6000ms budget'
         def result = script.toolSendCommand(null, null, null, null,
-            [[deviceId: '10', command: 'on']] + tail, FIXED_NOW - 200L)
+            [[deviceId: '10', command: 'on']] + tail, FIXED_NOW - 7000L)
 
         then: 'the first entry always goes; the rest never fired'
         nativeWrites.count { it.id == a.id && it.method == 'on' && it.args*.value == [] } == 1
@@ -1724,8 +1724,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     def "a batch with NO request clock times itself from the loop start, so nothing stops early"() {
-        given: 'the same tiny cloud budget, but the tool was called without a request clock'
-        settingsMap.relayBudgetMs = 100
+        given: 'the same cloud budget, but the tool was called without a request clock'
+        settingsMap.relayBudgetMs = 6000
         script.metaClass._isCloudRequest = { -> true }
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
