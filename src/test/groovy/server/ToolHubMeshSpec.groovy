@@ -642,6 +642,23 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.applied == ['peer_token']
     }
 
+    def "a non-Map JSON setHubMeshToken body (e.g. a parsed List) is a failure -- peer_token is NOT applied (#462)"() {
+        given: 'hubInternalPostJson returns a parsed JSON List -- not this endpoint proven success shape (a Map)'
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return ['unexpected'] }
+
+        when:
+        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+
+        then: 'unexpected JSON shape is not proof of a store -> fail-closed, peer_token not recorded, store unconfirmed'
+        result.success == false
+        result.applied == []
+        !result.applied.contains('peer_token')
+        result.error.contains('Failed to store the peer hub')
+        result.note.contains('unconfirmed')
+        result.note.contains('hub_get_hub_mesh peers[]')
+    }
+
     def "a null setHubMeshToken body (dropped/truncated response) is a failure -- peer_token is NOT applied"() {
         given: 'hubInternalPostJson returns null for an EMPTY body -- a dropped write is an unknown commit'
         enableWrite()

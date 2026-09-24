@@ -804,6 +804,14 @@ def toolUpdateHubMesh(args) {
                     "the hub rejected the request (success:false)",
                     "The hub rejected the token store. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId and that the token was read from that PEER via its own hub_get_hub_mesh(include_token=true).")
         }
+        if (!(postResult instanceof Map)) {
+            // Non-null, non-Map JSON (e.g. a parsed List or scalar): not this endpoint's proven success
+            // shape (a Map). Treat the write outcome as UNKNOWN and fail-closed rather than record the token.
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned an unexpected JSON shape (not a Map)", null)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub returned an unexpected JSON response shape; whether the token was stored is unknown",
+                    "The response was not the expected object shape, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying.")
+        }
         applied << "peer_token"
     }
 
