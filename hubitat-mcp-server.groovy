@@ -4088,7 +4088,9 @@ private boolean _isProtocolValidation(String message) {
 // report scoped by nativeAppId can find the retained error; the arguments themselves never do.
 private Map _toolLogDetails(reactiveToolName, toolName, args, Map extra = [:]) {
     def details = [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]
-    def appId = args instanceof Map ? (args.appId ?: args.nativeAppId) : null
+    // A gateway call arrives as the envelope {tool, args}; the leaf's own arguments sit inside it.
+    def leafArgs = (reactiveToolName != toolName && args instanceof Map && args.args instanceof Map) ? args.args : args
+    def appId = leafArgs instanceof Map ? (leafArgs.appId ?: leafArgs.nativeAppId) : null
     if (appId != null && appId.toString()) details.appId = appId.toString()
     return details + extra
 }

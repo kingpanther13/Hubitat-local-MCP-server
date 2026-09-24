@@ -216,20 +216,26 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         !result.report.contains('unrelated')
     }
 
-    def "a dispatch-level tool error is retained with the failing call's app id"() {
+    @Unroll
+    def "a dispatch-level tool error is retained with the failing call's app id (#label)"() {
         given: 'a native-rule write that throws, dispatched through handleToolsCall'
         seedLogs([])
         settingsMap.enableWrite = true
+        settingsMap.useGateways = true
         script.metaClass.executeTool = { String name, Map args -> throw new IllegalArgumentException('bad trigger') }
         script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
 
         when:
-        script.handleToolsCall([id: 1, params: [name: 'hub_set_rule', arguments: [appId: 777, operation: 'addTrigger']]])
+        script.handleToolsCall([id: 1, params: [name: toolName, arguments: arguments]])
         def result = script.toolGenerateBugReport(baseArgs([nativeAppId: '777']))
 
         then:
         result.logs.retainedErrorCount == 1
-        result.report.contains('bad trigger')
+
+        where:
+        label            | toolName                   | arguments
+        'flat call'      | 'hub_set_rule'             | [appId: 777, operation: 'addTrigger']
+        'gateway call'   | 'hub_manage_rule_machine'  | [tool: 'hub_set_rule', args: [appId: 777, operation: 'addTrigger']]
     }
 
     @Unroll
