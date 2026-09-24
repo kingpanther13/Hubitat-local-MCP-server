@@ -2184,6 +2184,18 @@ class TestRunner:
         )
 
     @test("infrastructure")
+    def test_hub_get_info_model_is_hardware_model(self) -> None:
+        # issue #466: model must be the real hardware model string (e.g. "C-8 Pro") from
+        # /hub/details/json, NOT the internal platform id hardwareID ("000D" on every hub).
+        # Robust to whatever hub CI runs on: assert model is a non-empty string that is not "000D",
+        # and that the raw id is now surfaced separately under platformHardwareId.
+        info = self.client.call_tool("hub_get_info", {})
+        model = info.get("model")
+        assert isinstance(model, str) and model.strip(), f"model not a non-empty string: {model!r}"
+        assert model != "000D", "model still reports the internal hardwareID instead of the hardware model"
+        assert "platformHardwareId" in info, "platformHardwareId not surfaced by hub_get_info"
+
+    @test("infrastructure")
     def test_server_discovery(self) -> None:
         result = self.client.discover()
         assert "serverInfo" in result, f"Missing serverInfo in discovery response: {list(result.keys())}"

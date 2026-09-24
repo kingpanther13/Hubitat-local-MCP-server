@@ -9741,6 +9741,8 @@ Creates a device from a driver TYPE id (the `id` from `hub_list_drivers(include=
 Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime, memory, temperature, DB size, MCP stats, security/toggle settings), it always returns three extra fields and supports two optional deep-dive flags. Use it for health checks, version lookups, or when triaging hub performance.
 
 **Always returned (regardless of the flags below):**
+- `model` — the hub HARDWARE model string (e.g. "C-7", "C-8 Pro"), read from /hub/details/json (hardwareVersion). Null if that read fails or the field is missing — never a placeholder.
+- `platformHardwareId` — the raw internal platform id (e.g. "000D"), which is NOT the model (it is identical across different hardware, so do not treat it as one).
 - `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it).
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
 - `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
