@@ -1056,11 +1056,11 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```json
 {
   "setup_prompt": "Call hub_get_logs with mode BAT_retained_error_invalid_mode and confirm it returns a validation error. Do not clear logs.",
-  "test_prompt": "Generate a bug report with diagnostics that I can submit to GitHub."
+  "test_prompt": "Generate a bug report with diagnostics that I can submit to GitHub, then generate the same report again in public privacy mode."
 }
 ```
 
-**Expected**: Calls `hub_report_issue` directly (flat core tool). Without a supplied failingTool, the report titles itself with `hub_get_logs` from the newest retained error (`failingToolSource: "retained_error"`), keeps the logs unscoped, and reports a positive `logs.retainedErrorCount`. In private mode the Retained Server Errors section precedes native history and contains the invalid-mode marker; public mode withholds raw error text. No existing device or rule is changed.
+**Expected**: Calls `hub_report_issue` directly (flat core tool) twice. Without a supplied failingTool, both reports title themselves with `hub_get_logs` from the newest retained error (`failingToolSource: "retained_error"`), keep the logs unscoped, and report a positive `logs.retainedErrorCount`. The private report's Retained Server Errors section precedes native history and contains the invalid-mode marker; the public report withholds that raw error text. No existing device or rule is changed.
 
 ### T53 — Discover hub_get_custom_rule diagnostics (hub_read_rules)
 
