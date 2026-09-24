@@ -366,6 +366,32 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.success == true
         result.meshShared == false
         result.meshShareConfirmed == true   // absent from sharedHubVariables == unshared
+
+        and: 'unshare (#448) carries the stale-copy / unlink-first caution'
+        result.note != null
+        result.note.contains('unlink the copy on those hubs first')
+        result.note.contains('STALE local copy')
+    }
+
+    def "hub_set_variable share (mesh_shared=true) does NOT carry the unshare caution; unshare does"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/removeVarFromMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[{"name":"vacationMode"}]}' }
+
+        when: 'share'
+        def shared = script.toolSetVariable([name: 'vacationMode', mesh_shared: true])
+
+        then: 'no unshare caution on the share path'
+        !(shared.note?.contains('unlink the copy on those hubs first'))
+
+        when: 'unshare (read-back still shows present -> propagation-lag note also present)'
+        def unshared = script.toolSetVariable([name: 'vacationMode', mesh_shared: false])
+
+        then: 'the caution is appended, and the pre-existing lag note is preserved alongside it'
+        unshared.note.contains('unlink the copy on those hubs first')
+        unshared.note.contains('propagation lag')
     }
 
     def "hub_set_variable applies BOTH a value write and a mesh share in one call"() {
@@ -1451,6 +1477,193 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         registry | note
         true     | "true"
         null     | "unreadable"
+    }
+
+    // -------- toolDeleteHubVariable Hub Mesh linked-mirror unlink (#448) --------
+    // A linked mirror is a normal local hub var whose DECORATED name ("<src> on <peer>") is what the
+    // caller passes. The hub's generic in-use registry ALWAYS marks a mirror in-use (the mesh link
+    // itself), so unlink keys on the mesh row's inUseByApps, not the registry. Mesh rows come from
+    // /hub2/hubMeshJson localLinkedHubVariables[].
+
+    def "hub_delete_variable unlinks a Hub Mesh mirror (inUseByApps=false) without force, bypassing the generic in-use guard"() {
+        given:
+        enableWrite()
+
+        and: 'the mirror exists pre-flight, gone after the wizard commits'
+        def calls = 0
+        script.metaClass.getGlobalVar = { String n ->
+            calls++
+            calls == 1 ? [name: 'porchTemp on Peer', type: 'Number', value: 21, deviceId: null, attribute: null] : null
+        }
+
+        and: 'the platform in-use registry says the mirror IS in use (the mesh link registration)'
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+
+        and: 'the mesh row reports NO real consuming app'
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', inUseByApps: false, type: 'Number']
+            ]])
+        }
+
+        and: 'wizard primitives recorded'
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'porchTemp on Peer', confirm: true])
+
+        then: 'the delete actually happened (wizard ran) despite the registry marking it in-use and no force'
+        buttonClicks == ['porchTemp on Peer', 'delConfirm']
+        result.success == true
+        result.deleted == true
+        result.unlinked == true
+        result.source == 'hub'
+
+        and: 'the message frames it as an unlink: local copy removed, peer untouched'
+        result.note.contains("Unlinked the Hub Mesh variable 'porchTemp on Peer'")
+        result.note.contains("removed this hub's local copy")
+        result.note.contains('untouched')
+    }
+
+    def "hub_delete_variable refuses to unlink a Hub Mesh mirror in real use (inUseByApps=true) without force, and names both facts"() {
+        given:
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'porchTemp on Peer', type: 'Number', value: 21, deviceId: null, attribute: null] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', inUseByApps: true, type: 'Number']
+            ]])
+        }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+
+        when:
+        script.toolDeleteHubVariable([name: 'porchTemp on Peer', confirm: true])
+
+        then: 'refused before any wizard click'
+        def ex = thrown(IllegalArgumentException)
+        buttonClicks.isEmpty()
+
+        and: 'the message names the linked-mirror nature AND that real apps break'
+        ex.message.contains('linked mirror')
+        ex.message.contains('untouched')
+        ex.message.contains('real app')
+        ex.message.contains('force=true')
+    }
+
+    def "hub_delete_variable refuses to unlink a Hub Mesh mirror with UNKNOWN inUseByApps without force (unknown = cautious)"() {
+        given: 'a mirror row missing the inUseByApps flag -- usage cannot be confirmed'
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'porchTemp on Peer', type: 'Number', value: 21, deviceId: null, attribute: null] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', type: 'Number']
+            ]])
+        }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+
+        when:
+        script.toolDeleteHubVariable([name: 'porchTemp on Peer', confirm: true])
+
+        then: 'refused before any wizard click; message names the mirror nature and the could-not-confirm reason'
+        def ex = thrown(IllegalArgumentException)
+        buttonClicks.isEmpty()
+        ex.message.contains('linked mirror')
+        ex.message.contains('could not confirm')
+        ex.message.contains('force=true')
+    }
+
+    def "hub_delete_variable force=true unlinks a Hub Mesh mirror even when a real app uses it (inUseByApps=true)"() {
+        given:
+        enableWrite()
+        def calls = 0
+        script.metaClass.getGlobalVar = { String n ->
+            calls++
+            calls == 1 ? [name: 'porchTemp on Peer', type: 'Number', value: 21, deviceId: null, attribute: null] : null
+        }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', inUseByApps: true, type: 'Number']
+            ]])
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'porchTemp on Peer', confirm: true, force: true])
+
+        then:
+        result.success == true
+        result.deleted == true
+        result.unlinked == true
+    }
+
+    def "hub_delete_variable does NOT relax the in-use guard for an ordinary (non-mirror) hub var"() {
+        given: 'an ordinary hub var the registry marks in-use, and a mesh list with no matching mirror'
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'shared', type: 'Number', value: 5, deviceId: null, attribute: null] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', inUseByApps: false, type: 'Number']
+            ]])
+        }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+
+        when:
+        script.toolDeleteHubVariable([name: 'shared', confirm: true])
+
+        then: 'unchanged behaviour: refuses on the generic registry guard, no clicks'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('registered as in use')
+        ex.message.contains('force=true')
+        buttonClicks.isEmpty()
+    }
+
+    def "hub_delete_variable falls back to the generic guard when the mesh JSON is unreadable"() {
+        given: 'an in-use hub var whose mesh JSON cannot be read (so mirror status is unknown)'
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'shared', type: 'Number', value: 5, deviceId: null, attribute: null] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+
+        when:
+        script.toolDeleteHubVariable([name: 'shared', confirm: true])
+
+        then: 'existing in-use guard applies (safe default), no clicks'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('registered as in use')
+        buttonClicks.isEmpty()
     }
 
     @spock.lang.Unroll

@@ -11474,6 +11474,10 @@ class TestRunner:
             un = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
             assert isinstance(un, dict) and un.get("success") is True and un.get("meshShared") is False, \
                 f"mesh unshare did not succeed: {un}"
+            # #448 fix (b): the unshare result must carry the stale-copy / unlink-first caution (the owner
+            # hub cannot see who linked its var). Non-peer-dependent -- fires on every successful unshare.
+            assert "unlink the copy on those hubs first" in str(un.get("note") or ""), \
+                f"unshare is missing the stale-copy caution note: {un}"
             deadline = time.time() + 10.0
             while time.time() < deadline and _is_shared():
                 time.sleep(1.0)

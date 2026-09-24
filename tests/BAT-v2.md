@@ -568,6 +568,18 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Reads `hub_get_hub_mesh` to find the peer's `hubId` + `deviceId` in `availableLinkedDevices[]`, then calls `hub_create_device` with `mesh_source_hub_id` + `mesh_source_device_id` + `confirm: true` (NOT `deviceTypeId`). Returns the new local `deviceId` (resolved by a `localLinkedDevices` diff; a read-back lag returns a `warning`, not a failure). The variable analogue is `hub_create_variable` with `mesh_source_hub_id` + `mesh_source_name`. Validation (an `isError` result before any hub call): passing both `deviceTypeId` and the mesh pair, or only one half of the pair, is rejected ("not both" / "BOTH mesh_source_..."). If the peer has UI login security, its mesh token must be stored first via `hub_update_hub_mesh(peer_hub_id, peer_token)` or the link no-ops. Unlink a linked device (local proxy only; peer source untouched) with `hub_delete_device`.
 
+### T14m — unlink a Hub Mesh linked variable (hub_delete_variable, mesh-aware)
+
+> **Conditional** — only runnable when this hub actually has a linked mirror (`hub_get_hub_mesh` `localLinkedHubVariables[]` non-empty). Creating one needs a live peer sharing a variable, so on a hub without a peer just verify the ordinary-variable guard is unchanged (T14k / T224 already cover the non-mesh delete path). Never assume the CI/e2e hub has a peer.
+
+```json
+{
+  "test_prompt": "Stop linking the variable 'porchTemp on GarageHub' that my other hub shares — remove it from this hub."
+}
+```
+
+**Expected**: Recognizes the DECORATED local name (`"<sourceVar> on <peerName>"`) as a Hub Mesh linked mirror and calls `hub_delete_variable` with `name` + `confirm: true`. When nothing real on this hub uses the mirror (`localLinkedHubVariables[]` row `inUseByApps:false`) it unlinks WITHOUT `force` — even though the hub's generic in-use registry marks the mirror in use (that registration is the mesh link itself, not a consumer) — and returns `{success:true, deleted:true, unlinked:true, source:"hub"}` with a `note` saying only this hub's local copy was removed and the source variable on the peer is untouched. When a real local app uses the mirror (`inUseByApps:true`) the unforced call is refused (`isError`) with a message naming BOTH that it is a linked mirror (peer untouched) AND that real apps will break; `force: true` unlinks anyway. An ordinary (non-mirror) in-use hub var is unchanged — still refused without `force` on the generic registry guard. Teardown ORDER: unlink on the linking hub(s) first, THEN unshare on the owner (`hub_set_variable(mesh_shared=false)`) — unsharing first strands the mirrors, and the unshare result carries a caution saying so. Confirm + a recent backup are still required (`requireDestructiveConfirm`).
+
 ### T15 — hub_list_modes
 
 ```json
@@ -2675,6 +2687,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Share a device / variable over Hub Mesh | `hub_update_device` (meshEnabled) / `hub_set_variable` (mesh_shared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
 | Link a peer hub's shared device / variable | `hub_create_device` / `hub_create_variable` (mesh_source_*) | hub_manage_devices | Creates a local proxy; needs the peer's mesh token if it has UI login security |
 | Unlink a Hub Mesh linked device | `hub_delete_device` | hub_manage_destructive_ops | Removes only the local link; the peer's source device is untouched |
+| Unlink a Hub Mesh linked variable | `hub_delete_variable` (decorated `"<var> on <peer>"` name) | hub_manage_variables | Removes only the local mirror; peer source untouched; `force` only if a real local app uses it (`inUseByApps`) |
 | Install app | `hub_create_app` | hub_manage_code | Modifies hub code |
 | Install driver | `hub_create_driver` | hub_manage_code | Modifies hub code |
 | Update app code | `hub_update_app` | hub_manage_code | Modifies production code |

@@ -915,6 +915,17 @@ def toolSetVariable(Map args) {
         } else {
             result.meshShareConfirmed = null
         }
+        if (!share) {
+            // Unshare caution (#448): the owner hub cannot see WHICH peers linked this variable (its
+            // sharedHubVariables row is just {name,type}), so any hub that linked it keeps a STALE local
+            // copy after unsharing -- last value, no orphan flag, and a consuming app there keeps reading
+            // it. Warn, never block. Clean teardown order is: unlink the copy on the linking hub(s) first
+            // (hub_delete_variable there), THEN unshare here.
+            def caution = ("Unshared over Hub Mesh: this hub cannot see which peers linked '${name}', and any hub that linked it " +
+                "keeps a STALE local copy (its last value, no orphan flag; a consuming app there keeps reading it). For a clean " +
+                "teardown, unlink the copy on those hubs first (hub_delete_variable there), then unshare here.").toString()
+            result.note = result.note ? "${result.note} ${caution}".toString() : caution
+        }
     }
     return result
 }
@@ -1005,14 +1016,47 @@ def toolDeleteHubVariable(args) {
     // not MCP children, so ask the hub itself. Unreadable means unknown, not unused.
     def hubVarsAppId = null
     Boolean platformInUse = null
+    def linkedMirrorRow = null
     if (isHubVar) {
+        // Hub Mesh linked-mirror detection (#448): a linked mirror is a normal local hub variable
+        // whose display name is DECORATED ("<sourceVar> on <peer>") -- that decorated name is exactly
+        // what the caller passes, so match localLinkedHubVariables[].name against varName here (unlike
+        // the create/link read-back, which keys on sourceVarName+sourceHubId). Deleting a mirror
+        // UNLINKS it: only this hub's local copy goes, the peer's source variable is untouched. The
+        // platform ALWAYS registers the mesh link itself as an in-use consumer, so the generic in-use
+        // guard below would force-gate every unlink; the row's inUseByApps is the accurate signal for
+        // a REAL consuming app. null from the helper = mesh JSON unreadable -> can't tell, so leave
+        // linkedMirrorRow null and fall through to the generic guard (safe default).
+        def meshRows = _meshLocalLinkedHubVars()
+        if (meshRows != null) {
+            linkedMirrorRow = meshRows.find { it instanceof Map && it.name?.toString() == varName }
+        }
         try {
             hubVarsAppId = _findHubVariablesAppId()
             platformInUse = _hubVarPlatformInUse(hubVarsAppId, varName)
         } catch (Exception e) {
             logDebug("hub_delete_variable: platform in-use check failed: ${e.class.simpleName}: ${e.message}")
         }
-        if (platformInUse != false && !force) {
+        if (linkedMirrorRow != null) {
+            def srcHub = linkedMirrorRow.sourceHubName?.toString() ?: 'the source hub'
+            // Relax the force-gate ONLY on a POSITIVE inUseByApps==false. inUseByApps==true means a
+            // real app depends on the mirror; null/absent means we couldn't confirm -- both stay
+            // cautious and require force (codebase convention: unknown = treat as in-use). The generic
+            // in-use registry always reads "true" for a mirror (the mesh link itself), so inUseByApps
+            // is the accurate signal; a clean unlink still removes only the local copy (peer untouched).
+            if (linkedMirrorRow.inUseByApps != false && !force) {
+                String why = (linkedMirrorRow.inUseByApps == true) ?
+                    "But at least one real app on this hub uses the mirror and will break when it is removed." :
+                    "This hub could not confirm whether a real app uses the mirror, so it is treated as in use."
+                throw new IllegalArgumentException(
+                    "Hub Variable '${varName}' is a Hub Mesh linked mirror of '${linkedMirrorRow.sourceVarName}' on ${srcHub}: " +
+                    "deleting it UNLINKS the mirror -- only this hub's local copy is removed, the source variable on ${srcHub} is untouched. " +
+                    "${why} Update or remove the consuming apps first, or pass force=true to unlink anyway.")
+            }
+            // Clean unlink (inUseByApps==false) or forced: bypass the generic in-use force-gate -- that
+            // refusal is only the mesh-link registration, not a real consumer. requireDestructiveConfirm
+            // (confirm + recent backup) still applied above; force is NOT required for the clean case.
+        } else if (platformInUse != false && !force) {
             throw new IllegalArgumentException(platformInUse ?
                 "Hub Variable '${varName}' is registered as in use by at least one app (Settings > Hub Variables shows it in orange; click its name to see which). Deleting it breaks those apps, which is why the hub's own delete prompt warns. Update or remove the consuming apps first, or pass force=true to delete anyway." :
                 "Could not read the hub's in-use registry for Hub Variable '${varName}', so whether an app uses it is unknown. Check Settings > Hub Variables (an in-use variable is shown in orange), then retry, or pass force=true to delete anyway.")
@@ -1074,19 +1118,32 @@ def toolDeleteHubVariable(args) {
             def cc = consumers.size()
             consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
         }
-        def registryNote = (platformInUse != false) ? " (forced; hub in-use registry: ${platformInUse == null ? 'unreadable' : 'true'})" : ""
-        mcpLog("warn", "developer-mode", "hub_delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${registryNote}${consumerNote}")
+        // Mesh unlink framing (#448): for a linked mirror the platform in-use registry always reads
+        // "true" (the mesh link itself), so suppress the generic forced-registry note and record the
+        // unlink instead.
+        boolean unlinked = (linkedMirrorRow != null)
+        String unlinkNote = null
+        String meshNote = ""
+        if (unlinked) {
+            def srcHub = linkedMirrorRow.sourceHubName?.toString() ?: 'the source hub'
+            unlinkNote = "Unlinked the Hub Mesh variable '${varName}' — removed this hub's local copy; the source variable on ${srcHub} is untouched.".toString()
+            meshNote = " (mesh unlink; source '${linkedMirrorRow.sourceVarName}' on ${srcHub} untouched)"
+        }
+        def registryNote = (platformInUse != false && !unlinked) ? " (forced; hub in-use registry: ${platformInUse == null ? 'unreadable' : 'true'})" : ""
+        mcpLog("warn", "developer-mode", "hub_delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${registryNote}${consumerNote}${meshNote}")
         return [
             success: true,
             name: varName,
             deleted: true,
+            unlinked: unlinked ?: null,
             source: "hub",
             type: previousType,
             previousValue: previousValue,
             connectorDeleted: hadConnector,
             brokenConsumers: consumers ?: null,
             platformInUse: platformInUse,
-            coverageNote: _hubVarDeleteCoverageNote()
+            coverageNote: _hubVarDeleteCoverageNote(),
+            note: unlinkNote
         ]
     }
 
