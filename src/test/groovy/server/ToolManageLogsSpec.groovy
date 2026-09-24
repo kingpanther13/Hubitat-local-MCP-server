@@ -2,6 +2,7 @@ package server
 
 import groovy.json.JsonOutput
 import spock.lang.Shared
+import spock.lang.Unroll
 import support.TestChildApp
 import support.TestDevice
 import support.TestLocation
@@ -1398,10 +1399,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
     }
 
-    def "a LAN request with lanBudgetMs set also uses the background fetch, with the LAN observe window"() {
-        given: 'LAN budget 10000 hits the 6000 LAN cap, distinct from the cloud cap of 4500'
+    @Unroll
+    def "a LAN request with lanBudgetMs=#lanBudget uses the background fetch and waits #expectedWait"() {
+        given: 'budget - 1500 below the 6000 LAN cap (distinct from the 4500 cloud cap), the cap above it'
         settingsMap.enableRead = true
-        settingsMap.lanBudgetMs = 10000
+        settingsMap.lanBudgetMs = lanBudget
         def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
         hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(2) }
         def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
@@ -1418,10 +1420,16 @@ class ToolManageLogsSpec extends ToolSpecBase {
         script._isCloudRequest() == false
         script._mrtrReadContinuationActive() == true
         first.status == 'in_progress'
-        waitedMs.get() == 6000L
+        waitedMs.get() == expectedWait
         runInMillisCalls.size() == 1
         fetches.get() == 1
         second.scheduledJobs.count == 2
+
+        where:
+        lanBudget | expectedWait
+        6000      | 4500L
+        7499      | 5999L
+        10000     | 6000L
     }
 
     def "a failed background /logs/json fetch is reported as an error result with a retry already scheduled"() {

@@ -37,7 +37,7 @@ class DebugLogRingSpec extends ToolSpecBase {
         ['debug', 'info', 'warn'].each { script.mcpLog(it, 'server', 'ordinary log') }
 
         then:
-        !stateMap.containsKey('reportErrors')
+        !atomicStateMap.containsKey('reportErrors')
 
         when:
         (1..12).each { n ->
@@ -48,18 +48,31 @@ class DebugLogRingSpec extends ToolSpecBase {
         reload()
 
         then:
-        stateMap.reportErrors.size() == 10
-        stateMap.reportErrors.first().message == 'failure 3 access_token=<redacted>'
-        stateMap.reportErrors.last().details == [tool: 'hub_set_rule', appId: '123']
-        stateMap.reportErrors.last().ruleId == '42'
-        !JsonOutput.toJson(stateMap.reportErrors).contains('private-')
-        !JsonOutput.toJson(stateMap.reportErrors).contains('stackTrace')
+        atomicStateMap.reportErrors.size() == 10
+        atomicStateMap.reportErrors.first().message == 'failure 3 access_token=<redacted>'
+        atomicStateMap.reportErrors.last().details == [tool: 'hub_set_rule', appId: '123']
+        atomicStateMap.reportErrors.last().ruleId == '42'
+        !JsonOutput.toJson(atomicStateMap.reportErrors).contains('private-')
+        !JsonOutput.toJson(atomicStateMap.reportErrors).contains('stackTrace')
+        atomicStateMap.reportErrors.every { it.generation == atomicStateMap.debugLogGeneration }
 
         when:
         script.toolClearDebugLogs([:])
 
         then:
-        stateMap.reportErrors == []
+        atomicStateMap.reportErrors == []
+    }
+
+    def "a record retained under an earlier clear generation is dropped on read"() {
+        given: 'an error retained, then a clear that a slow request did not observe'
+        script.mcpLog('error', 'server', 'before the clear', null, [details: [tool: 'hub_set_rule']])
+        def stale = atomicStateMap.reportErrors
+        script.toolClearDebugLogs([:])
+        atomicStateMap.reportErrors = stale + [stale[0] + [message: 'late write from the old generation']]
+        script.mcpLog('error', 'server', 'after the clear', null, [details: [tool: 'hub_set_rule']])
+
+        expect:
+        script._reportErrorSnapshot()*.message == ['after the clear']
     }
 
     def "retention scrubs quoted secrets before truncating the message"() {
@@ -67,8 +80,8 @@ class DebugLogRingSpec extends ToolSpecBase {
         script.mcpLog('error', 'server', ('x' * 475) + ' password="' + ('secret' * 100) + '"')
 
         then:
-        stateMap.reportErrors.last().message.endsWith('password="<redacted>"')
-        !stateMap.reportErrors.last().message.contains('secret')
+        atomicStateMap.reportErrors.last().message.endsWith('password="<redacted>"')
+        !atomicStateMap.reportErrors.last().message.contains('secret')
     }
 
     def "retained errors cap every variable string independently"() {
@@ -77,7 +90,7 @@ class DebugLogRingSpec extends ToolSpecBase {
             [details: [tool: 't' * 400, appId: 'a' * 400]])
 
         then:
-        def entry = stateMap.reportErrors.last()
+        def entry = atomicStateMap.reportErrors.last()
         entry.message.size() == 500
         entry.component.size() == 80
         entry.ruleId.size() == 80
@@ -89,14 +102,16 @@ class DebugLogRingSpec extends ToolSpecBase {
         given:
         script.initDebugLogs()
         def peer = newCompiledScriptInstance(app: loggingApp,
-            state: { -> throw new IllegalStateException('unavailable state') })
+            atomicState: { -> throw new IllegalStateException('unavailable state') })
 
         when:
         peer.mcpLog('error', 'server', 'original failure')
 
         then:
         noExceptionThrown()
-        script.log.messages.any { it.startsWith('warn:') && it.contains('could not be retained') }
+        // Groovy 3 surfaces the IllegalStateException itself; Groovy 2.5 wraps it in an
+        // InvocationTargetException. Either way the warning names the cause.
+        script.log.messages.any { it.startsWith('warn:') && (it =~ /could not be retained \(\w+Exception: .*\); the original error still follows/) }
         script.log.messages.any { it.startsWith('error:') && it.contains('original failure') }
     }
 

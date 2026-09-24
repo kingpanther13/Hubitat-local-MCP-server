@@ -1404,19 +1404,29 @@ private Map _toolSetVisualRuleImpl(args) {
         def after = _vrbDetect(appId)
         def nameOk = after != null && _vrbNameMatches(after, requestedName)
         def pauseOk = !hasPaused || ((after?.data?.rulePaused == true) == paused)
+        // Same rule as _vrbApplySave: a refused pause fails the write only when a real change
+        // was asked for.
         def pauseChangeRequested = hasPaused && detected.data.rulePaused != paused
-        def pauseRefused = pauseResult?.success == false && pauseChangeRequested
+        boolean pauseEndpointFailed = pauseResult?.success == false
+        String pauseErrorSuffix = pauseResult?.error ? " (${pauseResult.error})" : ""
+        def pauseRefused = pauseEndpointFailed && pauseChangeRequested
+        def pauseRefusedIdempotent = pauseEndpointFailed && !pauseChangeRequested && pauseOk
         def verified = nameOk && pauseOk && !pauseRefused
         def out = [success: verified, appId: appId, format: detected.format, verified: verified,
                    name: after?.data?.name, rulePaused: after?.data?.rulePaused == true]
-        if (pauseResult?.success == false && pauseOk && !pauseChangeRequested) {
-            out.note = "The hub refused the pause request${pauseResult.error ? " (${pauseResult.error})" : ""}, but the read-back confirms the rule is already ${paused ? 'paused' : 'running'}, so nothing needed changing.".toString()
+        if (pauseRefusedIdempotent) {
+            out.note = "The hub refused the pause request${pauseErrorSuffix}, but the read-back confirms the rule is already ${paused ? 'paused' : 'running'}, so nothing needed changing.".toString()
         }
         if (!verified) {
             // This tail is also reached by a rename to the rule's CURRENT name (nothing to re-save).
-            out.error = pauseRefused ? "Pause/resume failed: the hub refused the requested state change." :
-                    "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
-            out.note = (pauseResult?.success == false ? "The pause endpoint reported failure${pauseResult.error ? " (${pauseResult.error})" : ""}. " : "") +
+            if (pauseRefused && pauseOk) {
+                out.error = "Pause/resume failed: the hub refused the pause request${pauseErrorSuffix}, although the read-back shows the requested state."
+            } else if (pauseRefused) {
+                out.error = "Pause/resume failed: the hub refused the pause request${pauseErrorSuffix}."
+            } else {
+                out.error = "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
+            }
+            out.note = (pauseEndpointFailed ? "The pause endpoint reported failure${pauseErrorSuffix}. " : "") +
                     "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
             mcpLog("warn", "vrb", "${name ? 'Rename' : 'Pause'} read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk})")
         }

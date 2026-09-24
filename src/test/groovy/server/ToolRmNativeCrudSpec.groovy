@@ -10723,7 +10723,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> targetGets++; JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", error: "Cannot invoke method startsWith() on null object", sections: []]]) }
         def navigated = false
         hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, committed && navigated ? [[name: 'actType.1', value: 'messageActs']] : [])
+            statusJson(100, committed && navigated ? [[name: committedSetting, value: 'x']] : [])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.pauseExecution = { Long ms -> }
@@ -10751,17 +10751,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: 'a page RM could not build is a FAILED op -- an agent branching on success must not write into it'
         result.success == false
 
-        and: 'the hint says the schema is empty, because this page returned nothing at all'
+        and: 'the hint reports commit evidence, or the empty-schema cause when nothing committed'
         if (committed) {
-            assert result.commitSignal == 'action_committed'
-            assert result.repairHints.any { it.contains('operation committed') && it.contains('Do not repeat') }
+            assert result.commitSignal == commitSignal
+            assert result.repairHints.any { it.contains("operation committed (${commitSignal})") && it.contains('Do not repeat') }
             assert !result.repairHints.any { it.contains('not because the op committed') }
         } else {
-            assert result.repairHints.any { it.contains("its schema is empty because RM could not build it") }
+            assert result.commitSignal == 'schema_empty_no_commit_check_health'
+            assert result.repairHints.any { it.contains('its schema is empty because RM could not build it, and no new action or trigger was observed') }
         }
 
         where:
-        committed << [false, true]
+        committed | committedSetting | commitSignal
+        false     | null             | null
+        true      | 'actType.1'      | 'action_committed'
+        true      | 'tCapab1'        | 'trigger_committed'
     }
 
     def "walkStep drive carries the page forward: a step omitting page inherits the navigate target"() {

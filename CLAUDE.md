@@ -10,10 +10,10 @@ This file is for AI agents. Human contributors follow `.github/pull_request_temp
 ./gradlew test                     # full Spock suite (~1 min)
 ./gradlew test --tests "<spec>"    # single spec
 python tests/sandbox_lint.py       # Groovy sandbox lint
-./gradlew -p ci/groovy24-parse parse24  # Hub Groovy syntax and closure-parameter guard
+./gradlew -p ci/groovy24-parse parse24  # Hub Groovy 2.4 syntax, closure-parameter and blocked-class guard
 ```
 
-Run all three before pushing, or use the corresponding GitHub lanes when local tests are prohibited. Python lint does not run the AST closure-parameter guard. CI runs the same checks.
+Run all three before pushing, or rely on the corresponding CI lanes. Python lint does not run the AST closure-parameter guard. CI runs the same checks.
 
 ## Code style
 
@@ -189,7 +189,7 @@ The watchdog itself is **not** deployed by e2e. **e2e never writes to the watchd
 
 A PR runs **one of two lanes**, chosen by whether a full-run label (`release:patch` / `release:minor` / `release:major` / `e2e:full`) is on the PR. The `gate` step in `hub-e2e.yml` decides it; the lane is printed in the run summary.
 
-- **Focused** (no label): runs only the e2e `@test` groups AFFECTED by the changed files — the `file → group` map in `.github/scripts/e2e_scope.py` — plus a smoke core (`infrastructure` + `protocol`). Fast iteration signal. The job's own check is named **`e2e (run)`**.
+- **Focused** (no label): runs only the e2e `@test` groups AFFECTED by the changed files — the `file → group` map in `.github/scripts/e2e_scope.py` — plus a smoke core (`infrastructure` + `protocol` + `error_verification`). Fast iteration signal. The job's own check is named **`e2e (run)`**.
 - **Full** (label on): runs the WHOLE suite. The `e2e (run)` check shows its result.
 
 The **required merge gate is a posted commit status named `Full e2e (runs with label)`** (the "Post e2e gate status" step), NOT the job's own check (`e2e (run)`) — because a *skipped* required check counts as PASS and would let a focused-only PR merge. So while iterating, the gate is posted **PENDING (yellow)**, which HOLDS the merge without being red; adding a `release:*` / `e2e:full` label runs the full lane and posts the gate success/failure. **Only a green FULL run is mergeable.** Docs-only / no-secret PRs post the gate success without running.

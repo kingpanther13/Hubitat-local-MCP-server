@@ -270,7 +270,8 @@ private Map _validateMcpDeviceScope(scopeValue) {
 
     // ATOMIC validation: for replace/add, every requested id must resolve to a real hub device
     // (validated against the hub-wide device inventory -- the only view of every device,
-    // authorized or not). Validate ALL before any write so a single bad id can't leave a
+    // authorized or not; the one exception is an already-authorized id on an add against an
+    // incomplete inventory, below). Validate ALL before any write so a single bad id can't leave a
     // half-applied scope. remove does NOT validate membership BECAUSE removing an id that isn't
     // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
     // fetch there would block a legitimate cleanup of a since-deleted device.
@@ -296,8 +297,9 @@ private Map _validateMcpDeviceScope(scopeValue) {
         }
         def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
         def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
-        // A degraded read cannot revoke existing authorization during an idempotent add.
-        // A complete inventory still detects stale ids, including previously authorized ones.
+        // An incomplete inventory must not refuse an add over ids that are already authorized
+        // (re-adding them is a no-op). A complete inventory still rejects stale ids, including
+        // authorized ones.
         if (inventory.idsComplete == false && mode == "add") {
             unknown = unknown.findAll { !currentSet.contains(it) }
         }

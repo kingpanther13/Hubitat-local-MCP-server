@@ -12155,11 +12155,11 @@ class TestRunner:
     @test("system_tools")
     def test_report_issue_retains_tool_error(self) -> None:
         # Invalid read arguments fail before touching any device or rule.
-        marker = f"BAT_407_invalid_mode_{time.time_ns()}"
+        marker = f"BAT_retained_error_invalid_mode_{time.time_ns()}"
         try:
             self.client.call_tool("hub_get_logs", {"mode": marker})
-        except (McpError, McpToolError):
-            pass
+        except (McpError, McpToolError) as exc:
+            assert marker in str(exc), f"expected the invalid-mode validation error, got: {exc}"
         else:
             raise AssertionError("invalid log mode should produce a tool error")
         result = self.client.call_tool("hub_report_issue", {
@@ -12171,8 +12171,11 @@ class TestRunner:
         assert result.get("failingTool") == "hub_get_logs", result
         assert result.get("logs", {}).get("retainedErrorCount", 0) >= 1, result
         report = result.get("report") or ""
-        retained = report.split("## Retained Server Errors", 1)[1].split("## Recent Error/Warning Logs", 1)[0]
+        _, found, after = report.partition("## Retained Server Errors")
+        assert found, f"report has no Retained Server Errors section: {report!r}"
+        retained = after.partition("## Recent Error/Warning Logs")[0]
         assert marker in retained, retained
+        assert result.get("failingToolSource") == "retained_error", result
 
     @test("system_tools")
     def test_hub_mesh_read(self) -> None:
@@ -12633,16 +12636,18 @@ class TestRunner:
                 "args": {"cursor": cursor},
             })
             current = page["scheduledJobs"]
-            assert current["count"] == len(current["jobs"]) <= 100
-            assert current["total"] >= current["count"]
-            for key in ("runningJobs", "hubActions"):
-                assert isinstance(page.get(key), dict), f"page {pages}: missing {key}: {page}"
+            assert current["count"] == len(current["jobs"]), \
+                f"page {pages}: scheduledJobs.count {current['count']} != len(jobs) {len(current['jobs'])}"
+            assert current["count"] <= 100, f"page {pages} holds {current['count']} jobs; page size is 100"
+            assert current["total"] >= current["count"], \
+                f"page {pages}: total {current['total']} < page count {current['count']}"
             page_same_snapshot = (page.get("snapshot") or {}).get("fetchedAt") == fetched_at
             same_snapshot = same_snapshot and page_same_snapshot
-            if page_same_snapshot:
-                assert page["runningJobs"] == first["runningJobs"]
-                assert page["hubActions"] == first["hubActions"]
-            seen.extend(page["scheduledJobs"]["jobs"])
+            for key in ("runningJobs", "hubActions"):
+                assert isinstance(page.get(key), dict), f"page {pages}: missing {key}: {page}"
+                if page_same_snapshot:
+                    assert page[key] == first[key], f"page {pages}: {key} must match page 1 within one snapshot"
+            seen.extend(current["jobs"])
             cursor = page.get("nextCursor")
         if same_snapshot:
             assert len(seen) == sj["total"], \

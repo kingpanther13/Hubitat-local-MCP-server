@@ -8979,12 +8979,19 @@ Map _rmWalkStep(Integer appId, Map spec) {
         // An error page that still returned inputs is a different animal from one that returned
         // nothing: only the second one explains an empty `after` schema.
         def emptyAfter = afterSchema.inputs.isEmpty() && afterSchema.hrefs.isEmpty()
-        def committed = commitSignal in ["action_committed", "trigger_committed"]
-        result.repairHints = (result.repairHints ?: []) + [((committed ?
-                "The operation committed (${commitSignal}), but the page '${page}' rendered with an error (${pageError}). Do not repeat the operation; repair the page before continuing." : emptyAfter ?
-                "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, and no new action or trigger was observed." :
-                "The page '${page}' rendered with an error (${pageError}) alongside its inputs, so what it shows may not reflect what RM stored.") +
-                " Enter the page the way the wizard does (the href or button on its parent page) rather than by name.").toString()]
+        String renderHint
+        if (commitSignal in ["action_committed", "trigger_committed"]) {
+            renderHint = "The operation committed (${commitSignal}), but the page '${page}' rendered with an error (${pageError}). Do not repeat the operation; repair the page before continuing."
+        } else if (commitSignal == "schema_empty_no_commit_check_health") {
+            // Only a click/navigate computes the commit signal, so only there can "nothing new
+            // was observed" be said.
+            renderHint = "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, and no new action or trigger was observed."
+        } else if (emptyAfter) {
+            renderHint = "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it."
+        } else {
+            renderHint = "The page '${page}' rendered with an error (${pageError}) alongside its inputs, so what it shows may not reflect what RM stored."
+        }
+        result.repairHints = (result.repairHints ?: []) + [renderHint + " Enter the page the way the wizard does (the href or button on its parent page) rather than by name."]
     }
     if (health.unreadable == true) {
         result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); the operation itself committed. Verify via hub_get_rule_health(${appId}).".toString()]

@@ -1076,6 +1076,24 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         'bare success=false'     | '{"success":false}'                    | 'pause endpoint returned success=false'
     }
 
+    def "pause-only refusal whose read-back already shows the requested state says so"() {
+        given: 'the rule is running; the hub refuses the pause, but the read-back reads paused'
+        enableWrite()
+        def state905 = [name: 'Hall light', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/905') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/905') { params -> json(state905) }
+        hubGet.register('/app/ruleBuilderPause/905/true') { params -> state905.rulePaused = true; '{"success":false,"message":"nope"}' }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 905, paused: true, confirm: true])
+
+        then: 'the failure is reported, and so is the state the hub now shows'
+        result.success == false
+        result.rulePaused == true
+        result.error.contains('refused the pause request (pause endpoint reported: nope), although the read-back shows the requested state')
+        result.note.contains('hub_get_visual_rule')
+    }
+
     def "pause-only surfaces a non-JSON pause-endpoint response as a structured failure"() {
         given: 'hub answers the pause GET with a login page instead of {success}'
         enableWrite()

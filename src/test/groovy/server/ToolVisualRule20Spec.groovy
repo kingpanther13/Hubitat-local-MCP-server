@@ -1379,6 +1379,31 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.definition != null
     }
 
+    def "a paused save whose metadata reports activation failure without a message is not the paused note"() {
+        given: 'activatedSuccessfully:false and no activationError, rule paused'
+        enableWrite()
+        def state = [name: 'Meta says no', ruleJson: json(validGraph())]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state.name = b.name
+            state.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, revision: 'r-4', storedSuccessfully: true, activatedSuccessfully: false,
+             validationErrors: [], validationIssues: [], referencedDeviceIds: [101], activationError: null, storageError: null]
+        }
+        hubGet.register('/app/ruleBuilder20Json/832') { params ->
+            json([name: state.name, rulePaused: true, ruleJson: state.ruleJson, validationErrors: [], runtimeGraph: null])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 832, definition: editorDefinition(), confirm: true])
+
+        then:
+        result.success == true
+        result.activated == false
+        result.note.contains('Stored but NOT activated')
+        !result.note.contains('PAUSED')
+    }
+
     def "pause-only redundant refusal is verified against the read-back for paused=#paused"() {
         given:
         enableWrite()

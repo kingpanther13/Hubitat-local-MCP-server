@@ -19,9 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_live_label_read_retries_failed_gh(step_name, flag, succeed_on, tmp_path):
     workflow = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
     step = workflow.split(step_name + "\n", 1)[1].split("\n      - ", 1)[0]
-    loop = re.search(r"            for attempt in 1 2 3; do\n.*?\n            done", step, re.S)
-    if loop is None:
-        loop = re.search(r"          for attempt in 1 2 3; do\n.*?\n          done", step, re.S)
+    # The two steps indent their loops differently; `done` sits at the loop's own indentation.
+    loop = re.search(r"^( +)for attempt in 1 2 3; do\n.*?\n\1done", step, re.S | re.M)
     assert loop is not None
     command = re.sub(r"\$\{\{.*?\}\}", "fixture", textwrap.dedent(loop.group()))
     # Match Actions' implicit bash -e versus explicit bash --noprofile --norc -eo pipefail.
@@ -54,8 +53,8 @@ def test_focused_coverage_includes_shared_device_access_and_watchdog():
     spec = importlib.util.spec_from_file_location("e2e_scope", ROOT / ".github/scripts/e2e_scope.py")
     scope = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scope)
-    assert {"devices", "developer_mode", "system_tools"} <= set(scope.FILE_GROUP_MAP["hubitat-mcp-server.groovy"])
-    for source in ("e2e-deadman-watchdog.groovy", "e2e-deadman-watchdog-v2.groovy",
-                   "libraries/mcp-code-management-lib.groovy"):
-        assert "deadman" in scope.FILE_GROUP_MAP[source]
+    assert {"devices", "developer_mode", "system_tools", "deadman"} <= set(scope.FILE_GROUP_MAP["hubitat-mcp-server.groovy"])
+    assert "deadman" in scope.FILE_GROUP_MAP["libraries/mcp-code-management-lib.groovy"]
+    # e2e never deploys the watchdog app, so mapping its sources would run tests that cannot see them.
+    assert not any(source.startswith("e2e-deadman-watchdog") for source in scope.FILE_GROUP_MAP)
     assert "error_verification" in scope.SMOKE_GROUPS

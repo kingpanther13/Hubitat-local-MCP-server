@@ -60,11 +60,11 @@ FILE_GROUP_MAP = {
     # devices + diagnostics: _flattenHub2DeviceTree (bulk inventory, health) and _parseSinceArg
     # (changedSince / lastActivity parsing) live here; a change to either is only observable
     # through those groups. findDevice/getSelectedDevices also serve developer_mode tests.
+    # deadman: its one test drives hub_create_app through the main server (the watchdog app is
+    # never deployed by e2e, so the watchdog sources map to nothing here).
     "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
                                                  "native_apps", "best_practice_gating",
                                                  "devices", "developer_mode", "diagnostics", "system_tools", "deadman"],
-    "e2e-deadman-watchdog.groovy":              ["deadman"],
-    "e2e-deadman-watchdog-v2.groovy":           ["deadman"],
 }
 
 

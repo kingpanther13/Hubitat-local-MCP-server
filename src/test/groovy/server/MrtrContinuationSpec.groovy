@@ -1091,7 +1091,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         expect: 'half of the 6000ms default'
         script._mrtrContentionWaitMs() == 3000L
 
-        when:
+        when: 'a sub-minimum budget is floored to 6000'
         settingsMap.relayBudgetMs = 3000
 
         then:

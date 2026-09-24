@@ -39,10 +39,16 @@ check "buggy '// empty' returns '' for false (do NOT reintroduce)" "" "$buggy"
 lib_flag() { jq -r '.lastSelfDeploy.success | if type=="boolean" then tostring else "" end'; }
 check "watchdog-lib poll: success:false -> 'false'" "false" "$(printf '%s' '{"lastSelfDeploy":{"success":false}}' | lib_flag)"
 check "watchdog-lib poll: success:true  -> 'true'"  "true"  "$(printf '%s' '{"lastSelfDeploy":{"success":true}}'  | lib_flag)"
+# Every sibling script is scanned for the buggy form, not just the lib: any of them may read a
+# success flag. This file skips itself because it deliberately carries the buggy literal above
+# as the regression demo. The planted line first proves the pattern catches what it must.
+SUCCESS_EMPTY_RE='\.success[[:space:]]*//[[:space:]]*empty'
+planted="$(printf '%s' "jq -r '.lastSelfDeploy.success // empty'" | grep -Ec "$SUCCESS_EMPTY_RE")"
+check "sibling scan pattern catches a planted '// empty' success read" "1" "$planted"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for script in "$SCRIPT_DIR"/*.sh; do
   [ "$script" = "$SCRIPT_DIR/test_self_deploy_recovery.sh" ] && continue
-  if grep -En '\.success[[:space:]]*//[[:space:]]*empty' "$script"; then
+  if grep -En "$SUCCESS_EMPTY_RE" "$script"; then
     echo "FAIL: $script uses '// empty' on a success flag"; fail=1
   fi
 done

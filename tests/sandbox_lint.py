@@ -555,10 +555,10 @@ PERSISTED_STATE_INVENTORY = {
     "state": {
         "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
         "headersReadable", "originLocalIpReadable", "updateCheck",
-        "lastBackupTimestamp", "debugLogs", "reportErrors", "hubSecurityRetired", "hubSecurityFwUnreadable",
+        "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable",
     },
     "atomicState": {
-        "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy",
+        "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy", "reportErrors",
         "hubSecurityCookie", "hubSecurityCookieExpiry", "itemBackupManifest",
         "debugLogGeneration", "parentAppIds", "inUseHubVars", "variableHistory",
         "hubVarsAppId", "predClearPending",
@@ -1859,7 +1859,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     section_keys = set(re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*'''", sections_block, re.MULTILINE))
     # Extract each section's full body too so the content-anchor check below can verify
     # specific anchor strings exist in BOTH the source doc-block AND TOOL_GUIDE.md. The
-    # heading-presence check at L1252 only protects against renames/deletions; without a
+    # heading-presence check (step 2/3 above) only protects against renames/deletions; without a
     # content check, in-body prose can drift silently between the two files (live failure
     # mode: content-body drift -- heading-presence check passes but a specific entry is
     # absent from the source doc-block, so agents calling get_tool_guide see stale text).

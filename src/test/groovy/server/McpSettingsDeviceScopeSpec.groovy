@@ -970,8 +970,9 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         when:
         def result = setScopeStructured([mode: 'add', ids: [12]])
 
-        then:
+        then: 'the no-op add writes the unchanged scope, nothing more'
         result.success == true
+        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['12']]
 
         when:
         def unknown = setScopeStructured([mode: 'add', ids: [12, 13]])
@@ -980,6 +981,23 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         unknown.success == false
         unknown.error.contains('13')
         !unknown.error.contains('12')
+    }
+
+    def "degraded inventory still rejects replace over an already-authorized id it cannot see"() {
+        given:
+        enableDevModeAndWrite()
+        settingsMap.selectedDevices = [dev(12)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
+
+        when:
+        def result = setScopeStructured([mode: 'replace', ids: [12]])
+
+        then:
+        result.success == false
+        result.error.contains('12')
+        sharedAppStub.settingsStore.isEmpty()
     }
 
     def "complete inventory still rejects an already-authorized id that no longer exists"() {
