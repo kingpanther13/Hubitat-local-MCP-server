@@ -27,7 +27,7 @@ Run all three before pushing, or rely on the corresponding CI lanes. Python lint
 
 Use `atomicState` for thread-safe persistence, `state` for UI/counters. Compare device IDs as strings (`.toString()`).
 
-**Comments**: only when the WHY is non-obvious. No multi-paragraph docblocks. Don't reference the current PR/issue/caller.
+**Comments**: only when the WHY is non-obvious. No multi-paragraph docblocks. Don't reference the caller. Issue/PR numbers are fine in developer-side comments and tests, never in user- or agent-facing text (see § Tool descriptions).
 
 ## Tool design rules
 
@@ -122,6 +122,7 @@ Every MCP tool is gated. The layers, from broadest to narrowest:
 - **Flat-mode size vs gateway-mode richness — `[[FLAT_TRIM]]` + the served guide.** The flat `tools/list` catalog has a hard ~124KB hub cap (over it, `useGateways=false` clients see ZERO tools); gateway mode has no per-tool budget. So wrap advanced/optional detail — large nested sub-schemas, exhaustive capability tables, deep parameter semantics, long worked examples — in `[[FLAT_TRIM]]…[[/FLAT_TRIM]]`: it is STRIPPED from the flat catalog (keeps flat small) but KEPT in gateway mode (so the tool stays BP-rich where there is room). **A flat-mode LLM cannot see FLAT_TRIM'd content and cannot switch modes, so the SAME content MUST also live in the served `getToolGuideSections()` guide, reachable via `hub_get_tool_guide` — FLAT_TRIM without a guide home is a reachability bug.** Keep flat-visible (un-wrapped) only the basic-call essentials: purpose, required-param meaning, critical formats, and safety/confirm warnings.
 - **Cut genuine verbosity and duplication everywhere.** A fact restated across the description AND a parameter, prose that re-lists a value set already in the schema `enum`, a redundant second example, filler/hedging — delete it (this shrinks BOTH modes and improves BP). Distinct from FLAT_TRIM, which DEFERS load-bearing detail rather than deleting it.
 - **Examples: not stuffed in the description body.** Put a concrete format example in the relevant *parameter's* description (e.g. `"…e.g. 2026-02-04T14:00"`); route full worked examples to the served guide / `[[FLAT_TRIM]]`. (`input_examples` is the spec-native home but is incompatible with the Tool Search Tool, so gateway/deferred tools keep example content in description/param text.) Source: Anthropic *advanced-tool-use* (2025-11-24).
+- **No issue/PR numbers in user- or agent-facing text.** Tool and parameter descriptions, schema text, served guide sections, error/`note` text and response fields are read by the model or the end user, who cannot follow `#N` — state the behaviour itself. Issue/PR references belong on the developer side: code comments, tests, commit messages and PR bodies.
 - **Deferred/gateway tools are also a retrieval surface.** The `tools/list` name + description + parameter descriptions feed the BM25 tool-search index, so include semantic keywords matching how users phrase the task — not just mechanics. Source: Anthropic *tool-search-tool* (matches this repo's gateway / `hub_search_tools` retrieval model).
 
 ### Schema design

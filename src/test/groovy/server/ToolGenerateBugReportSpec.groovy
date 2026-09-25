@@ -322,6 +322,34 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.logs.hint == null
     }
 
+    def "env summary reports the hardware model from /hub/details/json, not the internal hardwareID"() {
+        given:
+        sharedLocation.hub = new TestHub(hardwareID: '000D')
+        hubGet.register('/hub/details/json') { params -> '{"hardwareVersion":"C-8 Pro"}' }
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Hub model:** C-8 Pro')
+        !result.report.contains('000D')
+    }
+
+    def "env summary reports Unknown hub model when /hub/details/json is unreadable"() {
+        given:
+        sharedLocation.hub = new TestHub(hardwareID: '000D')
+        hubGet.register('/hub/details/json') { params -> throw new IOException('timeout') }
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Hub model:** Unknown')
+        !result.report.contains('000D')
+    }
+
     def "env summary reports gateway tool-mode by default (useGateways unset)"() {
         given: 'a genuinely-unset useGateways (the flat CI matrix presets it false in setup)'
         settingsMap.remove('useGateways')

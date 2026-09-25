@@ -113,52 +113,69 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
 
     // -------- issue #466: model comes from /hub/details/json, not the internal hardwareID --------
 
-    def "getHubInfo model is the /hub/details/json hardwareVersion, hardwareID surfaces as platformHardwareId"() {
-        given:
-        def h = new TestHub(); h.hardwareID = '000D'
-        sharedLocation.hub = h
-        hubGet.register('/hub/details/json') { params -> '{"hardwareVersion":"C-8 Pro","hubName":"x"}' }
-
-        when:
-        def result = script.toolGetHubInfo()
-
-        then:
-        result.model == 'C-8 Pro'
-        result.platformHardwareId == '000D'
-        // regression: the internal id must NEVER masquerade as the model again.
-        result.model != '000D'
+    private List captureMcpLogs() {
+        def entries = []
+        script.metaClass.mcpLog = { String level, String component, String message,
+                                    String ruleId = null, Map extra = null ->
+            entries << [level: level, component: component, message: message]
+        }
+        return entries
     }
 
-    def "getHubInfo model is null (never a placeholder) when /hub/details/json read fails"() {
+    def "getHubInfo model is the trimmed /hub/details/json hardwareVersion, hardwareID surfaces as platformHardwareId"() {
         given:
-        def h = new TestHub(); h.hardwareID = '000D'
-        sharedLocation.hub = h
-        // /hub/details/json left unregistered -> hubInternalGet throws -> model degrades to null.
-
-        when:
-        def result = script.toolGetHubInfo()
-
-        then:
-        result.containsKey('model')
-        result.model == null
-        result.platformHardwareId == '000D'
-    }
-
-    def "getHubInfo model is null when hardwareVersion is missing or blank"() {
-        given:
-        def h = new TestHub(); h.hardwareID = '000D'
-        sharedLocation.hub = h
+        sharedLocation.hub = new TestHub(hardwareID: '000D')
         hubGet.register('/hub/details/json') { params -> body }
 
         when:
         def result = script.toolGetHubInfo()
 
         then:
-        result.model == null
+        result.model == expected
         result.platformHardwareId == '000D'
 
         where:
-        body << ['{"hubName":"x"}', '{"hardwareVersion":"  "}', 'not json at all']
+        body                                              | expected
+        '{"hardwareVersion":"C-8 Pro","hubName":"x"}'     | 'C-8 Pro'
+        '{"hardwareVersion":" C-7 "}'                     | 'C-7'
+    }
+
+    def "getHubInfo model is null (never a placeholder) and logged when /hub/details/json read fails"() {
+        given:
+        sharedLocation.hub = new TestHub(hardwareID: '000D')
+        hubGet.register('/hub/details/json') { params -> throw new IOException('timeout') }
+        def logs = captureMcpLogs()
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        hubGet.calls.any { it.path == '/hub/details/json' }
+        result.containsKey('model')
+        result.model == null
+        result.platformHardwareId == '000D'
+        logs.any { it.level == 'warn' && it.message.startsWith('_hubHardwareModel: /hub/details/json read/parse failed: timeout') }
+    }
+
+    def "getHubInfo model is null and logged when hardwareVersion is unusable"() {
+        given:
+        sharedLocation.hub = new TestHub(hardwareID: '000D')
+        hubGet.register('/hub/details/json') { params -> body }
+        def logs = captureMcpLogs()
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        hubGet.calls.any { it.path == '/hub/details/json' }
+        result.containsKey('model')
+        result.model == null
+        result.platformHardwareId == '000D'
+        logs.any { it.level == 'warn' && it.message.startsWith('_hubHardwareModel: ') }
+
+        where:
+        body << ['{"hubName":"x"}', '{"hardwareVersion":"  "}', 'not json at all', '',
+                 '{"hardwareVersion":8}', '{"hardwareVersion":null}', '{"hardwareVersion":{"x":1}}', '[]']
     }
 
     // -------- toolGetHubInfo identify-LED --------

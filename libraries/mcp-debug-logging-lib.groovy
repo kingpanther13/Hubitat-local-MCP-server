@@ -336,12 +336,11 @@ private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) 
 
 private Map _bugReportEnvironmentSummary(args, String privacyMode, Map identity) {
     def hubName = "Unknown"
-    def hubModel = "Unknown"
+    def hubModel = _hubHardwareModel() ?: "Unknown"
     def hubFirmware = "Unknown"
     def timeZone = "Unknown"
     try {
         hubName = location.hub?.name?.toString() ?: "Unknown"
-        hubModel = location.hub?.hardwareID?.toString() ?: location.hub?.type?.toString() ?: "Unknown"
         hubFirmware = location.hub?.firmwareVersionString?.toString() ?: "Unknown"
         timeZone = location.timeZone?.ID?.toString() ?: "Unknown"
     } catch (Throwable e) {
