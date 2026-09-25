@@ -11500,11 +11500,26 @@ class TestRunner:
             pb, limited = self._call_with_limiter_bounce(
                 "hub_manage_rule_machine", "hub_set_rule_private_boolean",
                 {"ruleId": int(app_id), "value": False}, "hub_set_rule_private_boolean(value=False)")
-            assert not limited, (
-                "hub_set_rule_private_boolean(value=False) stayed blocked by the platform load limiter, "
-                f"so the Required Expression is not gated: {limited}")
-            assert pb.get("success") is not False, \
-                f"could not set the Private Boolean false, so the Required Expression is not gated: {pb}"
+            if limited:
+                # hub_set_rule_private_boolean has no page-button route (RMUtils is the only way to
+                # set a Private Boolean from outside the rule), so when the limiter still refuses it
+                # after a bounce, make the Required Expression false another way: replace it with a
+                # switch condition that contradicts the test switch's current state. The contract
+                # under test is updateRule's SUPPRESSED verdict for a false expression, which this
+                # preserves; the wizard write goes through the rule page, which the limiter does not gate.
+                sw = int(self.get_test_switch_id())
+                cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw, "attribute": "switch"})
+                current = cur.get("value") if isinstance(cur, dict) else None
+                false_state = "off" if current == "on" else "on"
+                print(f"    [LIMITER] Private Boolean write blocked ({limited}); replacing the Required "
+                      f"Expression with 'switch is {false_state}' (switch reads {current!r}) so it is false without RMUtils.")
+                replaced = self._set_rule(app_id, {"replaceRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": false_state}]}}, strict=True)
+                assert replaced.get("requiredExpressionReplaced") is True, \
+                    f"load-immune Required Expression replacement did not land: {replaced}"
+            else:
+                assert pb.get("success") is not False, \
+                    f"could not set the Private Boolean false, so the Required Expression is not gated: {pb}"
             # strict: a relay-dropped response raises instead of returning a verdict-less sentinel.
             res = self._set_rule(app_id, {"button": "updateRule"}, strict=True)
             settle = str((res or {}).get("subscriptionSettle") or "")

@@ -4814,7 +4814,7 @@ def getGatewayConfig() {
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start resets private boolean).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
                 hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Edits ensure a rollback baseline; same-app edits reuse it for one hour by default. For Rule Machine RULES use hub_set_rule (in hub_manage_rule_machine). Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
@@ -10598,11 +10598,11 @@ Curated sub-page directories by app type: HPM — prefOptions (main menu), prefP
 `action` selects which Rule Machine verb to invoke (default `rule`):
 
 - **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
-- **`actions`** → `runRuleAct`: run the action list directly, skipping condition evaluation.
+- **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
 - **`stop`**: halt the rule's in-progress actions.
 - **`start`**: re-enable a stopped rule (also resets its private boolean).
 
-`stop`/`start` toggle the stopRule UI button, not RMUtils (RMUtils has no startRule verb).
+`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. Only `rule` still goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
 
 ### hub_set_native_app
 
