@@ -11560,8 +11560,10 @@ class TestRunner:
                     "addActions": [{"capability": "privateBoolean", "ruleIds": [int(app_id)], "value": False}],
                 })
                 try:
-                    run = self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_call_rule", "args": {"ruleId": int(setter_id), "action": "actions"}})
+                    run, run_limited = self._call_with_limiter_bounce(
+                        "hub_manage_rule_machine", "hub_call_rule",
+                        {"ruleId": int(setter_id), "action": "actions"}, "helper rule hub_call_rule(action=actions)")
+                    assert not run_limited, f"helper rule's Run Actions stayed blocked by the platform load limiter: {run_limited}"
                     assert run.get("success") is True, f"helper rule's Run Actions did not succeed: {run}"
                 finally:
                     self._delete_native(setter_id)
