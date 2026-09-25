@@ -866,7 +866,7 @@ def _getAllToolDefinitions_partDebugLogging() {
                     actual: [type: "string", description: "What actually happened."],
                     stepsToReproduce: [type: "string", description: "Exact repro sequence."],
                     issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
-                    failingTool: [type: "string", description: "Failed MCP tool; scopes logs and title. Defaults from retained errors when that opt-in setting is on."],
+                    failingTool: [type: "string", description: "Failed MCP tool; scopes logs and title."],
                     ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
                     nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
                     llmClient: [type: "string", description: "Host app + version, e.g. Claude Code 2.1 or Claude Desktop; ask the user, never guess."],
