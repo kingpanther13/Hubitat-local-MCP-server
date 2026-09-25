@@ -323,6 +323,7 @@ def toolCloneNativeApp(args) {
     if (parentAppId == null) {
         throw new IllegalArgumentException("Source app ${sourceAppId} has no numeric parentAppId. MCP cannot safely discover its clone; pass a child of the target parent app.")
     }
+    _requireUnprotectedAppMutation(parentAppId, "clone or import a child app under")
     Map snapshot = _appClonerSnapshotChildren(parentAppId)
     if (snapshot.isError == true) return snapshot
     def preIds = snapshot.ids as Set
@@ -570,6 +571,7 @@ def toolImportNativeApp(args) {
         // Refuse rather than firing the wizard and reporting a false failure.
         throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} has no numeric parentAppId — pass a hint that's a child of the target parent app (e.g. an existing RM rule for an RM import).")
     }
+    _requireUnprotectedAppMutation(parentAppId, "clone or import a child app under")
     Map snapshot = _appClonerSnapshotChildren(parentAppId)
     if (snapshot.isError == true) return snapshot
     def preIds = snapshot.ids as Set
@@ -802,6 +804,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         return _vrbRestoreFromSnapshot(snapshot, fileName?.toString())
     }
 
+    _requireUnprotectedAppMutation(savedId, "restore settings for")
     def exists = true
     try {
         _rmFetchConfigJson(savedId)
@@ -829,6 +832,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         _rmRejectDisabledAppEdit(ruleId, "restore")
     } else {
         def parentId = _discoverParentAppId(savedAppType)
+        _requireUnprotectedAppMutation(parentId, "restore a child app under")
         ruleId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
         try {
             def firstPage = _rmFetchConfigJson(ruleId)
@@ -1049,6 +1053,7 @@ private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
         if (parentAppId == null) {
             throw new IllegalArgumentException("Source app ${sourceAppId} has no numeric parentAppId. MCP cannot safely discover its clone; pass a child of the target parent app.")
         }
+        _requireUnprotectedAppMutation(parentAppId, "clone or import a child app under")
         Map snapshot = _appClonerSnapshotChildren(parentAppId)
         if (snapshot.isError == true) return snapshot
         def preIds = snapshot.ids
@@ -1063,6 +1068,7 @@ private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
 
     Integer clonerAppId = cp.clonerAppId as Integer
     try {
+        if (cp.phase != "stage_disable") _requireUnprotectedAppMutation(cp.parentAppId, "clone or import a child app under")
         if (cp.phase == "clone_clicks") {
             _appClonerClickClone(clonerAppId, cp.referrer?.toString(), cp.configUrl?.toString())
             cp.phase = "clone_commit"
@@ -1151,6 +1157,7 @@ private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
         if (parentAppId == null) {
             throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} has no numeric parentAppId — pass a child of the target parent app")
         }
+        _requireUnprotectedAppMutation(parentAppId, "clone or import a child app under")
         Map snapshot = _appClonerSnapshotChildren(parentAppId)
         if (snapshot.isError == true) return snapshot
         def preIds = snapshot.ids
@@ -1176,6 +1183,7 @@ private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
 
     Integer clonerAppId = cp.clonerAppId as Integer
     try {
+        if (cp.phase != "stage_disable") _requireUnprotectedAppMutation(cp.parentAppId, "clone or import a child app under")
         if (cp.phase == "import_commit") {
             _appClonerCommitImportRule(clonerAppId, cp.originalSourceId as Integer,
                 cp.newName?.toString(), cp.referrer?.toString(), cp.configUrl?.toString())

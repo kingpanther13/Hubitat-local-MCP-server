@@ -122,16 +122,21 @@ private Map _vrbWithBareName(Map data, boolean graph) {
     return data
 }
 
-private Map _vrbParentNode() {
+private Map _vrbParentNode(boolean allowMissing = false) {
     // The "Visual Rules Builder" parent node in the /hub2/appsList installed-app tree. Its
     // children are the rules; its id is the parent every child-create route needs. Throws
-    // IllegalStateException when the parent app is not installed so the caller can return an
-    // actionable note.
+    // IllegalStateException when absent unless allowMissing is true; that mode returns null
+    // only after validating the inventory, so creation can safely distinguish absence from a failed read.
     def text = hubInternalGet("/hub2/appsList")
     if (!text) throw new IllegalStateException("Empty response from /hub2/appsList")
     def parsed = new groovy.json.JsonSlurper().parseText(text)
+    if (allowMissing && (!(parsed instanceof Map) || !(parsed.apps instanceof List) ||
+            !parsed.apps.every { it instanceof Map && it.data instanceof Map &&
+                (it.data.id?.toString() ==~ /[1-9][0-9]*/) && it.data.type instanceof String && it.data.type })) {
+        throw new IllegalStateException("Cannot verify Visual Rules Builder parent: the app inventory is malformed.")
+    }
     def parent = (parsed?.apps ?: []).find { it?.data?.type == "Visual Rules Builder" }
-    if (parent == null) {
+    if (parent == null && !allowMissing) {
         throw new IllegalStateException("The Visual Rules Builder parent app is not installed on this hub. Install it via Apps -> Add Built-In App -> Visual Rules Builder, then retry.")
     }
     return parent
@@ -174,6 +179,13 @@ private List _vrbNewChildIds(Collection before) {
 }
 
 private Map _vrbCreateChild(String version) {
+    // Resolve once outside the fallback catch: unknown inventory or an authorization refusal
+    // must not trigger another create route, while a confirmed absent parent may bootstrap.
+    boolean checkProtection = !_protectedAppIds().isEmpty()
+    def checkedParent = checkProtection ? _vrbParentNode(true) : null
+    if (checkedParent != null) {
+        _requireUnprotectedAppMutation(checkedParent.data.id, "create a visual rule under")
+    }
     // The VRB parent offers a per-VERSION child-create route, so the DEFINITION picks which
     // builder the new rule runs instead of the firmware picking for us:
     //   /installedapp/createchild/hubitat/Visual Rule Builder <version>/parent/<parentId>
@@ -189,7 +201,8 @@ private Map _vrbCreateChild(String version) {
     def before = [] as Set
     def parentSeen = false
     try {
-        def parent = _vrbParentNode()
+        def parent = checkProtection ? checkedParent : _vrbParentNode()
+        if (parent == null) throw new IllegalStateException("The Visual Rules Builder parent is not installed yet")
         parentSeen = true
         before = ((parent.children ?: []).collect { it?.data?.id?.toString() }.findAll { it }) as Set
         def path = "/installedapp/createchild/hubitat/Visual Rule Builder ${version}/parent/${parent.data.id}".toString()
@@ -1267,6 +1280,7 @@ private Map _toolSetVisualRuleImpl(args) {
         throw new IllegalArgumentException("Nothing to change: provide definition (full replacement), name (rename), and/or paused (pause/resume) alongside appId.")
     }
     def appId = normalizeRuleId(args.appId)
+    _requireUnprotectedAppMutation(appId, "edit visual rule")
     def detected
     try {
         detected = _vrbDetect(appId)
@@ -1578,6 +1592,7 @@ def toolDeleteVisualRule(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required (find it with hub_get_visual_rule).")
     def appId = normalizeRuleId(args.appId)
+    _requireUnprotectedAppDeletion(appId)
     // Type-gate before deleting: forcedelete removes ANY installed app, so only proceed once
     // the id provably speaks a VRB serialization.
     def detected
@@ -1625,6 +1640,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
     // re-saves the snapshot's captured definition (vrbFormat + vrbDefinition/vrbRuleJson,
     // written by _rmBackupRuleSnapshot) through the same save+verify tail the set tool uses.
     def savedId = (snapshot.appId ?: snapshot.ruleId) as Integer
+    _requireUnprotectedAppMutation(savedId, "restore visual rule")
     def vrbFormat = snapshot.vrbFormat?.toString()
     def definition
     if (vrbFormat == "classic" && snapshot.vrbDefinition instanceof Map) {

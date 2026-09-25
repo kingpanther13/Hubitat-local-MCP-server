@@ -850,6 +850,13 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 </details>
 
 <details>
+<summary><b>Protected apps</b></summary>
+
+The **Protected apps** picker on the main app page blocks generic app, native-rule, and Dashboard mutations (Easy and legacy) for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Manage the selection in the Hubitat app UI and click **Done** to apply it.
+
+</details>
+
+<details>
 <summary><b>Item Backup & Restore</b></summary>
 
 When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hub_delete_item` (type: app|driver|library), the server automatically saves the **original source code** before making changes.
