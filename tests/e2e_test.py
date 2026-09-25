@@ -11501,23 +11501,25 @@ class TestRunner:
                 "hub_manage_rule_machine", "hub_set_rule_private_boolean",
                 {"ruleId": int(app_id), "value": False}, "hub_set_rule_private_boolean(value=False)")
             if limited:
-                # hub_set_rule_private_boolean has no page-button route (RMUtils is the only way to
-                # set a Private Boolean from outside the rule), so when the limiter still refuses it
-                # after a bounce, make the Required Expression false another way: replace it with a
-                # switch condition that contradicts the test switch's current state. The contract
-                # under test is updateRule's SUPPRESSED verdict for a false expression, which this
-                # preserves; the wizard write goes through the rule page, which the limiter does not gate.
-                sw = int(self.get_test_switch_id())
-                # The one-shot read takes deviceId as a String; the RM condition below wants the int.
-                cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": str(sw), "attribute": "switch"})
-                current = cur.get("value") if isinstance(cur, dict) else None
-                false_state = "off" if current == "on" else "on"
-                print(f"    [LIMITER] Private Boolean write blocked ({limited}); replacing the Required "
-                      f"Expression with 'switch is {false_state}' (switch reads {current!r}) so it is false without RMUtils.")
-                replaced = self._set_rule(app_id, {"replaceRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": false_state}]}}, strict=True)
-                assert replaced.get("requiredExpressionReplaced") is True, \
-                    f"load-immune Required Expression replacement did not land: {replaced}"
+                # hub_set_rule_private_boolean has no page-button route (RMUtils is the only way this
+                # app can set another rule's Private Boolean), so when the limiter still refuses it
+                # after a bounce, let Rule Machine set it: a helper rule whose only action is "Set
+                # Private Boolean false" on the gated rule, run through hub_call_rule's Run Actions
+                # button (the hub UI's own route, which the limiter does not gate). The gate under
+                # test is unchanged: PB false -> RM drops the trigger subscriptions -> updateRule
+                # reports SUPPRESSED. A device-condition expression is NOT an equivalent stand-in:
+                # RM subscribes to the device to track it, and that subscription reads as OK.
+                print(f"    [LIMITER] Private Boolean write blocked ({limited}); setting it through a "
+                      "helper rule's privateBoolean action run via the Run Actions button instead.")
+                setter_id = self._create_native_rule("GatedTriggerSetter", {
+                    "addActions": [{"capability": "privateBoolean", "ruleIds": [int(app_id)], "value": False}],
+                })
+                try:
+                    run = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_call_rule", "args": {"ruleId": int(setter_id), "action": "actions"}})
+                    assert run.get("success") is True, f"helper rule's Run Actions did not succeed: {run}"
+                finally:
+                    self._delete_native(setter_id)
             else:
                 assert pb.get("success") is not False, \
                     f"could not set the Private Boolean false, so the Required Expression is not gated: {pb}"
