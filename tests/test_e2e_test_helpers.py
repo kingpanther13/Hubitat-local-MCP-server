@@ -730,6 +730,69 @@ def test_limiter_logged_uses_watchdog_for_unusable_main_reads_and_requires_fresh
     assert runner._limiter_logged(5781, method="on", baseline=baseline) is True
 
 
+_LIMITED = "RMUtils.sendAction failed: App 38 generates excessive hub load"
+
+
+@pytest.mark.parametrize(
+    "replies, bounces, bounce_ok, expected_calls, expected_bounces, expect_limited",
+    [
+        pytest.param([{"success": True}], 1, True, 1, 0, False, id="clean-call-never-bounces"),
+        pytest.param([{"success": False, "error": _LIMITED}, {"success": True}], 1, True, 2, 1, False,
+                     id="envelope-trip-bounces-and-retries"),
+        pytest.param([et.McpToolError("hub_manage_rule_machine", _LIMITED), {"success": True}], 1, True, 2, 1, False,
+                     id="raised-trip-bounces-and-retries"),
+        pytest.param([{"success": False, "error": _LIMITED}] * 3, 2, True, 3, 2, True,
+                     id="sticky-limiter-exhausts-bounce-rounds"),
+        pytest.param([{"success": False, "error": _LIMITED}], 1, False, 1, 1, True,
+                     id="failed-bounce-does-not-retry"),
+        pytest.param([{"success": False, "error": "no such rule"}], 1, True, 1, 0, False,
+                     id="other-failure-is-returned-not-bounced"),
+    ],
+)
+def test_call_with_limiter_bounce_retries_only_limiter_trips(
+    replies, bounces, bounce_ok, expected_calls, expected_bounces, expect_limited,
+):
+    calls, bounced = [], []
+    replies = iter(replies)
+
+    class Client:
+        def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            reply = next(replies)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = Client()
+    runner._clear_load_throttle = lambda reason: bounced.append(reason) or bounce_ok
+
+    res, limited = runner._call_with_limiter_bounce(
+        "hub_manage_rule_machine", "hub_call_rule", {"ruleId": 7, "action": "actions"},
+        "probe", bounces=bounces)
+
+    assert calls == [("hub_manage_rule_machine",
+                      {"tool": "hub_call_rule", "args": {"ruleId": 7, "action": "actions"}})] * expected_calls
+    assert len(bounced) == expected_bounces
+    assert all(reason.startswith("probe: ") for reason in bounced)
+    assert (limited is not None) is expect_limited
+    if not expect_limited:
+        assert limited is None and isinstance(res, dict)
+
+
+def test_call_with_limiter_bounce_propagates_non_limiter_errors():
+    class Client:
+        def call_tool(self, name, arguments):
+            raise et.McpToolError("hub_manage_rule_machine", "rule 7 not found")
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = Client()
+    runner._clear_load_throttle = lambda reason: pytest.fail("a non-limiter error must not bounce")
+
+    with pytest.raises(et.McpToolError, match="not found"):
+        runner._call_with_limiter_bounce("hub_manage_rule_machine", "hub_call_rule", {}, "probe")
+
+
 def test_run_artifact_suffix_is_stable_and_unique_per_github_attempt():
     first_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "1"}
     second_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "2"}

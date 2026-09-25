@@ -1487,6 +1487,36 @@ class TestRunner:
             self._reboot_hub_for_limiter()
         return True
 
+    def _call_with_limiter_bounce(self, gateway: str, tool: str, args: dict, label: str,
+                                  bounces: int = 1) -> tuple[Any, str | None]:
+        """One gateway call under the platform load-limiter contract: (envelope, limiter_message).
+        The limiter reaches us in TWO shapes -- some tools RAISE it, the RMUtils-backed ones
+        (hub_set_rule_paused, hub_call_rule, hub_set_rule_private_boolean) return it inside a
+        {'success': False, 'error': '...excessive hub load'} envelope -- so both are normalized
+        into the second element. Each trip bounces the app and retries, up to `bounces` rounds. The limiter is sticky
+        and a bounce clears only the app instance's block, so a non-None second element can
+        survive the retry; the caller decides whether a converged read-back means the write
+        landed anyway. Anything that is not the limiter propagates."""
+
+        def _attempt():
+            try:
+                envelope = self.client.call_tool(gateway, {"tool": tool, "args": args})
+            except McpToolError as exc:
+                if "excessive hub load" not in str(exc):
+                    raise
+                return None, str(exc)
+            if (isinstance(envelope, dict) and envelope.get("success") is False
+                    and "excessive hub load" in str(envelope.get("error", ""))):
+                return envelope, str(envelope.get("error"))
+            return envelope, None
+
+        res, limited = _attempt()
+        for _round in range(bounces):
+            if not limited or not self._clear_load_throttle(f"{label}: {limited}"):
+                break
+            res, limited = _attempt()
+        return res, limited
+
     def _reboot_hub_for_limiter(self) -> bool:
         """Escalation for a recurring per-app load limiter: REBOOT the hub to reset the platform's
         load counters (an app-bounce only clears the app instance; a reboot clears the whole platform).
@@ -5381,27 +5411,7 @@ class TestRunner:
         # instance's block, so even the bounced retry can hit it again.
         def _status_write(tool: str, args: dict, label: str) -> Any:
             gateway = "hub_manage_rule_machine" if tool == "hub_set_rule_paused" else "hub_manage_native_rules_and_apps"
-
-            def _attempt():
-                """(envelope, limiter_message) for one call. The limiter reaches us in TWO
-                shapes -- hub_set_app_disabled RAISES it, hub_set_rule_paused returns it inside
-                a {'success': False, 'error': '...excessive hub load'} envelope -- so both are
-                normalized into the second element and take the SAME recovery path below.
-                Anything that is not the limiter propagates."""
-                try:
-                    envelope = self.client.call_tool(gateway, {"tool": tool, "args": args})
-                except McpToolError as exc:
-                    if "excessive hub load" not in str(exc):
-                        raise
-                    return None, str(exc)
-                if (isinstance(envelope, dict) and envelope.get("success") is False
-                        and "excessive hub load" in str(envelope.get("error", ""))):
-                    return envelope, str(envelope.get("error"))
-                return envelope, None
-
-            res, limited = _attempt()
-            if limited and self._clear_load_throttle(f"{label}: {limited}"):
-                res, limited = _attempt()
+            res, limited = self._call_with_limiter_bounce(gateway, tool, args, label)
             if limited:
                 # An app bounce clears the app INSTANCE; the limiter that blocks RMUtils lives on
                 # the platform's load counters, so the retry above can hit it again (observed: the
@@ -5442,22 +5452,8 @@ class TestRunner:
             hub_get_rule_health's `stopped`, not in the appsList status the paused/disabled
             writes poll."""
 
-            def _attempt():
-                try:
-                    envelope = self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_call_rule", "args": {"ruleId": app_id, "action": action}})
-                except McpToolError as exc:
-                    if "excessive hub load" not in str(exc):
-                        raise
-                    return None, str(exc)
-                if (isinstance(envelope, dict) and envelope.get("success") is False
-                        and "excessive hub load" in str(envelope.get("error", ""))):
-                    return envelope, str(envelope.get("error"))
-                return envelope, None
-
-            res, limited = _attempt()
-            if limited and self._clear_load_throttle(f"{label}: {limited}"):
-                res, limited = _attempt()
+            res, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_id, "action": action}, label)
             if limited:
                 # The limiter can abort the reply to a write that already committed, so a
                 # converged health read means the envelope is stale, not the write failed.
@@ -6197,24 +6193,10 @@ class TestRunner:
             rule_b = self._create_native_rule("CallRuleAggB")
             ids = [int(rule_a), int(rule_b)]
 
-            def _attempt():
-                # hub_call_rule stop/start is limiter-susceptible, the same as the sibling
-                # lifecycle test documents. _run_one's generic retry only matches a 50[0-3]
-                # status, which an "excessive hub load" McpToolError never carries -- so
-                # without this the test fails outright rather than flake-retrying.
-                try:
-                    envelope = self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_call_rule", "args": {"ruleId": ids, "action": "stop"}})
-                except McpToolError as exc:
-                    if "excessive hub load" not in str(exc):
-                        raise
-                    return None, str(exc)
-                if (isinstance(envelope, dict) and envelope.get("success") is False
-                        and "excessive hub load" in str(envelope.get("error", ""))):
-                    return envelope, str(envelope.get("error"))
-                return envelope, None
-
-            res, limited = _attempt()
+            # hub_call_rule stop/start is limiter-susceptible, the same as the sibling lifecycle
+            # test documents. _run_one's generic retry only matches a 50[0-3] status, which an
+            # "excessive hub load" McpToolError never carries -- so without this the test fails
+            # outright rather than flake-retrying.
             # Two bounce rounds, not one. The sibling lifecycle test's own comments record
             # that a single bounce+retry was NOT enough there and it needed a further
             # converged-read fallback -- so one round here would inherit a failure mode that
@@ -6222,12 +6204,9 @@ class TestRunner:
             # refusal produces no envelope to assert, so it cannot fall back to a read the way
             # the sibling does; it retries harder instead, then reports the limiter error if both
             # bounce+retry rounds are exhausted.
-            for _round in range(2):
-                if not limited:
-                    break
-                if not self._clear_load_throttle(f"multi-id hub_call_rule: {limited}"):
-                    break
-                res, limited = _attempt()
+            res, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": ids, "action": "stop"},
+                "multi-id hub_call_rule", bounces=2)
             assert not limited, (
                 "multi-id hub_call_rule stayed blocked by the platform load limiter after "
                 f"two bounce+retry rounds: {limited}"
@@ -8834,8 +8813,9 @@ class TestRunner:
                 assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
                 assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
                 self._assert_rule_healthy(app_d)
-                self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_call_rule", "args": {"ruleId": app_d, "action": "actions"}})
+                run, limited = self._call_with_limiter_bounce(
+                    "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_d, "action": "actions"},
+                    "hub_call_rule(action=actions)")
                 got = None
                 deadline = time.time() + 15.0
                 while time.time() < deadline:
@@ -8844,7 +8824,16 @@ class TestRunner:
                     if str(got) in ("7", "7.0"):
                         break
                     time.sleep(1.0)
-                assert str(got) in ("7", "7.0"),                     f"running the Number copy did not set {var_name} to 7 (got {got!r})"
+                # The limiter can abort the reply to a run that already happened, so the variable
+                # read above is the verdict; the run's own outcome explains a miss.
+                if str(got) not in ("7", "7.0"):
+                    assert not limited, (
+                        f"hub_call_rule(action=actions) stayed blocked by the platform load limiter "
+                        f"and {var_name} never reached 7 (got {got!r}): {limited}")
+                    assert not (isinstance(run, dict) and run.get("success") is False), \
+                        f"hub_call_rule(action=actions) reported failure and {var_name} is {got!r}: {run}"
+                assert str(got) in ("7", "7.0"), \
+                    f"running the Number copy did not set {var_name} to 7 (got {got!r}; run result {run})"
             finally:
                 self._delete_native(app_d)
         finally:
@@ -11517,8 +11506,12 @@ class TestRunner:
             "addActions": [{"capability": "log", "message": "E2E gated"}],
         })
         try:
-            pb = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule_private_boolean", "args": {"ruleId": int(app_id), "value": False}})
+            pb, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_set_rule_private_boolean",
+                {"ruleId": int(app_id), "value": False}, "hub_set_rule_private_boolean(value=False)")
+            assert not limited, (
+                "hub_set_rule_private_boolean(value=False) stayed blocked by the platform load limiter, "
+                f"so the Required Expression is not gated: {limited}")
             assert pb.get("success") is not False, \
                 f"could not set the Private Boolean false, so the Required Expression is not gated: {pb}"
             # strict: a relay-dropped response raises instead of returning a verdict-less sentinel.
