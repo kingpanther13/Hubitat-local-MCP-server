@@ -16,6 +16,8 @@ class DebugLogRingSpec extends ToolSpecBase {
         assert (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).isEmpty()
         assert script.app.id == 402L
         script.log.messages.clear()
+        // Error retention is an opt-in advanced setting; the retention features below need it on.
+        settingsMap.retainReportErrors = true
     }
 
     private void reload() {
@@ -61,6 +63,22 @@ class DebugLogRingSpec extends ToolSpecBase {
 
         then:
         atomicStateMap.reportErrors == []
+    }
+
+    def "with error retention off (the default) an error touches no report state and reports see none"() {
+        given:
+        settingsMap.remove('retainReportErrors')
+        script.initDebugLogs()
+        atomicStateMap.reportErrors = [[timestamp: 1L, level: 'error', message: 'kept while the option was on',
+                                        generation: atomicStateMap.debugLogGeneration]]
+
+        when:
+        script.mcpLog('error', 'server', 'failure with retention off', null, [details: [tool: 'hub_set_rule']])
+
+        then:
+        atomicStateMap.reportErrors*.message == ['kept while the option was on']
+        script._reportErrorSnapshot() == []
+        script.log.messages.any { it.startsWith('error:') && it.contains('failure with retention off') }
     }
 
     def "a record retained under an earlier clear generation is dropped on read"() {

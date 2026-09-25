@@ -686,10 +686,13 @@ private Map _rmRuleIdListArg(Object raw) {
     return [ids: ids, idsVerified: verified]
 }
 
-// Trigger a Rule Machine rule via RMUtils.sendAction() or the lifecycle
-// button for stop/start (RMUtils has no startRule verb — the RM 5.1 UI
-// uses the stopRule button as a toggle on state.stopped, and clicking
-// it while stopped restarts the rule and resets the private boolean).
+// Trigger a Rule Machine rule via RMUtils.sendAction() (rule) or the RM page
+// buttons for actions/stop/start. actions clicks runAction, the UI's "Run Actions"
+// button; stop/start toggle stopRule (RMUtils has no startRule verb — the RM 5.1 UI
+// uses the stopRule button as a toggle on state.stopped, and clicking it while
+// stopped restarts the rule and resets the private boolean). The button route is
+// the one the hub UI itself takes, so unlike RMUtils.sendAction it is not refused by
+// the platform's per-app load limiter.
 //
 // Not destructive — invokes existing user-configured automation.
 def toolRunRmRule(args) {
@@ -706,9 +709,12 @@ def toolRunRmRule(args) {
     // state.stopped=true clears it + re-runs initialize() + resets the
     // private boolean. To keep the verb idempotent, we read state before
     // clicking and no-op if the rule is already in the target state.
-    if (action == "stop" || action == "start") {
+    if (action == "stop" || action == "start" || action == "actions") {
+        boolean runActions = (action == "actions")
+        def perRule = { Integer id -> runActions ? _rmRunActionsButton(id) : _rmToggleStopped(id, action) }
+        String verb = runActions ? "runAction button" : "stopRule toggle"
         if (ruleIds.size() == 1) {
-            def single = _rmToggleStopped(ruleIds[0], action)
+            def single = perRule(ruleIds[0])
             // Every call echoes ruleIds -- scalar and array alike -- matching the
             // sendRmAction paths, so callers can read one key on every shape.
             if (single instanceof Map) single.ruleIds = ruleIds
@@ -727,7 +733,7 @@ def toolRunRmRule(args) {
                 remaining = ruleIds.subList(i, ruleIds.size()).collect { it }
                 break
             }
-            results << _rmToggleStopped(ruleIds[i], action)
+            results << perRule(ruleIds[i])
         }
         List failed = []
         results.eachWithIndex { r, i -> if (r?.success != true) failed << ruleIds[i] }
@@ -735,7 +741,7 @@ def toolRunRmRule(args) {
             success: failed.isEmpty() && !budgetPaused,
             partial: budgetPaused || (!failed.isEmpty() && failed.size() < results.size()),
             ruleIds: ruleIds,
-            rmAction: "stopRule toggle x${results.size()}",
+            rmAction: "${verb} x${results.size()}".toString(),
             results: results
         ]
         if (idArg.idsVerified != null) out.idsVerified = idArg.idsVerified
@@ -743,9 +749,11 @@ def toolRunRmRule(args) {
             out.failedRuleIds = failed
             def actionedCount = results.size() - failed.size()
             out.error = (actionedCount == 0)
-                ? "stopRule toggle failed for EVERY rule in the batch (${failed.join(', ')}); per-rule detail in results[]."
-                : "stopRule toggle failed for rule(s) ${failed.join(', ')} -- the other ${actionedCount} rule(s) in the batch WERE actioned; per-rule detail in results[]."
-            out.note = "Re-issue for the failed ids only. A repeat of a succeeded id is safe: the toggle no-ops rules already in the target state."
+                ? "${verb} failed for EVERY rule in the batch (${failed.join(', ')}); per-rule detail in results[].".toString()
+                : "${verb} failed for rule(s) ${failed.join(', ')} -- the other ${actionedCount} rule(s) in the batch WERE actioned; per-rule detail in results[].".toString()
+            out.note = runActions
+                ? "Re-issue for the failed ids only: a repeat of a succeeded id runs that rule's actions again."
+                : "Re-issue for the failed ids only. A repeat of a succeeded id is safe: the toggle no-ops rules already in the target state."
         }
         if (budgetPaused) {
             out.remainingRuleIds = remaining
@@ -758,16 +766,21 @@ def toolRunRmRule(args) {
         return out
     }
 
-    def rmAction
-    switch (action) {
-        case "rule": rmAction = "runRule"; break
-        case "actions": rmAction = "runRuleAct"; break
-        default: throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
-    }
-
-    def result = sendRmAction(ruleIds, rmAction, "hub_call_rule action=${action}")
+    if (action != "rule") throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
+    def result = sendRmAction(ruleIds, "runRule", "hub_call_rule action=${action}")
     if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     return result
+}
+
+// Click the rule's Run Actions button (runAction on the main page): runs the action list
+// directly, skipping condition evaluation, exactly as the hub UI does.
+private Map _rmRunActionsButton(Integer ruleId) {
+    try {
+        _rmClickAppButton(ruleId, "runAction")
+    } catch (Exception e) {
+        return [success: false, ruleId: ruleId, error: "hub_call_rule action=actions: runAction button click failed (${e.message})"]
+    }
+    return [success: true, ruleId: ruleId, rmAction: "runAction button"]
 }
 
 // Drive the RM 5.1 stopRule button — the same toggle the hub UI exposes

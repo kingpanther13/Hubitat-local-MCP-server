@@ -144,6 +144,7 @@ void _retainReportError(Map entry) {
 }
 
 private List _reportErrorSnapshot() {
+    if (settings?.retainReportErrors != true) return []
     def entries = atomicState.reportErrors instanceof List ? atomicState.reportErrors : []
     def generation = atomicState.debugLogGeneration
     def current = entries.findAll { it instanceof Map && it.generation == generation }
@@ -336,12 +337,11 @@ private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) 
 
 private Map _bugReportEnvironmentSummary(args, String privacyMode, Map identity) {
     def hubName = "Unknown"
-    def hubModel = "Unknown"
+    def hubModel = _hubHardwareModel() ?: "Unknown"
     def hubFirmware = "Unknown"
     def timeZone = "Unknown"
     try {
         hubName = location.hub?.name?.toString() ?: "Unknown"
-        hubModel = location.hub?.hardwareID?.toString() ?: location.hub?.type?.toString() ?: "Unknown"
         hubFirmware = location.hub?.firmwareVersionString?.toString() ?: "Unknown"
         timeZone = location.timeZone?.ID?.toString() ?: "Unknown"
     } catch (Throwable e) {
@@ -425,6 +425,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
+            "- **Keep recent errors for bug reports:** ${eff(settings.retainReportErrors, false)}",
             "- **Max captured states:** ${effNum(settings.maxCapturedStates, getMaxCapturedStates())}",
             "- **Loop guard max executions:** ${effNum(settings.loopGuardMax, settings.loopGuardMax ?: 30)}",
             "- **Loop guard window (sec):** ${effNum(settings.loopGuardWindowSec, settings.loopGuardWindowSec ?: 60)}"
@@ -865,7 +866,7 @@ def _getAllToolDefinitions_partDebugLogging() {
                     actual: [type: "string", description: "What actually happened."],
                     stepsToReproduce: [type: "string", description: "Exact repro sequence."],
                     issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
-                    failingTool: [type: "string", description: "Failed MCP tool; scopes logs and title. Defaults from retained errors."],
+                    failingTool: [type: "string", description: "Failed MCP tool; scopes logs and title."],
                     ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
                     nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
                     llmClient: [type: "string", description: "Host app + version, e.g. Claude Code 2.1 or Claude Desktop; ask the user, never guess."],

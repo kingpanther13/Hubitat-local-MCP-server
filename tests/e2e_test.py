@@ -949,6 +949,9 @@ class HubitatMcpClient:
                 # a client-side hot loop while preserving one logical call.
                 time.sleep(state_only_delay)
                 state_only_delay = min(state_only_delay * 2, 0.25)
+            parsed = self._decode_tool_result(name, arguments, result)
+            _op_ok = not (isinstance(parsed, dict) and parsed.get("success") is False)
+            return parsed
         except BaseException as exc:
             _op_ok = False
             # Cleanup can make more calls before the runner sees this exception.
@@ -985,8 +988,8 @@ class HubitatMcpClient:
             if _dur >= 7.5:
                 print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
                       f"{'' if _op_ok else '  [err/504]'}")
-        assert result is not None
 
+    def _decode_tool_result(self, name: str, arguments: dict, result: dict) -> Any:
         # Check for tool-level error
         if result.get("isError"):
             content_text = ""
@@ -1267,33 +1270,17 @@ class TestRunner:
         self.defer_native_deletes = os.environ.get("E2E_DEFER_NATIVE_DELETES") == "1"
         self.created_variable_names: list[str] = []
 
-        # Mid-run recovery for the platform's per-app load limiter. Once enough load
-        # accumulates in the platform's sliding window (back-to-back full runs get
-        # there), the hub throws LimitExceededException in the DEVICE's context on
-        # every device-method dispatch from the server app -- commands false-succeed
-        # and produce no event, and the block stays until the app instance is
-        # bounced (disable/enable; verified live, no reboot needed). The watchdog
-        # endpoint can do that bounce while the server stays the app under test, so
-        # the dispatch-dependent tests retry ONCE after a bounce instead of failing
-        # a healthy build on cadence. Every bounce is printed loudly and counted in
-        # the summary -- recovery is never silent.
+        # Dispatch-dependent tests may attempt a watchdog disable/enable before
+        # one retry. Only the retried operation/readback establishes recovery;
+        # a verified re-enable alone is not a passing test.
         self.watchdog_url = os.environ.get("WATCHDOG_URL", "")
         self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
         self.throttle_bounces = 0
         self._soft_passes: list[str] = []
-        # Inter-test pacing (see _run_one): optional client-side breathing room per test, ON TOP
-        # of the unconditional 0.2s per-call gap in _send. Byte volume (real per-run hub backups,
-        # large accumulated wizard pages) is one limiter input, but call CADENCE is another and was
-        # wrongly dismissed: the full 137-test lane still tripped the per-app limiter with backups
-        # mocked and rules kept small, because back-to-back calls (reads included) drove app 38's
-        # short-window duty cycle over the ceiling. The _send 0.2s gap is the primary lever; raise
-        # this for additional per-test spacing if the lane is still hot.
+        # Optional per-test spacing, in addition to the per-call gap in _send.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
-        # Opt-in escalation so a recurring per-app load limiter is NOT soft-passed forever: once the
-        # limiter has tripped (and been app-bounced) this many times in a run, escalate from an
-        # app-bounce to a full HUB REBOOT, which resets the platform's load counters (an app-bounce
-        # only clears the app instance). 0 = disabled (default; pure soft-pass behaviour). Capped at a
-        # few reboots/run so it can never loop. See _reboot_hub_for_limiter / _clear_load_throttle.
+        # Reboot escalation is opt-in and disabled in normal CI. A zero threshold
+        # leaves repeated failures to the caller's assertions; it does not grant a pass.
         self.limiter_reboot_after = int(os.environ.get("E2E_LIMITER_REBOOT_AFTER", "0"))
         self._limiter_reboots = 0
 
@@ -1443,21 +1430,18 @@ class TestRunner:
             return False
 
     def _clear_load_throttle(self, reason: str) -> bool:
-        """Bounce (disable/enable) the server app via the WATCHDOG to clear the
-        platform's per-app load-limiter block (LimitExceededException -- device
-        commands false-succeed with no event while it holds).
-        Returns True when the bounce fully verified, so the caller can retry its
-        dispatch exactly once. A bounce is NOT a reset: it clears the block on the
-        app INSTANCE, but the platform's load counters survive it, so the retry can
-        re-trip the limiter immediately -- only a hub reboot resets those counters
-        (hence _reboot_hub_for_limiter). Callers must handle a still-limited retry.
-        LOUD on purpose: a recovery that happened must be visible in the run log
-        and the summary."""
+        """Attempt watchdog disable/enable; True verifies those flags, not recovery.
+
+        The caller must verify its single retried dispatch. Attempts are logged
+        and counted even when the retry remains blocked.
+        """
         if not (self.watchdog_url and self.server_app_id):
             print(f"    [THROTTLE] suspected load-limiter block ({reason}) but "
                   "WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot bounce, failing as-is.")
             return False
         print(f"    [THROTTLE] suspected platform load-limiter block: {reason}")
+        if getattr(self, "_load_diagnostics", False) and not self.throttle_bounces:
+            self._record_load_snapshot("first limiter recovery")
         print(f"    [THROTTLE] bouncing server app {self.server_app_id} via the watchdog (disable/enable)...")
         if not self._watchdog_set_app_disabled(True):
             print("    [THROTTLE] disable leg did not verify -- not retrying the enable; failing as-is.")
@@ -1486,6 +1470,35 @@ class TestRunner:
                 and self._limiter_reboots < 3):
             self._reboot_hub_for_limiter()
         return True
+
+    def _call_with_limiter_bounce(self, gateway: str, tool: str, args: dict, label: str,
+                                  bounces: int = 1) -> tuple[Any, str | None]:
+        """One gateway call under the platform load-limiter contract: (envelope, limiter_message).
+        The limiter reaches us in TWO shapes -- some tools RAISE it, the RMUtils-backed ones
+        (hub_set_rule_paused, hub_call_rule, hub_set_rule_private_boolean) return it inside a
+        {'success': False, 'error': '...excessive hub load'} envelope -- so both are normalized
+        into the second element. Each trip bounces the app and retries, up to `bounces` rounds.
+        A non-None second element can survive the retry; the caller decides whether
+        a converged read-back means the write landed anyway. Other errors propagate."""
+
+        def _attempt():
+            try:
+                envelope = self.client.call_tool(gateway, {"tool": tool, "args": args})
+            except McpToolError as exc:
+                if "excessive hub load" not in str(exc):
+                    raise
+                return None, str(exc)
+            if (isinstance(envelope, dict) and envelope.get("success") is False
+                    and "excessive hub load" in str(envelope.get("error", ""))):
+                return envelope, str(envelope.get("error"))
+            return envelope, None
+
+        res, limited = _attempt()
+        for _round in range(bounces):
+            if not limited or not self._clear_load_throttle(f"{label}: {limited}"):
+                break
+            res, limited = _attempt()
+        return res, limited
 
     def _reboot_hub_for_limiter(self) -> bool:
         """Escalation for a recurring per-app load limiter: REBOOT the hub to reset the platform's
@@ -1804,7 +1817,10 @@ class TestRunner:
 
     def _last_op_str(self, error: BaseException | None = None) -> str:
         """Prefer the failing call's identity over any subsequent cleanup call."""
-        lo = getattr(error, "_mcp_failed_op", None) or getattr(self.client, "_last_op", None)
+        lo = getattr(error, "_mcp_failed_op", None)
+        if lo is None and isinstance(error, AssertionError):
+            return "assertion"
+        lo = lo or getattr(self.client, "_last_op", None)
         if not lo:
             return "unknown"
         op_key, dur, ok = lo
@@ -1835,7 +1851,49 @@ class TestRunner:
             time.sleep(5.0)
         print(f"    [BACKOFF] {name}: settle window elapsed -- re-running anyway")
 
+    def _record_load_snapshot(self, phase: str, *, include_mesh: bool = False) -> None:
+        """Bounded read-only evidence around the workload preceding RM dispatches."""
+        last_op = self.client._last_op
+        snapshot = {"phase": phase, "at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "recentCalls": self.client.op_timings[-10:]}
+        try:
+            stats = self.client.call_tool("hub_read_diagnostics", {
+                "tool": "hub_get_performance_stats", "args": {"type": "app", "sortBy": "totalMs", "limit": 0},
+            })
+            snapshot.update({key: stats.get(key) for key in ("uptime", "snapshot", "appSummary")})
+            rows = stats.get("appStats", [])
+            fields = ("id", "count", "pctBusy", "pctTotal", "stateSize", "totalMs", "averageMs",
+                      "totalEvents", "states", "hubActions", "pendingEvents", "cloudCalls", "largeState")
+            snapshot["apps"] = [{key: row.get(key) for key in fields}
+                                for index, row in enumerate(rows)
+                                if index < 5 or str(row.get("id")) == self.server_app_id]
+            if include_mesh:
+                mesh = self.client.call_tool("hub_get_hub_mesh")
+                snapshot["mesh"] = {"enabled": mesh.get("hubMeshEnabled"),
+                                    "fullRefreshInterval": mesh.get("fullRefreshInterval")}
+                for key in ("peers", "sharedDevices", "localLinkedDevices"):
+                    snapshot["mesh"][key + "Count"] = len(mesh.get(key, []))
+        except Exception as exc:
+            snapshot["diagnosticError"] = type(exc).__name__
+        finally:
+            self.client._last_op = last_op
+        print("    LOAD_SNAPSHOT " + json.dumps(snapshot, sort_keys=True), flush=True)
+
     def _run_one(self, group: str, name: str, method_name: str) -> None:
+        print(f"  [TEST] {datetime.now(UTC).isoformat(timespec='seconds')} {group}/{name}", flush=True)
+        capture_load = getattr(self, "_load_diagnostics", False)
+        matrix = method_name == "test_device_configuration_matrix"
+        if capture_load and (matrix or method_name == "test_set_rule_native_lifecycle"):
+            self._record_load_snapshot(f"before {name}", include_mesh=matrix)
+        try:
+            self._run_one_attempts(group, name, method_name)
+        finally:
+            if capture_load and matrix:
+                self._record_load_snapshot(f"after {name}")
+            if self.pace_seconds > 0:
+                time.sleep(self.pace_seconds)
+
+    def _run_one_attempts(self, group: str, name: str, method_name: str) -> None:
         method = getattr(self, method_name)
         self._current_test = f"{group}/{name}"
         self.client._active_test = self._current_test   # so per-op timings attribute to this test
@@ -1906,14 +1964,6 @@ class TestRunner:
                 self._record(name, group, "fail",
                              message=f"[{self._last_op_str(exc)}] {exc}"[:200], duration=elapsed)
                 return
-        # Inter-test breathing room for the hub's per-app load limiter. The limiter has
-        # tripped MID-RUN on a freshly-booted hub, and the suite's recent speedups all
-        # removed the natural idle gaps the older, slower flow gave the server app between
-        # heavy phases -- raising its short-window duty cycle. A client-side sleep costs
-        # the hub NOTHING (no request is in flight) and caps that duty cycle. Tunable via
-        # E2E_PACE_SECONDS; 0 disables.
-        if self.pace_seconds > 0:
-            time.sleep(self.pace_seconds)
 
     # -- Rule helper: create, verify, delete ---------------------------------
 
@@ -5352,27 +5402,7 @@ class TestRunner:
         # instance's block, so even the bounced retry can hit it again.
         def _status_write(tool: str, args: dict, label: str) -> Any:
             gateway = "hub_manage_rule_machine" if tool == "hub_set_rule_paused" else "hub_manage_native_rules_and_apps"
-
-            def _attempt():
-                """(envelope, limiter_message) for one call. The limiter reaches us in TWO
-                shapes -- hub_set_app_disabled RAISES it, hub_set_rule_paused returns it inside
-                a {'success': False, 'error': '...excessive hub load'} envelope -- so both are
-                normalized into the second element and take the SAME recovery path below.
-                Anything that is not the limiter propagates."""
-                try:
-                    envelope = self.client.call_tool(gateway, {"tool": tool, "args": args})
-                except McpToolError as exc:
-                    if "excessive hub load" not in str(exc):
-                        raise
-                    return None, str(exc)
-                if (isinstance(envelope, dict) and envelope.get("success") is False
-                        and "excessive hub load" in str(envelope.get("error", ""))):
-                    return envelope, str(envelope.get("error"))
-                return envelope, None
-
-            res, limited = _attempt()
-            if limited and self._clear_load_throttle(f"{label}: {limited}"):
-                res, limited = _attempt()
+            res, limited = self._call_with_limiter_bounce(gateway, tool, args, label)
             if limited:
                 # An app bounce clears the app INSTANCE; the limiter that blocks RMUtils lives on
                 # the platform's load counters, so the retry above can hit it again (observed: the
@@ -5413,22 +5443,8 @@ class TestRunner:
             hub_get_rule_health's `stopped`, not in the appsList status the paused/disabled
             writes poll."""
 
-            def _attempt():
-                try:
-                    envelope = self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_call_rule", "args": {"ruleId": app_id, "action": action}})
-                except McpToolError as exc:
-                    if "excessive hub load" not in str(exc):
-                        raise
-                    return None, str(exc)
-                if (isinstance(envelope, dict) and envelope.get("success") is False
-                        and "excessive hub load" in str(envelope.get("error", ""))):
-                    return envelope, str(envelope.get("error"))
-                return envelope, None
-
-            res, limited = _attempt()
-            if limited and self._clear_load_throttle(f"{label}: {limited}"):
-                res, limited = _attempt()
+            res, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_id, "action": action}, label)
             if limited:
                 # The limiter can abort the reply to a write that already committed, so a
                 # converged health read means the envelope is stale, not the write failed.
@@ -6168,24 +6184,10 @@ class TestRunner:
             rule_b = self._create_native_rule("CallRuleAggB")
             ids = [int(rule_a), int(rule_b)]
 
-            def _attempt():
-                # hub_call_rule stop/start is limiter-susceptible, the same as the sibling
-                # lifecycle test documents. _run_one's generic retry only matches a 50[0-3]
-                # status, which an "excessive hub load" McpToolError never carries -- so
-                # without this the test fails outright rather than flake-retrying.
-                try:
-                    envelope = self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_call_rule", "args": {"ruleId": ids, "action": "stop"}})
-                except McpToolError as exc:
-                    if "excessive hub load" not in str(exc):
-                        raise
-                    return None, str(exc)
-                if (isinstance(envelope, dict) and envelope.get("success") is False
-                        and "excessive hub load" in str(envelope.get("error", ""))):
-                    return envelope, str(envelope.get("error"))
-                return envelope, None
-
-            res, limited = _attempt()
+            # hub_call_rule stop/start is limiter-susceptible, the same as the sibling lifecycle
+            # test documents. _run_one's generic retry only matches a 50[0-3] status, which an
+            # "excessive hub load" McpToolError never carries -- so without this the test fails
+            # outright rather than flake-retrying.
             # Two bounce rounds, not one. The sibling lifecycle test's own comments record
             # that a single bounce+retry was NOT enough there and it needed a further
             # converged-read fallback -- so one round here would inherit a failure mode that
@@ -6193,12 +6195,9 @@ class TestRunner:
             # refusal produces no envelope to assert, so it cannot fall back to a read the way
             # the sibling does; it retries harder instead, then reports the limiter error if both
             # bounce+retry rounds are exhausted.
-            for _round in range(2):
-                if not limited:
-                    break
-                if not self._clear_load_throttle(f"multi-id hub_call_rule: {limited}"):
-                    break
-                res, limited = _attempt()
+            res, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": ids, "action": "stop"},
+                "multi-id hub_call_rule", bounces=2)
             assert not limited, (
                 "multi-id hub_call_rule stayed blocked by the platform load limiter after "
                 f"two bounce+retry rounds: {limited}"
@@ -8805,8 +8804,9 @@ class TestRunner:
                 assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
                 assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
                 self._assert_rule_healthy(app_d)
-                self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_call_rule", "args": {"ruleId": app_d, "action": "actions"}})
+                run, limited = self._call_with_limiter_bounce(
+                    "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_d, "action": "actions"},
+                    "hub_call_rule(action=actions)")
                 got = None
                 deadline = time.time() + 15.0
                 while time.time() < deadline:
@@ -8815,7 +8815,16 @@ class TestRunner:
                     if str(got) in ("7", "7.0"):
                         break
                     time.sleep(1.0)
-                assert str(got) in ("7", "7.0"),                     f"running the Number copy did not set {var_name} to 7 (got {got!r})"
+                # The limiter can abort the reply to a run that already happened, so the variable
+                # read above is the verdict; the run's own outcome explains a miss.
+                if str(got) not in ("7", "7.0"):
+                    assert not limited, (
+                        f"hub_call_rule(action=actions) stayed blocked by the platform load limiter "
+                        f"and {var_name} never reached 7 (got {got!r}): {limited}")
+                    assert not (isinstance(run, dict) and run.get("success") is False), \
+                        f"hub_call_rule(action=actions) reported failure and {var_name} is {got!r}: {run}"
+                assert str(got) in ("7", "7.0"), \
+                    f"running the Number copy did not set {var_name} to 7 (got {got!r}; run result {run})"
             finally:
                 self._delete_native(app_d)
         finally:
@@ -11488,10 +11497,32 @@ class TestRunner:
             "addActions": [{"capability": "log", "message": "E2E gated"}],
         })
         try:
-            pb = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule_private_boolean", "args": {"ruleId": int(app_id), "value": False}})
-            assert pb.get("success") is not False, \
-                f"could not set the Private Boolean false, so the Required Expression is not gated: {pb}"
+            pb, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_set_rule_private_boolean",
+                {"ruleId": int(app_id), "value": False}, "hub_set_rule_private_boolean(value=False)")
+            if limited:
+                # hub_set_rule_private_boolean has no page-button route (RMUtils is the only way this
+                # app can set another rule's Private Boolean), so when the limiter still refuses it
+                # after a bounce, let Rule Machine set it: a helper rule whose only action is "Set
+                # Private Boolean false" on the gated rule, run through hub_call_rule's Run Actions
+                # button (the hub UI's own route, which the limiter does not gate). The gate under
+                # test is unchanged: PB false -> RM drops the trigger subscriptions -> updateRule
+                # reports SUPPRESSED. A device-condition expression is NOT an equivalent stand-in:
+                # RM subscribes to the device to track it, and that subscription reads as OK.
+                print(f"    [LIMITER] Private Boolean write blocked ({limited}); setting it through a "
+                      "helper rule's privateBoolean action run via the Run Actions button instead.")
+                setter_id = self._create_native_rule("GatedTriggerSetter", {
+                    "addActions": [{"capability": "privateBoolean", "ruleIds": [int(app_id)], "value": False}],
+                })
+                try:
+                    run = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_call_rule", "args": {"ruleId": int(setter_id), "action": "actions"}})
+                    assert run.get("success") is True, f"helper rule's Run Actions did not succeed: {run}"
+                finally:
+                    self._delete_native(setter_id)
+            else:
+                assert pb.get("success") is not False, \
+                    f"could not set the Private Boolean false, so the Required Expression is not gated: {pb}"
             # strict: a relay-dropped response raises instead of returning a verdict-less sentinel.
             res = self._set_rule(app_id, {"button": "updateRule"}, strict=True)
             settle = str((res or {}).get("subscriptionSettle") or "")
@@ -12058,6 +12089,12 @@ class TestRunner:
         assert "mcp_version=" in submit_url, \
             f"submitUrl must prefill mcp_version: {submit_url!r}"
         report = result.get("report") or ""
+        # Hub model is the hardware model hub_get_info reports, never the internal hardwareID.
+        hub_model = re.search(r"^- \*\*Hub model:\*\* (.+)$", report, re.MULTILINE)
+        assert hub_model, "report is missing the Hub model line"
+        expected_model = self.client.call_tool("hub_get_info", {}).get("model")
+        assert hub_model.group(1) == expected_model, \
+            f"report Hub model {hub_model.group(1)!r} != hub_get_info model {expected_model!r}"
         for marker in (
             "## Environment",
             "- **Connection:** ",
@@ -12134,31 +12171,6 @@ class TestRunner:
             f"agent_behavior preflight must be the single verbatim step: {agent_preflight!r}"
         assert "## Verbatim Tool Calls\n_Not provided_" in (agent.get("report") or ""), \
             f"agent_behavior must render the missing-evidence gap: {agent.get('report')!r}"
-
-    @test("system_tools")
-    def test_report_issue_retains_tool_error(self) -> None:
-        # Invalid read arguments fail before touching any device or rule.
-        marker = f"BAT_retained_error_invalid_mode_{time.time_ns()}"
-        try:
-            self.client.call_tool("hub_get_logs", {"mode": marker})
-        except (McpError, McpToolError) as exc:
-            assert marker in str(exc), f"expected the invalid-mode validation error, got: {exc}"
-        else:
-            raise AssertionError("invalid log mode should produce a tool error")
-        result = self.client.call_tool("hub_report_issue", {
-            "title": "E2E retained error probe", "expected": "invalid mode rejected",
-            "actual": "validation error returned", "llmClient": "hubitat-e2e-suite",
-            "llmModel": "n/a (automated suite)",
-        })
-        assert result.get("success") is True, result
-        assert result.get("failingTool") == "hub_get_logs", result
-        assert result.get("logs", {}).get("retainedErrorCount", 0) >= 1, result
-        report = result.get("report") or ""
-        _, found, after = report.partition("## Retained Server Errors")
-        assert found, f"report has no Retained Server Errors section: {report!r}"
-        retained = after.partition("## Recent Error/Warning Logs")[0]
-        assert marker in retained, retained
-        assert result.get("failingToolSource") == "retained_error", result
 
     @test("system_tools")
     def test_hub_mesh_read(self) -> None:
@@ -16004,6 +16016,7 @@ class TestRunner:
         self._restore_permanent_configuration_fixtures("pre-run")
 
         # Group for display
+        self._load_diagnostics = True
         current_group = None
         for group, display_name, method_name in tests_to_run:
             if group != current_group:
@@ -16061,9 +16074,9 @@ class TestRunner:
 
         if self.throttle_bounces:
             print(f"\n  [THROTTLE] {self.throttle_bounces} watchdog bounce(s) of app "
-                  f"{self.server_app_id or '?'} were needed mid-run -- the platform's per-app "
-                  "load limiter tripped under the accumulated back-to-back load. The retried "
-                  "dispatches passed; this is a capacity signal, not a product failure.")
+                  f"{self.server_app_id or '?'} were attempted after load-limiter errors. "
+                  "A verified app re-enable does not prove dispatch recovered; "
+                  "the individual test results above record the outcome.")
 
         if self._fixture_reset_failures:
             print(f"\n  [FIXTURE-RESET] {len(self._fixture_reset_failures)} permanent-fixture reset(s) FAILED -- "

@@ -55,6 +55,22 @@ def _healthAlertsFromHub2(hub2) {
     return [safeMode: hub2.safeMode == true, active: active, details: alerts]
 }
 
+def _hubHardwareModel() {
+    // The hardware model the Hub Details page shows ("C-7", "C-8 Pro"): /hub/details/json's hardwareVersion.
+    // Null (never a placeholder) when unreadable. warn, not debug: the default log threshold is "error",
+    // and a firmware that renames or drops the field would otherwise degrade model to null silently.
+    try {
+        def raw = hubInternalGet("/hub/details/json")
+        def details = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        def hw = (details instanceof Map) ? details.hardwareVersion : null
+        if (hw instanceof String && hw.trim()) return hw.trim()
+        mcpLog("warn", "server", "_hubHardwareModel: /hub/details/json has no usable hardwareVersion")
+    } catch (Exception e) {
+        mcpLog("warn", "server", "_hubHardwareModel: /hub/details/json read/parse failed: ${e.message}")
+    }
+    return null
+}
+
 def toolGetHubInfo(args = null) {
     def logHistory = getDebugLogReadResult(args ?: [:])
     if (logHistory.status == "in_progress") return logHistory + [tool: "hub_get_info"]
@@ -64,19 +80,10 @@ def toolGetHubInfo(args = null) {
     ]
 
     // Hub hardware and radio info (always available)
-    // Real hardware model (e.g. "C-8 Pro") lives in /hub/details/json's hardwareVersion.
     // hub.hardwareID is an internal platform id ("000D" on both a C-7 and a C-8 Pro), so it is
-    // surfaced separately as platformHardwareId and NEVER used as the model. On any failure model
-    // is null rather than a misleading value. This GET runs only on the hub_get_info tool call.
-    info.platformHardwareId = null
-    try { info.platformHardwareId = hub?.hardwareID } catch (Exception e) { }
-    info.model = null
-    try {
-        def raw = hubInternalGet("/hub/details/json")
-        def details = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        def hw = (details instanceof Map) ? details.hardwareVersion : null
-        if (hw instanceof String && hw.trim()) info.model = hw.trim()
-    } catch (Exception e) { info.model = null }
+    // surfaced separately as platformHardwareId and NEVER used as the model.
+    try { info.platformHardwareId = hub?.hardwareID } catch (Exception e) { info.platformHardwareId = null }
+    info.model = _hubHardwareModel()
     try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
     try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable" }
     try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable" }

@@ -70,6 +70,7 @@ class AppCodeClient:
 def runner_for(client):
     runner = object.__new__(et.TestRunner)
     runner.client = client
+    runner.pace_seconds = 0
     return runner
 
 
