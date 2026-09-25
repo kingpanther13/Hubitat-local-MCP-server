@@ -659,6 +659,95 @@ def test_print_summary_requires_tests_and_fixture_resets_to_succeed(
     assert ("[FIXTURE-RESET]" in output) is bool(reset_failures)
 
 
+@pytest.mark.parametrize("outcome", ["pass", "fail", "skip", "retry"])
+@pytest.mark.parametrize("pace", [0, 0.5])
+def test_run_one_paces_once_after_terminal_result(monkeypatch, outcome, pace):
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(_last_op=None)
+    runner.results = []
+    runner._soft_passes = []
+    runner.pace_seconds = pace
+    sleeps = []
+    monkeypatch.setattr(et.time, "sleep", sleeps.append)
+    runner._settle_before_504_retry = lambda name: None
+    attempts = []
+
+    def probe():
+        attempts.append(1)
+        if outcome == "fail":
+            raise AssertionError("value did not change")
+        if outcome == "skip":
+            raise et.SkipTest("fixture unavailable")
+        if outcome == "retry" and len(attempts) == 1:
+            raise et.RelayLostResponseError("504 Gateway Timeout")
+
+    runner.probe = probe
+    runner._run_one("isolated", "probe", "probe")
+    assert sleeps == ([pace] if pace else [])
+    assert len(attempts) == (2 if outcome == "retry" else 1)
+    assert len(runner.results) == 1
+    assert runner.results[0]["status"] == {"retry": "pass"}.get(outcome, outcome)
+
+
+def test_assertion_failure_is_not_attributed_to_successful_cleanup():
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(_last_op=("hub_delete_variable", 3.6, True))
+    assert runner._last_op_str(AssertionError("copy stayed at zero")) == "assertion"
+
+
+def test_limiter_summary_does_not_claim_retried_dispatches_passed(capsys):
+    runner = object.__new__(et.TestRunner)
+    runner.results = [{"group": "native_apps", "name": "blocked", "status": "fail",
+                       "message": "dispatch remained blocked", "duration": 0.1}]
+    runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
+    runner.throttle_bounces = 6
+    runner.server_app_id = "38"
+    runner._fixture_reset_failures = []
+    runner._soft_passes = []
+    assert runner._print_summary() is False
+    output = capsys.readouterr().out
+    assert "retried dispatches passed" not in output
+    assert "6 watchdog bounce(s)" in output
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_load_snapshot_is_read_only_redacted_and_preserves_failed_operation(capsys, unavailable):
+    calls = []
+    failed_op = ("hub_call_rule", 1.2, False)
+    runner = object.__new__(et.TestRunner)
+    runner.server_app_id = "38"
+
+    def call_tool(name, arguments=None):
+        calls.append(name)
+        runner.client._last_op = (name, 0.1, True)
+        if unavailable:
+            raise et.McpToolError(name, "sensitive response detail")
+        if name == "hub_read_diagnostics":
+            assert arguments["tool"] == "hub_get_performance_stats"
+            return {"uptime": 42, "appStats": [
+                {"id": i, "totalMs": 100 - i, "name": "private app name"} for i in range(6)
+            ] + [{"id": 38, "totalMs": 5}]}
+        assert name == "hub_get_hub_mesh"
+        return {"hubMeshEnabled": True, "hubMeshToken": "secret token",
+                "peers": [{"token": "peer secret"}], "sharedDevices": []}
+
+    runner.client = SimpleNamespace(call_tool=call_tool, _last_op=failed_op,
+                                    op_timings=[("hub_call_rule", 1.2, "native_apps/example", False)])
+    runner._record_load_snapshot("before fixture edits", include_mesh=True)
+    assert runner.client._last_op is failed_op
+    output = capsys.readouterr().out
+    assert "secret" not in output and "private app name" not in output and "sensitive" not in output
+    snapshot = json.loads(output.split("LOAD_SNAPSHOT ", 1)[1])
+    if unavailable:
+        assert snapshot["diagnosticError"] == "McpToolError"
+        assert calls == ["hub_read_diagnostics"]
+    else:
+        assert [row["id"] for row in snapshot["apps"]] == [0, 1, 2, 3, 4, 38]
+        assert snapshot["mesh"]["enabled"] is True
+        assert snapshot["mesh"]["peersCount"] == 1
+        assert calls == ["hub_read_diagnostics", "hub_get_hub_mesh"]
+
+
 def test_limiter_lines_falls_back_to_watchdog_and_filters_exact_device_method(monkeypatch):
     target = (
         "dev|5781|BAT_E2E_CmdRoundtrip|error|"
@@ -1513,6 +1602,37 @@ def test_failure_diagnostic_retains_transport_operation_after_successful_cleanup
     assert client._last_op[0] == "hub_delete_file"
     assert runner._last_op_str(caught.value).startswith("hub_get_source ")
     assert runner._last_op_str(caught.value).endswith(" [err]")
+
+
+@pytest.mark.parametrize("is_error", [True, False])
+def test_tool_failure_telemetry_survives_successful_cleanup(is_error):
+    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
+
+    def send(method, params=None, **_kwargs):
+        if params["name"] == "hub_call_rule":
+            return {**_raw_tool_body({"success": False, "error": "excessive hub load"}),
+                    "isError": is_error}
+        return _raw_tool_body({"success": True})
+
+    client._send = send
+    caught = None
+    try:
+        result = client.call_tool("hub_call_rule", {"ruleId": [42], "action": "run"}, flat=True)
+        assert not is_error and result["success"] is False
+    except et.McpToolError as exc:
+        assert is_error
+        caught = exc
+    finally:
+        client.call_tool("hub_delete_variable", {"name": "owned"}, flat=True)
+
+    assert client.op_timings[0][0] == "hub_call_rule"
+    assert client.op_timings[0][3] is False
+    assert client.op_timings[1][3] is True
+    if is_error:
+        runner = object.__new__(et.TestRunner)
+        runner.client = client
+        assert runner._last_op_str(caught).startswith("hub_call_rule ")
+        assert runner._last_op_str(caught).endswith(" [err]")
 
 
 def test_call_tool_paces_ten_same_state_contention_rounds_and_still_completes(monkeypatch):
