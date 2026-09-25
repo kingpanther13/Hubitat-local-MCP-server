@@ -1668,6 +1668,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.4.3** - fix: hub_report_issue reports the real hub model; make bug-report error retention opt-in. PRs: [#468](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/468)
 - **v4.4.2** - fix: resolve verified issue 407 findings; fix: hub_get_info reports the real hardware model, not the internal hardwareID (#466); feat: add protected-app controls for generic app mutations. PRs: [#465](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/465), [#467](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/467), [#456](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/456)
 - **v4.4.1** - fix: keep producedBy/triggered provenance in device event history. PRs: [#459](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/459)
 - **v4.4.0** - feat: add hub-level Hub Mesh tools (hub_get_hub_mesh, hub_update_hub_mesh). PRs: [#438](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/438)
