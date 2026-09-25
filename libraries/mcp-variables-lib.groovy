@@ -469,22 +469,19 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
             it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId } : null
     }
 
-    // Pre-validate the source pair against the offered pool BEFORE the GET (validation-before-side-
-    // effect). An unoffered pair leaves the source row absent in the read-back, which would otherwise
-    // read as "linked" and report a false success. When the pool is readable and does NOT offer the
-    // pair, reject up front; an already-linked pair short-circuits (no fresh GET, no fresh-success claim).
+    // Pre-validate BEFORE the GET (validation-before-side-effect). Two short-circuits, in order:
+    //  (a) already linked -- a linked source LEAVES availableLinkedHubVariables (it moves to
+    //      localLinkedHubVariables), so check the local mirror by source FIRST; also honor a
+    //      still-offered row flagged linkedLocally. No fresh GET, no fresh-success claim.
+    //  (b) not offered -- pool readable but no matching row AND not already linked -> reject (an
+    //      unoffered pair would otherwise read as "linked" in the read-back and false-succeed).
     def srcBeforeRow = (availBefore != null)
         ? availBefore.find { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
         : null
     boolean sourceWasOffered = (srcBeforeRow != null)
-    if (availBefore != null && !sourceWasOffered) {
-        throw new IllegalArgumentException(
-            "No shared variable with hubId ${meshHubId} + name '${meshName}' is offered in " +
-            "hub_get_hub_mesh availableLinkedHubVariables[]. Copy the hubId + name from an " +
-            "availableLinkedHubVariables[] row and retry.")
-    }
-    if (srcBeforeRow != null && srcBeforeRow.linkedLocally == true) {
-        def existing = resolveLocal(localBefore)
+    def existingLocal = resolveLocal(localBefore)
+    if (existingLocal != null || srcBeforeRow?.linkedLocally == true) {
+        def existing = existingLocal
         mcpLog("info", "variables", "hub_create_variable: Hub Mesh variable '${meshName}' from hub ${meshHubId} is already linked${existing ? " as '${existing.name}'" : ''}")
         def already = [
             success: true,
@@ -498,6 +495,12 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
         ]
         if (existing == null) already.warnings = ["Already linked, but the local mirror name did not resolve from hub_get_hub_mesh localLinkedHubVariables; the returned name is the bare source name and may not identify the mirror. Verify it with hub_get_hub_mesh."]
         return already
+    }
+    if (availBefore != null && !sourceWasOffered) {
+        throw new IllegalArgumentException(
+            "No shared variable with hubId ${meshHubId} + name '${meshName}' is offered in " +
+            "hub_get_hub_mesh availableLinkedHubVariables[], and it is not already linked here. Copy the " +
+            "hubId + name from an availableLinkedHubVariables[] row and retry.")
     }
 
     // A 30s read timeout can fire AFTER the hub applied the link, so a throw is an UNKNOWN outcome, not

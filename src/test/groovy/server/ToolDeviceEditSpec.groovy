@@ -1426,6 +1426,26 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
     }
 
+    def "toolCreateDevice mesh link reports alreadyLinked (not 'not offered') when the source left availableLinkedDevices but a local proxy exists"() {
+        given: 'a linked source LEAVES availableLinkedDevices; the local proxy is the only evidence'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [[id: 900, name: 'Kitchen Bridge', sourceHubId: 'HUB-A']],
+                availableLinkedDevices: []
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then: 'recognized as already linked via the local proxy, not rejected as unoffered; no fresh GET'
+        result.success == true
+        result.alreadyLinked == true
+        result.deviceId == '900'
+        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+    }
+
     def "toolCreateDevice mesh link alreadyLinked warns when the existing local id cannot be resolved"() {
         given: 'linkedLocally:true but no localLinkedDevices row for this source'
         hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }

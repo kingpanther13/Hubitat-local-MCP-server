@@ -1354,10 +1354,14 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     def "hub_create_variable mesh link passes the name segment LITERALLY (not pre-encoded -- the platform layer encodes the path)"() {
-        given: 'a non-ASCII name: the path segment reaches the HTTP layer literal, since pre-encoding double-encodes'
+        given: 'a non-ASCII name, a FRESH link (offered before, mirror appears after): the path segment reaches the HTTP layer literal, since pre-encoding double-encodes'
         enableWrite()
-        hubGet.register('/hub2/createLinkedHubVar/HUB-A/café') { params -> '' }
-        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedHubVariables":[{"name":"café on Peer","sourceVarName":"café","sourceHubId":"HUB-A"}]}' }
+        def done = false
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/café') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            done ? '{"localLinkedHubVariables":[{"name":"café on Peer","sourceVarName":"café","sourceHubId":"HUB-A"}],"availableLinkedHubVariables":[]}'
+                 : '{"localLinkedHubVariables":[],"availableLinkedHubVariables":[{"hubId":"HUB-A","name":"café","linkedLocally":false}]}'
+        }
 
         when:
         def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'café', confirm: true])
@@ -1389,6 +1393,28 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.name == 'porchTemp on Peer'
         result.sourceName == 'porchTemp'
         result.linked == true
+        !hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
+    }
+
+    def "hub_create_variable mesh link reports alreadyLinked (not 'not offered') when the source left availableLinkedHubVariables but a local mirror exists"() {
+        given: 'a linked source LEAVES availableLinkedHubVariables; the local mirror is the only evidence'
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                availableLinkedHubVariables: [],
+                localLinkedHubVariables: [[name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A']]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'recognized as already linked via the local mirror, not rejected as unoffered; no fresh GET'
+        result.success == true
+        result.alreadyLinked == true
+        result.name == 'porchTemp on Peer'
+        result.sourceName == 'porchTemp'
         !hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
     }
 

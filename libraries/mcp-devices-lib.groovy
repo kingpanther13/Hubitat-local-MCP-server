@@ -4642,21 +4642,18 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         return byDev.size() == 1 ? byDev[0] : null
     }
 
-    // Pre-validate the source pair against the offered pool BEFORE the GET (validation-before-side-
-    // effect). An unoffered pair leaves srcRow==null in the read-back, which would otherwise read as
-    // "linked" and report a false success. When the pool is readable and does NOT offer the pair,
-    // reject up front; an already-linked pair short-circuits (no fresh GET, no fresh-success claim).
+    // Pre-validate BEFORE the GET (validation-before-side-effect). Two short-circuits, in order:
+    //  (a) already linked -- a linked source LEAVES availableLinkedDevices (it moves to
+    //      localLinkedDevices), so check the local proxy by source FIRST; also honor a still-offered
+    //      row flagged linkedLocally. No fresh GET, no fresh-success claim.
+    //  (b) not offered -- pool readable but no matching row AND not already linked -> reject (an
+    //      unoffered pair would otherwise read as srcRow==null "linked" in the read-back and false-succeed).
     def srcBefore = (availBefore != null)
         ? availBefore.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
         : null
-    if (availBefore != null && srcBefore == null) {
-        throw new IllegalArgumentException(
-            "No shared device with hubId ${meshHubId} + deviceId ${meshDeviceId} is offered in " +
-            "hub_get_hub_mesh availableLinkedDevices[]. Copy the hubId + deviceId from an " +
-            "availableLinkedDevices[] row and retry.")
-    }
-    if (srcBefore != null && srcBefore.linkedLocally == true) {
-        def existing = resolveLocal(beforeList)
+    def existingLocal = resolveLocal(beforeList)
+    if (existingLocal != null || srcBefore?.linkedLocally == true) {
+        def existing = existingLocal
         mcpLog("info", "device", "hub_create_device: Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId}) is already linked${existing ? " as local ${existing.id}" : ''}")
         def already = [
             success: true,
@@ -4671,6 +4668,12 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         ]
         if (existing == null) already.warnings = ["Already linked, but could not resolve the existing local id from hub_get_hub_mesh localLinkedDevices. Find it with hub_get_hub_mesh."]
         return already
+    }
+    if (availBefore != null && srcBefore == null) {
+        throw new IllegalArgumentException(
+            "No shared device with hubId ${meshHubId} + deviceId ${meshDeviceId} is offered in " +
+            "hub_get_hub_mesh availableLinkedDevices[], and it is not already linked here. Copy the " +
+            "hubId + deviceId from an availableLinkedDevices[] row and retry.")
     }
 
     // A 30s read timeout can fire AFTER the hub applied the link, so a throw is an UNKNOWN outcome, not
