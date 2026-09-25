@@ -978,7 +978,7 @@ The tool keeps a thin defensive net: it still verifies the delete via a short re
     "recommended": "verify-then-decide",
     "verifyVia": "hub_get_app_config(appId: <id>)",
     "ifActionsAbsent": "treat as success -- clearActions committed post-response",
-    "ifActionsPresent": "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions. If state.editAct is set it will block delete-class clicks -- abort the open editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) (a cancelAct click was verified NOT to clear it), or delete + hub_restore_backup(scope='source') to recreate the rule with fresh state.",
+    "ifActionsPresent": "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions. If state.editAct is set it will block delete-class clicks -- abort the open editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) (a cancelAct click was verified NOT to clear it), or delete the rule, then call hub_restore_backup(scope='source', backupKey='<delete_result.backup.backupKey>', confirm=true) to recreate it with fresh state.",
     "avoid": ["cancelTrash"]
   },
   "backup": "<backup>",
