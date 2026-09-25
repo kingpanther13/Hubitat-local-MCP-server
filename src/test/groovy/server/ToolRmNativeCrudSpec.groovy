@@ -6079,7 +6079,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def rolledBack = script._rmRollbackInFlightExpressionAction(100, 1, condWizardOpen)
+        def rolledBack = script._rmRollbackInFlightAction(100, 1, condWizardOpen)
 
         then:
         rolledBack == true
@@ -6093,6 +6093,42 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         condWizardOpen | expectedButtons
         false          | ["actionCancel"]
         true           | ["cancelCapab", "actionCancel"]
+    }
+
+    def "rollback falls back to the verified delAct leg when actionCancel leaves the row (deleteWorks=#deleteWorks)"() {
+        // Step 3 is the settings-VERIFIED backstop: the hub answers 200 to a click that does
+        // nothing (the old cancelAct failure class), so a cancel that leaves the row must fall
+        // through to delAct. deleteWorks=true: the delete removes the row and the rollback still
+        // answers true. deleteWorks=false: the row survives everything and the rollback answers
+        // false so the caller surfaces the stuck marker.
+        given:
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            def deleted = deleteWorks && posts.any { it.path == "/installedapp/btn" && it.body?.stateAttribute == "delAct" }
+            deleted ? statusJson(100)
+                    : statusJson(100, [[name: "actType.1", value: "condActs"], [name: "actSubType.1", value: "getIfThen"]])
+        }
+
+        when:
+        def rolledBack = script._rmRollbackInFlightAction(100, 1)
+
+        then:
+        rolledBack == expected
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "1" && it.body?.stateAttribute == "delAct" }
+
+        where:
+        deleteWorks || expected
+        true        || true
+        false       || false
     }
 
     def "addRequiredExpression Lock codes fails loud even when the STPage picker OMITS the capability (firmware-independent)"() {
@@ -6699,6 +6735,67 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.error?.contains("not in doActPage option list")
         result.error?.contains("Did you mean 'Switch'?")
+    }
+
+    def "addAction ifThen mid-walk refusal surfaces the orphan-action wizardStuck marker when the rollback cannot confirm removal"() {
+        // The expression opener committed (actType.1) and the walker refused; the rollback's
+        // actionCancel does not take (row + editAct persist, so delAct is editAct-blocked) and
+        // the caller must see the stuck-orphan marker with the removeAction/backup recovery path.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF ..."]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            // Clean until the rollback's cancel attempt; afterwards the opener row persists with
+            // the editor still open (editAct set) -- the rollback cannot confirm removal.
+            if (!posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }) {
+                return statusJson(100)
+            }
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [[name: "actType.1", value: "condActs"], [name: "actSubType.1", value: "getIfThen"]],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [[name: "editAct", value: 1]],
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Switc"]]]],
+            confirm: true
+        ])
+
+        then: "the refusal text survives, carrying the stuck-orphan marker and recovery path"
+        result.success == false
+        result.wizardStuck == true
+        result.error?.contains("not in doActPage option list")
+        result.error?.contains("wizardStuck -- orphan action 1")
+        result.error?.contains("removeAction:{index:1}")
     }
 
     def "_rmResolveModeNames rejects a comma-joined mode string with a list-shape hint, not an opaque unknown-mode"() {
@@ -25779,10 +25876,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def writtenFields = [:]
+        def posts = []
         def fetchSeq = 0
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
                     def key = _settingKeyOf(k)
@@ -25848,6 +25947,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.settingsApplied?.contains("xVar3.1")
         result.settingsSkipped == null || result.settingsSkipped.isEmpty()
         result.partial != true
+
+        and: "a successful add never aborts the editor"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
     }
 
     def "addAction setVariable sourceVariable into a String target uses valStringOp=Copy variable, not numOp"() {
@@ -27339,7 +27441,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the open editor is cancelled on doActPage, so the error no longer points at a partial row"
         posts.count { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" && it.body?.currentPage == "doActPage" } == 1
         !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
-        result.error?.contains("in-flight action was cancelled")
+        result.error?.contains("Retry with a listed sourceVariable")
         !result.error?.contains("removeAction")
     }
 
@@ -27766,10 +27868,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def writtenFields = [:]
+        def posts = []
         def fetchSeq = 0
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
                     def key = _settingKeyOf(k)
@@ -27827,6 +27931,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "action bakes cleanly"
         result.success == true
         result.partial != true
+
+        and: "a successful add never aborts the editor"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
     }
 
     def "addAction setVariable fromDevice rejects attribute not in the device's filtered enum"() {
@@ -27956,8 +28063,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
     }
 
-    def "addAction setVariable fromDevice refusal still surfaces when the actionCancel click itself fails"() {
-        // The cancel is best-effort: a failing click must not replace the caller-actionable refusal.
+    def "addAction setVariable fromDevice refusal surfaces wizardStuck when the cancel cannot be verified"() {
+        // The actionCancel click 500s AND the row persists with state.editAct set (the real
+        // post-refusal state when the cancel did not take): the rollback cannot confirm removal
+        // (delAct is editAct-blocked), so the refusal must carry the wizardStuck marker instead
+        // of implying a clean retry -- while the refusal text itself stays the error.
         given:
         enableWrite()
         def writtenFields = [:]
@@ -27998,7 +28108,22 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             modeActsDoActPageJson(100, extra, { seq })
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            // Clean before the cancel attempt (so the add allocates index 1); afterwards the
+            // refused row persists with the editor still open (editAct set) -- what the hub
+            // reports when the cancel click did not take.
+            if (!posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }) {
+                return statusJson(100)
+            }
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [[name: "actType.1", value: "modeActs"], [name: "actSubType.1", value: "getSetVariable"]],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [[name: "editAct", value: 1]],
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
 
         when:
         def result = script.toolSetRule([
@@ -28007,11 +28132,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "the cancel was attempted, and the original refusal (not the click failure) is the error"
+        then: "the refusal survives as the error"
         posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
         result.success == false
         result.error?.contains("is not in the device's attribute enum")
         !result.error?.contains("Button click 'actionCancel'")
+
+        and: "the unverified cancel is surfaced -- the editor may still be open, so the envelope must not imply a clean retry"
+        result.wizardStuck == true
+        result.error?.contains("could not be cancelled")
+        result.error?.contains("removeAction:{index:1}")
     }
 
     def "addAction setVariable fromDevice rejects missing deviceId"() {
@@ -28081,10 +28211,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def writtenFields = [:]
+        def posts = []
         def fetchSeq = 0
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
                     def key = _settingKeyOf(k)
@@ -28144,6 +28276,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "action bakes cleanly"
         result.success == true
         result.partial != true
+
+        and: "a successful add never aborts the editor"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
     }
 
     def "addAction setVariable math unary op writes operator and no second operand"() {
@@ -29155,10 +29290,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def writtenFields = [:]
+        def posts = []
         def fetchSeq = 0
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
                     def key = _settingKeyOf(k)
@@ -29200,6 +29337,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "operator-not-in-revealed-enum fails loud naming the field"
         result.success == false
         result.error?.contains("operator '+' is not in the revealed enum for 'valMathOp.1'")
+
+        and: "the math refusal cancels the open editor exactly once on doActPage"
+        posts.count { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" && it.body?.currentPage == "doActPage" } == 1
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
     }
 
     def "addAction setVariable math fails loud when second-operand variable absent from revealed xVar4 enum"() {

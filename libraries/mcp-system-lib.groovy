@@ -184,7 +184,7 @@ def toolGetHubInfo(args = null) {
 
     // Transport header readability (see _noteHeadersReadable). Null until the first MCP request has
     // been served. When false, TWO things are off and neither is visible anywhere else: Origin
-    // validation cannot run, and modern-era (2026-07-28) requests are served as legacy.
+    // validation cannot run, and modern-era (2026-07-28 or later) requests are served as legacy.
     if (state.headersReadable != null) {
         def hv = [requestHeadersReadable: (state.headersReadable == true),
                   originValidation: (state.headersReadable != true) ? "INACTIVE (headers unreadable)"

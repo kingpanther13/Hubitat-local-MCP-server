@@ -174,10 +174,12 @@ builds each action fresh, so this is harmless here; a future setVariable-EDIT pa
 clear stale mode keys. Leftover hidden keys under a working action are normal RM behavior:
 RM's own UI keeps them when the variable type is switched mid-form.
 
-A refused source-mode add has already persisted `actType`/`actSubType` plus mode fields and leaves
-the editor open on `actNdx=N` (the next add reopens row N pre-filled), so the add path clicks
-doActPage's `actionCancel` (`cancelAct.<N>` is only the delay toggle): it removes the row's keys
-(an empty `tCustomAttr.<N>=""` remains) and consumes the index -- the next action gets N+1.
+A refused add has already persisted `actType`/`actSubType` plus whatever fields landed before the
+refusal, and leaves the editor open on `actNdx=N` (the next add reopens row N pre-filled). So every
+mid-edit refusal after the editor opens (setVariable source modes, runCommand params, delay,
+rawSettings) clicks doActPage's `actionCancel` (`cancelAct.<N>` is only the delay toggle): it
+removes the row's keys (an empty `tCustomAttr.<N>=""` remains) and consumes the index -- the next
+action gets N+1.
 
 ---
 

@@ -8804,14 +8804,28 @@ class TestRunner:
                     and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
                     f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
                 # The refused numeric-target fromDevice case above (the switch attribute) opened a
-                # row and wrote numOp/customDev before refusing; its actionCancel consumes that
-                # index, so the copy must land on a fresh one with none of those leftovers.
+                # row and wrote numOp/customDev before refusing; its actionCancel drops that row
+                # and consumes its index, so the copy must carry none of those leftovers.
                 copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
                 assert not any(k.startswith("numOp.") for k in copy_applied), \
                     f"String copy wrote a numOp field: settingsApplied={copy_applied}"
                 stale = [k for k in (f"numOp.{copy_idx}", f"customDev.{copy_idx}") if k in copy_settings]
                 assert not stale, \
                     f"String copy at index {copy_idx} inherited the refused add's fields {stale}: {copy_settings}"
+                # The cancelled rows themselves must be GONE: a refusal that left its actType
+                # behind would show up as an orphaned settings row in rule health, and its mode
+                # fields (numOp/customDev) must not linger at any index outside the rule's two
+                # real actions (the math unary owns its numOp; the String copy owns neither).
+                health_c = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_get_rule_health", "args": {"appId": app_c}})
+                assert not health_c.get("orphanedActionRows"), \
+                    f"refused adds left orphaned action rows behind: {health_c.get('orphanedActionRows')}"
+                known_c = {str(mu_idx), str(copy_idx)}
+                stray_c = [k for k in copy_settings
+                           if (str(k).startswith("numOp.") or str(k).startswith("customDev."))
+                           and str(k).split(".", 1)[1] not in known_c]
+                assert not stray_c, \
+                    f"refused adds left stale mode fields outside the real actions {known_c}: {stray_c}"
                 # A Boolean target's copy picker is uncaptured, so it is refused before any write.
                 bool_copy = self._patch_rule(app_c, [
                     {"addAction": {"capability": "setVariable", "variable": bool_var_name,
