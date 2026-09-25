@@ -252,6 +252,8 @@ class HubInternalRetrySpec extends ToolSpecBase {
         given:
         enableHubSecurity()
         seedCachedCookie('JSESSIONID=cached')
+        settingsMap.debugLogging = true
+        script.log.messages.clear()
 
         and: 'followRedirects:false makes HTTPBuilder throw on the 302; the exception carries the Location'
         def sawFollowRedirects = null
@@ -267,6 +269,8 @@ class HubInternalRetrySpec extends ToolSpecBase {
         sawFollowRedirects == false
         resp.status == 302
         resp.location == '/installedapp/configure/9999/mainPage'
+        script.log.messages.any { it.contains('[hubrt] GET /installedapp/create/310') }
+        !script.log.messages.any { it.contains('[hubrt]') && it.contains('FakeHttpException') }
     }
 
     def "hubInternalGetRaw on a 404 (outside the 3xx window) propagates rather than returning a struct"() {

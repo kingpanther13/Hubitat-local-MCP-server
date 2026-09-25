@@ -503,11 +503,11 @@ def advancedOverridesPage() {
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
-            input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, 0 = off)",
-                  description: "Pause a slow multi-step write over the cloud relay once this many ms have elapsed (default: 6000). A leg runs to this budget PLUS the step already in flight when it trips (1-2s for a wizard POST on a loaded hub), plus relay overhead, so 6000 lands legs near 8s -- headroom under the ~10s relay ceiling even on a hub whose per-app load limiter is already tripping.",
+            input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, minimum 6000, 0 = off)",
+                  description: "Pause a slow multi-step write over the cloud relay once this many ms have elapsed (default: 6000; positive values below 6000 use 6000). A leg runs to this budget PLUS the step already in flight when it trips (1-2s for a wizard POST on a loaded hub), plus relay overhead, so 6000 lands legs near 8s -- headroom under the ~10s relay ceiling even on a hub whose per-app load limiter is already tripping.",
                   defaultValue: 6000, range: "0..30000", required: false
-            input "lanBudgetMs", "number", title: "LAN time budget (ms, 0 = off)",
-                  description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; set just under your MCP client's request timeout).",
+            input "lanBudgetMs", "number", title: "LAN time budget (ms, minimum 6000, 0 = off)",
+                  description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; positive values below 6000 use 6000; set below your MCP client's request timeout).",
                   defaultValue: 0, range: "0..300000", required: false
         }
         section("Native app edit backups") {
@@ -1904,13 +1904,11 @@ def handleToolsCall(msg) {
             _mrtrAbandon(stateId, rec, claim, "validation_error")
         }
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
-            [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
-                       error: e.message]])
+            [details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message])])
         return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message, rejoined, rec)
     } catch (Exception e) {
         mcpLog("error", "server", "MRTR tool execution error in ${reactiveToolName}: ${e.message}", null,
-            [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
-                       error: e.message],
+            [details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message]),
              stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")])
         if (e instanceof IllegalStateException && sliceResult instanceof Map &&
                 e.message?.startsWith("requestState ownership was lost")) {
@@ -2028,8 +2026,7 @@ def handleToolsCallLegacy(msg) {
         def result = executeTool(toolName, args)
         if (result == null) {
             mcpLog("error", "server", "Tool ${reactiveToolName} returned null -- internal tool bug", null, [
-                details: [tool: reactiveToolName,
-                          gateway: (reactiveToolName != toolName) ? toolName : null]
+                details: _toolLogDetails(reactiveToolName, toolName, args)
             ])
             result = [isError: true, error: "Tool ${reactiveToolName} returned no result",
                       tool: reactiveToolName]
@@ -2038,16 +2035,12 @@ def handleToolsCallLegacy(msg) {
             result instanceof Map && result.isError == true)
     } catch (IllegalArgumentException e) {
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
-            details: [tool: reactiveToolName,
-                      gateway: (reactiveToolName != toolName) ? toolName : null,
-                      error: e.message]
+            details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message])
         ])
         return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message)
     } catch (Exception e) {
         mcpLog("error", "server", "Tool execution error in ${reactiveToolName}: ${e.message}", null, [
-            details: [tool: reactiveToolName,
-                      gateway: (reactiveToolName != toolName) ? toolName : null,
-                      error: e.message],
+            details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message]),
             stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")
         ])
         log.error "Tool execution error: ${e.message} (${e.class.simpleName})"
@@ -2081,14 +2074,20 @@ def _isCloudRequest() {
 // 8.844s; 6000 lands legs near 8s healthy and ~8.75s throttled.
 // The budget is a setting, never a literal elsewhere -- read it here.
 def _relayBudgetMs() {
-    return settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 6000L
+    return _flooredBudgetMs(settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 6000L)
 }
 
 // LAN time budget in ms. Default 0 = off: LAN has no fixed transport ceiling, so
 // the pause is opt-in for clients whose own request timeout kills slow multi-step
-// writes (set it just under that client timeout).
+// writes (set it below that client timeout, leaving room for the floor below).
 def _lanBudgetMs() {
-    return settings.lanBudgetMs != null ? (settings.lanBudgetMs as Long) : 0L
+    return _flooredBudgetMs(settings.lanBudgetMs != null ? (settings.lanBudgetMs as Long) : 0L)
+}
+
+// Positive budgets have a 6000 ms floor on both transports so eight Logs-page observation
+// slices cover the native fetch timeout. Zero (off) passes through unchanged.
+private long _flooredBudgetMs(long configuredMs) {
+    return configuredMs > 0L ? Math.max(6000L, configuredMs) : configuredMs
 }
 
 def _maxConcurrentWrites() {
@@ -4085,6 +4084,17 @@ private boolean _isProtocolValidation(String message) {
             "Invalid or expired requestState", "requestState does not match"].any { txt.startsWith(it) }
 }
 
+// Structured context for a dispatch-level log line. The failing call's appId rides along so a
+// report scoped by nativeAppId can find the retained error; the arguments themselves never do.
+private Map _toolLogDetails(reactiveToolName, toolName, args, Map extra = [:]) {
+    def details = [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]
+    // A gateway call arrives as the envelope {tool, args}; the leaf's own arguments sit inside it.
+    def leafArgs = (reactiveToolName != toolName && args instanceof Map && args.args instanceof Map) ? args.args : args
+    def appId = leafArgs instanceof Map ? (leafArgs.appId ?: leafArgs.nativeAppId) : null
+    if (appId != null && appId.toString()) details.appId = appId.toString()
+    return details + extra
+}
+
 private def _renderValidationError(id, toolName, reactiveToolName, args, String detail,
                                    boolean rejoined = false, Map rec = null) {
     if (_isProtocolValidation(detail)) {
@@ -4101,7 +4111,7 @@ private def _renderValidationError(id, toolName, reactiveToolName, args, String 
         try { hint = _reactiveBpsWarning(reactiveToolName, args, detail) }
         catch (Exception bpErr) {
             mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null,
-                [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
+                [details: _toolLogDetails(reactiveToolName, toolName, args)])
         }
     }
     def failure = [success: false, isError: true, tool: _externalToolName(reactiveToolName as String),
@@ -4117,8 +4127,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     if (result instanceof Map && result.__deviceValidation != null) {
         String detail = result.__deviceValidation.toString()
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${detail}", null,
-            [details: [tool: reactiveToolName,
-                       gateway: (reactiveToolName != toolName) ? toolName : null, error: detail]])
+            [details: _toolLogDetails(reactiveToolName, toolName, args, [error: detail])])
         return _renderValidationError(id, toolName, reactiveToolName, args, detail,
             result.rejoined == true)
     }
@@ -4137,9 +4146,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     if (!validation && (isErrorOverride || failureFlag || stateReadbackFailed)) {
         // Returned error text and arguments may contain secrets; log only safe failure context.
         mcpLog("error", "server", "Tool ${reactiveToolName} returned a failure result", null, [
-            details: [tool: reactiveToolName,
-                      gateway: (reactiveToolName != toolName) ? toolName : null,
-                      failureKind: stateReadbackFailed ? "state_readback_failed" : "tool_failed"]
+            details: _toolLogDetails(reactiveToolName, toolName, args, [failureKind: stateReadbackFailed ? "state_readback_failed" : "tool_failed"])
         ])
     }
     if (rendered instanceof Map && (rendered.isError == true || rendered.success == false)) {
@@ -4153,10 +4160,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         jsonText = groovy.json.JsonOutput.toJson(rendered)
     } catch (Exception serErr) {
         mcpLog("error", "server", "Tool ${reactiveToolName} returned a non-serializable result: ${serErr.message}", null, [
-            details: [tool: reactiveToolName,
-                      gateway: (reactiveToolName != toolName) ? toolName : null,
-                      resultType: result?.class?.name,
-                      error: serErr.message]
+            details: _toolLogDetails(reactiveToolName, toolName, args, [resultType: result?.class?.name, error: serErr.message])
         ])
         def errorResult = [
             isError: true,
@@ -4180,10 +4184,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     final int responseSizeLimit = hubResponseCapBytes() - 11072
     if (wireBytes > responseSizeLimit) {
         mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
-            details: [tool: reactiveToolName,
-                      gateway: (reactiveToolName != toolName) ? toolName : null,
-                      bytes: wireBytes,
-                      limit: responseSizeLimit]
+            details: _toolLogDetails(reactiveToolName, toolName, args, [bytes: wireBytes, limit: responseSizeLimit])
         ])
         String tooLarge = groovy.json.JsonOutput.toJson(
             _responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))
@@ -6912,10 +6913,8 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         if (method == 'GET') httpGet(params, reader)
         else httpPost(params, reader)
     } catch (Exception e) {
-        _hubRtOutcome = e.class.simpleName
-
         // hubInternalGetRaw path: a 3xx with followRedirects=false is the success case (read the
-        // Location header), not an error.
+        // Location header), not an error -- so it returns before the outcome is marked failed.
         if (opts.handle3xx) {
             def resp = null
             try { resp = e.response } catch (Exception ignore) { resp = null }
@@ -6927,6 +6926,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
                 return [status: st, location: resp.headers?."Location"?.toString(), data: b]
             }
         }
+        _hubRtOutcome = e.class.simpleName
         if (shouldRetryWithFreshCookie(e, opts.isRetry)) {
             // Log this attempt on its own before recursing, so the outer finally does not
             // fold the retry's duration into the failed attempt's line.
@@ -7833,6 +7833,7 @@ def clearDebugLogEntries(Map args = [:]) {
         int count = buffer.entries.size()
         String generation = java.util.UUID.randomUUID().toString()
         atomicState.debugLogGeneration = generation
+        atomicState.reportErrors = []
         buffer.generation = generation
         buffer.entries = []
         buffer.hydrated = true
@@ -7900,6 +7901,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
+        if (level == "error") _retainReportError(raw)
         _emitNativeDebugLog(buffer, record, message)
         _appendDebugLogRecord(buffer, record)
     }
@@ -10231,6 +10233,8 @@ Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable cle
 
 ### hub_report_issue
 
+Reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
+
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
 Issue-type routing: `issueType` picks the GitHub issue template behind `submitUrl` -- `bug` opens the bug-report template, `enhancement` the feature template, `agent_behavior` the agent-behavior template -- and sets the report heading and the title prefix (`[bug]` / `[feature]` / `[agent-behavior]`) with it. Filing a feature request as a bug lands the user on the wrong form, so pick the type before you call.
@@ -11025,7 +11029,7 @@ Native log reads through `hub_get_logs` and cold MCP log recovery use the same c
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
-The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
+The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. Both transport budgets automatically use at least 6000 ms when enabled. `lanBudgetMs` defaults to 0; enable it only when the LAN client timeout leaves room for that minimum plus request overhead.
 
 ### Package deployment
 

@@ -56,7 +56,7 @@ def verify = { String name, File file, List expected, String error = null ->
     boolean ok = rc == ((expected || error) ? 1 : 0) && count == expected.size()
     expected.each { ok &= output.contains(it + ': closure parameters are null;') }
     if (error) ok &= output.contains(error)
-    if (expected) ok &= !output.contains('CLASS_GENERATION') && !output.contains('sandbox check SKIPPED')
+    ok &= !output.contains('CLASS_GENERATION') && !output.contains('sandbox check SKIPPED')
     if (!ok) {
         failures++
         println "SELF-TEST FAIL ${name}: rc=${rc}, expected locations=${expected}, error=${error}\n${output}"

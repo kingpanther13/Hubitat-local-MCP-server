@@ -129,11 +129,20 @@ class IncludeResolver {
     }
 
     static String sourceLocation(Map resolved, int line, int column) {
+        String fallback = "resolved source:${line}:${column}"
+        if (line < 1 || column < 1) return fallback
         int offset = 0
-        for (int i = 1; i < line; i++) offset = resolved.source.indexOf('\n', offset) + 1
-        offset += Math.max(column - 1, 0)
+        for (int i = 1; i < line; i++) {
+            int newline = resolved.source.indexOf('\n', offset)
+            if (newline < 0) return fallback
+            offset = newline + 1
+        }
+        int lineEnd = resolved.source.indexOf('\n', offset)
+        if (lineEnd < 0) lineEnd = resolved.source.length()
+        offset += column - 1
+        if (offset >= lineEnd) return fallback
         def span = resolved.origins.find { offset >= it.start && offset < it.end }
-        if (span == null) return "resolved source:${line}:${column}"
+        if (span == null) return fallback
         int originalOffset = span.offset + offset - span.start
         String prefix = span.original.text.substring(0, originalOffset)
         int originalLine = prefix.count('\n') + 1
