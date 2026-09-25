@@ -55,10 +55,10 @@ def _healthAlertsFromHub2(hub2) {
     return [safeMode: hub2.safeMode == true, active: active, details: alerts]
 }
 
-// The hardware model the Hub Details page shows ("C-7", "C-8 Pro"): /hub/details/json's hardwareVersion.
-// Null (never a placeholder) when unreadable. warn, not debug: the default log threshold is "error",
-// and a firmware that renames or drops the field would otherwise degrade model to null silently.
 def _hubHardwareModel() {
+    // The hardware model the Hub Details page shows ("C-7", "C-8 Pro"): /hub/details/json's hardwareVersion.
+    // Null (never a placeholder) when unreadable. warn, not debug: the default log threshold is "error",
+    // and a firmware that renames or drops the field would otherwise degrade model to null silently.
     try {
         def raw = hubInternalGet("/hub/details/json")
         def details = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
