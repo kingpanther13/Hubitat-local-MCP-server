@@ -863,6 +863,24 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.calls.last().path == '/device/fullJson/777'
     }
 
+    def "toolCreateDevice with present-but-null mesh keys still does a normal driver create (not diverted to link)"() {
+        given: 'a driver create with mesh_source_* explicitly null -- must NOT be pushed onto the link form'
+        hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/fullJson/777') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 777, label: 'X', name: 'Generic LAN Driver',
+                deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', mesh_source_hub_id: null, mesh_source_device_id: null, confirm: true])
+
+        then: 'the driver-create path runs; no "not both" throw, no divert to the mesh link GET'
+        result.success == true
+        result.deviceId == '777'
+        result.alreadyLinked != true
+        !hubGet.calls.any { it.key?.toString()?.startsWith('/device/createLinked/') }
+    }
+
     @spock.lang.Unroll
     def "toolCreateDevice verifies a true-but-no-op label setter and reports #fallback native fallback accurately"() {
         given:

@@ -881,6 +881,27 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('forbidden character')
     }
 
+    def "hub_create_variable with present-but-null mesh keys takes the create path, not the link form"() {
+        given: 'null mesh keys alongside a normal single create -- must NOT divert to link nor throw "not both"'
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> null }   // not an existing var
+
+        when: 'the create path may fail downstream in the (unstubbed) wizard -- fine; the assertion is which branch it chose'
+        def ex = null
+        try {
+            script.toolCreateVariable([name: 'vacationMode', type: 'String', value: 'off',
+                mesh_source_hub_id: null, mesh_source_name: null, confirm: true])
+        } catch (Exception e) { ex = e }
+
+        then: 'it chose the normal create path: no link GET, and no mutually-exclusive "not both" rejection'
+        !hubGet.calls.any { it.key?.toString()?.startsWith('/hub2/createLinkedHubVar/') }
+        !(ex instanceof IllegalArgumentException && ex.message?.toLowerCase()?.contains('not both'))
+        // Positive proof it proceeded PAST the link-vs-create gate into the real create path: it threw
+        // downstream on an unstubbed hub call (the create wizard was deliberately not mocked), rather
+        // than returning at the gate or diverting to the link GET.
+        ex != null
+    }
+
     def "hub_create_variable rejects unknown type"() {
         given:
         enableWrite()
