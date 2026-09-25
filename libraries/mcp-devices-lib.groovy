@@ -4629,31 +4629,31 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     def before = (beforeList != null) ? (beforeList.collect { it.id?.toString() } as Set) : null
     def availBefore = (beforeJson?.availableLinkedDevices instanceof List) ? beforeJson.availableLinkedDevices : null
 
-    // Resolve the local mirror row for this source pair out of a localLinkedDevices snapshot: prefer a
-    // single row matching sourceHubId, narrowing by a source-device-id field only when the peer shares
-    // more than one device here.
+    // Best-effort resolve of the local proxy row for this source, for DISPLAY only (the id in an
+    // already-linked result). localLinkedDevices rows carry sourceHubId but NOT a source-device-id, so
+    // a specific source device cannot be matched reliably when a peer shares several: match a
+    // source-device-id field when one is present, else accept a lone same-hub row only when no such
+    // field exists to contradict it, else null. Never used to DECIDE already-linked (see below).
     def resolveLocal = { List rows ->
         if (!(rows instanceof List)) return null
         def bySrc = rows.findAll { it instanceof Map && it.sourceHubId?.toString() == meshHubId }
-        if (bySrc.size() == 1) return bySrc[0]
-        def byDev = bySrc.findAll { r ->
-            ['sourceDeviceId', 'sourceId', 'deviceId'].any { k -> r.containsKey(k) && r[k]?.toString() == meshDeviceId }
-        }
-        return byDev.size() == 1 ? byDev[0] : null
+        def devKeys = ['sourceDeviceId', 'sourceId', 'deviceId']
+        def byDev = bySrc.findAll { r -> devKeys.any { k -> r.containsKey(k) && r[k]?.toString() == meshDeviceId } }
+        if (byDev.size() == 1) return byDev[0]
+        if (bySrc.size() == 1 && !devKeys.any { k -> bySrc[0].containsKey(k) }) return bySrc[0]
+        return null
     }
 
-    // Pre-validate BEFORE the GET (validation-before-side-effect). Two short-circuits, in order:
-    //  (a) already linked -- a linked source LEAVES availableLinkedDevices (it moves to
-    //      localLinkedDevices), so check the local proxy by source FIRST; also honor a still-offered
-    //      row flagged linkedLocally. No fresh GET, no fresh-success claim.
-    //  (b) not offered -- pool readable but no matching row AND not already linked -> reject (an
-    //      unoffered pair would otherwise read as srcRow==null "linked" in the read-back and false-succeed).
     def srcBefore = (availBefore != null)
         ? availBefore.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
         : null
-    def existingLocal = resolveLocal(beforeList)
-    if (existingLocal != null || srcBefore?.linkedLocally == true) {
-        def existing = existingLocal
+    // Already linked is decided ONLY by the offered row's authoritative linkedLocally flag -- NOT by a
+    // local-row match: local device rows lack a source-device-id, so a same-hub proxy cannot prove that
+    // THIS source device is the linked one (that would mislink a second device from the peer, and mask a
+    // mistyped id). A linked device leaves availableLinkedDevices, so a source that is simply absent is
+    // rejected as not-offered (below) rather than assumed already-linked.
+    if (srcBefore != null && srcBefore.linkedLocally == true) {
+        def existing = resolveLocal(beforeList)
         mcpLog("info", "device", "hub_create_device: Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId}) is already linked${existing ? " as local ${existing.id}" : ''}")
         def already = [
             success: true,
@@ -4672,8 +4672,9 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     if (availBefore != null && srcBefore == null) {
         throw new IllegalArgumentException(
             "No shared device with hubId ${meshHubId} + deviceId ${meshDeviceId} is offered in " +
-            "hub_get_hub_mesh availableLinkedDevices[], and it is not already linked here. Copy the " +
-            "hubId + deviceId from an availableLinkedDevices[] row and retry.")
+            "hub_get_hub_mesh availableLinkedDevices[]. Copy the hubId + deviceId from an " +
+            "availableLinkedDevices[] row and retry; a device that is already linked no longer appears " +
+            "there -- find it in hub_get_hub_mesh localLinkedDevices instead.")
     }
 
     // A 30s read timeout can fire AFTER the hub applied the link, so a throw is an UNKNOWN outcome, not

@@ -1426,24 +1426,45 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
     }
 
-    def "toolCreateDevice mesh link reports alreadyLinked (not 'not offered') when the source left availableLinkedDevices but a local proxy exists"() {
-        given: 'a linked source LEAVES availableLinkedDevices; the local proxy is the only evidence'
+    def "toolCreateDevice mesh link does NOT mark an unoffered device alreadyLinked from an unrelated same-hub proxy"() {
+        given: 'HUB-A has a DIFFERENT device linked (local proxy 900); the requested deviceId 42 is not offered'
         hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
         hubGet.register('/hub2/hubMeshJson') { params ->
             groovy.json.JsonOutput.toJson([
-                localLinkedDevices: [[id: 900, name: 'Kitchen Bridge', sourceHubId: 'HUB-A']],
+                localLinkedDevices: [[id: 900, name: 'Other Bridge', sourceHubId: 'HUB-A']],
                 availableLinkedDevices: []
+            ])
+        }
+
+        when: 'local device rows carry no source-device-id, so a same-hub proxy must NOT prove 42 is linked'
+        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then: 'rejected as not-offered, not a false alreadyLinked; no GET'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('availableLinkedDevices')
+        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+    }
+
+    def "toolCreateDevice mesh link links a SECOND device from a peer that already has one linked"() {
+        given: 'HUB-A already has device 900 linked; deviceId 42 is offered and not yet linked'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: done
+                    ? [[id: 900, name: 'Other Bridge', sourceHubId: 'HUB-A'], [id: 901, name: 'New Bridge', sourceHubId: 'HUB-A']]
+                    : [[id: 900, name: 'Other Bridge', sourceHubId: 'HUB-A']],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'New Bridge', linkedLocally: done]]
             ])
         }
 
         when:
         def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
 
-        then: 'recognized as already linked via the local proxy, not rejected as unoffered; no fresh GET'
+        then: 'the link GET IS sent (not short-circuited by the pre-existing same-hub proxy) and it links'
+        hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
         result.success == true
-        result.alreadyLinked == true
-        result.deviceId == '900'
-        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+        result.alreadyLinked != true
     }
 
     def "toolCreateDevice mesh link alreadyLinked warns when the existing local id cannot be resolved"() {
