@@ -11508,7 +11508,8 @@ class TestRunner:
                 # under test is updateRule's SUPPRESSED verdict for a false expression, which this
                 # preserves; the wizard write goes through the rule page, which the limiter does not gate.
                 sw = int(self.get_test_switch_id())
-                cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw, "attribute": "switch"})
+                # The one-shot read takes deviceId as a String; the RM condition below wants the int.
+                cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": str(sw), "attribute": "switch"})
                 current = cur.get("value") if isinstance(cur, dict) else None
                 false_state = "off" if current == "on" else "on"
                 print(f"    [LIMITER] Private Boolean write blocked ({limited}); replacing the Required "
