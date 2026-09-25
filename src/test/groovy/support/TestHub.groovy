@@ -41,4 +41,7 @@ class TestHub implements Hub {
     // zwaveVersion read and :5202 for the zigbeeChannel read) ---
     String zwaveVersion
     Integer zigbeeChannel
+    // location.hub.hardwareID — internal platform id ("000D" on both a C-7 and a C-8 Pro).
+    // hub_get_info surfaces it as platformHardwareId; the real model comes from /hub/details/json.
+    String hardwareID
 }

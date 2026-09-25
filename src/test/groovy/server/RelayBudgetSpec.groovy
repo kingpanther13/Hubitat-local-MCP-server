@@ -47,12 +47,33 @@ class RelayBudgetSpec extends ToolSpecBase {
         script._relayBudgetMs() == 6000L
     }
 
-    def "_relayBudgetMs honours settings.relayBudgetMs"() {
+    def "_relayBudgetMs honours a supported settings.relayBudgetMs"() {
         given:
-        settingsMap.relayBudgetMs = 5000
+        settingsMap.relayBudgetMs = 7000
 
         expect:
-        script._relayBudgetMs() == 5000L
+        script._relayBudgetMs() == 7000L
+    }
+
+    @Unroll
+    def "both transport budgets preserve off and floor positive #configured to #effective"() {
+        given:
+        settingsMap.relayBudgetMs = configured
+        settingsMap.lanBudgetMs = configured
+
+        expect:
+        script._relayBudgetMs() == effective
+        script._lanBudgetMs() == effective
+
+        where:
+        configured | effective
+        0          | 0L
+        1          | 6000L
+        1500       | 6000L
+        1501       | 6000L
+        5999       | 6000L
+        6000       | 6000L
+        12000      | 12000L
     }
 
     def "_isCloudRequest defaults to false when no cloud request marker is present"() {
@@ -150,13 +171,17 @@ class RelayBudgetSpec extends ToolSpecBase {
 
         where:
         desc                          | cloud | relayMs | lanMs | t0                | expected
-        'cloud, over budget'          | true  | 100     | null  | FIXED_NOW - 200L  | true
-        'cloud, under budget'         | true  | 100     | null  | FIXED_NOW - 50L   | false
+        'cloud, at minimum budget'    | true  | 100     | null  | FIXED_NOW - 6000L | true
+        'cloud, under minimum budget' | true  | 100     | null  | FIXED_NOW - 5999L | false
+        'cloud, at larger budget'     | true  | 8000    | null  | FIXED_NOW - 8000L | true
+        'cloud, under larger budget'  | true  | 8000    | null  | FIXED_NOW - 7999L | false
         'cloud, null t0'              | true  | 100     | null  | null              | false
         'cloud, budget disabled 0'    | true  | 0       | null  | FIXED_NOW - 200L  | false
         'LAN, lan budget unset (off)' | false | 100     | null  | FIXED_NOW - 999L  | false
-        'LAN, lan budget live, over'  | false | 100     | 200   | FIXED_NOW - 300L  | true
-        'LAN, lan budget live, under' | false | 100     | 200   | FIXED_NOW - 50L   | false
+        'LAN, at minimum budget'      | false | 100     | 200   | FIXED_NOW - 6000L | true
+        'LAN, under minimum budget'   | false | 100     | 200   | FIXED_NOW - 5999L | false
+        'LAN, at larger budget'       | false | 100     | 8000  | FIXED_NOW - 8000L | true
+        'LAN, under larger budget'    | false | 100     | 8000  | FIXED_NOW - 7999L | false
         'LAN, lan budget disabled 0'  | false | 100     | 0     | FIXED_NOW - 300L  | false
         'cloud ignores the LAN knob'  | true  | 0       | 50    | FIXED_NOW - 200L  | false
     }

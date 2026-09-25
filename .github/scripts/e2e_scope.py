@@ -18,7 +18,7 @@ import os
 import re
 
 # Always run a tiny smoke core so no focused run has ZERO integration coverage.
-SMOKE_GROUPS = ["infrastructure", "protocol"]
+SMOKE_GROUPS = ["infrastructure", "protocol", "error_verification"]
 
 TEST_FILE = "tests/e2e_test.py"
 
@@ -41,7 +41,7 @@ FILE_GROUP_MAP = {
                                                  "virtual_device_lifecycle", "developer_mode"],
     "libraries/mcp-virtual-devices-lib.groovy": ["virtual_device_lifecycle", "devices"],
     "libraries/mcp-variables-lib.groovy":       ["hub_variables"],
-    "libraries/mcp-code-management-lib.groovy": ["app_code_update", "driver_code_update", "installed_app_reads", "system_tools"],
+    "libraries/mcp-code-management-lib.groovy": ["app_code_update", "driver_code_update", "installed_app_reads", "system_tools", "deadman"],
     "libraries/mcp-bundles-lib.groovy":         ["system_tools"],
     "libraries/mcp-hpm-lib.groovy":             ["system_tools"],
     "libraries/mcp-files-lib.groovy":           ["system_tools"],
@@ -59,10 +59,12 @@ FILE_GROUP_MAP = {
     # best_practice_gating: getToolGuideSections() / getToolGuideSubSections() live in this file.
     # devices + diagnostics: _flattenHub2DeviceTree (bulk inventory, health) and _parseSinceArg
     # (changedSince / lastActivity parsing) live here; a change to either is only observable
-    # through those groups.
+    # through those groups. findDevice/getSelectedDevices also serve developer_mode tests.
+    # deadman: its one test drives hub_create_app through the main server (the watchdog app is
+    # never deployed by e2e, so the watchdog sources map to nothing here).
     "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
                                                  "native_apps", "best_practice_gating",
-                                                 "devices", "diagnostics", "system_tools"],
+                                                 "devices", "developer_mode", "diagnostics", "system_tools", "deadman"],
 }
 
 

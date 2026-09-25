@@ -25,6 +25,56 @@ requests = pytest.importorskip("requests", reason="'requests' not installed; ski
 import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_test imports requests at module level)
 
 
+@pytest.mark.parametrize("refetched", [False, True])
+def test_jobs_cursor_checks_multiple_pages_without_pinning_expired_snapshot(refetched):
+    first = {
+        "scheduledJobs": {"jobs": [{"name": str(i)} for i in range(100)], "count": 100, "total": 101},
+        "runningJobs": {"jobs": [], "count": 0}, "hubActions": {"actions": [], "count": 0},
+        "snapshot": {"fetchedAt": 1000}, "nextCursor": "next-page",
+    }
+    second = {
+        "scheduledJobs": {"jobs": [{"name": "last"}], "count": 1, "total": 102 if refetched else 101},
+        "runningJobs": {"jobs": ["new"] if refetched else [], "count": 1 if refetched else 0},
+        "hubActions": {"actions": [], "count": 0},
+        "snapshot": {"fetchedAt": 32000 if refetched else 1000},
+    }
+    calls = []
+
+    def call_tool(gateway, args):
+        calls.append(args)
+        if args["tool"] == "hub_get_performance_stats":
+            return {"uptime": "1d"}
+        return first if args["args"]["cursor"] == "" else second
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(call_tool=call_tool)
+    runner.test_get_hub_jobs_cursor()
+    assert [call["args"].get("cursor") for call in calls[:2]] == ["", "next-page"]
+    if not refetched:
+        second["scheduledJobs"]["jobs"] = []
+        second["scheduledJobs"]["count"] = 0
+        with pytest.raises(AssertionError, match="pages summed"):
+            runner.test_get_hub_jobs_cursor()
+
+
+@pytest.mark.parametrize("refetched", [False, True])
+def test_jobs_provenance_accepts_shared_snapshot_from_another_transport(refetched):
+    jobs = {"scheduledJobs": {}, "snapshot": {
+        "fetchedAt": 1000, "ageMs": 500, "background": False, "budgeted": True,
+    }}
+    stats = {"uptime": "1d", "snapshot": {
+        "fetchedAt": 2000 if refetched else 1000, "ageMs": 0 if refetched else 600,
+        "background": True if refetched else False, "budgeted": True,
+    }}
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(call_tool=lambda gateway, args:
+                                    jobs if args["tool"] == "hub_get_jobs" else stats)
+    runner.test_get_hub_jobs_snapshot_provenance()
+    stats["snapshot"]["ageMs"] = 30001
+    with pytest.raises(AssertionError, match="stale snapshot"):
+        runner.test_get_hub_jobs_snapshot_provenance()
+
+
 def _raw_tool_body(body, *, is_error=False):
     return {
         "isError": is_error,

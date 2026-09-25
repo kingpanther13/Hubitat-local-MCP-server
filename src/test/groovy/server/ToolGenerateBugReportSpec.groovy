@@ -77,6 +77,224 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         script.metaClass.mcpClientIdentity = { -> [client: null, error: error] }
     }
 
+    def "retained errors survive missing native history and supply explicit tool context"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'retained failure access_token=private-token', null,
+            [details: [tool: 'hub_set_rule']])
+        (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
+        script.metaClass.getDebugLogReadResult = { Map args ->
+            [entries: null, error: 'native history unavailable', retryable: true]
+        }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.success
+        result.failingTool == 'hub_set_rule'
+        result.failingToolSource == 'retained_error'
+        result.report.contains('**Failing tool:** hub_set_rule (inferred from the newest retained error')
+        result.logs.retainedErrorCount == 1
+        result.logs.relevantCount == null
+        result.report.contains('retained failure access_token=<redacted>')
+        !result.report.contains('private-token')
+        result.report.indexOf('Retained Server Errors') < result.report.indexOf('Recent Error/Warning Logs')
+        result.submitUrl.contains('failing_tool=hub_set_rule')
+    }
+
+    def "retained errors can produce a report while native history is loading"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'retained loading evidence')
+        script.metaClass.getDebugLogReadResult = { Map args -> [status: 'in_progress'] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.success
+        result.logs.retainedErrorCount == 1
+        result.logs.error.contains('still loading')
+        result.report.contains('still loading when this report was generated')
+        !result.report.contains('MCP log history unavailable')
+        result.report.contains('retained loading evidence')
+        !result.containsKey('failingTool')
+    }
+
+    def "loading native history with nothing retained still hands back the continuation"() {
+        given:
+        seedLogs([])
+        script.metaClass.getDebugLogReadResult = { Map args -> [status: 'in_progress', requestState: [id: 'r1']] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.status == 'in_progress'
+        result.tool == 'hub_report_issue'
+        result.requestState == [id: 'r1']
+    }
+
+    def "an unscoped report keeps every retained error and the full recent-log window"() {
+        given: 'a tool-less error, a tool error, and native history with both'
+        script.mcpLog('error', 'hub-admin', 'backup manifest write failed')
+        script.mcpLog('error', 'server', 'Tool hub_set_rule returned a failure result', null,
+            [details: [tool: 'hub_set_rule']])
+        seedLogs([logEntry(timestamp: 1_700_000_000_000L, message: 'older unrelated warning', level: 'warn'),
+                  logEntry(timestamp: 1_700_000_050_000L, message: 'Tool hub_set_rule returned a failure result',
+                           details: [tool: 'hub_set_rule'])])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then: 'the inferred tool labels the report without narrowing it'
+        result.failingTool == 'hub_set_rule'
+        result.failingToolSource == 'retained_error'
+        result.suggestedTitle.startsWith('[bug] hub_set_rule:')
+        result.logs.retainedErrorCount == 2
+        result.logs.scoped == false
+        result.logs.relevantCount == 2
+        result.report.contains('backup manifest write failed')
+        result.report.contains('older unrelated warning')
+    }
+
+    @Unroll
+    def "no failing tool is inferred #label"() {
+        given:
+        seedLogs([])
+        if (retained) script.mcpLog('error', 'server', 'retained tool failure', null, [details: [tool: retained]])
+        if (ageMs) atomicStateMap.reportErrors = atomicStateMap.reportErrors.collect { it + [timestamp: it.timestamp - ageMs] }
+        script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs(extra))
+
+        then:
+        !result.containsKey('failingTool')
+        !result.containsKey('failingToolSource')
+        !result.suggestedTitle.contains(':')
+
+        where:
+        label                                        | retained            | ageMs      | extra
+        'from the report tool\'s own validation error' | 'hub_report_issue'  | 0L         | [:]
+        'from an error older than the log window'      | 'hub_set_rule'      | 121_000L   | [:]
+        'on an enhancement request'                    | 'hub_set_rule'      | 0L         | [issueType: 'enhancement']
+        'on an agent-behavior report'                  | 'hub_set_rule'      | 0L         | [issueType: 'agent_behavior']
+    }
+
+    def "the newest retained tool error wins the inferred label"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'older', null, [details: [tool: 'hub_update_app']])
+        script.mcpLog('error', 'server', 'newer', null, [details: [tool: 'hub_set_rule']])
+        script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.failingTool == 'hub_set_rule'
+        result.logs.retainedErrorCount == 2
+    }
+
+    def "two scope keys keep a retained error that matches either one"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'tool failure without an app', null, [details: [tool: 'hub_set_rule']])
+        script.mcpLog('error', 'server', 'app failure under another tool', null, [details: [tool: 'hub_update_app', appId: '123']])
+        script.mcpLog('error', 'server', 'unrelated', null, [details: [tool: 'hub_get_logs', appId: '456']])
+        script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'hub_set_rule', nativeAppId: '123']))
+
+        then:
+        result.logs.retainedErrorCount == 2
+        result.report.contains('tool failure without an app')
+        result.report.contains('app failure under another tool')
+        !result.report.contains('unrelated')
+    }
+
+    @Unroll
+    def "a dispatch-level tool error is retained with the failing call's app id (#label)"() {
+        given: 'a native-rule write that throws, dispatched through handleToolsCall'
+        seedLogs([])
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        script.metaClass.executeTool = { String name, Map args -> throw new IllegalArgumentException('bad trigger') }
+        script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
+
+        when:
+        script.handleToolsCall([id: 1, params: [name: toolName, arguments: arguments]])
+        def result = script.toolGenerateBugReport(baseArgs([nativeAppId: '777']))
+
+        then:
+        result.logs.retainedErrorCount == 1
+
+        where:
+        label            | toolName                   | arguments
+        'flat call'      | 'hub_set_rule'             | [appId: 777, operation: 'addTrigger']
+        'gateway call'   | 'hub_manage_rule_machine'  | [tool: 'hub_set_rule', args: [appId: 777, operation: 'addTrigger']]
+    }
+
+    @Unroll
+    def "retained errors honor explicit caller scope #scope"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'matching retained failure', '42',
+            [details: [tool: 'hub_set_rule', appId: '123']])
+        script.mcpLog('error', 'server', 'unrelated retained failure', '99',
+            [details: [tool: 'hub_update_app', appId: '456']])
+        script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs(scope))
+
+        then:
+        result.failingTool == 'hub_set_rule'
+        result.logs.retainedErrorCount == 1
+        result.report.contains('matching retained failure')
+        !result.report.contains('unrelated retained failure')
+
+        where:
+        scope << [[failingTool: 'hub_set_rule'], [ruleId: '42'], [nativeAppId: '123']]
+    }
+
+    def "unmatched explicit scope cannot borrow an unrelated retained tool"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'unrelated failure', null, [details: [tool: 'hub_update_app', appId: '456']])
+        script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs([nativeAppId: '123']))
+
+        then:
+        !result.containsKey('failingTool')
+        result.logs.retainedErrorCount == 0
+        !result.report.contains('unrelated failure')
+    }
+
+    @Unroll
+    def "retained raw evidence is withheld with #privacy"() {
+        given:
+        seedLogs([])
+        script.mcpLog('error', 'server', 'retained private evidence', null, [details: [tool: 'hub_set_rule']])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs(privacy))
+
+        then:
+        result.logs.retainedErrorCount == 1
+        result.report.contains('Retained Server Errors')
+        !result.report.contains('retained private evidence')
+        result.report.contains('omitted')
+
+        where:
+        privacy << [[privacyMode: 'public'], [includeRawLogs: false]]
+    }
+
     // ---------- default invocation ----------
 
     def "default invocation returns success with split env counts and a [bug] title"() {

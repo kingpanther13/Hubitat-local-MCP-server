@@ -254,9 +254,24 @@ private Map _validateMcpDeviceScope(scopeValue) {
         if (!requestedIds.contains(s)) requestedIds << s
     }
 
+    // Current authorized set = the ids on the selectedDevices input. Normally a
+    // List<DeviceWrapper>; tolerate raw String/Number ids defensively too. FAIL LOUD on an element
+    // that resolves to neither (no .id, not a scalar) -- silently dropping it would shrink the scope
+    // without telling anyone (this is the current-scope read, so it guards against corrupt stored
+    // state). Per the AGENTS.md error contract: surface, don't swallow.
+    def currentIds = (settings.selectedDevices ?: []).collect { dev ->
+        def id = (dev instanceof String || dev instanceof Number) ? dev.toString() : dev?.id?.toString()
+        if (id == null) {
+            throw new IllegalArgumentException("settings.selectedDevices contains an unrecognized element (neither a device with an id nor a String/Number id): ${dev}. Nothing was changed.")
+        }
+        id
+    } as List
+    def currentSet = currentIds as Set
+
     // ATOMIC validation: for replace/add, every requested id must resolve to a real hub device
     // (validated against the hub-wide device inventory -- the only view of every device,
-    // authorized or not). Validate ALL before any write so a single bad id can't leave a
+    // authorized or not; the one exception is an already-authorized id on an add against an
+    // incomplete inventory, below). Validate ALL before any write so a single bad id can't leave a
     // half-applied scope. remove does NOT validate membership BECAUSE removing an id that isn't
     // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
     // fetch there would block a legitimate cleanup of a since-deleted device.
@@ -282,6 +297,12 @@ private Map _validateMcpDeviceScope(scopeValue) {
         }
         def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
         def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
+        // An incomplete inventory must not refuse an add over ids that are already authorized
+        // (re-adding them is a no-op). A complete inventory still rejects stale ids, including
+        // authorized ones.
+        if (inventory.idsComplete == false && mode == "add") {
+            unknown = unknown.findAll { !currentSet.contains(it) }
+        }
         if (!unknown.isEmpty()) {
             if (inventory.idsComplete == false) {
                 return [success: false, isError: true,
@@ -291,20 +312,6 @@ private Map _validateMcpDeviceScope(scopeValue) {
             throw new IllegalArgumentException("Unknown device id(s): ${unknown.join(', ')}. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.")
         }
     }
-
-    // Current authorized set = the ids on the selectedDevices input. Normally a
-    // List<DeviceWrapper>; tolerate raw String/Number ids defensively too. FAIL LOUD on an element
-    // that resolves to neither (no .id, not a scalar) -- silently dropping it would shrink the scope
-    // without telling anyone (this is the current-scope read, so it guards against corrupt stored
-    // state). Per the AGENTS.md error contract: surface, don't swallow.
-    def currentIds = (settings.selectedDevices ?: []).collect { dev ->
-        def id = (dev instanceof String || dev instanceof Number) ? dev.toString() : dev?.id?.toString()
-        if (id == null) {
-            throw new IllegalArgumentException("settings.selectedDevices contains an unrecognized element (neither a device with an id nor a String/Number id): ${dev}. Nothing was changed.")
-        }
-        id
-    } as List
-    def currentSet = currentIds as Set
 
     // Compute the resulting set per mode. add uses a Set-backed union (LinkedHashSet) so the dedupe
     // is O(n) instead of O(n*m) -- current ids first (insertion order), then the new requested ids.

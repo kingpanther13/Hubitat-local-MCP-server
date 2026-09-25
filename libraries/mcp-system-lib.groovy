@@ -64,7 +64,19 @@ def toolGetHubInfo(args = null) {
     ]
 
     // Hub hardware and radio info (always available)
-    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = "unavailable" }
+    // Real hardware model (e.g. "C-8 Pro") lives in /hub/details/json's hardwareVersion.
+    // hub.hardwareID is an internal platform id ("000D" on both a C-7 and a C-8 Pro), so it is
+    // surfaced separately as platformHardwareId and NEVER used as the model. On any failure model
+    // is null rather than a misleading value. This GET runs only on the hub_get_info tool call.
+    info.platformHardwareId = null
+    try { info.platformHardwareId = hub?.hardwareID } catch (Exception e) { }
+    info.model = null
+    try {
+        def raw = hubInternalGet("/hub/details/json")
+        def details = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        def hw = (details instanceof Map) ? details.hardwareVersion : null
+        if (hw instanceof String && hw.trim()) info.model = hw.trim()
+    } catch (Exception e) { info.model = null }
     try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
     try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable" }
     try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable" }

@@ -482,6 +482,8 @@ jobs:
         #    cannot green-wash a change e2e should test; detection fails SAFE (run on any doubt);
         #    workflow_dispatch always runs the real suite.
         id: gate
+        # explicit shell = -eo pipefail; the implicit default lacks pipefail and masks a failed gh in `gh | tr`
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TESTS_INPUT: ${{ inputs.tests }}
@@ -870,7 +872,7 @@ jobs:
             # The runner treats an EMPTY --groups as "no filter" = the FULL suite, so NEVER pass empty in
             # focused mode (that would silently run everything). e2e_scope.py always emits >=smoke, so this
             # only fires if the gate misbehaved -- fall back to the smoke core, not the whole suite.
-            groups="${E2E_GROUPS:-infrastructure,protocol}"
+            groups="${E2E_GROUPS:-infrastructure,protocol,error_verification}"
             echo "Running the FOCUSED lane -- groups: $groups"
             python tests/e2e_test.py --groups "$groups"
           else
@@ -927,6 +929,8 @@ jobs:
       #                             PENDING (fail-closed: it can't rule the label out); the status POST
       #                             below uses the same API, so it would most likely fail too.
       - name: Post e2e gate status
+        # explicit shell = -eo pipefail; the implicit default lacks pipefail and masks a failed gh in `gh | tr`
+        shell: bash
         # always() EXCEPT on cancel: a focused run cancelled by the FIRST-full-label promote shares the
         # PR head SHA with the full run it spawned (a label add doesn't change the SHA, unlike a commit),
         # so its PENDING post could land AFTER the full run's success/failure on the SAME status context

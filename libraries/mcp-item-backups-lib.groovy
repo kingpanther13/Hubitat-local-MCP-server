@@ -77,7 +77,7 @@ private _listSourceItemBackups(args) {
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
     if (backupList.any { it.deletePending }) {
-        result.deletePendingNote = "Entries with deletePending=true record an incomplete deletion. If the file is still readable, hub_get_backup or hub_restore_backup can clear the marker and recover the backup. Otherwise it remains unavailable; the next backup publication purges unrecovered markers. Pending entries cannot be reused as baselines."
+        result.deletePendingNote = "Entries with deletePending=true record an incomplete deletion. If the file is still readable, hub_get_backup or hub_restore_backup can clear the marker and recover the backup. Recover promptly: the next backup publication purges unprotected pending entries and attempts to delete their files, even if still readable. Pending entries cannot be reused as baselines."
     }
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
@@ -136,7 +136,7 @@ def toolGetItemBackup(args) {
         return [
             error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be recovered. ${recovery.error}",
             backupKey: args.backupKey,
-            hint: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. The next backup publication purges unrecovered markers."
+            hint: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. Recover promptly: the next backup publication purges unprotected pending entries and attempts to delete their files, even if still readable."
         ]
     }
 
@@ -244,7 +244,7 @@ private Map _toolRestoreSourceBackup(args) {
                 success: false,
                 error: "Backup '${args.backupKey}' is marked pending deletion and its file '${entry.fileName}' could not be recovered. ${recovery.error} Nothing was restored.",
                 backupKey: args.backupKey,
-                note: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. The next backup publication purges unrecovered markers."
+                note: "Check File Manager and retry if the file is still present or the read failed temporarily. A readable file can recover this marker; otherwise choose a non-pending backup. Recover promptly: the next backup publication purges unprotected pending entries and attempts to delete their files, even if still readable."
             ]
         }
 
