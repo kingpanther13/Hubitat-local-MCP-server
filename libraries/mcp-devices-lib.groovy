@@ -4461,14 +4461,23 @@ def toolCreateDevice(args) {
 
     // Hub Mesh LINK vs driver-based CREATE are two mutually-exclusive shapes of this tool.
     // Validation runs before any hub call so a bad shape can be corrected and retried cleanly.
+    // "Wants to link" is decided by a NON-BLANK mesh source value, not key presence: a caller passing
+    // mesh_source_hub_id:null on a normal driver create must not be pushed onto the link path.
     String meshHubId = args.mesh_source_hub_id?.toString()?.trim()
     String meshDeviceId = args.mesh_source_device_id?.toString()?.trim()
-    boolean wantsMeshLink = args.containsKey("mesh_source_hub_id") || args.containsKey("mesh_source_device_id")
+    boolean wantsMeshLink = meshHubId || meshDeviceId
     boolean hasType = args.deviceTypeId != null && args.deviceTypeId.toString().trim() != ""
     if (wantsMeshLink) {
         if (hasType) {
             throw new IllegalArgumentException(
                 "Provide EITHER deviceTypeId (driver-based create) OR mesh_source_hub_id + mesh_source_device_id (Hub Mesh link) -- not both.")
+        }
+        // The link form takes only the source pair (+ confirm); create-only fields (label, ...) do not
+        // apply to a linked proxy -- its identity mirrors the peer's source device.
+        def createOnly = ["label"].findAll { args.get(it) != null && args.get(it).toString().trim() != "" }
+        if (createOnly) {
+            throw new IllegalArgumentException(
+                "${createOnly.join(', ')} cannot be set when linking a Hub Mesh device -- a linked proxy mirrors the peer's source device. Drop it and pass only mesh_source_hub_id + mesh_source_device_id.")
         }
         if (!meshHubId || !meshDeviceId) {
             throw new IllegalArgumentException(
@@ -4608,24 +4617,35 @@ def toolCreateDevice(args) {
 }
 
 // Hub Mesh: create a LOCAL linked device from a device a peer hub shares (GET
-// /device/createLinked/<hubId>/<deviceId>). The endpoint returns HTTP 200 with an empty/plaintext
-// body EVEN WHEN the link silently does not happen (observed live: while the mesh was still
-// re-establishing its connection to a peer that had recently rebooted -- the row stays in
-// availableLinkedDevices with linkedLocally:false and localLinkedDevices is unchanged; it clears once
-// the peer reconnects. A persistently missing peer mesh token would look the same). So a 200 is NOT proof of success; the
-// read-back must key on the SOURCE pair and distinguish three outcomes: linked (success), a confirmed
-// no-op (FAILURE, not a warning), and a genuinely unreadable mesh list (the only warn-not-fail case).
-// Segments are URL-encoded so an unexpected id cannot inject extra path segments.
+// /device/createLinked/<hubId>/<deviceId>). A 200 is NOT proof of success -- the endpoint returns an
+// empty body even when the link silently no-ops (seen live while the mesh was still re-establishing a
+// recently-rebooted peer). So the read-back keys on the SOURCE pair and classifies three outcomes:
+// linked (success), a confirmed no-op (FAILURE), and an unreadable mesh list (the only warn-not-fail).
+// The id/name are passed literally: the platform HTTP layer encodes the path, so pre-encoding here
+// would double-encode.
 private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
-    def beforeList = _meshLocalLinkedDevices()
+    Map beforeJson = _meshJson()
+    def beforeList = (beforeJson?.localLinkedDevices instanceof List) ? beforeJson.localLinkedDevices : null
     def before = (beforeList != null) ? (beforeList.collect { it.id?.toString() } as Set) : null
+    def availBefore = (beforeJson?.availableLinkedDevices instanceof List) ? beforeJson.availableLinkedDevices : null
 
-    // Pre-validate the source pair against the offered pool BEFORE the GET (validation-before-
-    // side-effect, like this tool's other mutually-exclusive throws). A pair that was never offered
-    // (typo/stale/peer stopped sharing) leaves srcRow==null in the read-back, which would otherwise
-    // read as "linked" and report a false success. When the pool is readable and does NOT offer the
-    // pair, reject up front; when it is unreadable we cannot pre-validate, so proceed as before.
-    def availBefore = _meshAvailableLinkedDevices()
+    // Resolve the local mirror row for this source pair out of a localLinkedDevices snapshot: prefer a
+    // single row matching sourceHubId, narrowing by a source-device-id field only when the peer shares
+    // more than one device here.
+    def resolveLocal = { List rows ->
+        if (!(rows instanceof List)) return null
+        def bySrc = rows.findAll { it instanceof Map && it.sourceHubId?.toString() == meshHubId }
+        if (bySrc.size() == 1) return bySrc[0]
+        def byDev = bySrc.findAll { r ->
+            ['sourceDeviceId', 'sourceId', 'deviceId'].any { k -> r.containsKey(k) && r[k]?.toString() == meshDeviceId }
+        }
+        return byDev.size() == 1 ? byDev[0] : null
+    }
+
+    // Pre-validate the source pair against the offered pool BEFORE the GET (validation-before-side-
+    // effect). An unoffered pair leaves srcRow==null in the read-back, which would otherwise read as
+    // "linked" and report a false success. When the pool is readable and does NOT offer the pair,
+    // reject up front; an already-linked pair short-circuits (no fresh GET, no fresh-success claim).
     def srcBefore = (availBefore != null)
         ? availBefore.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
         : null
@@ -4635,31 +4655,43 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             "hub_get_hub_mesh availableLinkedDevices[]. Copy the hubId + deviceId from an " +
             "availableLinkedDevices[] row and retry.")
     }
-
-    String encHub = java.net.URLEncoder.encode(meshHubId, 'UTF-8')
-    String encDev = java.net.URLEncoder.encode(meshDeviceId, 'UTF-8')
-    try {
-        hubInternalGet("/device/createLinked/${encHub}/${encDev}", null, 30)
-    } catch (Exception e) {
-        mcpLogError("device", "hub_create_device Hub Mesh link failed (hub ${meshHubId}, device ${meshDeviceId})", e)
-        return [success: false, isError: true,
-                error: "Hub call failed linking the shared device (hub ${meshHubId}, device ${meshDeviceId}): ${e.message}",
-                note: "Verify the pair against hub_get_hub_mesh availableLinkedDevices[] (hubId + deviceId). " +
-                      "If the peer hub has UI login security, store its mesh token here first with " +
-                      "hub_update_hub_mesh(peer_hub_id, peer_token)."]
+    if (srcBefore != null && srcBefore.linkedLocally == true) {
+        def existing = resolveLocal(beforeList)
+        mcpLog("info", "device", "hub_create_device: Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId}) is already linked${existing ? " as local ${existing.id}" : ''}")
+        def already = [
+            success: true,
+            alreadyLinked: true,
+            deviceId: existing?.id?.toString(),
+            name: existing?.name?.toString(),
+            sourceHubId: meshHubId,
+            sourceDeviceId: meshDeviceId,
+            linkedDevice: true,
+            message: "Hub Mesh device shared by hub ${meshHubId} was already linked here${existing ? " as local device ${existing.id}" : ''}.",
+            note: "This is a local proxy for a device on the peer hub; unlink it (local only) with hub_delete_device. Read all linked devices via hub_get_hub_mesh."
+        ]
+        if (existing == null) already.warnings = ["Already linked, but could not resolve the existing local id from hub_get_hub_mesh localLinkedDevices. Find it with hub_get_hub_mesh."]
+        return already
     }
 
-    // Read-back with a short backoff for propagation lag. Three-way classification keyed on the
-    // SOURCE pair: `linked` is a tri-state -- true (proven linked), false (proven still unlinked =
-    // silent no-op), null (could not read the availableLinkedDevices list to decide either way).
-    // The new local id is resolved by diffing localLinkedDevices (preferring the added row whose
-    // sourceHubId matches this peer), not by a bare size diff.
+    // A 30s read timeout can fire AFTER the hub applied the link, so a throw is an UNKNOWN outcome, not
+    // a definite failure: capture it and let the read-back decide (like the no-op path).
+    String linkThrew = null
+    try {
+        hubInternalGet("/device/createLinked/${meshHubId}/${meshDeviceId}", null, 30)
+    } catch (Exception e) {
+        mcpLogError("device", "hub_create_device Hub Mesh link GET errored (hub ${meshHubId}, device ${meshDeviceId})", e)
+        linkThrew = e.message ?: e.toString()
+    }
+
+    // Read-back with a short backoff for propagation lag. `linked` is a tri-state -- true (proven
+    // linked), false (proven still unlinked = silent no-op), null (mesh list unreadable / inconclusive).
     Boolean linked = null
     String newId = null
     String newName = null
     for (int attempt = 0; attempt < 3; attempt++) {
-        def after = _meshLocalLinkedDevices()
-        def avail = _meshAvailableLinkedDevices()
+        Map j = _meshJson()
+        def after = (j?.localLinkedDevices instanceof List) ? j.localLinkedDevices : null
+        def avail = (j?.availableLinkedDevices instanceof List) ? j.availableLinkedDevices : null
         if (newId == null && before != null && after != null) {
             def added = after.findAll { !before.contains(it.id?.toString()) }
             def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
@@ -4669,8 +4701,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         if (avail != null) {
             // The source's own row is authoritative: still present-and-unlinked means the link did
             // NOT take. Its ABSENCE means "took" only when the pair was offered before this call
-            // (srcBefore != null) -- a pair that was never offered is absent for a different reason,
-            // so treat that absence as inconclusive (null) rather than a false success.
+            // (srcBefore != null) -- otherwise the absence is inconclusive (null), not a false success.
             def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
             if (srcRow == null) {
                 linked = (srcBefore != null) ? true : null
@@ -4681,8 +4712,6 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             // available list unreadable, but a new local link for THIS source showed up.
             linked = true
         }
-        // Break once proven linked, but keep polling if the new local id is still unresolved and a
-        // before-list existed to diff against (the id should appear within the backoff window).
         if (linked == true && (newId != null || before == null)) break
         if (attempt < 2) pauseExecution(500)
     }
@@ -4699,12 +4728,24 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
                       "and store it with hub_update_hub_mesh(peer_hub_id, peer_token)."]
     }
 
-    // Outcome 3: could not prove linked OR not-linked (mesh list unreadable / ambiguous) -- warn, don't fail.
+    // Outcome 3a: the GET errored AND the read-back could not prove it linked -- unknown, not a definite
+    // failure (the timeout may have fired after the hub applied it). Fail, but say it MAY have applied.
+    if (linked == null && linkThrew != null) {
+        return [success: false, isError: true,
+                error: "Hub call errored linking the shared device (hub ${meshHubId}, device ${meshDeviceId}): ${linkThrew}",
+                note: "The link MAY have applied (a read timeout can fire after the hub commits) -- verify with " +
+                      "hub_get_hub_mesh before retrying. If it did not take, this is usually transient: Hub Mesh takes " +
+                      "time to re-establish a peer connection after that peer reboots or updates. If it persists, confirm " +
+                      "the peer in hub_get_hub_mesh peers[] (offline=false, warning=null) and that this hub holds its mesh " +
+                      "token (store it with hub_update_hub_mesh(peer_hub_id, peer_token), read from the peer's OWN " +
+                      "hub_get_hub_mesh(include_token=true))."]
+    }
+
+    // Outcome 3b: could not prove linked OR not-linked (mesh list unreadable / ambiguous) -- warn, don't fail.
     def warnings = []
     if (linked == null) {
         warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh availableLinkedDevices (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
     } else if (newId == null) {
-        // Proven linked, but the new local id could not be resolved from the localLinkedDevices diff.
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
     }
 
@@ -4720,39 +4761,6 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         message: "Linked the Hub Mesh device shared by hub ${meshHubId}${newId ? " as local device ${newId}" : ''}." + (warnings ? " WARNING: see warnings." : ""),
         note: "This is a local proxy for a device on the peer hub; unlink it (local only) with hub_delete_device. Read all linked devices via hub_get_hub_mesh."
     ]
-}
-
-// Reads /hub2/hubMeshJson and returns the localLinkedDevices list (remote devices linked ONTO this
-// hub: id, name, sourceHubId, childCount, appsUsing). Returns null when the mesh JSON is
-// unreachable/unparseable or the section is missing/misshaped -- callers treat null as "unreadable".
-private List _meshLocalLinkedDevices() {
-    try {
-        def raw = hubInternalGet("/hub2/hubMeshJson")
-        if (!raw?.trim()) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(raw)
-        if (!(parsed instanceof Map) || !(parsed.localLinkedDevices instanceof List)) return null
-        return parsed.localLinkedDevices
-    } catch (Exception e) {
-        mcpLog("warn", "device", "Could not read Hub Mesh localLinkedDevices: ${e.message}")
-        return null
-    }
-}
-
-// Reads /hub2/hubMeshJson and returns the availableLinkedDevices list (remote shared devices offered
-// to this hub: hubId, deviceId, deviceDisplayName, linkedLocally). Returns null when the mesh JSON is
-// unreachable/unparseable or the section is missing/misshaped -- callers treat null as "unreadable"
-// (cannot decide linked vs not-linked, so warn rather than fail).
-private List _meshAvailableLinkedDevices() {
-    try {
-        def raw = hubInternalGet("/hub2/hubMeshJson")
-        if (!raw?.trim()) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(raw)
-        if (!(parsed instanceof Map) || !(parsed.availableLinkedDevices instanceof List)) return null
-        return parsed.availableLinkedDevices
-    } catch (Exception e) {
-        mcpLog("warn", "device", "Could not read Hub Mesh availableLinkedDevices: ${e.message}")
-        return null
-    }
 }
 
 def toolGetCompatibleDevices(args) {
@@ -4955,13 +4963,22 @@ def toolDeleteDevice(args) {
     if (_deviceFlag(deviceInfo.linkedDevice)) {
         warnings << "LINKED MESH DEVICE: This is a Hub Mesh linked device (a local proxy for a device shared by a peer hub). Deleting it removes ONLY the local link; the source device on the peer hub is untouched."
         try {
-            def linkedRow = _meshLocalLinkedDevices()?.find { it.id?.toString() == deviceId }
-            def apps = (linkedRow?.appsUsing instanceof List) ? linkedRow.appsUsing : []
-            if (apps) {
-                warnings << "IN USE BY ${apps.size()} APP(S): ${apps.join(', ')}. These apps reference the linked device and WILL BREAK after deletion."
+            // A mesh read that fails (null) OR a missing row is NOT "no apps use it": the appsUsing check
+            // simply did not run, so warn distinctly rather than let an unchecked delete look safe.
+            Map meshJson = _meshJson()
+            def meshRows = (meshJson?.localLinkedDevices instanceof List) ? meshJson.localLinkedDevices : null
+            def linkedRow = (meshRows != null) ? meshRows.find { it.id?.toString() == deviceId } : null
+            if (meshRows == null || linkedRow == null) {
+                warnings << "COULD NOT CHECK which local apps use this linked device (mesh read ${meshRows == null ? 'failed' : 'did not list this device'}); deletion may break apps that reference it. Review hub_get_hub_mesh localLinkedDevices before proceeding."
+            } else {
+                def apps = (linkedRow.appsUsing instanceof List) ? linkedRow.appsUsing : []
+                if (apps) {
+                    warnings << "IN USE BY ${apps.size()} APP(S): ${apps.join(', ')}. These apps reference the linked device and WILL BREAK after deletion."
+                }
             }
         } catch (Exception e) {
             mcpLog("debug", "hub-admin", "Could not read Hub Mesh appsUsing for linked device ${deviceId}: ${e.message}")
+            warnings << "COULD NOT CHECK which local apps use this linked device (mesh read failed); deletion may break apps that reference it. Review hub_get_hub_mesh localLinkedDevices before proceeding."
         }
     }
 
@@ -4998,8 +5015,8 @@ def toolDeleteDevice(args) {
     mcpLog("warn", "hub-admin", "DELETE DEVICE AUDIT: Deleting '${deviceName}' (ID: ${deviceId}, DNI: ${deviceDNI}, Type: ${deviceType}). Warnings: ${warnings.size() > 0 ? warnings.join(' | ') : 'none'}")
 
     // Step 7: Execute force delete via hub internal API. The /yes variant unlinks a Hub Mesh LINKED
-    // device too (live-verified #448: deleting a linked proxy via /yes removed only the local link and
-    // returned the source to availableLinkedDevices; the peer's source device was untouched), so the
+    // device too (live-verified: deleting a linked proxy via /yes removes only the local link and
+    // returns the source to availableLinkedDevices; the peer's source device is untouched), so the
     // linked case needs no separate /json branch.
     try {
         def responseText = hubInternalGet("/device/forceDelete/${deviceId}/yes", null, 30)
@@ -5528,14 +5545,14 @@ Only modify devices user explicitly requested. Pre-flight: read configuration, c
         // Device Admin
         [
             name: "hub_delete_device",
-            description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO. Requires Write master + confirm.[[FLAT_TRIM]] For ghost/orphaned/stuck devices only.
+            description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO.[[FLAT_TRIM]] Requires Write master + confirm. For ghost/orphaned/stuck devices only.[[/FLAT_TRIM]]
 
-PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation. Device + history lost, automations break. A Hub Mesh LINKED device unlinks locally only (the peer's source device is untouched) and warns on appsUsing. See hub_get_tool_guide(section='hub_admin_write_destructive').[[/FLAT_TRIM]]""",
+PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation. Device + history lost, automations break.[[FLAT_TRIM]] A Hub Mesh LINKED device unlinks locally only (the peer's source device is untouched) and warns on appsUsing. See hub_get_tool_guide(section='hub_admin_write_destructive').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "The device ID to permanently delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created, device was verified, and user explicitly approved the deletion."]
+                    deviceId: [type: "string", description: "Device ID to delete."],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true.[[FLAT_TRIM]] Confirms a backup exists (<24h), the device was verified, and the user approved the deletion.[[/FLAT_TRIM]]"]
                 ],
                 required: ["deviceId", "confirm"]
             ]

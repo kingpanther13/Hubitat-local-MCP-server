@@ -776,11 +776,12 @@ def toolUpdateHubMesh(args) {
                     "The peer token was not stored. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
         }
         // FAIL-CLOSED on anything that is not a positive commit (repo precedent: the /device/runmethod
-        // handler in mcp-devices-lib.groovy). hubInternalPostJson returns null for an EMPTY/dropped
-        // body -- a truncated response is an unknown commit, not a success. An _unparseable Map is a
-        // non-JSON body. An explicit [success:false] is a rejection. All three mean "not stored", so
-        // do NOT record peer_token. An empty {} / non-error Map IS this endpoint's proven success
-        // shape (it returns 200 {} on success), so success is NOT gated on success==true.
+        // handler in mcp-devices-lib.groovy). Four non-success branches follow, and only ONE is a proven
+        // not-stored: an explicit [success:false] is a hub rejection. The other three are UNKNOWN/
+        // unconfirmed commits -- a null (empty/dropped body), an _unparseable Map (non-JSON body), and a
+        // non-null non-Map JSON. None of the four records peer_token. An empty {} / non-error Map IS this
+        // endpoint's proven success shape (it returns 200 {} on success), so success is NOT gated on
+        // success==true.
         if (postResult == null) {
             // Empty/dropped body: a truncated response is an UNKNOWN commit, not a proven one.
             mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned no body (dropped/unknown commit)", null)
@@ -1346,7 +1347,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_update_hub_mesh",
-            description: """Change Hub Mesh settings (hub-to-hub sharing, NOT the Z-Wave/Zigbee radios). All optional — pass only what changes. ⚠️ An `enabled` change needs a hub REBOOT (hub_reboot) to take effect.[[FLAT_TRIM]] The tool never reboots on its own. Applied fields are echoed in `applied`. Peers auto-discover on the LAN (no "add peer" write); per-DEVICE sharing is hub_update_device (meshEnabled / meshFullSync). Read current config + valid peer hubIds via hub_get_hub_mesh; full write model in hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            description: """Change Hub Mesh settings (hub-to-hub sharing, NOT the Z-Wave/Zigbee radios). All optional — pass only what changes. ⚠️ An `enabled` change needs a hub REBOOT (hub_reboot) to take effect.[[FLAT_TRIM]] The tool never reboots on its own. Applied fields are echoed in `applied`. Peers auto-discover on the LAN (no "add peer" write); per-DEVICE sharing is hub_update_device (meshEnabled; meshFullSync there is a LINKED-device sync flag, not a share). Read current config + valid peer hubIds via hub_get_hub_mesh; full write model in hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [

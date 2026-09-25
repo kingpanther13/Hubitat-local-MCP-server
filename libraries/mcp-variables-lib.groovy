@@ -393,16 +393,18 @@ def toolCreateVariable(args) {
     args = args ?: [:]
 
     // Hub Mesh LINK form: create a local variable linked to one a peer hub shares. Mutually exclusive
-    // with every create form (single and bulk). Validation before any hub call.
-    boolean wantsMeshLink = args.containsKey("mesh_source_hub_id") || args.containsKey("mesh_source_name")
+    // with every create form (single and bulk). Validation before any hub call. "Wants to link" is a
+    // NON-BLANK source value, not key presence -- a mesh_source_*:null on a normal create must not be
+    // pushed onto the link path.
+    String meshHubId = args.mesh_source_hub_id?.toString()?.trim()
+    String meshName = args.mesh_source_name?.toString()?.trim()
+    boolean wantsMeshLink = meshHubId || meshName
     if (wantsMeshLink) {
         if (args.name != null || args.type != null || args.value != null || args.variables != null) {
             throw new IllegalArgumentException(
                 "Provide EITHER a new-variable create (name/type/value or the variables array) OR a Hub Mesh link " +
                 "(mesh_source_hub_id + mesh_source_name) -- not both.")
         }
-        String meshHubId = args.mesh_source_hub_id?.toString()?.trim()
-        String meshName = args.mesh_source_name?.toString()?.trim()
         if (!meshHubId || !meshName) {
             throw new IllegalArgumentException(
                 "Linking a Hub Mesh variable needs BOTH mesh_source_hub_id and mesh_source_name " +
@@ -449,58 +451,76 @@ def toolCreateVariable(args) {
 }
 
 // Hub Mesh: create a LOCAL linked variable from one a peer hub shares (GET
-// /hub2/createLinkedHubVar/<hubId>/<name>). The endpoint returns HTTP 200 with an empty/plaintext
-// body EVEN WHEN the link silently does not happen (observed live: while the mesh was still
-// re-establishing its connection to a peer that had recently rebooted -- the row stays in
-// availableLinkedHubVariables with linkedLocally:false and localLinkedHubVariables is unchanged; it
-// clears once the peer reconnects. A persistently missing peer mesh token would look the same). So a 200 is NOT proof of success; the read-back keys on the
-// SOURCE pair and distinguishes three outcomes: linked (success), a confirmed no-op (FAILURE, not a
-// warning), and a genuinely unreadable mesh list (the only warn-not-fail case). A local linked row's
-// display `name` is DECORATED ("<name> on <peer>"); the bare source name is in `sourceVarName`, so the
-// confirmation signal is a localLinkedHubVariables row whose sourceVarName + sourceHubId match this
-// source pair (NOT a name match). Both URL segments are encoded (the name may carry spaces/punctuation).
+// /hub2/createLinkedHubVar/<hubId>/<name>). A 200 is NOT proof of success -- the endpoint returns an
+// empty body even when the link silently no-ops (seen live while the mesh was still re-establishing a
+// recently-rebooted peer). The read-back keys on the SOURCE pair and classifies three outcomes: linked
+// (success), a confirmed no-op (FAILURE), and an unreadable mesh list (the only warn-not-fail). A local
+// linked row's display `name` is DECORATED ("<name> on <peer>"); the bare source name is in
+// `sourceVarName`, so the confirmation signal is a localLinkedHubVariables row whose sourceVarName +
+// sourceHubId match this pair (NOT a name match). The id/name are passed literally: the platform HTTP
+// layer encodes the path, so pre-encoding here would double-encode.
 private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
+    Map beforeJson = _meshJson()
+    def availBefore = (beforeJson?.availableLinkedHubVariables instanceof List) ? beforeJson.availableLinkedHubVariables : null
+    def localBefore = (beforeJson?.localLinkedHubVariables instanceof List) ? beforeJson.localLinkedHubVariables : null
+
+    def resolveLocal = { List rows ->
+        (rows instanceof List) ? rows.find {
+            it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId } : null
+    }
+
     // Pre-validate the source pair against the offered pool BEFORE the GET (validation-before-side-
-    // effect, like this tool's other mutually-exclusive throws). A pair that was never offered
-    // (typo/stale/peer stopped sharing) leaves the source row absent in the read-back, which would
-    // otherwise read as "linked" and report a false success. When the pool is readable and does NOT
-    // offer the pair, reject up front; when it is unreadable we cannot pre-validate, so proceed.
-    def availBefore = _meshAvailableLinkedHubVars()
-    boolean sourceWasOffered = (availBefore != null) && availBefore.any {
-        it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
+    // effect). An unoffered pair leaves the source row absent in the read-back, which would otherwise
+    // read as "linked" and report a false success. When the pool is readable and does NOT offer the
+    // pair, reject up front; an already-linked pair short-circuits (no fresh GET, no fresh-success claim).
+    def srcBeforeRow = (availBefore != null)
+        ? availBefore.find { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
+        : null
+    boolean sourceWasOffered = (srcBeforeRow != null)
     if (availBefore != null && !sourceWasOffered) {
         throw new IllegalArgumentException(
             "No shared variable with hubId ${meshHubId} + name '${meshName}' is offered in " +
             "hub_get_hub_mesh availableLinkedHubVariables[]. Copy the hubId + name from an " +
             "availableLinkedHubVariables[] row and retry.")
     }
+    if (srcBeforeRow != null && srcBeforeRow.linkedLocally == true) {
+        def existing = resolveLocal(localBefore)
+        mcpLog("info", "variables", "hub_create_variable: Hub Mesh variable '${meshName}' from hub ${meshHubId} is already linked${existing ? " as '${existing.name}'" : ''}")
+        def already = [
+            success: true,
+            alreadyLinked: true,
+            name: existing?.name?.toString() ?: meshName,
+            sourceName: meshName,
+            sourceHubId: meshHubId,
+            linked: true,
+            message: "Hub Mesh variable '${meshName}' shared by hub ${meshHubId} was already linked here${existing ? " as '${existing.name}'" : ''}.",
+            note: "This is a local mirror of a variable on the peer hub. Read all linked variables via hub_get_hub_mesh."
+        ]
+        if (existing == null) already.warnings = ["Already linked, but the local mirror name did not resolve from hub_get_hub_mesh localLinkedHubVariables; the returned name is the bare source name and may not identify the mirror. Verify it with hub_get_hub_mesh."]
+        return already
+    }
 
-    String encHub = java.net.URLEncoder.encode(meshHubId, 'UTF-8')
-    String encName = java.net.URLEncoder.encode(meshName, 'UTF-8')
+    // A 30s read timeout can fire AFTER the hub applied the link, so a throw is an UNKNOWN outcome, not
+    // a definite failure: capture it and let the read-back decide (like the no-op path).
+    String linkThrew = null
     try {
-        hubInternalGet("/hub2/createLinkedHubVar/${encHub}/${encName}", null, 30)
+        hubInternalGet("/hub2/createLinkedHubVar/${meshHubId}/${meshName}", null, 30)
     } catch (Exception e) {
-        mcpLogError("variables", "hub_create_variable Hub Mesh link failed (hub ${meshHubId}, variable ${meshName})", e)
-        return [success: false, isError: true,
-                error: "Hub call failed linking the shared variable (hub ${meshHubId}, name ${meshName}): ${e.message}",
-                note: "Verify the pair against hub_get_hub_mesh availableLinkedHubVariables[] (hubId + name). " +
-                      "If the peer hub has UI login security, store its mesh token here first with " +
-                      "hub_update_hub_mesh(peer_hub_id, peer_token)."]
+        mcpLogError("variables", "hub_create_variable Hub Mesh link GET errored (hub ${meshHubId}, variable ${meshName})", e)
+        linkThrew = e.message ?: e.toString()
     }
 
     // Read-back with a short backoff. Tri-state `linked`: true (proven linked), false (proven still
     // unlinked = silent no-op), null (could not decide -- mesh list unreadable). The link took if a
     // localLinkedHubVariables row now mirrors this source OR the source's availableLinkedHubVariables
     // row is gone / flagged linkedLocally; it did NOT take if that row is still present-and-unlinked.
-    // NOTE: a local linked row's `name` is DECORATED ("<name> on <peer>"); the bare source name is in
-    // `sourceVarName` and the peer id in `sourceHubId` -- match on those, not on `name`.
     Boolean linked = null
     def matchedLocalRow = null
     for (int attempt = 0; attempt < 3; attempt++) {
-        def afterRows = _meshLocalLinkedHubVars()
-        def avail = _meshAvailableLinkedHubVars()
-        def localRow = afterRows?.find {
-            it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId }
+        Map j = _meshJson()
+        def afterRows = (j?.localLinkedHubVariables instanceof List) ? j.localLinkedHubVariables : null
+        def avail = (j?.availableLinkedHubVariables instanceof List) ? j.availableLinkedHubVariables : null
+        def localRow = resolveLocal(afterRows)
         boolean localHasLink = (localRow != null)
         if (localRow != null) matchedLocalRow = localRow
         Boolean availLinked = null
@@ -537,7 +557,20 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
                       "and store it with hub_update_hub_mesh(peer_hub_id, peer_token)."]
     }
 
-    // Outcome 3: could not prove linked OR not-linked (mesh list unreadable) -- warn, don't fail.
+    // Outcome 3a: the GET errored AND the read-back could not prove it linked -- unknown, not a definite
+    // failure (the timeout may have fired after the hub applied it). Fail, but say it MAY have applied.
+    if (linked == null && linkThrew != null) {
+        return [success: false, isError: true,
+                error: "Hub call errored linking the shared variable (hub ${meshHubId}, name ${meshName}): ${linkThrew}",
+                note: "The link MAY have applied (a read timeout can fire after the hub commits) -- verify with " +
+                      "hub_get_hub_mesh before retrying. If it did not take, this is usually transient: Hub Mesh takes " +
+                      "time to re-establish a peer connection after that peer reboots or updates. If it persists, confirm " +
+                      "the peer in hub_get_hub_mesh peers[] (offline=false, warning=null) and that this hub holds its mesh " +
+                      "token (store it with hub_update_hub_mesh(peer_hub_id, peer_token), read from the peer's OWN " +
+                      "hub_get_hub_mesh(include_token=true))."]
+    }
+
+    // Outcome 3b: could not prove linked OR not-linked (mesh list unreadable) -- warn, don't fail.
     def warnings = []
     if (linked == null) {
         warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
@@ -564,40 +597,6 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
         message: "Linked the Hub Mesh variable '${meshName}' shared by hub ${meshHubId}." + (warnings ? " WARNING: see warnings." : ""),
         note: "This is a local mirror of a variable on the peer hub. Read all linked variables via hub_get_hub_mesh."
     ]
-}
-
-// Reads /hub2/hubMeshJson and returns the localLinkedHubVariables ROWS (variables linked ONTO this hub
-// from peers). Each row carries a DECORATED display `name` ("<name> on <peer>"), the bare `sourceVarName`,
-// and `sourceHubId` -- match on the latter two, not `name`. Returns null when the mesh JSON is
-// unreachable/unparseable or the section is missing/misshaped -- callers treat null as "unreadable".
-private List _meshLocalLinkedHubVars() {
-    try {
-        def raw = hubInternalGet("/hub2/hubMeshJson")
-        if (!raw?.trim()) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(raw)
-        if (!(parsed instanceof Map) || !(parsed.localLinkedHubVariables instanceof List)) return null
-        return parsed.localLinkedHubVariables
-    } catch (Exception e) {
-        logDebug("hub_create_variable: could not read Hub Mesh localLinkedHubVariables: ${e.message}")
-        return null
-    }
-}
-
-// Reads /hub2/hubMeshJson and returns the availableLinkedHubVariables list (remote shared variables
-// offered to this hub: hubId, name, hubName, linkedLocally). Returns null when the mesh JSON is
-// unreachable/unparseable or the section is missing/misshaped -- callers treat null as "unreadable"
-// (cannot decide linked vs not-linked, so warn rather than fail).
-private List _meshAvailableLinkedHubVars() {
-    try {
-        def raw = hubInternalGet("/hub2/hubMeshJson")
-        if (!raw?.trim()) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(raw)
-        if (!(parsed instanceof Map) || !(parsed.availableLinkedHubVariables instanceof List)) return null
-        return parsed.availableLinkedHubVariables
-    } catch (Exception e) {
-        logDebug("hub_create_variable: could not read Hub Mesh availableLinkedHubVariables: ${e.message}")
-        return null
-    }
 }
 
 // Bulk create driver: requires a non-empty List at the batch level, resolves the
@@ -910,11 +909,22 @@ def toolSetVariable(Map args) {
         throw new IllegalArgumentException("mesh_shared must be a boolean (true or false), got: ${args.mesh_shared}")
     }
     // Hub Mesh sharing applies only to HUB variables -- reject it on a rule-only var up front (before
-    // the value leg runs), so mesh_shared never silently no-ops against a rule_engine variable.
+    // the value leg runs), so mesh_shared never silently no-ops against a rule_engine variable. A THROW
+    // from getGlobalVar is transient/unknown, NOT proof the name is not a hub variable -- distinguish it
+    // from a genuine null so a lookup blip does not misreport the variable as absent.
     if (hasMeshShared) {
         def hv = null
+        boolean lookupThrew = false
+        String lookupErr = null
         try { hv = getGlobalVar(name) } catch (Exception e) {
+            lookupThrew = true
+            lookupErr = e.message ?: e.toString()
             logDebug("hub_set_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        }
+        if (lookupThrew) {
+            throw new IllegalArgumentException(
+                "Unable to verify whether '${name}' is a hub variable (getGlobalVar errored: ${lookupErr}). " +
+                "Retry, or drop mesh_shared.")
         }
         if (hv == null) {
             throw new IllegalArgumentException(
@@ -927,37 +937,59 @@ def toolSetVariable(Map args) {
 
     if (hasMeshShared) {
         boolean share = (args.mesh_shared == true)
-        String enc = java.net.URLEncoder.encode(name.toString(), 'UTF-8')
+        // Name passed literally: the platform HTTP layer encodes the path, so pre-encoding double-encodes.
+        // A throw is an UNKNOWN outcome (a read timeout can fire after the hub applied it), not proof the
+        // change did not happen -- capture it and let the sharedHubVariables read-back classify.
+        String meshThrew = null
         try {
-            hubInternalGet(share ? "/hub2/addVarToMesh/${enc}" : "/hub2/removeVarFromMesh/${enc}", null, 30)
+            hubInternalGet(share ? "/hub2/addVarToMesh/${name}" : "/hub2/removeVarFromMesh/${name}", null, 30)
         } catch (Exception e) {
-            mcpLogError("variables", "hub_set_variable Hub Mesh ${share ? 'share' : 'unshare'} failed for '${name}'", e)
-            return [success: false,
-                    error: "Failed to ${share ? 'share' : 'unshare'} hub variable '${name}' over Hub Mesh: ${e.message}",
-                    name: name,
-                    valueApplied: hasValue ? result.value : null,
-                    note: "The value leg${hasValue ? ' committed' : ' was not requested'}; the mesh ${share ? 'share' : 'unshare'} did not. " +
-                          "Verify Hub Mesh is enabled and read the state with hub_get_hub_mesh."]
+            mcpLogError("variables", "hub_set_variable Hub Mesh ${share ? 'share' : 'unshare'} errored for '${name}'", e)
+            meshThrew = e.message ?: e.toString()
         }
         result.meshShared = share
-        // Read-back (warn-not-fail): the endpoint returns an empty/plaintext body, so confirm against
-        // the sharedHubVariables list. An unreadable list leaves meshShareConfirmed null.
+        // Read-back against sharedHubVariables (THIS hub's own state, so a readable disagreement is a real
+        // no-op, not lag). present: true/false readable, null unreadable.
         def sharedNames = _meshSharedHubVarNames()
-        if (sharedNames != null) {
-            boolean present = sharedNames.contains(name.toString())
-            result.meshShareConfirmed = (present == share)
-            if (!result.meshShareConfirmed) {
-                result.note = "Hub Mesh ${share ? 'share' : 'unshare'} was sent but the sharedHubVariables read-back did not yet reflect it (propagation lag). Re-check with hub_get_hub_mesh."
+        Boolean present = (sharedNames != null) ? sharedNames.contains(name.toString()) : null
+        String verb = share ? 'share' : 'unshare'
+        def valueLegNote = "The value leg${hasValue ? ' committed' : ' was not requested'}"
+
+        if (meshThrew != null) {
+            if (present != null && present == share) {
+                // The call errored but the hub applied it anyway (timeout fired post-commit).
+                result.meshShareConfirmed = true
+                result.note = "The Hub Mesh ${verb} call errored (${meshThrew}) but the sharedHubVariables read-back confirms it applied."
+            } else if (present != null && present != share) {
+                // Errored AND provably not applied -> a real failure.
+                return [success: false, isError: true, name: name, meshShared: share, meshShareConfirmed: false,
+                        valueApplied: hasValue ? result.value : null,
+                        error: "Failed to ${verb} hub variable '${name}' over Hub Mesh: ${meshThrew}",
+                        note: "${valueLegNote}; the mesh ${verb} did not take (sharedHubVariables shows '${name}' is ${present ? 'still shared' : 'not shared'}). Retry, and verify Hub Mesh is enabled; read the state with hub_get_hub_mesh."]
+            } else {
+                // Errored and unreadable -> UNKNOWN; may have applied, so do not claim it did not happen.
+                return [success: false, isError: true, name: name, meshShared: share, meshShareConfirmed: null,
+                        valueApplied: hasValue ? result.value : null,
+                        error: "The Hub Mesh ${verb} of hub variable '${name}' errored: ${meshThrew}",
+                        note: "${valueLegNote}. The mesh ${verb} MAY have applied (a read timeout can fire after the hub commits) -- verify with hub_get_hub_mesh rather than assuming it failed. This is usually transient: Hub Mesh takes time to re-establish a peer connection after a peer reboots or updates."]
             }
-        } else {
+        } else if (present == null) {
+            // No throw, but the read-back is unreadable -> warn-not-fail (confirmation unknown).
             result.meshShareConfirmed = null
+            result.note = "Hub Mesh ${verb} was sent, but the sharedHubVariables list was unreadable so it could not be confirmed. Re-check with hub_get_hub_mesh."
+        } else if (present == share) {
+            result.meshShareConfirmed = true
+        } else {
+            // No throw, readable, and it DISAGREES with the request. This is this hub's own state, so a
+            // confirmed mismatch is a real failure (mirroring the link paths' confirmed no-op).
+            return [success: false, isError: true, name: name, meshShared: share, meshShareConfirmed: false,
+                    valueApplied: hasValue ? result.value : null,
+                    error: "Hub Mesh ${verb} of '${name}' did not take: sharedHubVariables shows it is ${present ? 'still shared' : 'not shared'} after the request.",
+                    note: "This is this hub's own state, so the change did not apply. Retry, and verify Hub Mesh is enabled; read the state with hub_get_hub_mesh."]
         }
         if (!share) {
-            // Unshare caution (#448): the owner hub cannot see WHICH peers linked this variable (its
-            // sharedHubVariables row is just {name,type}), so any hub that linked it keeps a STALE local
-            // copy after unsharing -- last value, no orphan flag, and a consuming app there keeps reading
-            // it. Warn, never block. Clean teardown order is: unlink the copy on the linking hub(s) first
-            // (hub_delete_variable there), THEN unshare here.
+            // Why warn on unshare: the owner hub cannot see which peers linked the variable, so a linking
+            // hub keeps a STALE local copy after unsharing. Warn, never block.
             def caution = ("Unshared over Hub Mesh: this hub cannot see which peers linked '${name}', and any hub that linked it " +
                 "keeps a STALE local copy (its last value, no orphan flag; a consuming app there keeps reading it). For a clean " +
                 "teardown, unlink the copy on those hubs first (hub_delete_variable there), then unshare here.").toString()
@@ -984,20 +1016,13 @@ private Map _setVariableValueLeg(name, value) {
     return [success: true, name: name, value: value, source: "rule_engine"]
 }
 
-// Reads /hub2/hubMeshJson and returns the NAMES of hub variables shared INTO the mesh
-// (sharedHubVariables[].name). Returns null when the mesh JSON is unreachable/unparseable or the
-// section is missing/misshaped -- callers treat null as "unreadable" (warn, never fail).
+// Returns the NAMES of hub variables shared INTO the mesh (sharedHubVariables[].name), off the single
+// _meshJson() snapshot. Null when the mesh JSON is unreadable or the section is missing/misshaped --
+// callers treat null as "unreadable".
 private List _meshSharedHubVarNames() {
-    try {
-        def raw = hubInternalGet("/hub2/hubMeshJson")
-        if (!raw?.trim()) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(raw)
-        if (!(parsed instanceof Map) || !(parsed.sharedHubVariables instanceof List)) return null
-        return parsed.sharedHubVariables.collect { it?.name?.toString() }
-    } catch (Exception e) {
-        logDebug("hub_set_variable: could not read Hub Mesh sharedHubVariables: ${e.message}")
-        return null
-    }
+    def j = _meshJson()
+    if (!(j?.sharedHubVariables instanceof List)) return null
+    return j.sharedHubVariables.collect { it?.name?.toString() }
 }
 
 def toolDeleteHubVariable(args) {
@@ -1055,16 +1080,13 @@ def toolDeleteHubVariable(args) {
     Boolean platformInUse = null
     def linkedMirrorRow = null
     if (isHubVar) {
-        // Hub Mesh linked-mirror detection (#448): a linked mirror is a normal local hub variable
-        // whose display name is DECORATED ("<sourceVar> on <peer>") -- that decorated name is exactly
-        // what the caller passes, so match localLinkedHubVariables[].name against varName here (unlike
-        // the create/link read-back, which keys on sourceVarName+sourceHubId). Deleting a mirror
-        // UNLINKS it: only this hub's local copy goes, the peer's source variable is untouched. The
-        // platform ALWAYS registers the mesh link itself as an in-use consumer, so the generic in-use
-        // guard below would force-gate every unlink; the row's inUseByApps is the accurate signal for
-        // a REAL consuming app. null from the helper = mesh JSON unreadable -> can't tell, so leave
-        // linkedMirrorRow null and fall through to the generic guard (safe default).
-        def meshRows = _meshLocalLinkedHubVars()
+        // A linked mirror's display name is DECORATED ("<sourceVar> on <peer>") -- the caller passes that,
+        // so match localLinkedHubVariables[].name against varName (the create/link read-back instead keys
+        // on sourceVarName+sourceHubId). Why the mirror needs its own path: the platform ALWAYS registers
+        // the mesh link itself as an in-use consumer, so the generic guard would force-gate every unlink;
+        // the row's inUseByApps is the accurate signal. Unreadable -> null, fall through to the generic guard.
+        Map meshJson = _meshJson()
+        def meshRows = (meshJson?.localLinkedHubVariables instanceof List) ? meshJson.localLinkedHubVariables : null
         if (meshRows != null) {
             linkedMirrorRow = meshRows.find { it instanceof Map && it.name?.toString() == varName }
         }
@@ -1155,9 +1177,8 @@ def toolDeleteHubVariable(args) {
             def cc = consumers.size()
             consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
         }
-        // Mesh unlink framing (#448): for a linked mirror the platform in-use registry always reads
-        // "true" (the mesh link itself), so suppress the generic forced-registry note and record the
-        // unlink instead.
+        // For a linked mirror the platform in-use registry always reads "true" (the mesh link itself),
+        // so suppress the generic forced-registry note and record the unlink instead.
         boolean unlinked = (linkedMirrorRow != null)
         String unlinkNote = null
         String meshNote = ""

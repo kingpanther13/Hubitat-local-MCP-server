@@ -624,7 +624,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.error.contains('Failed to store the peer hub')
         result.note.contains('non-JSON')
 
-        and: 'the store is described as UNCONFIRMED (a non-JSON body does not establish the outcome), not proven-not-stored, and steers to the read-back (#462 F3)'
+        and: 'the store is described as UNCONFIRMED (a non-JSON body does not establish the outcome), not proven-not-stored, and steers to the read-back'
         result.note.contains('unconfirmed')
         result.note.contains('hub_get_hub_mesh peers[]')
     }
@@ -642,7 +642,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.applied == ['peer_token']
     }
 
-    def "a non-Map JSON setHubMeshToken body (e.g. a parsed List) is a failure -- peer_token is NOT applied (#462)"() {
+    def "a non-Map JSON setHubMeshToken body (e.g. a parsed List) is a failure -- peer_token is NOT applied"() {
         given: 'hubInternalPostJson returns a parsed JSON List -- not this endpoint proven success shape (a Map)'
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return ['unexpected'] }
@@ -673,7 +673,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         !result.applied.contains('peer_token')
         result.error.contains('Failed to store the peer hub')
 
-        and: 'the note is case-specific: a dropped/empty body is an UNKNOWN commit (#448 nit 6a)'
+        and: 'the note is case-specific: a dropped/empty body is an UNKNOWN commit'
         result.error.contains('no response body')
         result.note.contains('unconfirmed')
     }
@@ -692,7 +692,7 @@ class ToolHubMeshSpec extends ToolSpecBase {
         !result.applied.contains('peer_token')
         result.error.contains('Failed to store the peer hub')
 
-        and: 'the note is case-specific: an explicit success:false is a hub REJECTION (#448 nit 6a)'
+        and: 'the note is case-specific: an explicit success:false is a hub REJECTION'
         result.error.contains('rejected the request')
         result.note.contains('rejected')
     }

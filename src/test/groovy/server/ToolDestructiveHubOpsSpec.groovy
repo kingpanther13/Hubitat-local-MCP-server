@@ -759,6 +759,52 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.warnings.any { it.contains('IN USE BY 2 APP(S)') && it.contains('Kitchen Rule') && it.contains('Away Lights') }
     }
 
+    // Item: a linked device whose mesh read FAILS is not "no apps use it" -- the appsUsing check simply
+    // did not run, so warn distinctly rather than let an unchecked destructive delete look safe.
+    def "hub_delete_device on a linked device warns it could not check appsUsing when the mesh read fails"() {
+        given:
+        enableWrite()
+        def lookupCalls = 0
+        hubGet.register('/device/fullJson/55') { params ->
+            lookupCalls++
+            lookupCalls == 1
+                ? '{"device":{"id":55,"label":"Linked Bulb","name":"Generic Bulb","deviceTypeName":"Generic Bulb","deviceNetworkId":"mesh-linked-55","linkedDevice":true},"commands":[]}'
+                : '{"device":null}'
+        }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+        hubGet.register('/device/forceDelete/55/yes') { params -> 'ok' }
+
+        when:
+        def result = script.toolDeleteDevice([deviceId: '55', confirm: true])
+
+        then: 'still deletes, but surfaces the could-not-check warning alongside the linked-mesh warning'
+        result.success == true
+        result.warnings.any { it.contains('LINKED MESH DEVICE') }
+        result.warnings.any { it.contains('COULD NOT CHECK') }
+    }
+
+    // Item: mesh readable but the row for this device is MISSING -> also could-not-check, not "no apps".
+    def "hub_delete_device on a linked device warns could-not-check when its row is missing from the mesh read"() {
+        given:
+        enableWrite()
+        def lookupCalls = 0
+        hubGet.register('/device/fullJson/55') { params ->
+            lookupCalls++
+            lookupCalls == 1
+                ? '{"device":{"id":55,"label":"Linked Bulb","name":"Generic Bulb","deviceTypeName":"Generic Bulb","deviceNetworkId":"mesh-linked-55","linkedDevice":true},"commands":[]}'
+                : '{"device":null}'
+        }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedDevices":[{"id":99,"name":"Other","appsUsing":[]}]}' }
+        hubGet.register('/device/forceDelete/55/yes') { params -> 'ok' }
+
+        when:
+        def result = script.toolDeleteDevice([deviceId: '55', confirm: true])
+
+        then:
+        result.success == true
+        result.warnings.any { it.contains('COULD NOT CHECK') }
+    }
+
     def "hub_delete_device does NOT read Hub Mesh for an ordinary (non-linked) device"() {
         given:
         enableWrite()

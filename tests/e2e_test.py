@@ -11406,9 +11406,9 @@ class TestRunner:
 
     @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
-        # #448: hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation
-        # contract LIVE with NO mesh state change -- every rejection fires before any hub call and
-        # surfaces as an isError validation result the caller can correct and retry.
+        # hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation contract
+        # LIVE with NO mesh state change -- every rejection fires before any hub call and surfaces as an
+        # isError validation result the caller can correct and retry.
         absent = f"{PREFIX}NoSuchMeshVar_{int(time.time())}"
         for args, needle, label in (
             ({"name": absent, "mesh_shared": True}, "hub variable", "mesh_shared on a non-hub-variable"),
@@ -11424,16 +11424,17 @@ class TestRunner:
 
     @test("hub_variables")
     def test_hub_create_variable_mesh_link_validation(self) -> None:
-        # #448: hub_create_variable gained a Hub Mesh LINK form (mesh_source_hub_id + mesh_source_name),
-        # mutually exclusive with the create forms. Prove the rejections live -- validation fires before
-        # any variable is created (requireDestructiveConfirm may reject first when no recent backup
-        # exists; either way NOTHING is created, which the absence check below confirms).
+        # hub_create_variable gained a Hub Mesh LINK form (mesh_source_hub_id + mesh_source_name), mutually
+        # exclusive with the create forms. Assert the MESH-SPECIFIC rejection message (not the destructive-
+        # confirm backup message): the suite ensures a recent backup at startup, so requireDestructiveConfirm
+        # passes and the mesh validation is what fires -- accepting "backup"/"confirm" here would let a run
+        # with no backup green without ever exercising the mesh contract. NOTHING is created either way.
         probe = f"{PREFIX}MeshLinkProbe_{int(time.time())}"
-        for args, needles, label in (
+        for args, needle, label in (
             ({"mesh_source_hub_id": "HUB-A", "mesh_source_name": probe, "name": probe, "confirm": True},
-             ("not both", "backup", "confirm"), "link mixed with a create field"),
+             "not both", "link mixed with a create field"),
             ({"mesh_source_hub_id": "HUB-A", "confirm": True},
-             ("both mesh_source", "backup", "confirm"), "link with only the hub id"),
+             "both mesh_source", "link with only the hub id"),
         ):
             rejected = False
             detail: Any = None
@@ -11441,19 +11442,19 @@ class TestRunner:
                 detail = self.client.call_tool("hub_create_variable", args)
             except McpError as exc:
                 detail = str(exc)
-                rejected = any(n.lower() in detail.lower() for n in needles)
-            assert rejected, f"{label}: expected one of {needles}, got: {detail}"
+                rejected = needle.lower() in detail.lower()
+            assert rejected, f"{label}: expected the mesh-specific '{needle}', got: {detail}"
         assert self._hub_variable_absent(probe), f"a rejected mesh-link create left {probe} behind"
 
-    # NOTE (#462 F8): the full mesh share/unshare CYCLE requires Hub Mesh enabled with a peer, which the
-    # single shared CI/e2e hub does not have. A SkipTest here would FAIL the whole e2e run (a skip counts
-    # as a failure in _print_summary), so the cycle is NOT an e2e test. The share/unshare/caution path is
+    # NOTE: the full mesh share/unshare CYCLE requires Hub Mesh enabled with a peer, which the single
+    # shared CI/e2e hub does not have. A SkipTest here would FAIL the whole e2e run (a skip counts as a
+    # failure in _print_summary), so the cycle is NOT an e2e test. The share/unshare/caution path is
     # covered by the Spock unit/integration suite and the live BAT runs (tests/BAT-v2.md T14k/T14m); only
     # the mesh-INDEPENDENT validation-first assertions live in e2e (above / below).
 
     @test("devices")
     def test_hub_create_device_mesh_link_validation(self) -> None:
-        # #448: hub_create_device can LINK a Hub Mesh device (mesh_source_hub_id + mesh_source_device_id),
+        # hub_create_device can LINK a Hub Mesh device (mesh_source_hub_id + mesh_source_device_id),
         # mutually exclusive with deviceTypeId. Prove the rejections live -- validation fires before any
         # hub call, so NOTHING is created (a real link needs a peer sharing a device; not a dependency here).
         for args, needle, label in (
