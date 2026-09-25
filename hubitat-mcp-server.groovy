@@ -793,8 +793,9 @@ def handleMcpGet() {
 //   404 -- unknown method, MODERN only; body keeps -32601 so a dual-era client can tell it
 //          from a legacy HTTP+SSE server's 404.
 //
-// "MODERN" = the header's VALUE is modernProtocolVersion(), not its presence (see the era
-// split below). Legacy revisions keep every pre-2026 behaviour, batch included.
+// "MODERN" = the header's VALUE is a modern-era version (2026-07-28 or later), not its
+// presence (see the era split below). Legacy revisions keep every pre-2026 behaviour,
+// batch included.
 def handleMcpRequest() {
     // Streamable HTTP security MUST: validate Origin on every inbound POST to
     // block DNS rebinding. First thing in the handler, so a rejected request costs
@@ -867,7 +868,7 @@ def handleMcpRequest() {
     // Compare the header value already in hand rather than re-scanning via _modernEraRequest():
     // same verdict, one header lookup instead of two. jsonRpcResult keeps its own read because it
     // runs outside this scope.
-    boolean modernRequest = headerVersion == modernProtocolVersion() && bodyCarriesRequest
+    boolean modernRequest = _modernEraVersion(headerVersion) && bodyCarriesRequest
     if (modernRequest) {
         def rejection = _modernRequestRejection(headerVersion, requestBody)
         if (rejection != null) {
@@ -1123,22 +1124,24 @@ def _authorityHost(String authority) {
     return s.isEmpty() ? null : s
 }
 
-// The one revision that defines the mirrored request-metadata headers, the
-// `resultType` result field, and the 400/404 status mappings. Named rather than
-// inlined because three places branch on it: the supported list, the initialize
-// exclusion, and the per-request era test.
+// The first revision that defines the mirrored request-metadata headers, the
+// `resultType` result field, and the 400/404 status mappings -- the start of the modern era.
 def modernProtocolVersion() { "2026-07-28" }
 
-// Era test for the modern revision, used by the request validation in
+// Spec terminology: Modern = 2026-07-28 and later, Legacy = 2025-11-25 and earlier.
+// Versions are YYYY-MM-DD, so string order is date order; a non-date value is never modern.
+boolean _modernEraVersion(String v) { v != null && v ==~ /\d{4}-\d{2}-\d{2}/ && v >= modernProtocolVersion() }
+
+// Era test for the current request, used by the request validation in
 // handleMcpRequest and by jsonRpcResult's resultType stamp. The header VALUE is the
 // switch, not its presence -- the header itself has been required since 2025-06-18.
 // Reads through _requestHeader, so a call from outside a request context (a scheduled
 // handler, a direct unit call) answers false instead of throwing.
 def _modernEraRequest() {
-    return _requestHeader("MCP-Protocol-Version") == modernProtocolVersion()
+    return _modernEraVersion(_requestHeader("MCP-Protocol-Version"))
 }
 
-// Modern-era (2026-07-28) body + mirrored-header validation. Returns a
+// Modern-era (2026-07-28 or later) body + mirrored-header validation. Returns a
 // ready-to-render JSON-RPC error for the caller to ship at HTTP 400, or null when the
 // request passes. The unsupported-version rejection is NOT here -- it lives in
 // handleMcpRequest because it applies to both eras.
@@ -1346,8 +1349,8 @@ def processJsonRpcMessage(msg) {
         return null
     }
 
-    // Dispatch is era-agnostic: a MODERN request (MCP-Protocol-Version ==
-    // modernProtocolVersion()) was already validated in handleMcpRequest -- Mcp-Method /
+    // Dispatch is era-agnostic: a MODERN request (MCP-Protocol-Version is a
+    // modern-era version) was already validated in handleMcpRequest -- Mcp-Method /
     // Mcp-Name and the header-vs-_meta version agreement -- so anything arriving here
     // has either passed that or is on a LEGACY revision.
     //
@@ -1437,16 +1440,15 @@ def supportedProtocolVersions() {
     [modernProtocolVersion(), "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 }
 
-// The subset `initialize` may negotiate: every supported revision EXCEPT the modern
-// one. `initialize` is a legacy-era method -- 2026-07-28 deleted the handshake in
-// favour of per-request metadata -- so a client that reaches it is speaking the old
-// era by construction and must never be handed a modern version to cache. Derived
-// from the list above so a future revision cannot drift the two apart.
+// The subset `initialize` may negotiate: every supported LEGACY revision (modern era =
+// 2026-07-28 or later). `initialize` is a legacy-era method -- 2026-07-28 deleted the
+// handshake in favour of per-request metadata -- so a client that reaches it is speaking
+// the old era by construction and must never be handed a modern version to cache.
 def initializeProtocolVersions() {
-    supportedProtocolVersions().findAll { it != modernProtocolVersion() }
+    supportedProtocolVersions().findAll { !_modernEraVersion(it) }
 }
 // Newest revision `initialize` will negotiate -- what a client that omits (or
-// requests an unknown, or requests the modern) protocolVersion negotiates down to.
+// requests an unknown, or requests a modern-era) protocolVersion negotiates down to.
 def defaultProtocolVersion() { initializeProtocolVersions()[0] }
 
 // The version initialize answers with for a requested one -- the NEGOTIATED version, never the
@@ -1478,9 +1480,9 @@ def serverIdentity() {
 
 def handleInitialize(msg) {
     // Echo the client's requested protocolVersion when it is one initialize may
-    // negotiate; otherwise the default. Omitted, unknown, AND "2026-07-28" all land
-    // on the default -- see initializeProtocolVersions() for why the modern revision
-    // is not negotiable through this legacy-era handshake.
+    // negotiate; otherwise the default. Omitted, unknown, AND modern-era versions all land
+    // on the default -- see initializeProtocolVersions() for why modern revisions
+    // are not negotiable through this legacy-era handshake.
     def requested = msg.params?.protocolVersion
     def negotiated = _negotiatedProtocolVersion(requested)
     def info = msg.params?.clientInfo
@@ -1754,7 +1756,7 @@ def handleToolsCall(msg) {
     if (!toolName) return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
     if (requestState != null && !_modernEraRequest()) {
         return jsonRpcError(msg.id, -32602,
-            "Invalid params: requestState requires MCP-Protocol-Version ${modernProtocolVersion()}.")
+            "Invalid params: requestState requires MCP-Protocol-Version ${modernProtocolVersion()} or later.")
     }
 
     boolean eligible = _modernEraRequest() && _mrtrEligibleCall(toolName, reactiveToolName, args)

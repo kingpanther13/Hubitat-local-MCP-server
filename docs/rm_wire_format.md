@@ -171,7 +171,13 @@ target, so writing it is rejected `not_in_schema`.)
 **Orphan-field note:** RM does NOT auto-clean mode-specific keys when `numOp` changes
 (e.g. `customDev.<N>` lingers after switching to `variable math`). The addAction path
 builds each action fresh, so this is harmless here; a future setVariable-EDIT path must
-clear stale mode keys.
+clear stale mode keys. Leftover hidden keys under a working action are normal RM behavior:
+RM's own UI keeps them when the variable type is switched mid-form.
+
+A refused source-mode add has already persisted `actType`/`actSubType` plus mode fields and leaves
+the editor open on `actNdx=N` (the next add reopens row N pre-filled), so the add path clicks
+doActPage's `actionCancel` (`cancelAct.<N>` is only the delay toggle): it removes the row's keys
+(an empty `tCustomAttr.<N>=""` remains) and consumes the index -- the next action gets N+1.
 
 ---
 

@@ -860,14 +860,52 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         and: 'the modern revision heads the supported list and is the only non-legacy entry'
         script.supportedProtocolVersions()[0] == script.modernProtocolVersion()
 
-        and: 'the initialize allowlist is exactly the supported list minus the modern revision'
-        script.initializeProtocolVersions() == script.supportedProtocolVersions() - [script.modernProtocolVersion()]
+        and: 'the initialize allowlist is exactly the supported list minus EVERY modern-era revision'
+        script.initializeProtocolVersions() == script.supportedProtocolVersions().findAll { !script._modernEraVersion(it) }
+        script.initializeProtocolVersions().every { !script._modernEraVersion(it) }
         !script.initializeProtocolVersions().contains(script.modernProtocolVersion())
 
         and: 'the initialize fallback is the newest LEGACY revision, not the newest supported one'
         script.defaultProtocolVersion() == script.initializeProtocolVersions()[0]
         script.defaultProtocolVersion() == '2025-11-25'
         script.defaultProtocolVersion() != script.supportedProtocolVersions()[0]
+    }
+
+    def "era membership is 2026-07-28 or later, so a newer revision is modern too: #label"() {
+        // Spec terminology: Modern = 2026-07-28 and later, Legacy = 2025-11-25 and earlier.
+        // An exact match on modernProtocolVersion() would misfile a newer revision as legacy.
+        expect:
+        script._modernEraVersion(version) == modern
+
+        where:
+        label                        | version      || modern
+        'the first modern revision'  | '2026-07-28' || true
+        'a hypothetical later one'   | '2027-01-01' || true
+        'the newest legacy revision' | '2025-11-25' || false
+        'no header'                  | null         || false
+        'a non-date value'           | 'zzzz'       || false
+    }
+
+    def "every legacy entry of supportedProtocolVersions is outside the modern era"() {
+        expect:
+        script.supportedProtocolVersions().findAll { !script._modernEraVersion(it) } == ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
+    }
+
+    def "a header naming a modern-era version newer than 2026-07-28 is validated as modern, not served as legacy"() {
+        // Simulates the day a newer revision joins supportedProtocolVersions(): the era test must
+        // still route it through the modern header validation (here: a batch body -> -32600).
+        given:
+        script.metaClass.supportedProtocolVersions = { -> ['2027-01-01', '2026-07-28', '2025-11-25'] }
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2027-01-01', 'Mcp-Method': 'tools/list'])
+        mcpDriver.pushBody([[jsonrpc: '2.0', id: 1, method: 'tools/list', params: [:]]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        mcpDriver.parseResponseJson().error.code == -32600
+        script._modernEraRequest()
     }
 
     def "a MODERN-era result carries resultType 'complete' plus the io.modelcontextprotocol/serverInfo _meta key"() {

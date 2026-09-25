@@ -5494,10 +5494,10 @@ private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, 
     if (condWizardOpen) {
         try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) { /* nothing to cancel */ }
     }
-    // 2. Abort the action editor so state.editAct clears -- RM silently no-ops delAct while it is set.
-    //    RM's doActPage Cancel discards a not-yet-committed new action; on some firmware this alone
-    //    removes the opener row.
-    try { _rmClickAppButton(appId, "cancelAct", null, "doActPage") } catch (Exception ignored) { /* editor may already be closed */ }
+    // 2. Abort the action editor via doActPage's Cancel button (actionCancel; "cancelAct" is only the
+    //    delay "Cancelable?" toggle). RM removes the uncommitted row's keys and consumes its index, so
+    //    a later add cannot reopen this editor with stale fields; step 3 is the backstop.
+    try { _rmClickAppButton(appId, "actionCancel", null, "doActPage") } catch (Exception ignored) { /* editor may already be closed */ }
     // 3. If the opener row still persists in settings (actType.<idx> written by this call), delete it.
     try {
         // Settings, not the compiled list: an un-baked orphan row never reaches
@@ -7537,166 +7537,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
     }
 
-    // setVariable copy-from-variable: source-variable field is schema-gated.
-    // RM 5.1 reveals the source-variable enum ONLY after the copy selector lands:
-    // numOp.<N>="variable" for a Number/Decimal target, valStringOp.<N>="Copy variable" for a String.
-    // Discover the actual field name from the live schema (observed as xVar3.<N>) rather
-    // than hardcoding it -- RM's field naming is firmware-version-specific.
-    // Fail loud if the reveal does not materialise: a missing field means the write
-    // would silently be skipped, leaving an action that bakes without a source variable.
-    if (actionSpec.__setVariableSourceVar != null) {
-        def srcVar = actionSpec.__setVariableSourceVar.toString()
-        // Name the actual capability the caller invoked (setVariable vs setLocalVariable),
-        // stashed when the markers were set; defaults to setVariable for safety.
-        def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
-        // The copy selector must have landed for the schema-gated source-variable field to appear.
-        def copyOp = (actionSpec.__setVariableSourceOp ?: "numOp").toString()
-        def copyMode = actionSpec.__setVariableSourceTypeUnread ? "source-variable (the variable list was unreadable, so the target type is unknown and numOp was assumed; a String target needs valStringOp)" : "source-variable"
-        _rmAssertSelectorLanded(idx, applied, skipped, copyMode, copyOp, capLbl)
-        def srcCfg = _rmFetchConfigJson(appId, "doActPage")
-        def srcInputs = (srcCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
-        // Match xVar<digits>.<N> -- the source-variable enum for getSetVariable.
-        // xVarV.<N> (target field, already written) and xVarD.<N> (delay-variable) don't match
-        // \d+ because 'V' and 'D' are not digits, so the pattern naturally excludes them.
-        def xVarMatches = srcInputs.findAll { inp ->
-            inp?.name?.toString()?.matches("xVar\\d+\\.${idx}")
-        }
-        if (!xVarMatches) {
-            def visibleNames = srcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
-            throw new IllegalArgumentException("${capLbl}: source-variable field was not revealed after writing ${copyOp == 'valStringOp' ? 'valStringOp=Copy variable' : 'numOp=variable'} for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
-        }
-        if (xVarMatches.size() > 1) {
-            // More than one numeric xVar at this action slot is unexpected. Surface it loudly
-            // so the caller can inspect the schema rather than silently picking the first.
-            def allNames = xVarMatches.collect { it?.name?.toString() }.join(', ')
-            throw new IllegalArgumentException("${capLbl}: schema contains ${xVarMatches.size()} candidate source-variable fields for action ${idx} (${allNames}); expected exactly one. Use rawSettings to write the correct field explicitly.")
-        }
-        def xVar3Input = xVarMatches[0]
-        def xVar3Field = xVar3Input.name.toString()
-        // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
-        // shared with the fromDevice/math source modes so all three read enums identically.
-        def xVar3Opts = _rmReadPickerOptionStrings(xVar3Input)
-        // Fail loud when the revealed enum is empty: an unvalidated write would produce a
-        // silently-broken action with no source variable persisted.
-        if (xVar3Opts == null || xVar3Opts.isEmpty()) {
-            throw new IllegalArgumentException("${capLbl}: revealed field '${xVar3Field}' has no enumerable options -- cannot validate sourceVariable '${srcVar}'. Hub may not expose the variable list at this action position.")
-        }
-        if (!xVar3Opts.any { it == srcVar }) {
-            // The target + copy selector already landed before this deferred reveal-enum
-            // check, so the throw leaves a partial action row (target set, no source). Warn
-            // the caller and point at the auto-snapshot taken before the edit for recovery.
-            throw new IllegalArgumentException("${capLbl}: sourceVariable '${srcVar}' is not in the revealed enum for '${xVar3Field}'. Available: ${xVar3Opts.sort().join(', ')}. A partial action row was written (target variable set, no source) -- remove it with hub_set_rule(removeAction:{index:N}) or restore the pre-edit auto-snapshot via hub_restore_backup.")
-        }
-        _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, srcVar, applied, null, skipped)
-        if (copyOp == "numOp") {
-            // A Number copy is source + valOffset.<N>; the RM UI stores 0 by default. Without it the
-            // rule throws "Ambiguous method overloading for method java.lang.Long#plus" when it runs.
-            _rmWriteSettingOnPage(appId, "doActPage", "valOffset.${idx}".toString(), 0, applied, null, skipped)
-        }
-    }
-
-    // setVariable from-device: the device picker (customDev.<N>) and the attribute enum
-    // (tCustomAttr.<N>) are schema-gated. RM reveals customDev.<N> only after
-    // numOp.<N>="device attribute" lands, and tCustomAttr.<N> only after the device is
-    // written (the attribute enum is FILTERED to the selected device's live attributes).
-    // Field names are validated against the live schema before writing (existence check
-    // gates each write). The names are fixed by RM's UI contract for these slots, so they
-    // are hardcoded -- unlike __setVariableSourceVar, whose copy-variable slot number can
-    // vary by firmware and is therefore regex-discovered.
-    if (actionSpec.__setVariableFromDevice != null) {
-        def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
-        def fd = actionSpec.__setVariableFromDevice
-        def fdDeviceId = fd.deviceId.toString()
-        def fdAttr = fd.attribute.toString()
-        // numOp must have landed for the gated fields to appear.
-        _rmAssertSelectorLanded(idx, applied, skipped, "device-attribute", "numOp", capLbl)
-        // Step 1: customDev.<N> (capability.* single-device picker) must be revealed.
-        def customDevField = "customDev.${idx}".toString()
-        _rmRevealedInputOrThrow(appId, customDevField,
-            "device picker '${customDevField}' was not revealed after writing numOp=device attribute for action ${idx} -- hub may not support read-from-device at this action position.")
-        // Write the device id. The writer reads multiple=false from the schema and emits the
-        // capability.* single-device 3-field contract. RM's picker spans all hub devices, so an
-        // unknown id does not land; the next step's tCustomAttr reveal then fails loud
-        // (success=false) because the attribute enum never appears without a selected device.
-        _rmWriteSettingOnPage(appId, "doActPage", customDevField, [fdDeviceId], applied, null, skipped)
-        // Step 2: tCustomAttr.<N> (attribute enum, filtered to the device) appears after the
-        // device write. Validate the requested attribute against the revealed enum.
-        def tCustomAttrField = "tCustomAttr.${idx}".toString()
-        def tCustomAttrInput = _rmRevealedInputOrThrow(appId, tCustomAttrField,
-            "attribute enum '${tCustomAttrField}' was not revealed after writing device '${fdDeviceId}' for action ${idx} -- the device id may not be in RM's picker (RM's customDev picker spans all hub devices; confirm the id exists).")
-        // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps).
-        def attrOpts = _rmReadPickerOptionStrings(tCustomAttrInput)
-        if (attrOpts == null || attrOpts.isEmpty()) {
-            throw new IllegalArgumentException("${capLbl}: revealed attribute enum '${tCustomAttrField}' has no enumerable options -- cannot validate attribute '${fdAttr}'. Device '${fdDeviceId}' may expose no readable attributes at this action position.")
-        }
-        // Match case-insensitively, then write the CANONICAL enum option (the hub's exact casing),
-        // not the caller's -- RM stores the option verbatim, so the caller's casing could bake a
-        // value the enum does not contain.
-        def canonicalAttr = attrOpts.find { it?.equalsIgnoreCase(fdAttr) }
-        if (canonicalAttr == null) {
-            throw new IllegalArgumentException("${capLbl} fromDevice: attribute '${fdAttr}' is not in the device's attribute enum for action ${idx}. Available: ${attrOpts.sort().join(', ')}")
-        }
-        _rmWriteSettingOnPage(appId, "doActPage", tCustomAttrField, canonicalAttr, applied, null, skipped)
-    }
-
-    // setVariable variable-math: operands are schema-gated. RM reveals the first operand
-    // (xVar3.<N>) and the operator (valMathOp.<N>) after numOp.<N>="variable math" lands.
-    // A "(constant)" first operand reveals valConst.<N>. A binary operator reveals the second
-    // operand (xVar4.<N>); a "(constant)" second operand reveals valConst2.<N>. Unary operators
-    // take no second operand. Field names are validated against the live schema before writing
-    // (existence check gates each write). The names are fixed by RM's UI contract for these
-    // math slots, so they are hardcoded (unlike __setVariableSourceVar's regex-discovered slot).
-    if (actionSpec.__setVariableMath != null) {
-        def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
-        def m = actionSpec.__setVariableMath
-        _rmAssertSelectorLanded(idx, applied, skipped, "variable-math", "numOp", capLbl)
-        // The "(constant)" sentinel is RM's enum option that switches an operand to a literal.
-        def constSentinel = "(constant)"
-        // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
-        // returning [] for absent/unreadable options. assertInEnum's empty-list guard covers that.
-        def optsOf = { inp -> _rmReadPickerOptionStrings(inp) }
-        // Fail loud if the requested operand/operator value is not in the revealed field's enum,
-        // mirroring the sibling source-var/attribute validation. An unvalidated write would bake
-        // a silently-broken action with the wrong (or no) operand/operator. role describes the slot.
-        def assertInEnum = { String field, Object input, String wanted, String role ->
-            def opts = optsOf(input)
-            if (opts == null || opts.isEmpty()) {
-                throw new IllegalArgumentException("${capLbl} math: revealed field '${field}' has no enumerable options -- cannot validate ${role} '${wanted}'. Hub may not expose the ${role} list at this action position.")
-            }
-            if (!opts.any { it == wanted }) {
-                throw new IllegalArgumentException("${capLbl} math: ${role} '${wanted}' is not in the revealed enum for '${field}'. Available: ${opts.sort().join(', ')}")
-            }
-        }
-        // Step 1: first operand (xVar3.<N>) + operator (valMathOp.<N>) appear after numOp.
-        def mCfg = _rmFetchConfigJson(appId, "doActPage")
-        def mInputs = (mCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
-        def xVar3Field = "xVar3.${idx}".toString()
-        def xVar3Input = mInputs.find { it?.name?.toString() == xVar3Field }
-        def valMathOpField = "valMathOp.${idx}".toString()
-        def valMathOpInput = mInputs.find { it?.name?.toString() == valMathOpField }
-        if (!xVar3Input || !valMathOpInput) {
-            def visibleNames = mInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
-            throw new IllegalArgumentException("${capLbl}: variable-math operand/operator fields ('${xVar3Field}' + '${valMathOpField}') were not revealed after writing numOp=variable math for action ${idx} -- hub may not support variable math at this action position. Visible fields: ${visibleNames}")
-        }
-        // Validate the operator against valMathOp's options up-front (the field is already
-        // revealed). _rmMathBinaryOps/_rmMathUnaryOps is the project's known partition, but the
-        // live enum is the hub's authority -- a firmware that drops an operator is caught here.
-        assertInEnum(valMathOpField, valMathOpInput, m.op.toString(), "operator")
-        // Write the first operand: a Number becomes (constant)+valConst.<N>, else the var name.
-        // _rmWriteMathOperand validates the chosen xVar3 option and writes verbatim constants.
-        _rmWriteMathOperand(appId, idx, m.left, xVar3Field, "valConst.${idx}".toString(),
-            "first operand", assertInEnum, xVar3Input, applied, skipped)
-        // Write the operator. (Validated against the live enum above; arity in the handler.)
-        _rmWriteSettingOnPage(appId, "doActPage", valMathOpField, m.op.toString(), applied, null, skipped)
-        // Binary operator: write the second operand (xVar4.<N>), revealed after the op write.
-        if (_rmMathBinaryOps().contains(m.op.toString())) {
-            def xVar4Field = "xVar4.${idx}".toString()
-            def xVar4Input = _rmRevealedInputOrThrow(appId, xVar4Field,
-                "math: second-operand field '${xVar4Field}' was not revealed after writing binary operator '${m.op}' for action ${idx}.")
-            _rmWriteMathOperand(appId, idx, m.right, xVar4Field, "valConst2.${idx}".toString(),
-                "second operand", assertInEnum, xVar4Input, applied, skipped)
-        }
-    }
+    // setVariable source modes (sourceVariable / fromDevice / math): schema-gated deferred writes.
+    _rmWriteSetVariableSourceModes(appId, idx, actionSpec, applied, skipped)
 
     // Caller escape hatch.
     if (actionSpec.rawSettings instanceof Map) {
@@ -11176,6 +11018,178 @@ private void _rmWriteMathOperand(Integer appId, int idx, Object operandValue, St
     } else {
         assertInEnum(xVarField, xVarInput, operandValue.toString(), roleLabel)
         _rmWriteSettingOnPage(appId, "doActPage", xVarField, operandValue.toString(), applied, null, skipped)
+    }
+}
+
+// Extracted from _rmAddAction for the same bytecode budget.
+private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
+    try {
+        // setVariable copy-from-variable: source-variable field is schema-gated.
+        // RM 5.1 reveals the source-variable enum ONLY after the copy selector lands:
+        // numOp.<N>="variable" for a Number/Decimal target, valStringOp.<N>="Copy variable" for a String.
+        // Discover the actual field name from the live schema (observed as xVar3.<N>) rather
+        // than hardcoding it -- RM's field naming is firmware-version-specific.
+        // Fail loud if the reveal does not materialise: a missing field means the write
+        // would silently be skipped, leaving an action that bakes without a source variable.
+        if (actionSpec.__setVariableSourceVar != null) {
+            def srcVar = actionSpec.__setVariableSourceVar.toString()
+            // Name the actual capability the caller invoked (setVariable vs setLocalVariable),
+            // stashed when the markers were set; defaults to setVariable for safety.
+            def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
+            // The copy selector must have landed for the schema-gated source-variable field to appear.
+            def copyOp = (actionSpec.__setVariableSourceOp ?: "numOp").toString()
+            def copyMode = actionSpec.__setVariableSourceTypeUnread ? "source-variable (the variable list was unreadable, so the target type is unknown and numOp was assumed; a String target needs valStringOp)" : "source-variable"
+            _rmAssertSelectorLanded(idx, applied, skipped, copyMode, copyOp, capLbl)
+            def srcCfg = _rmFetchConfigJson(appId, "doActPage")
+            def srcInputs = (srcCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+            // Match xVar<digits>.<N> -- the source-variable enum for getSetVariable.
+            // xVarV.<N> (target field, already written) and xVarD.<N> (delay-variable) don't match
+            // \d+ because 'V' and 'D' are not digits, so the pattern naturally excludes them.
+            def xVarMatches = srcInputs.findAll { inp ->
+                inp?.name?.toString()?.matches("xVar\\d+\\.${idx}")
+            }
+            if (!xVarMatches) {
+                def visibleNames = srcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+                throw new IllegalArgumentException("${capLbl}: source-variable field was not revealed after writing ${copyOp == 'valStringOp' ? 'valStringOp=Copy variable' : 'numOp=variable'} for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
+            }
+            if (xVarMatches.size() > 1) {
+                // More than one numeric xVar at this action slot is unexpected. Surface it loudly
+                // so the caller can inspect the schema rather than silently picking the first.
+                def allNames = xVarMatches.collect { it?.name?.toString() }.join(', ')
+                throw new IllegalArgumentException("${capLbl}: schema contains ${xVarMatches.size()} candidate source-variable fields for action ${idx} (${allNames}); expected exactly one. Use rawSettings to write the correct field explicitly.")
+            }
+            def xVar3Input = xVarMatches[0]
+            def xVar3Field = xVar3Input.name.toString()
+            // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
+            // shared with the fromDevice/math source modes so all three read enums identically.
+            def xVar3Opts = _rmReadPickerOptionStrings(xVar3Input)
+            // Fail loud when the revealed enum is empty: an unvalidated write would produce a
+            // silently-broken action with no source variable persisted.
+            if (xVar3Opts == null || xVar3Opts.isEmpty()) {
+                throw new IllegalArgumentException("${capLbl}: revealed field '${xVar3Field}' has no enumerable options -- cannot validate sourceVariable '${srcVar}'. Hub may not expose the variable list at this action position.")
+            }
+            if (!xVar3Opts.any { it == srcVar }) {
+                throw new IllegalArgumentException("${capLbl}: sourceVariable '${srcVar}' is not in the revealed enum for '${xVar3Field}'. Available: ${xVar3Opts.sort().join(', ')}. The in-flight action was cancelled, so no partial row is kept -- retry with a listed sourceVariable.")
+            }
+            _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, srcVar, applied, null, skipped)
+            if (copyOp == "numOp") {
+                // A Number copy is source + valOffset.<N>; the RM UI stores 0 by default. Without it the
+                // rule throws "Ambiguous method overloading for method java.lang.Long#plus" when it runs.
+                _rmWriteSettingOnPage(appId, "doActPage", "valOffset.${idx}".toString(), 0, applied, null, skipped)
+            }
+        }
+
+        // setVariable from-device: the device picker (customDev.<N>) and the attribute enum
+        // (tCustomAttr.<N>) are schema-gated. RM reveals customDev.<N> only after
+        // numOp.<N>="device attribute" lands, and tCustomAttr.<N> only after the device is
+        // written (the attribute enum is FILTERED to the selected device's live attributes).
+        // Field names are validated against the live schema before writing (existence check
+        // gates each write). The names are fixed by RM's UI contract for these slots, so they
+        // are hardcoded -- unlike __setVariableSourceVar, whose copy-variable slot number can
+        // vary by firmware and is therefore regex-discovered.
+        if (actionSpec.__setVariableFromDevice != null) {
+            def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
+            def fd = actionSpec.__setVariableFromDevice
+            def fdDeviceId = fd.deviceId.toString()
+            def fdAttr = fd.attribute.toString()
+            // numOp must have landed for the gated fields to appear.
+            _rmAssertSelectorLanded(idx, applied, skipped, "device-attribute", "numOp", capLbl)
+            // Step 1: customDev.<N> (capability.* single-device picker) must be revealed.
+            def customDevField = "customDev.${idx}".toString()
+            _rmRevealedInputOrThrow(appId, customDevField,
+                "device picker '${customDevField}' was not revealed after writing numOp=device attribute for action ${idx} -- hub may not support read-from-device at this action position.")
+            // Write the device id. The writer reads multiple=false from the schema and emits the
+            // capability.* single-device 3-field contract. RM's picker spans all hub devices, so an
+            // unknown id does not land; the next step's tCustomAttr reveal then fails loud
+            // (success=false) because the attribute enum never appears without a selected device.
+            _rmWriteSettingOnPage(appId, "doActPage", customDevField, [fdDeviceId], applied, null, skipped)
+            // Step 2: tCustomAttr.<N> (attribute enum, filtered to the device) appears after the
+            // device write. Validate the requested attribute against the revealed enum.
+            def tCustomAttrField = "tCustomAttr.${idx}".toString()
+            def tCustomAttrInput = _rmRevealedInputOrThrow(appId, tCustomAttrField,
+                "attribute enum '${tCustomAttrField}' was not revealed after writing device '${fdDeviceId}' for action ${idx} -- the device id may not be in RM's picker (RM's customDev picker spans all hub devices; confirm the id exists).")
+            // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps).
+            def attrOpts = _rmReadPickerOptionStrings(tCustomAttrInput)
+            if (attrOpts == null || attrOpts.isEmpty()) {
+                throw new IllegalArgumentException("${capLbl}: revealed attribute enum '${tCustomAttrField}' has no enumerable options -- cannot validate attribute '${fdAttr}'. Device '${fdDeviceId}' may expose no readable attributes at this action position.")
+            }
+            // Match case-insensitively, then write the CANONICAL enum option (the hub's exact casing),
+            // not the caller's -- RM stores the option verbatim, so the caller's casing could bake a
+            // value the enum does not contain.
+            def canonicalAttr = attrOpts.find { it?.equalsIgnoreCase(fdAttr) }
+            if (canonicalAttr == null) {
+                throw new IllegalArgumentException("${capLbl} fromDevice: attribute '${fdAttr}' is not in the device's attribute enum for action ${idx}. Available: ${attrOpts.sort().join(', ')}")
+            }
+            _rmWriteSettingOnPage(appId, "doActPage", tCustomAttrField, canonicalAttr, applied, null, skipped)
+        }
+
+        // setVariable variable-math: operands are schema-gated. RM reveals the first operand
+        // (xVar3.<N>) and the operator (valMathOp.<N>) after numOp.<N>="variable math" lands.
+        // A "(constant)" first operand reveals valConst.<N>. A binary operator reveals the second
+        // operand (xVar4.<N>); a "(constant)" second operand reveals valConst2.<N>. Unary operators
+        // take no second operand. Field names are validated against the live schema before writing
+        // (existence check gates each write). The names are fixed by RM's UI contract for these
+        // math slots, so they are hardcoded (unlike __setVariableSourceVar's regex-discovered slot).
+        if (actionSpec.__setVariableMath != null) {
+            def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
+            def m = actionSpec.__setVariableMath
+            _rmAssertSelectorLanded(idx, applied, skipped, "variable-math", "numOp", capLbl)
+            // The "(constant)" sentinel is RM's enum option that switches an operand to a literal.
+            def constSentinel = "(constant)"
+            // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
+            // returning [] for absent/unreadable options. assertInEnum's empty-list guard covers that.
+            def optsOf = { inp -> _rmReadPickerOptionStrings(inp) }
+            // Fail loud if the requested operand/operator value is not in the revealed field's enum,
+            // mirroring the sibling source-var/attribute validation. An unvalidated write would bake
+            // a silently-broken action with the wrong (or no) operand/operator. role describes the slot.
+            def assertInEnum = { String field, Object input, String wanted, String role ->
+                def opts = optsOf(input)
+                if (opts == null || opts.isEmpty()) {
+                    throw new IllegalArgumentException("${capLbl} math: revealed field '${field}' has no enumerable options -- cannot validate ${role} '${wanted}'. Hub may not expose the ${role} list at this action position.")
+                }
+                if (!opts.any { it == wanted }) {
+                    throw new IllegalArgumentException("${capLbl} math: ${role} '${wanted}' is not in the revealed enum for '${field}'. Available: ${opts.sort().join(', ')}")
+                }
+            }
+            // Step 1: first operand (xVar3.<N>) + operator (valMathOp.<N>) appear after numOp.
+            def mCfg = _rmFetchConfigJson(appId, "doActPage")
+            def mInputs = (mCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+            def xVar3Field = "xVar3.${idx}".toString()
+            def xVar3Input = mInputs.find { it?.name?.toString() == xVar3Field }
+            def valMathOpField = "valMathOp.${idx}".toString()
+            def valMathOpInput = mInputs.find { it?.name?.toString() == valMathOpField }
+            if (!xVar3Input || !valMathOpInput) {
+                def visibleNames = mInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+                throw new IllegalArgumentException("${capLbl}: variable-math operand/operator fields ('${xVar3Field}' + '${valMathOpField}') were not revealed after writing numOp=variable math for action ${idx} -- hub may not support variable math at this action position. Visible fields: ${visibleNames}")
+            }
+            // Validate the operator against valMathOp's options up-front (the field is already
+            // revealed). _rmMathBinaryOps/_rmMathUnaryOps is the project's known partition, but the
+            // live enum is the hub's authority -- a firmware that drops an operator is caught here.
+            assertInEnum(valMathOpField, valMathOpInput, m.op.toString(), "operator")
+            // Write the first operand: a Number becomes (constant)+valConst.<N>, else the var name.
+            // _rmWriteMathOperand validates the chosen xVar3 option and writes verbatim constants.
+            _rmWriteMathOperand(appId, idx, m.left, xVar3Field, "valConst.${idx}".toString(),
+                "first operand", assertInEnum, xVar3Input, applied, skipped)
+            // Write the operator. (Validated against the live enum above; arity in the handler.)
+            _rmWriteSettingOnPage(appId, "doActPage", valMathOpField, m.op.toString(), applied, null, skipped)
+            // Binary operator: write the second operand (xVar4.<N>), revealed after the op write.
+            if (_rmMathBinaryOps().contains(m.op.toString())) {
+                def xVar4Field = "xVar4.${idx}".toString()
+                def xVar4Input = _rmRevealedInputOrThrow(appId, xVar4Field,
+                    "math: second-operand field '${xVar4Field}' was not revealed after writing binary operator '${m.op}' for action ${idx}.")
+                _rmWriteMathOperand(appId, idx, m.right, xVar4Field, "valConst2.${idx}".toString(),
+                    "second operand", assertInEnum, xVar4Input, applied, skipped)
+            }
+        }
+    } catch (Exception svExc) {
+        // These refusals throw with the doActPage editor still open; without actionCancel RM
+        // reopens the same row, stale fields included, on the next add.
+        try {
+            _rmClickAppButton(appId, "actionCancel", null, "doActPage")
+        } catch (Exception cancelExc) {
+            mcpLog("warn", "rm-native", "_rmAddAction: actionCancel after a refused setVariable source write failed for app ${appId} action ${idx} (${cancelExc.message ?: cancelExc.toString()}) -- the editor may stay open with stale fields")
+        }
+        throw svExc
     }
 }
 

@@ -67,10 +67,11 @@ MODERN_PROTOCOL_VERSION = "2026-07-28"
 SUPPORTED_PROTOCOL_VERSIONS = [MODERN_PROTOCOL_VERSION, "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
 # Mirrors initializeProtocolVersions() / defaultProtocolVersion(): the handshake negotiates
-# every supported revision EXCEPT the modern one. 2026-07-28 deleted `initialize`, so a client
-# that reaches it is legacy-era by construction and must never be handed a version it cannot
-# speak. Derived from the transport list above so the two cannot drift.
-INITIALIZE_PROTOCOL_VERSIONS = [v for v in SUPPORTED_PROTOCOL_VERSIONS if v != MODERN_PROTOCOL_VERSION]
+# every supported revision OLDER than the modern era (2026-07-28 or later). 2026-07-28 deleted
+# `initialize`, so a client that reaches it is legacy-era by construction and must never be handed
+# a version it cannot speak. Derived from the transport list above so the two cannot drift;
+# YYYY-MM-DD strings compare correctly as plain strings.
+INITIALIZE_PROTOCOL_VERSIONS = [v for v in SUPPORTED_PROTOCOL_VERSIONS if v < MODERN_PROTOCOL_VERSION]
 DEFAULT_PROTOCOL_VERSION = INITIALIZE_PROTOCOL_VERSIONS[0]
 # The revision the legacy_protocol group speaks on the wire. 2025-06-18 is the one that made
 # MCP-Protocol-Version REQUIRED on every POST, and it is what the shipping production clients
@@ -809,7 +810,7 @@ class HubitatMcpClient:
             version = headers.get("MCP-Protocol-Version")
             assert version is not None and version not in {
                 supported for supported in SUPPORTED_PROTOCOL_VERSIONS
-                if supported != MODERN_PROTOCOL_VERSION
+                if supported < MODERN_PROTOCOL_VERSION
             }, (
                 "raw E2E requests may use only 2026-07-28 or an unsupported-version "
                 "negative control; headerless and legacy revisions are forbidden"
@@ -8802,12 +8803,15 @@ class TestRunner:
                     and copy_settings.get(f"xVarV.{copy_idx}") == str_var_name \
                     and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
                     f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
-                # What the copy itself WROTE. The persisted rule can still hold numOp/customDev at
-                # this index: the refused numeric-target fromDevice case above (the switch
-                # attribute) leaves settings without an actType, so the next add reuses that index.
+                # The refused numeric-target fromDevice case above (the switch attribute) opened a
+                # row and wrote numOp/customDev before refusing; its actionCancel consumes that
+                # index, so the copy must land on a fresh one with none of those leftovers.
                 copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
                 assert not any(k.startswith("numOp.") for k in copy_applied), \
                     f"String copy wrote a numOp field: settingsApplied={copy_applied}"
+                stale = [k for k in (f"numOp.{copy_idx}", f"customDev.{copy_idx}") if k in copy_settings]
+                assert not stale, \
+                    f"String copy at index {copy_idx} inherited the refused add's fields {stale}: {copy_settings}"
                 # A Boolean target's copy picker is uncaptured, so it is refused before any write.
                 bool_copy = self._patch_rule(app_c, [
                     {"addAction": {"capability": "setVariable", "variable": bool_var_name,

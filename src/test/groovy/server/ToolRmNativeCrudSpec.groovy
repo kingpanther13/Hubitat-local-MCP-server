@@ -5874,7 +5874,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the RAW requested capability name, ahead of the pre-write snapshot and any wizard write. So NO
         // opener is committed and NO cond=a write hits the hub: nothing to roll back, and "RM is not
         // touched" is accurate with zero wizard round-trips. The posts assertions below prove no wizard
-        // write occurred (no actType opener, no cond=a, no cancelAct rollback). Both-ways proof is
+        // write occurred (no actType opener, no cond=a, no actionCancel rollback). Both-ways proof is
         // orchestrator-owned; the no-backup property of the pre-snapshot reject is asserted at the
         // integration level in the e2e suite.
         given:
@@ -5923,10 +5923,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the reject reports the rule as untouched (pre-write hoist -- opener never committed)"
         result.error?.contains("RM is not touched")
 
-        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click was needed"
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback actionCancel click was needed"
         !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
         !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
     }
 
     def "addAction ifThen Last Event Device fails loud PRE-WRITE via the top-of-function hoist (no opener/cond=a write)"() {
@@ -5935,7 +5935,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // pre-write snapshot and any wizard write, so NO IF-block opener is committed and NO cond=a write
         // reaches the hub -- distinct from the rollback path, which would commit the opener first and then
         // unwind it. The posts assertions below prove no wizard write occurred (no actType opener, no cond=a,
-        // no cancelAct rollback); the tailored-message assertion distinguishes the raw-name steer from the
+        // no actionCancel rollback); the tailored-message assertion distinguishes the raw-name steer from the
         // generic picker miss. Both-ways proof is orchestrator-owned; the no-backup property of the
         // pre-snapshot reject is asserted at the integration level in the e2e suite.
         given:
@@ -5981,10 +5981,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("RM is not touched")
         !result.error?.contains("not in doActPage option list")
 
-        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click"
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback actionCancel click"
         !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
         !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
     }
 
     def "patches addAction ifThen Lock codes fails loud PRE-WRITE via the _rmAddAction top-of-function hoist (dispatcher-bypass path)"() {
@@ -5996,7 +5996,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (atomic via the rollback backstop, but back over the cloud relay budget). The tailored
         // unconfigurable-condition steer must still fire from the RAW requested capability name, so NO
         // IF-block opener is committed and NO cond=a write reaches the hub -- proven by the posts
-        // assertions below (no actType opener, no cond=a, no cancelAct rollback). Unlike the dispatcher
+        // assertions below (no actType opener, no cond=a, no actionCancel rollback). Unlike the dispatcher
         // path, a patches sub-op reports its refusal in the per-op patches[] entry (patchErr stays null),
         // so the tailored steer is asserted on the addAction patch entry's error, not the top-level error.
         given:
@@ -6057,10 +6057,42 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         addPatch.error?.contains("RM is not touched")
         !addPatch.error?.contains("not in doActPage option list")
 
-        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click"
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback actionCancel click"
         !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
         !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+    }
+
+    def "expression-opener rollback aborts the editor with doActPage's actionCancel, not the cancelAct delay toggle (condWizardOpen=#condWizardOpen)"() {
+        // doActPage renders no cancelAct button (cancelAct.<N> is the delay "Cancelable?" toggle), so
+        // clicking it was a no-op; actionCancel is RM's own editor abort that drops the uncommitted row.
+        // With the row gone from settings afterwards, the rollback reports success without a delAct.
+        given:
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def rolledBack = script._rmRollbackInFlightExpressionAction(100, 1, condWizardOpen)
+
+        then:
+        rolledBack == true
+        def btns = posts.findAll { it.path == "/installedapp/btn" }.collect { it.body?.name }
+        btns == expectedButtons
+        posts.find { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }?.body?.currentPage == "doActPage"
+        !btns.contains("cancelAct")
+        !btns.contains("delAct")
+
+        where:
+        condWizardOpen | expectedButtons
+        false          | ["actionCancel"]
+        true           | ["cancelCapab", "actionCancel"]
     }
 
     def "addRequiredExpression Lock codes fails loud even when the STPage picker OMITS the capability (firmware-independent)"() {
@@ -25822,7 +25854,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Captured from the RM UI on fw 2.5.1.183: a String target renders no numOp.<N>; its
         // source picker is valStringOp.<N>, whose "Copy variable" option reveals xVar3.<N>
         // (stored: valStringOp.1="Copy variable", xVar3.1="AMGateA_Shared"). Writing numOp for a
-        // String target is refused not_in_schema and leaves a partial row.
+        // String target is refused not_in_schema.
         // The stub reveals ONLY valStringOp for this target, and gates xVar3.1 on it. The type
         // token is mixed-case to cover the case-insensitive match.
         given:
@@ -27253,9 +27285,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def writtenFields = [:]
+        def posts = []
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
                     def key = _settingKeyOf(k)
@@ -27301,6 +27335,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.error?.contains("ghostSrc")
         result.error?.contains("is not in the revealed enum")
+
+        and: "the open editor is cancelled on doActPage, so the error no longer points at a partial row"
+        posts.count { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" && it.body?.currentPage == "doActPage" } == 1
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+        result.error?.contains("in-flight action was cancelled")
+        !result.error?.contains("removeAction")
     }
 
     // setVariable value type narrowing
@@ -27843,6 +27883,135 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("is not in the device's attribute enum")
         result.error?.contains("humidity")
         result.error?.contains("temperature")
+    }
+
+    def "addAction setVariable fromDevice refusal cancels the open doActPage editor before surfacing the error"() {
+        // RM leaves the new-action editor open (state.actNdx=N) when a deferred source-mode check
+        // refuses; the next "Create New Action" would reopen row N with numOp/customDev pre-filled.
+        // actionCancel is doActPage's own Cancel: it drops the row and consumes the index. The
+        // refusal itself must reach the caller unchanged, and the action must never be committed.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def posts = []
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]],
+                [name: "actionCancel", type: "button"]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            if (numOpWritten && devWritten) extra << [name: "tCustomAttr.1", type: "enum", options: ["temperature": "temperature"]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "humidity"]],
+            confirm: true
+        ])
+
+        then: "the refusal surfaces unchanged"
+        result.success == false
+        result.error?.contains("fromDevice: attribute 'humidity' is not in the device's attribute enum for action 1")
+        result.wizardStuck != true
+
+        and: "the refusal fired after the device write, then exactly one actionCancel on doActPage"
+        writtenFields["customDev.1"]?.toString() == "72"
+        def cancelIdx = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+        cancelIdx >= 0
+        posts[cancelIdx].body?.currentPage == "doActPage"
+        posts.count { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" } == 1
+        def devWriteIdx = posts.findIndexOf { it.path == "/installedapp/update/json" && (it.body as Map)?.containsKey("settings[customDev.1]") }
+        devWriteIdx >= 0 && devWriteIdx < cancelIdx
+
+        and: "the action is never committed, and no no-op cancelAct click is sent"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+    }
+
+    def "addAction setVariable fromDevice refusal still surfaces when the actionCancel click itself fails"() {
+        // The cancel is best-effort: a failing click must not replace the caller-actionable refusal.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def posts = []
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body?.name == "actionCancel") {
+                return [status: 500, location: null, data: '']
+            }
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            if (numOpWritten && devWritten) extra << [name: "tCustomAttr.1", type: "enum", options: ["temperature": "temperature"]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "humidity"]],
+            confirm: true
+        ])
+
+        then: "the cancel was attempted, and the original refusal (not the click failure) is the error"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+        result.success == false
+        result.error?.contains("is not in the device's attribute enum")
+        !result.error?.contains("Button click 'actionCancel'")
     }
 
     def "addAction setVariable fromDevice rejects missing deviceId"() {
