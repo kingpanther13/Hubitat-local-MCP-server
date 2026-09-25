@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.4.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.4.2 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -90,6 +90,8 @@
 // Code-derived metadata is valid for one compiled class, including same-version deploys:
 // recompilation resets statics without needing updated() or a contributor version bump.
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
+// Serialize the one-time protected-app default across concurrent endpoint handlers.
+@groovy.transform.Field static final Map PROTECTED_APPS_LOCK = new java.util.HashMap()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
@@ -207,6 +209,7 @@ preferences {
 }
 
 def mainPage() {
+    _protectedAppIds()
     dynamicPage(name: "mainPage", title: "MCP Rule Server", install: true, uninstall: true) {
         section("MCP Endpoint") {
             if (!state.accessToken) {
@@ -256,6 +259,17 @@ def mainPage() {
             href name: "advancedOverrides", page: "advancedOverridesPage",
                  title: "Advanced: Per-tool Overrides & expert settings",
                  description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and configure Origin validation."
+        }
+
+        section("Protected apps") {
+            def choices = _protectedAppChoices()
+            input "protectedAppIds", "enum", title: "Protect installed apps from generic mutations",
+                  options: choices.options, multiple: true, required: false,
+                  description: "Selected apps cannot be edited, controlled, disabled, deleted, or have children created beneath them through generic app/native-rule/dashboard tools, even with Developer Mode on. Reads and dedicated Developer Mode maintenance remain available."
+            if (choices.inventoryUnavailable) {
+                paragraph "The installed-app list could not be loaded completely. Only the MCP server and previously protected apps are shown. Existing protection remains active; reopen this page to retry loading the full list."
+            }
+            paragraph "The MCP server is selected by default. You can remove it or clear the list; later updates preserve your choice. Click Done to apply protection changes."
         }
 
         section("Best-Practice Guidance") {
@@ -606,6 +620,7 @@ def getChildAppById(appId) {
 
 def installed() {
     log.info "MCP Rule Server installed"
+    _protectedAppIds(true)
     _invalidateToolMetadata()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         RETIRED_TOOL_STATE_CLEANED.clear()
@@ -624,6 +639,7 @@ def installed() {
 
 def updated() {
     log.info "MCP Rule Server updated"
+    _protectedAppIds(true)
     _invalidateToolMetadata()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         RETIRED_TOOL_STATE_CLEANED.clear()
@@ -697,9 +713,132 @@ def uninstalled() {
     try { unschedule() } catch (Exception e) { /* best-effort teardown */ }
 }
 
+private String _protectedAppId(value) {
+    String id = value?.toString()?.trim()
+    return id?.isLong() && id.toLong() > 0L ? id.toLong().toString() : null
+}
+
+private Set<String> _protectedAppSelection(value) {
+    def values = value instanceof Collection ? value : (value == null ? [] : [value])
+    return values.collect { _protectedAppId(it) }.findAll { it != null } as Set
+}
+
+private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
+    def policy = atomicState.protectedAppsPolicy
+    if (!applyUiSelection && policy instanceof Map && policy.ids instanceof List) {
+        return _protectedAppSelection(policy.ids)
+    }
+    synchronized (PROTECTED_APPS_LOCK) {
+        policy = atomicState.protectedAppsPolicy
+        if (policy instanceof Map && policy.ids instanceof List) {
+            if (applyUiSelection) {
+                policy = [ids: _protectedAppSelection(settings.protectedAppIds) as List]
+                atomicState.protectedAppsPolicy = policy
+            }
+            return _protectedAppSelection(policy.ids)
+        }
+        def selected = _protectedAppSelection(settings.protectedAppIds)
+        String selfId = _protectedAppId(app?.id)
+        if (!selfId) return selected
+        boolean hasSelection = settings.protectedAppIds != null
+        if (!hasSelection) selected.add(selfId)
+        try {
+            if (!hasSelection) {
+                app.updateSetting('protectedAppIds', [type: 'enum', value: selected as List])
+            }
+            // Publish initialization and its effective selection together: concurrent handlers
+            // may retain older settings snapshots. Only installed()/updated() publish UI saves.
+            atomicState.protectedAppsPolicy = [ids: selected as List]
+        } catch (Exception e) {
+            // Keep enforcing the default even if persistence fails; the next request retries.
+            mcpLog('warn', 'server', "Could not save protected-app defaults; protection remains active and initialization will retry: ${e.message}")
+        }
+        return selected
+    }
+}
+
+private Map _protectedAppChoices() {
+    def selected = _protectedAppIds()
+    def options = [:]
+    def apps = _collectLiveApps()
+    (apps ?: [:]).each { id, details ->
+        String key = _protectedAppId(id)
+        if (key) {
+            String label = stripAppConfigHtml(details.name) ?: 'Installed app'
+            options.put(key, "${label} (ID ${key})".toString())
+        }
+    }
+    String selfId = _protectedAppId(app?.id)
+    if (selfId && !options.containsKey(selfId)) options.put(selfId, "${app?.label ?: 'MCP Rule Server'} (ID ${selfId})".toString())
+    selected.each { id ->
+        if (!options.containsKey(id)) options.put(id, "Unavailable app (ID ${id})".toString())
+    }
+    return [options: options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) },
+            inventoryUnavailable: apps == null]
+}
+
+private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
+    String id = _protectedAppId(targetId)
+    if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
+        throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps in the MCP server's Hubitat app UI. Developer Mode does not bypass this protection for generic tools.")
+    }
+}
+
+private boolean _requireUnprotectedAppDeletion(Integer appId, boolean allowMissing = false) {
+    // Use one policy snapshot for the entire cascading delete, not a DB read per node.
+    def protectedIds = _protectedAppIds()
+    _requireUnprotectedAppMutation(appId, "delete", protectedIds)
+    if (protectedIds.isEmpty()) return true
+    def parsed
+    try {
+        def text = hubInternalGet("/hub2/appsList")
+        parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: ${e.message}. No app was deleted.")
+    }
+    if (!(parsed instanceof Map) || !(parsed.apps instanceof List)) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is unavailable. No app was deleted.")
+    }
+    boolean found = false
+    boolean complete = true
+    def walk
+    walk = { node, boolean belowTarget ->
+        if (!(node instanceof Map) || (node.data != null && !(node.data instanceof Map)) ||
+                (node.children != null && !(node.children instanceof List))) {
+            complete = false
+            return
+        }
+        def rawId = node.data?.id != null ? node.data.id : node.id
+        Integer id = null
+        if (rawId != null) {
+            try {
+                if (!(rawId.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
+                id = rawId.toString().toInteger()
+            } catch (Exception ignored) { complete = false; return }
+        } else if (node.data != null) {
+            complete = false
+            return
+        }
+        boolean affected = belowTarget || id == appId
+        if (id == appId) found = true
+        if (affected && id != null) _requireUnprotectedAppMutation(id, "delete through parent app ${appId}", protectedIds)
+        (node.children ?: []).each { walk(it, affected) }
+    }
+    parsed.apps.each { walk(it, false) }
+    if (!complete) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is incomplete. Retry after the full app inventory is available. No app was deleted.")
+    }
+    if (!found) {
+        // Dashboard deletion is retry-safe; absence is conclusive only after the full walk.
+        if (allowMissing) return false
+        throw new IllegalArgumentException("App ${appId} is absent from the installed-app tree. Refresh hub_list_apps to confirm the target ID; no app was deleted.")
+    }
+    return true
+}
+
+
 def initialize() {
-    // Stamp when THIS app instance came up. Any op record still marked "running" that
-    // started before this stamp was written by an instance that no longer exists: its
+    _protectedAppIds()
     if (!state.accessToken) {
         createAccessToken()
         log.info "Created access token"
@@ -823,6 +962,7 @@ def handleMcpRequest() {
 
     _cleanupRetiredToolState()
     _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
+    _protectedAppIds()
     _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
@@ -9479,7 +9619,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.4.1"
+    return "4.4.2"
 }
 
 
@@ -10331,6 +10471,8 @@ Only query devices the user has mentioned or that are relevant to their request.
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
 
+Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule and Easy/legacy Dashboard mutations even with Developer Mode enabled. Creating children under protected parents is also refused. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list in the Hubitat UI and click Done to apply it.
+
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 
 ### hub_read_apps_code (4 tools)
@@ -10955,6 +11097,7 @@ Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
 
 - `confirm` (param) — Confirms a recent backup + user approval.
 - A legacy dashboard is removed through the classic force-delete (the Easy `/dashboard/delete` endpoint is a no-op for it); removal is confirmed by effect and the result carries its `type`.
+- If the protected-app inventory check confirms the target is already absent, returns `success: true, alreadyAbsent: true` without a delete. This also covers an ID that never existed; it does not prove a previous call deleted it.
 
 ### hub_clone_dashboard
 

@@ -1,6 +1,7 @@
 package server
 
 import spock.lang.Shared
+import spock.lang.Unroll
 import support.TestChildApp
 import support.ToolSpecBase
 
@@ -39,6 +40,12 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         // app.updateSetting(...) call has a non-null target. Same additive-stub
         // pattern as ToolManageLogsSpec.setupSpec.
         appExecutor.getApp() >> sharedAppStub
+    }
+
+    def setup() {
+        // Validation assertions isolate settings writes from the one-time installation migration.
+        atomicStateMap.protectedAppsPolicy = [ids: [sharedAppStub.id.toString()]]
+        settingsMap.protectedAppIds = [sharedAppStub.id.toString()]
     }
 
     def cleanup() {
@@ -888,4 +895,61 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         and: 'verbatim message reaches the caller — proves the broad-catch cascade is not in the path'
         mcpDriver.parseInner(response).error.contains("'Developer Mode Tools'")
     }
+
+    @Unroll
+    def "protected apps remain UI-only with Developer Mode #developerMode"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        settingsMap.enableDeveloperMode = developerMode
+        settingsMap.protectedAppIds = ['1']
+        atomicStateMap.protectedAppsPolicy = [ids: ['1']]
+
+        when:
+        script.executeTool('hub_update_mcp_settings', [settings: [debugLogging: true, protectedAppIds: []], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(developerMode ? "'protectedAppIds'" : 'Developer Mode')
+        sharedAppStub.settingsStore.isEmpty()
+        settingsMap.protectedAppIds == ['1']
+
+        where:
+        developerMode << [false, true]
+    }
+
+    def "protecting self does not block authorized allowlisted Developer Mode settings"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        settingsMap.protectedAppIds = ['1']
+        atomicStateMap.protectedAppsPolicy = [ids: ['1']]
+
+        when:
+        def result = script.executeTool('hub_update_mcp_settings', [settings: [debugLogging: true], confirm: true])
+
+        then:
+        result.success == true
+        sharedAppStub.settingsStore == [debugLogging: [type: 'bool', value: true]]
+        settingsMap.protectedAppIds == ['1']
+    }
+
+    @Unroll
+    def "protecting self does not bypass dedicated Developer Mode #gate gate"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        settingsMap.protectedAppIds = ['1']
+        atomicStateMap.protectedAppsPolicy = [ids: ['1']]
+        if (gate == 'write') settingsMap.enableWrite = false
+        if (gate == 'backup') stateMap.remove('lastBackupTimestamp')
+
+        when:
+        script.executeTool('hub_update_mcp_settings', [settings: [debugLogging: true], confirm: gate != 'confirmation'])
+
+        then:
+        thrown(IllegalArgumentException)
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        gate << ['write', 'backup', 'confirmation']
+    }
+
 }
