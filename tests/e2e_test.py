@@ -12087,6 +12087,12 @@ class TestRunner:
         assert "mcp_version=" in submit_url, \
             f"submitUrl must prefill mcp_version: {submit_url!r}"
         report = result.get("report") or ""
+        # Hub model is the hardware model hub_get_info reports, never the internal hardwareID.
+        hub_model = re.search(r"^- \*\*Hub model:\*\* (.+)$", report, re.MULTILINE)
+        assert hub_model, "report is missing the Hub model line"
+        expected_model = self.client.call_tool("hub_get_info", {}).get("model")
+        assert hub_model.group(1) == expected_model, \
+            f"report Hub model {hub_model.group(1)!r} != hub_get_info model {expected_model!r}"
         for marker in (
             "## Environment",
             "- **Connection:** ",
