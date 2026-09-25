@@ -1060,6 +1060,8 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
+**Precondition**: the advanced setting "Keep recent errors for bug reports" (`retainReportErrors`) is ON; it is off by default and e2e does not exercise it.
+
 **Expected**: Calls `hub_report_issue` directly (flat core tool) twice. Without a supplied failingTool, both reports title themselves with `hub_get_logs` from the newest retained error (`failingToolSource: "retained_error"`), keep the logs unscoped, and report a positive `logs.retainedErrorCount`. The private report's Retained Server Errors section precedes native history and contains the invalid-mode marker; the public report withholds that raw error text. No existing device or rule is changed.
 
 ### T53 — Discover hub_get_custom_rule diagnostics (hub_read_rules)

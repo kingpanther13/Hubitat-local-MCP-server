@@ -12164,31 +12164,6 @@ class TestRunner:
             f"agent_behavior must render the missing-evidence gap: {agent.get('report')!r}"
 
     @test("system_tools")
-    def test_report_issue_retains_tool_error(self) -> None:
-        # Invalid read arguments fail before touching any device or rule.
-        marker = f"BAT_retained_error_invalid_mode_{time.time_ns()}"
-        try:
-            self.client.call_tool("hub_get_logs", {"mode": marker})
-        except (McpError, McpToolError) as exc:
-            assert marker in str(exc), f"expected the invalid-mode validation error, got: {exc}"
-        else:
-            raise AssertionError("invalid log mode should produce a tool error")
-        result = self.client.call_tool("hub_report_issue", {
-            "title": "E2E retained error probe", "expected": "invalid mode rejected",
-            "actual": "validation error returned", "llmClient": "hubitat-e2e-suite",
-            "llmModel": "n/a (automated suite)",
-        })
-        assert result.get("success") is True, result
-        assert result.get("failingTool") == "hub_get_logs", result
-        assert result.get("logs", {}).get("retainedErrorCount", 0) >= 1, result
-        report = result.get("report") or ""
-        _, found, after = report.partition("## Retained Server Errors")
-        assert found, f"report has no Retained Server Errors section: {report!r}"
-        retained = after.partition("## Recent Error/Warning Logs")[0]
-        assert marker in retained, retained
-        assert result.get("failingToolSource") == "retained_error", result
-
-    @test("system_tools")
     def test_hub_mesh_read(self) -> None:
         # Hub Mesh is Hubitat's hub-to-hub device/variable sharing between hubs on the same LAN --
         # NOT the Z-Wave/Zigbee radio mesh (that is hub_get_radio_details). READ-ONLY coverage: the

@@ -516,6 +516,12 @@ def advancedOverridesPage() {
                   description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit.",
                   defaultValue: false
         }
+        section("Bug report error retention") {
+            paragraph "Every MCP server error is already written to the hub's own Past Logs, which hub_report_issue reads. This option additionally keeps the ten newest errors in app state, so a bug report still includes them after they have rolled out of Past Logs. It costs an app-state write on every error, so it is off by default."
+            input "retainReportErrors", "bool", title: "Keep recent errors for bug reports",
+                  description: "Leave OFF (default): bug reports read errors from Past Logs only. Turn ON to keep the ten newest errors in app state; turning it back OFF discards them on save.",
+                  defaultValue: false
+        }
         section("Tool name number") {
             paragraph "Inserts a single digit after the \"hub\" prefix of every MCP tool name on the wire (e.g. hub_get_info becomes hub3_get_info). Lets multiple Hubitat MCP servers coexist in one client without tool-name collisions -- internal behavior is unchanged, only the names the client sees. MCP clients cache the tool list, so refresh or reconnect your client after changing this."
             input "enableHubToolNumber", "bool", title: "Add a digit to every tool name",
@@ -626,6 +632,8 @@ def updated() {
     // Shed the retired publication toggle and its migration marker on upgraded hubs.
     app.removeSetting("publishOutputSchemas")
     atomicState.remove("publishOutputSchemasForcedOff")
+    // Error retention is opt-in; switching it off discards what it kept.
+    if (settings.retainReportErrors != true) atomicState.remove("reportErrors")
     _retireHubSecuritySettings()
     _cleanupRetiredToolState()
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
@@ -7833,7 +7841,7 @@ def clearDebugLogEntries(Map args = [:]) {
         int count = buffer.entries.size()
         String generation = java.util.UUID.randomUUID().toString()
         atomicState.debugLogGeneration = generation
-        atomicState.reportErrors = []
+        if (atomicState.reportErrors != null) atomicState.reportErrors = []
         buffer.generation = generation
         buffer.entries = []
         buffer.hydrated = true
@@ -7901,7 +7909,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
-        if (level == "error") _retainReportError(raw)
+        if (level == "error" && settings?.retainReportErrors == true) _retainReportError(raw)
         _emitNativeDebugLog(buffer, record, message)
         _appendDebugLogRecord(buffer, record)
     }
@@ -10237,7 +10245,7 @@ Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable cle
 
 ### hub_report_issue
 
-Reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
+With the opt-in advanced setting "Keep recent errors for bug reports" (off by default), reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. With it off, reports read errors from the native log history only. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 

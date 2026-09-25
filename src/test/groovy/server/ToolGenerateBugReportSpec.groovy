@@ -16,6 +16,11 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         appExecutor.getLocation() >> sharedLocation
     }
 
+    def setup() {
+        // Retained-error reporting is an opt-in advanced setting; these specs cover it switched on.
+        settingsMap.retainReportErrors = true
+    }
+
     def cleanup() {
         sharedLocation.hub = null
     }
