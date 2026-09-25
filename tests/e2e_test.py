@@ -7672,7 +7672,26 @@ class TestRunner:
                 and "removetrigger" in str(rejected.get("error", "")).lower() \
                 and "not touched" in str(rejected.get("restoreHint", "")).lower(), \
                 f"modifyTrigger state-change token should refuse pre-write: {rejected}"
-            self._set_rule(app_id, {"removeTrigger": {"index": tidx}}, strict=True)
+            # Retarget in ONE patches call: removeTrigger + addTrigger both run under the single
+            # trailing updateRule. The replacement uses state "on" so it cannot be confused with the
+            # removed trigger (modified to "off" above) if RM hands the freed index back.
+            retarget = self._patch_rule(app_id, [
+                {"removeTrigger": {"index": tidx}},
+                {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}},
+            ])
+            assert [e.get("op") for e in retarget] == ["removeTrigger", "addTrigger"] \
+                and all(e.get("success") is True for e in retarget), \
+                f"patches retarget did not run both sub-ops successfully: {retarget}"
+            new_tidx = retarget[1].get("triggerIndex")
+            assert new_tidx is not None, \
+                f"patches addTrigger did not return a triggerIndex: {retarget}"
+            assert str(tidx) not in [str(i) for i in retarget[0].get("afterIndices") or []], \
+                f"patches removeTrigger left trigger {tidx} in the rule: {retarget}"
+            retarget_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert self._setting_holds_exact(retarget_settings.get(f"tDev{new_tidx}"), sw) \
+                and str(retarget_settings.get(f"tstate{new_tidx}")).lower() == "on", \
+                f"patches addTrigger settings did not land on trigger {new_tidx}: {retarget_settings}"
+            self._set_rule(app_id, {"removeTrigger": {"index": new_tidx}}, strict=True)
             self._assert_rule_healthy(app_id)
 
             # Fail-closed bulk triggers: a clean Switch-off trigger lands, the refused state-change
@@ -8837,20 +8856,28 @@ class TestRunner:
             finally:
                 self._delete_native(app_c)
 
-            # Rule D: Number copy, then RUN the actions. The persisted settings alone do not prove
-            # it: without valOffset.<N> RM throws "Ambiguous method overloading ... Long#plus" at
-            # run time and leaves the target unchanged, although the rule saves and reads healthy.
+            # Rule D: Number copy, then numOp "add number", then RUN the actions. The persisted
+            # settings alone do not prove it: without valOffset.<N> RM throws "Ambiguous method
+            # overloading ... Long#plus" at run time and leaves the target unchanged, although the
+            # rule saves and reads healthy. The run lands 7 + 3 = 10 only if both actions execute.
             self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": var_name, "value": 0}})
             copy_spec = {"capability": "setVariable", "variable": var_name,
                          "sourceVariable": num_src_name}
-            app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec]})
+            add_spec = {"capability": "setVariable", "variable": var_name,
+                        "numOp": "add number", "value": 3}
+            app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec, add_spec]})
             try:
                 d_settings = self._get_persisted_rule_config(app_d).get("settings") or {}
                 d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
                               if str(k).startswith("numOp.") and v == "variable"), None)
                 assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
                 assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
+                add_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
+                                if str(k).startswith("numOp.") and v == "add number"), None)
+                assert add_idx is not None, f"no numOp.<N>='add number' persisted: {d_settings}"
+                assert str(d_settings.get(f"valNumber.{add_idx}")) in ("3", "3.0"), \
+                    f"add-number constant did not persist on index {add_idx}: {d_settings}"
                 self._assert_rule_healthy(app_d)
                 self.client.call_tool("hub_manage_rule_machine", {
                     "tool": "hub_call_rule", "args": {"ruleId": app_d, "action": "actions"}})
@@ -8859,10 +8886,11 @@ class TestRunner:
                 while time.time() < deadline:
                     got = self.client.call_tool("hub_manage_variables", {
                         "tool": "hub_get_variable", "args": {"name": var_name}}).get("value")
-                    if str(got) in ("7", "7.0"):
+                    if str(got) in ("10", "10.0"):
                         break
                     time.sleep(1.0)
-                assert str(got) in ("7", "7.0"),                     f"running the Number copy did not set {var_name} to 7 (got {got!r})"
+                assert str(got) in ("10", "10.0"), \
+                    f"running copy (7) then add number (3) did not set {var_name} to 10 (got {got!r})"
             finally:
                 self._delete_native(app_d)
         finally:

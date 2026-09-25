@@ -131,7 +131,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     patches: [
                         type: "array",
-                        description: "Multi-mutation in one call (not a transaction: ops before a stop stay written): each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction). Operations run sequentially; updateRule fires once at the end; per-op outcome in patches[i]. The first failed or partial op or inner item stops the batch: later ops are notAttempted and updateRule is not fired.",
+                        description: "Multi-mutation in one call (not a transaction: ops before a stop stay written): each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction). Operations run sequentially; updateRule fires once at the end; per-op outcome in patches[i]. The first failed or partial op or inner item stops the batch: later ops are notAttempted and updateRule is not fired.",
                         items: [type: "object"]
                     ],
                     removeAction: [
@@ -3500,6 +3500,7 @@ private Map _rmActionSchemaForDiscover() {
                 ],
                 optionalFields: [
                     [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the write otherwise -- RM renders numOp/valNumber only for numeric targets). String, boolean, and datetime targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
+                    [name: "numOp", type: "String", description: "Only with 'value': 'number' (default) sets the variable to value; 'add number' adds value to its current value. Any other numOp, or numOp without 'value', is rejected before the write."],
                     [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Works for Number, Decimal and String targets (a String target uses RM's valStringOp='Copy variable' picker instead of numOp=variable); a Boolean or DateTime target is refused before any write. Schema-gated: the source-variable field is only revealed by RM after that selector is written; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
                     [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable. Maps to numOp='device attribute'.[[FLAT_TRIM]] RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence.[[/FLAT_TRIM]]"],
                     [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the variable-math source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp='variable math'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require 'right'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject 'right'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."],
@@ -3516,6 +3517,7 @@ private Map _rmActionSchemaForDiscover() {
                 ],
                 optionalFields: [
                     [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime local-variable targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
+                    [name: "numOp", type: "String", description: "Only with 'value': 'number' (default) sets the variable to value; 'add number' adds value to its current value. Same rules as setVariable's numOp."],
                     [name: "sourceVariable", type: "String", description: "Variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. RM's source picker spans BOTH local and hub variables, so the source may be either; validated against the live revealed enum (fails loud, success=false, if the hub does not reveal it). Number, Decimal and String targets are supported; Boolean and DateTime targets are refused before any action row is written. See docs/rm_wire_format.md for the wire sequence."],
                     [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same wire and validation as setVariable's fromDevice."],
                     [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same operator set and wire as setVariable's math; operand variables may be local or hub (validated against the live revealed enum)."],
@@ -4617,6 +4619,30 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     return out.findAll { k, v -> v != null }
 }
 
+// One patches[] removeTrigger / modifyTrigger / modifyAction op, via the same helpers as the
+// top-level ops. No updateRule here: the batch fires it once at the end.
+private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
+    String op = ["removeTrigger", "modifyTrigger", "modifyAction"].find { pm.containsKey(it) }
+    def spec = pm[op]
+    if (!(spec instanceof Map) || spec.index == null) throw new IllegalArgumentException("${op}.index required")
+    if (op == "removeTrigger") {
+        def rtRes = _rmRemoveTrigger(appId, spec.index as Integer)
+        return [success: rtRes?.success != false, op: op, index: spec.index, removedIndex: rtRes?.removedIndex,
+                beforeIndices: rtRes?.beforeIndices, afterIndices: rtRes?.afterIndices, partial: rtRes?.partial == true]
+    }
+    if (!(spec.mods instanceof Map)) {
+        String example = (op == "modifyTrigger") ? "{state: 'on'}" : "{ruleIds: [123]}"
+        throw new IllegalArgumentException("${op}.mods is required and must be a Map (e.g. ${example})")
+    }
+    if (op == "modifyTrigger") {
+        def mtRes = _rmModifyTrigger(appId, spec.index as Integer, spec.mods as Map) ?: [:]
+        // Same inner-partial rule as the top-level modifyTrigger envelope.
+        boolean mtPartial = ((mtRes.settingsSkipped as List)?.size() ?: 0) > 0 || mtRes.verificationFetchFailed == true
+        return [op: op] + mtRes + [partial: mtPartial]
+    }
+    return [op: op] + (_rmModifyAction(appId, spec.index as Integer, spec.mods as Map, reqT0) ?: [:])
+}
+
 // Message for a throw AFTER modifyAction's delete leg committed. Neutralizes
 // any nested "RM is not touched" sentinel (true for the inner helper's own
 // pre-flight, a lie for the composed operation) so the error-response builder
@@ -5545,6 +5571,7 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
     // level deviceIds list (used by switch / dimmer / lock / shade /
     // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
     _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
+    if (cap in ["variable", "setVariable", "setLocalVariable"]) _rmSetVariableValueNumOp(actionSpec)
     // A hub-variable copy into a Boolean/DateTime target has no captured picker, so refuse it
     // before the selectActions page-init POST. The builder repeats the check for locals, whose
     // types are only readable from the rule itself.
@@ -5619,6 +5646,22 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
             }
         }
     }
+}
+
+// The numOp a setVariable/setLocalVariable 'value' action writes. The other source modes
+// each write their own numOp, so a caller numOp there (or with no value) could only be
+// silently dropped -- refuse it instead.
+private String _rmSetVariableValueNumOp(Map actionSpec) {
+    if (actionSpec.numOp == null) return "number"
+    String capLabel = (actionSpec.capability?.toString()?.trim() == "setLocalVariable") ? "setLocalVariable" : "setVariable"
+    if (actionSpec.value == null) {
+        throw new IllegalArgumentException("${capLabel}: numOp is only supported with 'value' ('number' sets the variable to value, 'add number' adds value to it). sourceVariable, fromDevice and math select their own numOp -- remove numOp. RM is not touched.")
+    }
+    String requested = actionSpec.numOp.toString().trim().toLowerCase()
+    if (!(requested in ["number", "add number"])) {
+        throw new IllegalArgumentException("${capLabel}: numOp '${actionSpec.numOp}' is not supported with 'value'. Supported: 'number' (default, sets the variable to value) or 'add number' (adds value to its current value). To copy another variable use sourceVariable instead of numOp 'variable'; to read a device attribute use fromDevice instead of numOp 'device attribute'; for arithmetic use math instead of numOp 'variable math'. RM is not touched.")
+    }
+    return requested
 }
 
 // Extracted from _rmAddAction for the same bytecode budget. Returns the action index RM
@@ -6183,11 +6226,11 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         //                     numOp.<N> reveal -- numOp does not render until xVarV is set, so
         //                     xVarV must be written before numOp.
         //   numOp.<N>       = source mode enum, rendered only for a Number/Decimal target.
-        //                     Supported here: "number" (constant),
-        //                     "variable" (copy from another variable), "device attribute"
-        //                     (read a device's attribute), "variable math" (structured math).
-        //                     Default: "number"
-        //   valNumber.<N>   = value when numOp=number (constant form)
+        //                     Supported here: "number" (constant), "add number" (add a
+        //                     constant), "variable" (copy from another variable), "device
+        //                     attribute" (read a device's attribute), "variable math"
+        //                     (structured math). Default: "number"
+        //   valNumber.<N>   = value when numOp="number" or "add number" (constant form)
         //   valStringOp.<N> = "Copy variable" for a copy into a String target (no numOp there).
         //   xVar3.<N>       = source variable name for a copy (numOp=variable or valStringOp=Copy variable).
         //                     Schema-gated: RM only reveals xVar3.<N> AFTER that selector lands.
@@ -6204,7 +6247,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         //                     numOp; a binary operator reveals the second operand. Operand value
         //                     "(constant)" reveals the matching valConst slot. Post-write block:
         //                     __setVariableMath.
-        // Source mode is exactly one of value | sourceVariable | fromDevice | math.
+        // Source mode is exactly one of value | sourceVariable | fromDevice | math; numOp is
+        // honored only with value.
         actType = "modeActs"
         actSubType = "getSetVariable"
         // setLocalVariable targets the rule's LOCAL variable namespace; setVariable/variable
@@ -6454,7 +6498,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 left: mathLeft, op: mathOp, right: mathRight
             ]
         } else {
-            fields["numOp.@N"] = "number"
+            // "add number" reveals the same valNumber slot and renders "Add <n> to <var>".
+            fields["numOp.@N"] = _rmSetVariableValueNumOp(actionSpec)
             fields["valNumber.@N"] = actionSpec.value
         }
     } else if (cap == "runCommand") {
@@ -14830,7 +14875,8 @@ def _applyNativeAppEdit(args) {
         //   {addLocalVariable: {...}}
         //   {settings: {...}}
         //   {removeAction: {index}} | {clearActions: true} | {replaceActions: [...]}
-        //   {moveAction: {index, direction}}
+        //   {moveAction: {index, direction}} | {modifyAction: {index, mods}}
+        //   {removeTrigger: {index}} | {modifyTrigger: {index, mods}}
         //   {button: <name>, stateAttribute?, pageName?}
         // Operations apply sequentially and updateRule fires once at the end, so the rule's
         // actions[] map and subscriptions bake from a fully-loaded state. It is not a
@@ -15181,8 +15227,10 @@ def _applyNativeAppEdit(args) {
                             verifyHint: mvRes?.verifyHint,
                             partial: mvRes?.partial == true
                         ]
+                    } else if (pm.containsKey("removeTrigger") || pm.containsKey("modifyTrigger") || pm.containsKey("modifyAction")) {
+                        patchResults << _rmPatchModifyOp(appId, pm, args?.__reqT0 as Long)
                     } else {
-                        patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]
+                        patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction.", spec: p]
                     }
                 } catch (Exception subExc) {
                     // Strip the internal asyncCommit sentinel from the user-

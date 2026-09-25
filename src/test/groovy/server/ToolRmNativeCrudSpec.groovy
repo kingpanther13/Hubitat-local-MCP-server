@@ -25863,6 +25863,103 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
     }
 
+    // Wires a numeric-target setVariable/setLocalVariable add and returns [written: <field map>, posts: <POST paths>].
+    private Map wireSetVariableValueAdd(String varName, boolean local) {
+        def fetchSeq = 0
+        def ctl = [written: [:], posts: []]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            (ctl.posts as List) << path
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) (ctl.written as Map)[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> [(varName): [name: varName, type: "integer", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable / Hub Action"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            modeActsDoActPageJson(100, [
+                [name: "xVarV.1", type: "enum", options: [(varName): varName]],
+                [name: "numOp.1", type: "enum", options: ["number": "number", "add number": "add number"]],
+                [name: "valNumber.1", type: "number"]
+            ], { ++fetchSeq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            local ? statusJsonWithLocals(100, [(varName): [type: "integer", value: 0]]) : statusJson(100)
+        }
+        return ctl
+    }
+
+    @spock.lang.Unroll
+    def "addAction #cap value with numOp 'add number' writes numOp.1='add number' plus valNumber.1"() {
+        given:
+        enableWrite()
+        def ctl = wireSetVariableValueAdd("fires", cap == "setLocalVariable")
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: cap, variable: "fires", numOp: "add number", value: 1],
+            confirm: true
+        ])
+
+        then: "the caller's numOp is written, not the hardcoded 'number'"
+        ctl.written["xVarV.1"] == "fires"
+        ctl.written["numOp.1"] == "add number"
+        ctl.written["valNumber.1"].toString() == "1"
+        result.success == true
+
+        where:
+        cap << ["setVariable", "setLocalVariable"]
+    }
+
+    def "addAction setVariable value with an explicit numOp 'number' still writes numOp.1='number'"() {
+        given:
+        enableWrite()
+        def ctl = wireSetVariableValueAdd("fires", false)
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "fires", numOp: "number", value: 5],
+            confirm: true
+        ])
+
+        then:
+        ctl.written["numOp.1"] == "number"
+        ctl.written["valNumber.1"].toString() == "5"
+        result.success == true
+    }
+
+    @spock.lang.Unroll
+    def "addAction setVariable refuses #label before any wizard POST"() {
+        given:
+        enableWrite()
+        def ctl = wireSetVariableValueAdd("fires", false)
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "setVariable", variable: "fires"] + spec, confirm: true])
+
+        then: "refused with the steer, and neither the selectActions init nor the doActPage editor was touched"
+        result.success == false
+        expected.every { result.error?.contains(it) }
+        result.error?.contains("RM is not touched")
+        !(ctl.posts as List).any { it in ["/installedapp/update/json", "/installedapp/btn"] }
+        (ctl.written as Map).isEmpty()
+
+        where:
+        label                                    | spec                                              | expected
+        "an unknown numOp with value"            | [numOp: "bogus", value: 1]                        | ["numOp 'bogus' is not supported", "'number'", "'add number'"]
+        "numOp 'variable' with value"            | [numOp: "variable", value: 1]                     | ["numOp 'variable' is not supported", "use sourceVariable"]
+        "numOp 'device attribute' with value"    | [numOp: "device attribute", value: 1]             | ["use fromDevice"]
+        "numOp alongside sourceVariable"         | [numOp: "variable", sourceVariable: "fires"]      | ["numOp is only supported with 'value'"]
+        "numOp with no source mode"              | [numOp: "add number"]                             | ["numOp is only supported with 'value'"]
+    }
+
     def "addAction setVariable sourceVariable form uses numOp=variable and discovers xVar3 via schema reveal"() {
         // RM 5.1 live-verified wire: the source-variable field is xVar3.<N>, not xVar.<N>.
         // RM only reveals xVar3.<N> AFTER numOp.<N>="variable" (the full word) is written --
@@ -43498,6 +43595,162 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (entry.beforeIndices as List).contains(1)
         entry.afterIndices instanceof List
         !((entry.afterIndices as List).contains(1))
+    }
+
+    def "patches [removeTrigger, addTrigger] retargets a trigger in one call with a single trailing updateRule"() {
+        given: "a rule whose only trigger is index 2; the new trigger lands in the slot the wizard opens"
+        enableWrite()
+        def deleteConFired = false
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "deleteCon") deleteConFired = true
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            selectTriggersSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            deleteConFired ? statusJson(100) : statusJson(100, [[name: "tCapab2", value: "Motion"]])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            patches: [
+                [removeTrigger: [index: 2]],
+                [addTrigger: [capability: "Switch", deviceIds: [8], state: "on"]]
+            ],
+            confirm: true
+        ])
+
+        then: "both sub-ops ran and succeeded -- removeTrigger is no longer an unrecognized key"
+        result.patches.size() == 2
+        result.patches[0].op == "removeTrigger"
+        result.patches[0].success == true
+        result.patches[0].removedIndex == 2
+        result.patches[0].beforeIndices == [2]
+        result.patches[0].afterIndices == []
+        result.patches[1].op == "addTrigger"
+        result.patches[1].success == true
+        result.patches[1].partial != true
+        !result.containsKey("bulkStoppedAfter")
+        result.success == true
+
+        and: "the new trigger's settings were written after the delete"
+        result.patches[1].triggerIndex == 1
+        (result.patches[1].settingsApplied as List).containsAll(["tCapab1", "tstate1"])
+        int deleteAt = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.get("stateAttribute") == "deleteCon" }
+        int stateAt = posts.findIndexOf { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[tstate1]") }
+        deleteAt >= 0
+        stateAt > deleteAt
+
+        and: "updateRule fires once, at the end of the batch"
+        posts.count { it.path == "/installedapp/btn" && it.body?.get("settings[updateRule]") == "clicked" } == 1
+    }
+
+    def "patches modifyTrigger routes through the single-op helper and finalises once"() {
+        given:
+        enableWrite()
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "r", install: true, error: null, sections: []],
+                settings: [tCapab1: "Switch", tstate1: "off"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "Triggers", install: true, error: null,
+                             sections: [[title: "", input: [[name: "tstate1", type: "enum", options: ["on", "off"]]]]]],
+                settings: [tstate1: "off"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Switch"]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[modifyTrigger: [index: 1, mods: [state: "off"]]]], confirm: true])
+
+        then:
+        result.patches.size() == 1
+        result.patches[0].op == "modifyTrigger"
+        result.patches[0].success == true
+        result.patches[0].partial == false
+        result.patches[0].modifiedIndex == 1
+        result.patches[0].verifiedState == "off"
+        result.success == true
+        posts.any { it.path == "/installedapp/btn" && it.body?.get("stateAttribute") == "editCond" && it.body?.name == "1" }
+        posts.count { it.path == "/installedapp/btn" && it.body?.get("settings[updateRule]") == "clicked" } == 1
+    }
+
+    def "patches modifyAction routes through the position-preserving rebuild and finalises once"() {
+        given: "the first of two actions is retargeted, so the rebuilt action walks up one slot"
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def ma = wireModifyActionTransport(100, [1, 2],
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
+             "actType.2": "rulesActs", "ruleAct.3": ["300"]])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 3)
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[modifyAction: [index: 1, mods: [ruleIds: [300]]]]], confirm: true])
+
+        then:
+        result.patches.size() == 1
+        result.patches[0].op == "modifyAction"
+        result.patches[0].success == true
+        result.patches[0].newActionIndex == 3
+        result.patches[0].verifiedTargets == ["300"]
+        specs[0].capability == "runRule"
+        ma.order == [3, 2]
+        result.success == true
+
+        and: "the rebuild's own updateRule is not fired mid-batch; the batch fires it once"
+        (ma.clicks as List).count { it.name == "updateRule" } == 1
+    }
+
+    def "patches still fails closed on a genuinely unknown op key and names the new ops as supported"() {
+        given:
+        enableWrite()
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Switch"]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[retargetTrigger: [index: 1]], [removeTrigger: [index: 1]]], confirm: true])
+
+        then: "the unknown op stops the batch; the removeTrigger after it is never dispatched"
+        result.patches[0].success == false
+        result.patches[0].error.contains("no recognized operation key")
+        result.patches[0].error.contains("removeTrigger, modifyTrigger, modifyAction")
+        result.patches[1].op == "removeTrigger"
+        result.patches[1].notAttempted == true
+        result.bulkStoppedAfter == "patches[0]"
+        result.success == false
+        !posts.any { it.path == "/installedapp/btn" }
     }
 
     // ---------- replaceActions inner-partial OR-clause (sibling of the addedOk!=addedTotal arm) ----------
