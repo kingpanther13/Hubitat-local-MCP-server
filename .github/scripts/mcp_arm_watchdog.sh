@@ -380,7 +380,7 @@ if [ "${#MISSING_TOKENS[@]}" -gt 0 ]; then
   echo "::warning::${#MISSING_TOKENS[@]} of main's #include'd libraries are missing from the hub (${MISSING_TOKENS[*]}) -- a prior run's restore likely left the hub behind main. Healing once by installing canonical main's bundle: ${HEAL_URL}"
   HEAL_RPC=$(jq -nc --arg url "$HEAL_URL" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
   if ! HEAL_TEXT=$(mcp_tool_call_text "hub_install_bundle (arm baseline heal)" "$HEAL_RPC") \
-     || [ "$(printf '%s' "$HEAL_TEXT" | jq -r '.success // empty' 2>/dev/null)" != "true" ]; then
+     || [ "$(printf '%s' "$HEAL_TEXT" | jq -r '.success | if type=="boolean" then tostring else "" end' 2>/dev/null)" != "true" ]; then
     echo "::error::e2e HALT: the baseline-heal bundle install did not report success (verbatim: $(printf '%s' "$HEAL_TEXT" | head -c 300 | tr '\n' ' ')). Refusing to arm."
     exit 1
   fi

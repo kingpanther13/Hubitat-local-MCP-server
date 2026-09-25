@@ -618,7 +618,8 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         result.backups.collectEntries { [(it.backupKey): it.deletePending] } == [app_1: false, app_2: true]
         result.deletePendingNote.contains('still readable')
         result.deletePendingNote.contains('recover the backup')
-        result.deletePendingNote.contains('purges unrecovered markers')
+        result.deletePendingNote.contains('purges unprotected pending entries')
+        result.deletePendingNote.contains('attempts to delete their files, even if still readable')
     }
 
     def 'pending library baseline is not reused by hub_update_library'() {

@@ -1411,25 +1411,37 @@ private Map _toolSetVisualRuleImpl(args) {
             out.remove("definition")
             return out
         }
-        if (hasPaused) {
-            def pauseResult = _vrbSetPaused(appId, paused)
-            if (pauseResult.success == false) {
-                return [success: false, appId: appId, error: "Pause/resume failed", note: pauseResult.error]
-            }
-        }
+        def pauseResult = hasPaused ? _vrbSetPaused(appId, paused) : null
         // Pause-only: nothing was re-saved, so the read-back verifies the name and the pause state
         // and NOT the definition counts -- comparing two independent reads would report a landed
         // pause as failed on a transient read that lacked the graph.
         def after = _vrbDetect(appId)
         def nameOk = after != null && _vrbNameMatches(after, requestedName)
         def pauseOk = !hasPaused || ((after?.data?.rulePaused == true) == paused)
-        def verified = nameOk && pauseOk
+        // Same rule as _vrbApplySave: a refused pause fails the write only when a real change
+        // was asked for.
+        def pauseChangeRequested = hasPaused && detected.data.rulePaused != paused
+        boolean pauseEndpointFailed = pauseResult?.success == false
+        String pauseErrorSuffix = pauseResult?.error ? " (${pauseResult.error})" : ""
+        def pauseRefused = pauseEndpointFailed && pauseChangeRequested
+        def pauseRefusedIdempotent = pauseEndpointFailed && !pauseChangeRequested && pauseOk
+        def verified = nameOk && pauseOk && !pauseRefused
         def out = [success: verified, appId: appId, format: detected.format, verified: verified,
                    name: after?.data?.name, rulePaused: after?.data?.rulePaused == true]
+        if (pauseRefusedIdempotent) {
+            out.note = "The hub refused the pause request${pauseErrorSuffix}, but the read-back confirms the rule is already ${paused ? 'paused' : 'running'}, so nothing needed changing.".toString()
+        }
         if (!verified) {
             // This tail is also reached by a rename to the rule's CURRENT name (nothing to re-save).
-            out.error = "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
-            out.note = "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
+            if (pauseRefused && pauseOk) {
+                out.error = "Pause/resume failed: the hub refused the pause request${pauseErrorSuffix}, although the read-back shows the requested state."
+            } else if (pauseRefused) {
+                out.error = "Pause/resume failed: the hub refused the pause request${pauseErrorSuffix}."
+            } else {
+                out.error = "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
+            }
+            out.note = (pauseEndpointFailed ? "The pause endpoint reported failure${pauseErrorSuffix}. " : "") +
+                    "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
             mcpLog("warn", "vrb", "${name ? 'Rename' : 'Pause'} read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk})")
         }
         return out
@@ -1530,7 +1542,8 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
     if (validationErrors) {
         out.validationErrors = validationErrors
         out.note = "Stored as an INACTIVE DRAFT: the hub reported validation errors, so the rule was saved but NOT activated and will not run until they are fixed. See hub_get_tool_guide(section='visual_rule_reference')."
-    } else if (format == "graph" && out.activated == false && after?.data?.rulePaused == true) {
+    } else if (format == "graph" && out.activated == false && after?.data?.rulePaused == true &&
+            out.activationError == null && savedMeta?.activatedSuccessfully != false) {
         // Not an activation failure: `activated` means "actually runs", and a paused rule does not.
         // The remedy is a resume, never the re-save the branch below prescribes.
         out.note = "Stored; activated is false because the rule is PAUSED, not because activation failed. Resume with hub_set_visual_rule(appId=${appId}, paused: false)."

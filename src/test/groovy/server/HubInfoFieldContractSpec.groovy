@@ -111,6 +111,56 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.developerModeEnabled == false
     }
 
+    // -------- issue #466: model comes from /hub/details/json, not the internal hardwareID --------
+
+    def "getHubInfo model is the /hub/details/json hardwareVersion, hardwareID surfaces as platformHardwareId"() {
+        given:
+        def h = new TestHub(); h.hardwareID = '000D'
+        sharedLocation.hub = h
+        hubGet.register('/hub/details/json') { params -> '{"hardwareVersion":"C-8 Pro","hubName":"x"}' }
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.model == 'C-8 Pro'
+        result.platformHardwareId == '000D'
+        // regression: the internal id must NEVER masquerade as the model again.
+        result.model != '000D'
+    }
+
+    def "getHubInfo model is null (never a placeholder) when /hub/details/json read fails"() {
+        given:
+        def h = new TestHub(); h.hardwareID = '000D'
+        sharedLocation.hub = h
+        // /hub/details/json left unregistered -> hubInternalGet throws -> model degrades to null.
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.containsKey('model')
+        result.model == null
+        result.platformHardwareId == '000D'
+    }
+
+    def "getHubInfo model is null when hardwareVersion is missing or blank"() {
+        given:
+        def h = new TestHub(); h.hardwareID = '000D'
+        sharedLocation.hub = h
+        hubGet.register('/hub/details/json') { params -> body }
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.model == null
+        result.platformHardwareId == '000D'
+
+        where:
+        body << ['{"hubName":"x"}', '{"hardwareVersion":"  "}', 'not json at all']
+    }
+
     // -------- toolGetHubInfo identify-LED --------
 
     def "getHubInfo identifyHub=true fires /hub/advanced/blinkLED and reports identifyHubTriggered=true"() {

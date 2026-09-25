@@ -80,7 +80,8 @@ if (!resolverFile.exists()) {
 def resolverClass = new GroovyClassLoader().parseClass(resolverFile)
 
 // Stock Groovy processes null closure parameters successfully. The hub-specific transform is
-// not exercised here; this guard excludes that AST shape without claiming it caused a hub 500.
+// not exercised here. An isolated hub probe rejects { -> 42 } with HTTP 500 while the same
+// app with { 42 } compiles; this guard excludes the shape without claiming the private mechanism.
 def collectNullParameters = { CompilationUnit cu, Map resolved ->
     def findings = []
     def seen = Collections.newSetFromMap(new IdentityHashMap())
@@ -107,9 +108,7 @@ def collectNullParameters = { CompilationUnit cu, Map resolved ->
 
 // Compile to CANONICALIZATION and collect blocked-class references. Returns a list of finding
 // strings, or null if CANONICALIZATION could not resolve some class (caller falls back to syntax).
-def collectBlocked = { String fileName, Map resolved ->
-    def cu = new CompilationUnit(new CompilerConfiguration())
-    cu.addSource(fileName, resolved.source)
+def collectBlocked = { CompilationUnit cu, Map resolved ->
     try {
         cu.compile(Phases.CANONICALIZATION)
     } catch (Throwable e) {
@@ -182,7 +181,7 @@ def checkFile = { String path ->
     // Gate 2: blocked-class / sandbox check (CANONICALIZATION + AST walk).
     def findings
     try {
-        findings = collectBlocked(f.name, mapped)
+        findings = collectBlocked(cu, mapped)
     } catch (Throwable e) {
         System.err.println "FAIL (Groovy ${GroovySystem.version} compile): ${path}"
         System.err.println e.message

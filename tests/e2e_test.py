@@ -2184,6 +2184,18 @@ class TestRunner:
         )
 
     @test("infrastructure")
+    def test_hub_get_info_model_is_hardware_model(self) -> None:
+        # issue #466: model must be the real hardware model string (e.g. "C-8 Pro") from
+        # /hub/details/json, NOT the internal platform id hardwareID ("000D" on every hub).
+        # Robust to whatever hub CI runs on: assert model is a non-empty string that is not "000D",
+        # and that the raw id is now surfaced separately under platformHardwareId.
+        info = self.client.call_tool("hub_get_info", {})
+        model = info.get("model")
+        assert isinstance(model, str) and model.strip(), f"model not a non-empty string: {model!r}"
+        assert model != "000D", "model still reports the internal hardwareID instead of the hardware model"
+        assert "platformHardwareId" in info, "platformHardwareId not surfaced by hub_get_info"
+
+    @test("infrastructure")
     def test_server_discovery(self) -> None:
         result = self.client.discover()
         assert "serverInfo" in result, f"Missing serverInfo in discovery response: {list(result.keys())}"
@@ -4221,6 +4233,27 @@ class TestRunner:
             assert applied.get("success") is True and applied.get("finalValue") == first, (
                 f"The command must execute even though its missing wait attribute times out: {applied}"
             )
+
+            # Event provenance: MCP commands go through /device/runmethod, which records no
+            # command-<name> event, so the switch's own state events carry producedBy -- hub HTML
+            # that must come back parsed. Command-driven rows name the device itself; the initial
+            # state the MCP app set at creation names that app instead.
+            own_label = self.client.call_tool("hub_get_device", {"deviceId": dev_id}).get("label")
+            ev = self.client.call_tool("hub_list_device_events", {
+                "deviceId": dev_id, "attribute": "switch", "hoursBack": 1,
+            })
+            switch_rows = ev.get("events", []) if isinstance(ev, dict) else []
+            assert switch_rows, f"no switch events recorded for the commanded switch {dev_id}: {ev}"
+            assert all("<" not in json.dumps(row) for row in switch_rows), \
+                f"raw hub HTML leaked into switch events: {switch_rows}"
+            itself = {"name": own_label, "deviceId": dev_id}
+            assert switch_rows[0].get("producedBy") == itself, \
+                f"the newest (command-driven) switch event must name the device itself: {switch_rows}"
+            assert all(row.get("producedBy") == itself
+                       or (isinstance(row.get("producedBy"), dict) and isinstance(row["producedBy"].get("appId"), int)
+                           and row["producedBy"].get("name"))
+                       for row in switch_rows), \
+                f"every switch event must name the device itself or a parsed producing app: {switch_rows}"
         finally:
             # Best-effort inline delete (the tracked DNI + cleanup sweep backstop a
             # miss); delete-contract assertions live in test_delete_virtual_switch.
@@ -5186,7 +5219,7 @@ class TestRunner:
         Returns {str(id): row}; on timeout, the last rows read."""
         rows: dict = {}
         wanted = {str(t) for t in target_ids}
-        for _ in range(attempts):
+        for attempt in range(attempts):
             listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
             entries = listed if isinstance(listed, list) else (listed.get("rules") or [])
             rows = {str(r.get("id")): r for r in entries if str(r.get("id")) in wanted}
@@ -5194,7 +5227,8 @@ class TestRunner:
             assert not missing, f"rules {missing} not found in hub_list_rules"
             if all(predicate(rows[str(t)]) for t in target_ids):
                 return rows
-            time.sleep(gap)
+            if attempt + 1 < attempts:
+                time.sleep(gap)
         print(f"    [STATUS] rules {target_ids} never all satisfied the predicate over "
               f"{attempts} reads; last rows {rows}")
         return rows
@@ -5208,11 +5242,12 @@ class TestRunner:
         shared here because several rules-status tests need it against DIFFERENT rules."""
         status: dict = {}
         started = time.monotonic()
-        for _ in range(attempts):
+        for attempt in range(attempts):
             status = self._rm_rule_status(target_id)
             if predicate(status):
                 return status
-            time.sleep(gap)
+            if attempt + 1 < attempts:
+                time.sleep(gap)
         # Say so on the timeout path: "never converged over the full budget" and "read the
         # wrong value once, immediately" otherwise reach the caller looking identical.
         print(f"    [STATUS] rule {target_id} never satisfied the predicate: {attempts} reads "
@@ -6055,6 +6090,60 @@ class TestRunner:
                 f"ifThen Lock codes reject left an orphan block opener (structuralIssues not empty): {health_after_if}"
             assert "never closed" not in str(health_after_if).lower() and "end-if" not in str(health_after_if).lower(), \
                 f"ifThen Lock codes reject left a missing-END-IF structural marker: {health_after_if}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("devices")
+    def test_button_rule_command_provenance(self) -> None:
+        # The provenance chain a client uses to answer "why did this turn on": the button's pushed
+        # event lists the rule it fired in `triggered`, and the command that rule sent is recorded
+        # as command-<name> with the same rule as `producedBy` (both arrive as hub HTML and must come
+        # back parsed). MCP's own commands go through /device/runmethod and record no command-<name>
+        # event, so the command has to come from a rule. PERMANENT non-child fixtures, and the
+        # action is derived from the switch's CURRENT value so it drives a real transition.
+        button = self._ensure_perm_fixture("button")
+        switch = self._ensure_perm_fixture("switch_b")
+        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": switch, "attribute": "switch"})
+        target = "off" if (cur.get("value") if isinstance(cur, dict) else None) == "on" else "on"
+        app_id = self._create_native_rule("BtnProvenance", {
+            "addTrigger": {"capability": "Button", "deviceIds": [int(button)], "buttonNumber": 1, "state": "pushed"},
+            "addActions": [{"capability": "switch", "action": target, "deviceIds": [int(switch)]}],
+        })
+        try:
+            rule_label = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}).get("app", {}).get("label")
+            assert rule_label, f"could not read the provenance rule's label (app {app_id})"
+            pressed = self.client.call_tool("hub_call_device_command", {
+                "deviceId": button, "command": "push", "parameters": [1]})
+            assert isinstance(pressed, dict) and pressed.get("success") is True, f"button push failed: {pressed}"
+            pushed_at = (pressed.get("state") or {}).get("pushed", {}).get("timestamp")
+
+            def _latest(device_id: str, attribute: str) -> dict:
+                ev = self.client.call_tool("hub_list_device_events", {
+                    "deviceId": device_id, "attribute": attribute, "hoursBack": 1, "limit": 1})
+                rows = ev.get("events", []) if isinstance(ev, dict) else []
+                return rows[0] if rows else {}
+
+            want = {"name": rule_label, "appId": int(app_id)}
+            command = {}
+            deadline = time.time() + 15.0
+            while time.time() < deadline:
+                command = _latest(switch, f"command-{target}")
+                if command.get("producedBy") == want:
+                    break
+                time.sleep(1.0)
+            print(f"    command provenance: {json.dumps(command)} (button pushed at {pushed_at})")
+            assert command.get("producedBy") == want, \
+                f"command-{target} on {switch} must name rule {app_id} as producedBy: {command}"
+            assert command.get("type") == "command", f"command event lost its type: {command}"
+
+            push = _latest(button, "pushed")
+            fired = [t for t in push.get("triggered", []) if t.get("appId") == int(app_id)]
+            assert fired and fired[0].get("name") == rule_label and fired[0].get("handler"), \
+                f"the button's pushed event must list rule {app_id} in triggered: {push}"
+            assert push.get("producedBy") == {"name": self.PERM_FIXTURES["button"][0], "deviceId": button}, \
+                f"the pushed event must name the button itself as producedBy: {push}"
+            assert "<" not in json.dumps([command, push]), f"raw hub HTML leaked: {command} {push}"
         finally:
             self._delete_native(app_id)
 
@@ -9633,6 +9722,14 @@ class TestRunner:
                 assert changed.get("success") is True, f"literal-name pause write did not verify: {changed}"
                 own = self._get_visual_rule(app_id)
                 assert own.get("name") == expected_name and own.get("rulePaused") is paused, own
+                if own.get("format") == "graph" and paused:
+                    assert changed.get("activated") is False, changed
+                    assert "PAUSED" in (changed.get("note") or ""), changed
+                    assert not changed.get("activationError"), changed
+                repeated = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule", "args": {
+                        "appId": app_id, "paused": paused, "confirm": True}})
+                assert repeated.get("success") is True and repeated.get("rulePaused") is paused, repeated
                 health = self.client.call_tool("hub_read_rules", {
                     "tool": "hub_get_rule_health", "args": {"appId": app_id}})
                 assert health.get("paused") is paused and health.get("label") == expected_name, \
@@ -10216,6 +10313,12 @@ class TestRunner:
             if "storedSuccessfully" in created:
                 assert created["storedSuccessfully"] is True, \
                     f"a clean editor-form create must report storedSuccessfully true: {created}"
+            if "activatedSuccessfully" in created:
+                assert created["activatedSuccessfully"] is True, \
+                    f"a clean editor-form create must report activation success: {created}"
+            if "createRouteNote" in created:
+                assert isinstance(created["createRouteNote"], str) and created["createRouteNote"], \
+                    f"create route guidance must be nonempty text: {created}"
             # validationIssues is optional on the wire (a pre-2.0 firmware answers without it, and
             # both emitters gate on presence); when it IS answered, a clean save's list is empty
             # and must survive as one.
@@ -12033,6 +12136,31 @@ class TestRunner:
             f"agent_behavior must render the missing-evidence gap: {agent.get('report')!r}"
 
     @test("system_tools")
+    def test_report_issue_retains_tool_error(self) -> None:
+        # Invalid read arguments fail before touching any device or rule.
+        marker = f"BAT_retained_error_invalid_mode_{time.time_ns()}"
+        try:
+            self.client.call_tool("hub_get_logs", {"mode": marker})
+        except (McpError, McpToolError) as exc:
+            assert marker in str(exc), f"expected the invalid-mode validation error, got: {exc}"
+        else:
+            raise AssertionError("invalid log mode should produce a tool error")
+        result = self.client.call_tool("hub_report_issue", {
+            "title": "E2E retained error probe", "expected": "invalid mode rejected",
+            "actual": "validation error returned", "llmClient": "hubitat-e2e-suite",
+            "llmModel": "n/a (automated suite)",
+        })
+        assert result.get("success") is True, result
+        assert result.get("failingTool") == "hub_get_logs", result
+        assert result.get("logs", {}).get("retainedErrorCount", 0) >= 1, result
+        report = result.get("report") or ""
+        _, found, after = report.partition("## Retained Server Errors")
+        assert found, f"report has no Retained Server Errors section: {report!r}"
+        retained = after.partition("## Recent Error/Warning Logs")[0]
+        assert marker in retained, retained
+        assert result.get("failingToolSource") == "retained_error", result
+
+    @test("system_tools")
     def test_hub_mesh_read(self) -> None:
         # Hub Mesh is Hubitat's hub-to-hub device/variable sharing between hubs on the same LAN --
         # NOT the Z-Wave/Zigbee radio mesh (that is hub_get_radio_details). READ-ONLY coverage: the
@@ -12464,7 +12592,7 @@ class TestRunner:
     @test("system_tools")
     def test_get_hub_jobs_cursor(self) -> None:
         """hub_get_jobs pages scheduledJobs through the universal cursor; runningJobs and
-        hubActions stay in full on every page, and the pages add up to the reported total."""
+        hubActions stay in full; totals are comparable only within the same snapshot."""
         first = self.client.call_tool("hub_manage_logs", {
             "tool": "hub_get_jobs",
             "args": {"cursor": ""},
@@ -12481,6 +12609,8 @@ class TestRunner:
         seen = list(sj["jobs"])
         cursor = first.get("nextCursor")
         pages = 1
+        fetched_at = (first.get("snapshot") or {}).get("fetchedAt")
+        same_snapshot = fetched_at is not None
         while cursor is not None:
             pages += 1
             assert pages <= 50, "nextCursor never ended"
@@ -12488,14 +12618,23 @@ class TestRunner:
                 "tool": "hub_get_jobs",
                 "args": {"cursor": cursor},
             })
-            assert page.get("runningJobs") == first.get("runningJobs"), \
-                f"page {pages}: runningJobs must match page 1 in full"
-            assert page.get("hubActions") == first.get("hubActions"), \
-                f"page {pages}: hubActions must match page 1 in full"
-            seen.extend(page["scheduledJobs"]["jobs"])
+            current = page["scheduledJobs"]
+            assert current["count"] == len(current["jobs"]), \
+                f"page {pages}: scheduledJobs.count {current['count']} != len(jobs) {len(current['jobs'])}"
+            assert current["count"] <= 100, f"page {pages} holds {current['count']} jobs; page size is 100"
+            assert current["total"] >= current["count"], \
+                f"page {pages}: total {current['total']} < page count {current['count']}"
+            page_same_snapshot = (page.get("snapshot") or {}).get("fetchedAt") == fetched_at
+            same_snapshot = same_snapshot and page_same_snapshot
+            for key in ("runningJobs", "hubActions"):
+                assert isinstance(page.get(key), dict), f"page {pages}: missing {key}: {page}"
+                if page_same_snapshot:
+                    assert page[key] == first[key], f"page {pages}: {key} must match page 1 within one snapshot"
+            seen.extend(current["jobs"])
             cursor = page.get("nextCursor")
-        assert len(seen) == sj["total"], \
-            f"pages summed to {len(seen)} jobs but total is {sj['total']}"
+        if same_snapshot:
+            assert len(seen) == sj["total"], \
+                f"pages summed to {len(seen)} jobs but total is {sj['total']}"
         # Exercise the second Logs-page reader immediately after the paginated jobs flow.
         stats = self.client.call_tool("hub_manage_logs", {
             "tool": "hub_get_performance_stats",
@@ -12504,32 +12643,26 @@ class TestRunner:
         assert isinstance(stats, dict) and "uptime" in stats, f"performance stats after jobs: {stats}"
 
     @test("system_tools")
-    def test_get_hub_jobs_cold_fetch_continues(self) -> None:
-        """A cold Logs-page read over the cloud relay runs its fetch in the background worker.
+    def test_get_hub_jobs_snapshot_provenance(self) -> None:
+        """Both Logs-page readers expose fetch provenance independently of this request's budget.
 
-        The snapshot cache lives 30 s; after sitting past it, the first hub_get_jobs is a cold
-        fetch. Over the relay (a budgeted transport) that fetch must come from the background
-        worker, which the result's snapshot provenance reports, whether the call completed in
-        one round trip or continued via requestState. The immediate second read is served from
-        the same snapshot: same fetchedAt, older age."""
-        import time as _time
-        _time.sleep(31)
-        cold = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_jobs", "args": {"cursor": ""}})
-        assert isinstance(cold, dict), f"hub_get_jobs returned {type(cold)}"
-        assert "scheduledJobs" in cold, f"cold read returned no jobs: {cold}"
-        prov = cold.get("snapshot") or {}
-        # background is the worker path; it is taken exactly when the transport carries a
-        # budget (relayBudgetMs over the relay), which the provenance reports as budgeted.
-        assert "budgeted" in prov and "background" in prov, f"cold read carries no provenance: {prov}"
-        assert prov["background"] == prov["budgeted"], \
-            f"cold read fetch path does not match the transport budget: {prov}"
-        assert prov.get("ageMs", 10**9) < 30000, f"cold read served a stale snapshot: {prov}"
-        warm = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_performance_stats", "args": {"limit": 1}})
-        assert isinstance(warm, dict) and "uptime" in warm, f"warm read after cold fetch: {warm}"
-        wprov = warm.get("snapshot") or {}
-        assert wprov.get("fetchedAt") == prov.get("fetchedAt"), \
-            f"warm read did not reuse the cold snapshot: {wprov} vs {prov}"
-        assert wprov.get("ageMs", 0) >= prov.get("ageMs", 0), f"warm age went backwards: {wprov} vs {prov}"
+        Another client can populate or replace the shared snapshot between these calls. Cold
+        worker scheduling and warm-cache reuse are pinned deterministically by ToolManageLogsSpec.
+        """
+        jobs = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_jobs", "args": {"cursor": ""}})
+        assert isinstance(jobs, dict) and "scheduledJobs" in jobs, f"jobs read: {jobs}"
+        stats = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_performance_stats", "args": {"limit": 1}})
+        assert isinstance(stats, dict) and "uptime" in stats, f"performance stats after jobs: {stats}"
+        first = jobs.get("snapshot") or {}
+        second = stats.get("snapshot") or {}
+        for prov in (first, second):
+            assert isinstance(prov.get("budgeted"), bool), f"missing request budget provenance: {prov}"
+            assert isinstance(prov.get("background"), bool), f"missing fetch provenance: {prov}"
+            assert isinstance(prov.get("fetchedAt"), (int, float)), f"missing fetch time: {prov}"
+            assert 0 <= prov.get("ageMs", 10**9) < 30000, f"stale snapshot: {prov}"
+        assert second["fetchedAt"] >= first["fetchedAt"], f"snapshot moved backwards: {second} vs {first}"
+        if second["fetchedAt"] == first["fetchedAt"]:
+            assert second["ageMs"] >= first["ageMs"], f"snapshot age moved backwards: {second} vs {first}"
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:

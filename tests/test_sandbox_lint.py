@@ -1777,13 +1777,18 @@ _METHOD_SECTION_TOOL_GUIDE = (
 )
 
 
-def test_check_tool_guide_pointers_section_body_resolved_from_library(monkeypatch, tmp_path):
+@pytest.mark.parametrize("return_type, comment", [
+    ("String", ""), ("def", ""),
+    ("String", "    // Explanation before the body.\n"),
+    ("def", "    /* Explanation before the body. */\n"),
+])
+def test_check_tool_guide_pointers_section_body_resolved_from_library(monkeypatch, tmp_path, return_type, comment):
     """A section whose text lives in its domain library still counts as a section, and its body
     is resolved for the content-anchor check -- the shape the app-file size budget forces."""
     _patch_tool_guide_sources(monkeypatch, tmp_path, _METHOD_SECTION_SERVER, _METHOD_SECTION_TOOL_GUIDE)
     (tmp_path / "libraries").mkdir()
     (tmp_path / "libraries" / "mcp-virtual-devices-lib.groovy").write_text(
-        "private String _virtualDevicesGuideSection() {\n"
+        f"private {return_type} _virtualDevicesGuideSection() {{\n{comment}"
         "    return '''## Virtual Device Tools\n"
         "A load-bearing anchor phrase.\n"
         "'''\n"
@@ -1807,6 +1812,24 @@ def test_check_tool_guide_pointers_unresolvable_section_method_flagged(monkeypat
     assert "_virtualDevicesGuideSection" in unresolved[0]["message"]
     # The key still counts, so the pointer at it must NOT also read as broken.
     assert not [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
+
+
+def test_check_tool_guide_pointers_statement_before_literal_return_stays_unresolved(monkeypatch, tmp_path):
+    """Only whitespace and comments may sit between the brace and the literal return: a real
+    statement means the body is computed, and the anchor check cannot vouch for computed text."""
+    _patch_tool_guide_sources(monkeypatch, tmp_path, _METHOD_SECTION_SERVER, _METHOD_SECTION_TOOL_GUIDE)
+    (tmp_path / "libraries").mkdir()
+    (tmp_path / "libraries" / "mcp-virtual-devices-lib.groovy").write_text(
+        "private String _virtualDevicesGuideSection() {\n"
+        "    def prefix = 'x'\n"
+        "    return '''## Virtual Device Tools\n"
+        "A load-bearing anchor phrase.\n"
+        "'''\n"
+        "}\n"
+    )
+    findings = sl.check_tool_guide_pointers(
+        anchors_override={"virtual_devices": ["A load-bearing anchor phrase"]})
+    assert [f for f in findings if f["rule"] == "tool-guide-section-method-unresolved"], findings
 
 
 
