@@ -2047,6 +2047,25 @@ class TestRunner:
         hub_vars = (result or {}).get("hubVariables") or []
         return any((v or {}).get("name") == name for v in hub_vars)
 
+    def _poll_mesh_shared(self, name: str, want: bool, timeout: float = 20.0) -> bool:
+        """Poll hub_get_hub_mesh until `name`'s presence in sharedHubVariables matches `want`.
+
+        The share/unshare write commits on this hub before the sharedHubVariables read-back
+        settles, so a brief poll absorbs the propagation lag. Returns True once the observed
+        presence equals `want`, False if the window elapses first."""
+        deadline = time.time() + timeout
+        while True:
+            try:
+                mesh = self.client.call_tool("hub_get_hub_mesh")
+                names = [(v or {}).get("name") for v in (mesh.get("sharedHubVariables") or [])]
+                if (name in names) == want:
+                    return True
+            except (McpToolError, McpError, requests.HTTPError):
+                pass
+            if time.time() >= deadline:
+                return False
+            time.sleep(1.0)
+
     def _create_hub_variable_visible(self, name: str, var_type: str, value: str) -> None:
         """Create a HUB variable and wait until the bulk read (the condition pickers' source) lists it.
 
@@ -11477,6 +11496,110 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
             self._delete_variable_safe(var_name)
+
+    @test("hub_variables")
+    def test_hub_set_variable_mesh_validation(self) -> None:
+        # hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation contract
+        # LIVE with NO mesh state change -- every rejection fires before any hub call and surfaces as an
+        # isError validation result the caller can correct and retry.
+        absent = f"{PREFIX}NoSuchMeshVar_{int(time.time())}"
+        for args, needle, label in (
+            ({"name": absent, "mesh_shared": True}, "hub variable", "mesh_shared on a non-hub-variable"),
+            ({"name": absent}, "value, mesh_shared", "neither value nor mesh_shared"),
+            ({"name": absent, "mesh_shared": "yes"}, "boolean", "non-boolean mesh_shared"),
+        ):
+            try:
+                detail = self.client.call_tool("hub_set_variable", args)
+            except McpError as exc:  # McpToolError subclass -> the isError validation envelope
+                assert needle.lower() in str(exc).lower(), f"{label}: expected '{needle}', got: {exc}"
+                continue
+            raise AssertionError(f"{label}: hub_set_variable({args}) must be rejected, got: {detail}")
+
+    @test("hub_variables")
+    def test_hub_create_variable_mesh_link_validation(self) -> None:
+        # hub_create_variable gained a Hub Mesh LINK form (mesh_source_hub_id + mesh_source_name), mutually
+        # exclusive with the create forms. Assert the MESH-SPECIFIC rejection message (not the destructive-
+        # confirm backup message): the suite ensures a recent backup at startup, so requireDestructiveConfirm
+        # passes and the mesh validation is what fires -- accepting "backup"/"confirm" here would let a run
+        # with no backup green without ever exercising the mesh contract. NOTHING is created either way.
+        probe = f"{PREFIX}MeshLinkProbe_{int(time.time())}"
+        for args, needle, label in (
+            ({"mesh_source_hub_id": "HUB-A", "mesh_source_name": probe, "name": probe, "confirm": True},
+             "not both", "link mixed with a create field"),
+            ({"mesh_source_hub_id": "HUB-A", "confirm": True},
+             "both mesh_source", "link with only the hub id"),
+        ):
+            rejected = False
+            detail: Any = None
+            try:
+                detail = self.client.call_tool("hub_create_variable", args)
+            except McpError as exc:
+                detail = str(exc)
+                rejected = needle.lower() in detail.lower()
+            assert rejected, f"{label}: expected the mesh-specific '{needle}', got: {detail}"
+        assert self._hub_variable_absent(probe), f"a rejected mesh-link create left {probe} behind"
+
+    @test("hub_variables")
+    def test_hub_variable_mesh_share_cycle(self) -> None:
+        # The full share/unshare CYCLE needs Hub Mesh ENABLED, NOT a peer: sharing a hub variable
+        # INTO the mesh is a local operation (a peer is required only to LINK one a peer shares).
+        # The e2e hub now has Hub Mesh enabled (no peers), so this runs for real -- no SkipTest (a
+        # skip counts as a failure in _print_summary and would fail the whole run). Create a throwaway
+        # hub variable, share it, confirm it lands in hub_get_hub_mesh sharedHubVariables, unshare it,
+        # confirm it drops off AND the result note carries the stale-copy / unlink-first teardown
+        # caution. Deleted in finally so no standing mesh state is left on the shared hub.
+        mesh = self.client.call_tool("hub_get_hub_mesh")
+        assert isinstance(mesh, dict) and mesh.get("success") is True, \
+            f"hub_get_hub_mesh did not succeed: {mesh}"
+        assert mesh.get("hubMeshEnabled") is True, \
+            ("the e2e hub is expected to have Hub Mesh ENABLED for the share cycle; "
+             f"hubMeshEnabled={mesh.get('hubMeshEnabled')!r}. Enable it (hub_update_hub_mesh(enabled=true) "
+             "+ reboot) or this test cannot run.")
+
+        var_name = f"{PREFIX}MeshShareVar_{int(time.time())}"
+        self._create_hub_variable_visible(var_name, "String", "share-me")
+        try:
+            # SHARE into the mesh.
+            shared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": True})
+            assert shared.get("success") is not False, f"share failed: {shared}"
+            assert shared.get("meshShared") is True, f"share did not report meshShared=true: {shared}"
+            assert self._poll_mesh_shared(var_name, want=True), \
+                f"{var_name} never appeared in hub_get_hub_mesh sharedHubVariables after sharing"
+
+            # UNSHARE and assert the teardown caution rides the result note.
+            unshared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+            assert unshared.get("success") is not False, f"unshare failed: {unshared}"
+            assert unshared.get("meshShared") is False, f"unshare did not report meshShared=false: {unshared}"
+            note = str(unshared.get("note") or "")
+            assert "STALE local copy" in note and "unlink" in note.lower(), \
+                f"unshare note is missing the stale-copy/unlink-first caution: {note!r}"
+            assert self._poll_mesh_shared(var_name, want=False), \
+                f"{var_name} still present in hub_get_hub_mesh sharedHubVariables after unsharing"
+        finally:
+            # Best-effort: never leave the throwaway shared even if an assertion above bailed mid-cycle.
+            try:
+                self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+            except Exception:
+                pass
+            self._delete_variable_safe(var_name)
+
+    @test("devices")
+    def test_hub_create_device_mesh_link_validation(self) -> None:
+        # hub_create_device can LINK a Hub Mesh device (mesh_source_hub_id + mesh_source_device_id),
+        # mutually exclusive with deviceTypeId. Prove the rejections live -- validation fires before any
+        # hub call, so NOTHING is created (a real link needs a peer sharing a device; not a dependency here).
+        for args, needle, label in (
+            ({"deviceTypeId": "1", "mesh_source_hub_id": "HUB-A", "mesh_source_device_id": "42", "confirm": True},
+             "not both", "deviceTypeId mixed with the mesh pair"),
+            ({"mesh_source_hub_id": "HUB-A", "confirm": True},
+             "both mesh_source", "mesh link with only the hub id"),
+        ):
+            try:
+                detail = self.client.call_tool("hub_create_device", args)
+            except McpError as exc:
+                assert needle.lower() in str(exc).lower(), f"{label}: expected '{needle}', got: {exc}"
+                continue
+            raise AssertionError(f"{label}: hub_create_device({args}) must be rejected, got: {detail}")
 
     @test("native_apps")
     def test_set_rule_update_with_false_required_expression_is_suppressed(self) -> None:

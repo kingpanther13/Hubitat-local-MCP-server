@@ -863,6 +863,24 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.calls.last().path == '/device/fullJson/777'
     }
 
+    def "toolCreateDevice with present-but-null mesh keys still does a normal driver create (not diverted to link)"() {
+        given: 'a driver create with mesh_source_* explicitly null -- must NOT be pushed onto the link form'
+        hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/fullJson/777') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 777, label: 'X', name: 'Generic LAN Driver',
+                deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', mesh_source_hub_id: null, mesh_source_device_id: null, confirm: true])
+
+        then: 'the driver-create path runs; no "not both" throw, no divert to the mesh link GET'
+        result.success == true
+        result.deviceId == '777'
+        result.alreadyLinked != true
+        !hubGet.calls.any { it.key?.toString()?.startsWith('/device/createLinked/') }
+    }
+
     @spock.lang.Unroll
     def "toolCreateDevice verifies a true-but-no-op label setter and reports #fallback native fallback accurately"() {
         given:
@@ -1234,6 +1252,369 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         response.error == null
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Write tools are disabled')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ============================================================
+    // hub_create_device -- Hub Mesh link
+    // ============================================================
+
+    // Outcome 1 (linked): the source appears in localLinkedDevices with sourceHubId AND its
+    // availableLinkedDevices row flips linkedLocally -> success with the resolved local id.
+    def "toolCreateDevice links a Hub Mesh device and resolves the new local id (outcome: linked)"() {
+        given: 'before: source offered unlinked; after createLinked it is linked locally'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: done ? [[id: 900, name: 'Kitchen Bridge', sourceHubId: 'HUB-A']] : [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: done]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+        result.success == true
+        result.deviceId == '900'
+        result.name == 'Kitchen Bridge'
+        result.sourceHubId == 'HUB-A'
+        result.sourceDeviceId == '42'
+        result.linkedDevice == true
+        result.warnings == null
+    }
+
+    // Outcome 2 (silent no-op): the GET returns 200 but the source stays in availableLinkedDevices
+    // with linkedLocally:false and localLinkedDevices never changes -> FAILURE, not a warning.
+    def "toolCreateDevice mesh link FAILS on a silent no-op (source stays unlinked)"() {
+        given: 'the createLinked GET is accepted but no link ever appears'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('did not take')
+        and: 'the note leads with the transient re-establish/retry guidance, with the peer-token store as the persistent-cause fallback'
+        result.note.toLowerCase().contains('retry')
+        result.note.toLowerCase().contains('re-establish')
+        result.note.contains('mesh token')
+        result.note.contains('hub_update_hub_mesh(peer_hub_id, peer_token)')
+    }
+
+    // Outcome 3 (unresolvable): the link GET is accepted but the mesh list cannot be read back at all
+    // -- we can prove neither linked nor not-linked -> warn, don't fail.
+    def "toolCreateDevice mesh link warns (not fails) when the mesh list is unreadable"() {
+        given: 'the link is accepted but hubMeshJson cannot be read back'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == null
+        result.warnings != null
+        result.warnings.any { it.contains('could not confirm') }
+    }
+
+    // A throw with an UNREADABLE read-back is an UNKNOWN outcome, not a definite failure: the note must
+    // say the link MAY have applied and steer to verification, not that it did not happen.
+    def "toolCreateDevice mesh link reports an unknown (may-have-applied) outcome when createLinked throws and the mesh list is unreadable"() {
+        given:
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> throw new RuntimeException('Hub API 500') }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('linking the shared device')
+        result.note.contains('MAY have applied')
+        result.note.contains('hub_get_hub_mesh')
+    }
+
+    // A throw whose read-back PROVES the source is still unlinked is a definite no-op failure.
+    def "toolCreateDevice mesh link FAILS definitively when createLinked throws but the read-back proves it did not link"() {
+        given:
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> throw new RuntimeException('Hub API 500') }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('did not take')
+    }
+
+    def "toolCreateDevice rejects mixing deviceTypeId with the mesh_source pair"() {
+        when:
+        script.toolCreateDevice([deviceTypeId: '500', mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('not both')
+    }
+
+    // Item: the mesh-link form rejects create-only fields (a linked proxy mirrors the peer's source, so
+    // it cannot carry a local label).
+    def "toolCreateDevice mesh link rejects a create-only field (label)"() {
+        when:
+        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', label: 'Nope', confirm: true])
+
+        then: 'rejected before any hub call'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('label')
+        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+    }
+
+    def "toolCreateDevice mesh link requires BOTH hub id and device id"() {
+        when:
+        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('BOTH mesh_source_hub_id and mesh_source_device_id')
+    }
+
+    // An available list that is READABLE but does NOT offer the pair (typo/stale/peer stopped sharing)
+    // must throw BEFORE the createLinked GET -- validation-before-side-effect -- rather than let
+    // srcRow==null read as a false success.
+    def "toolCreateDevice mesh link throws (no GET) when the pair is not offered in a readable available list"() {
+        given: 'the available list is readable but offers a DIFFERENT device, not HUB-A/42'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 99, deviceDisplayName: 'Other', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then: 'rejected as a validation error and the createLinked GET was never called'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('availableLinkedDevices')
+        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+    }
+
+    // Item: linking an already-linked source short-circuits -- no fresh GET, alreadyLinked:true with the
+    // existing local id resolved from localLinkedDevices.
+    def "toolCreateDevice mesh link short-circuits with alreadyLinked when the source is already linked (no GET)"() {
+        given: 'the available row is already flagged linkedLocally:true and a local mirror exists'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [[id: 900, name: 'Kitchen Bridge', sourceHubId: 'HUB-A']],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: true]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.alreadyLinked == true
+        result.deviceId == '900'
+        result.linkedDevice == true
+        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+    }
+
+    def "toolCreateDevice mesh link does NOT mark an unoffered device alreadyLinked from an unrelated same-hub proxy"() {
+        given: 'HUB-A has a DIFFERENT device linked (local proxy 900); the requested deviceId 42 is not offered'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [[id: 900, name: 'Other Bridge', sourceHubId: 'HUB-A']],
+                availableLinkedDevices: []
+            ])
+        }
+
+        when: 'local device rows carry no source-device-id, so a same-hub proxy must NOT prove 42 is linked'
+        script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then: 'rejected as not-offered, not a false alreadyLinked; no GET'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('availableLinkedDevices')
+        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+    }
+
+    def "toolCreateDevice mesh link links a SECOND device from a peer that already has one linked"() {
+        given: 'HUB-A already has device 900 linked; deviceId 42 is offered and not yet linked'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: done
+                    ? [[id: 900, name: 'Other Bridge', sourceHubId: 'HUB-A'], [id: 901, name: 'New Bridge', sourceHubId: 'HUB-A']]
+                    : [[id: 900, name: 'Other Bridge', sourceHubId: 'HUB-A']],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'New Bridge', linkedLocally: done]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then: 'the link GET IS sent (not short-circuited by the pre-existing same-hub proxy) and it links'
+        hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+        result.success == true
+        result.alreadyLinked != true
+    }
+
+    def "toolCreateDevice mesh link alreadyLinked warns when the existing local id cannot be resolved"() {
+        given: 'linkedLocally:true but no localLinkedDevices row for this source'
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: true]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.alreadyLinked == true
+        result.deviceId == null
+        result.warnings != null
+        !hubGet.calls.any { it.key == '/device/createLinked/HUB-A/42' }
+    }
+
+    // Item: the source row DISAPPEARS from availableLinkedDevices between pre-check (offered, unlinked)
+    // and read-back (gone) -> proves linked, and the new id resolves from the localLinkedDevices diff.
+    def "toolCreateDevice mesh link proves linked when the offered source row disappears after the GET"() {
+        given: 'source offered pre-call, then absent from availableLinkedDevices after createLinked'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: done ? [[id: 901, name: 'Patio Bridge', sourceHubId: 'HUB-A']] : [],
+                availableLinkedDevices: done ? [] : [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Patio Bridge', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '901'
+        result.warnings == null
+    }
+
+    // Item: new-id resolution prefers the added row whose sourceHubId matches, over an unrelated add.
+    def "toolCreateDevice mesh link picks the added local row matching sourceHubId when several appear"() {
+        given: 'two rows are added, only one from this peer'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: done
+                    ? [[id: 700, name: 'From Other', sourceHubId: 'HUB-Z'], [id: 900, name: 'Kitchen Bridge', sourceHubId: 'HUB-A']]
+                    : [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: done]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '900'
+    }
+
+    // Item: proven linked, but the new local id never resolves (no matching added row) -> success + warn.
+    def "toolCreateDevice mesh link warns when linked but the new local id cannot be resolved"() {
+        given: 'the availableLinkedDevices row flips linked, but no matching localLinkedDevices row appears'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: done]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == null
+        result.warnings != null
+        result.warnings.any { it.contains('could not resolve its new local id') }
+    }
+
+    // Item: new-id resolution POLLS -- the row is absent on the first read-back and appears on a later one.
+    def "toolCreateDevice mesh link polls until the new local id resolves"() {
+        given: 'localLinkedDevices is empty on the first mesh read and populated on the next'
+        int meshReads = 0
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            meshReads++
+            // read 1 = before-snapshot (offered, unlinked, no local row);
+            // read 2 = first read-back (still no local row); read 3+ = local row present + linked.
+            boolean settled = meshReads >= 3
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: settled ? [[id: 902, name: 'Hall Bridge', sourceHubId: 'HUB-A']] : [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Hall Bridge', linkedLocally: settled]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '902'
+        result.warnings == null
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_create_device mesh link passes through (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def linked = []
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> linked = [[id: 900, name: 'Kitchen Bridge']]; '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> groovy.json.JsonOutput.toJson([localLinkedDevices: linked]) }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_device', [mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.deviceId == '900'
+        inner.linkedDevice == true
 
         where:
         useGateways << [true, false]

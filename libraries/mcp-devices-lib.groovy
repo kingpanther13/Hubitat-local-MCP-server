@@ -4504,12 +4504,42 @@ def toolCreateDevice(args) {
     // software/component drivers that have no pairing flow. Radio drivers created this way
     // are orphan shells (no node), so we warn. MCP-managed virtual devices have their own
     // tool (hub_manage_virtual_device); this is the broader catalog path.
-    if (args?.confirm != true) {
+    args = args ?: [:]
+    if (args.confirm != true) {
         throw new IllegalArgumentException("confirm=true is required to create a device.")
     }
-    def typeId = args?.deviceTypeId
+
+    // Hub Mesh LINK vs driver-based CREATE are two mutually-exclusive shapes of this tool.
+    // Validation runs before any hub call so a bad shape can be corrected and retried cleanly.
+    // "Wants to link" is decided by a NON-BLANK mesh source value, not key presence: a caller passing
+    // mesh_source_hub_id:null on a normal driver create must not be pushed onto the link path.
+    String meshHubId = args.mesh_source_hub_id?.toString()?.trim()
+    String meshDeviceId = args.mesh_source_device_id?.toString()?.trim()
+    boolean wantsMeshLink = meshHubId || meshDeviceId
+    boolean hasType = args.deviceTypeId != null && args.deviceTypeId.toString().trim() != ""
+    if (wantsMeshLink) {
+        if (hasType) {
+            throw new IllegalArgumentException(
+                "Provide EITHER deviceTypeId (driver-based create) OR mesh_source_hub_id + mesh_source_device_id (Hub Mesh link) -- not both.")
+        }
+        // The link form takes only the source pair (+ confirm); create-only fields (label, ...) do not
+        // apply to a linked proxy -- its identity mirrors the peer's source device.
+        def createOnly = ["label"].findAll { args.get(it) != null && args.get(it).toString().trim() != "" }
+        if (createOnly) {
+            throw new IllegalArgumentException(
+                "${createOnly.join(', ')} cannot be set when linking a Hub Mesh device -- a linked proxy mirrors the peer's source device. Drop it and pass only mesh_source_hub_id + mesh_source_device_id.")
+        }
+        if (!meshHubId || !meshDeviceId) {
+            throw new IllegalArgumentException(
+                "Linking a Hub Mesh device needs BOTH mesh_source_hub_id and mesh_source_device_id " +
+                "(the hubId + deviceId of one hub_get_hub_mesh availableLinkedDevices[] row).")
+        }
+        return _createLinkedMeshDevice(meshHubId, meshDeviceId)
+    }
+
+    def typeId = args.deviceTypeId
     if (typeId == null || typeId.toString().trim() == "") {
-        throw new IllegalArgumentException("deviceTypeId is required -- the driver-type id from hub_list_drivers(include='all') (the 'id' field).")
+        throw new IllegalArgumentException("deviceTypeId is required -- the driver-type id from hub_list_drivers(include='all') (the 'id' field). To link a device shared by a peer hub instead, pass mesh_source_hub_id + mesh_source_device_id.")
     }
     typeId = typeId.toString().trim()
 
@@ -4633,6 +4663,157 @@ def toolCreateDevice(args) {
         warnings: warnings ?: null,
         message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
         note: "Set room/preferences/showOnHome with hub_update_device once the device is selectable, or delete it with hub_delete_device."
+    ]
+}
+
+// Hub Mesh: create a LOCAL linked device from a device a peer hub shares (GET
+// /device/createLinked/<hubId>/<deviceId>). A 200 is NOT proof of success -- the endpoint returns an
+// empty body even when the link silently no-ops (seen live while the mesh was still re-establishing a
+// recently-rebooted peer). So the read-back keys on the SOURCE pair and classifies three outcomes:
+// linked (success), a confirmed no-op (FAILURE), and an unreadable mesh list (the only warn-not-fail).
+// The id/name are passed literally: the platform HTTP layer encodes the path, so pre-encoding here
+// would double-encode.
+private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
+    Map beforeJson = _meshJson()
+    def beforeList = (beforeJson?.localLinkedDevices instanceof List) ? beforeJson.localLinkedDevices : null
+    def before = (beforeList != null) ? (beforeList.collect { it.id?.toString() } as Set) : null
+    def availBefore = (beforeJson?.availableLinkedDevices instanceof List) ? beforeJson.availableLinkedDevices : null
+
+    // Best-effort resolve of the local proxy row for this source, for DISPLAY only (the id in an
+    // already-linked result). localLinkedDevices rows carry sourceHubId but NOT a source-device-id, so
+    // a specific source device cannot be matched reliably when a peer shares several: match a
+    // source-device-id field when one is present, else accept a lone same-hub row only when no such
+    // field exists to contradict it, else null. Never used to DECIDE already-linked (see below).
+    def resolveLocal = { List rows ->
+        if (!(rows instanceof List)) return null
+        def bySrc = rows.findAll { it instanceof Map && it.sourceHubId?.toString() == meshHubId }
+        def devKeys = ['sourceDeviceId', 'sourceId', 'deviceId']
+        def byDev = bySrc.findAll { r -> devKeys.any { k -> r.containsKey(k) && r[k]?.toString() == meshDeviceId } }
+        if (byDev.size() == 1) return byDev[0]
+        if (bySrc.size() == 1 && !devKeys.any { k -> bySrc[0].containsKey(k) }) return bySrc[0]
+        return null
+    }
+
+    def srcBefore = (availBefore != null)
+        ? availBefore.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
+        : null
+    // Already linked is decided ONLY by the offered row's authoritative linkedLocally flag -- NOT by a
+    // local-row match: local device rows lack a source-device-id, so a same-hub proxy cannot prove that
+    // THIS source device is the linked one (that would mislink a second device from the peer, and mask a
+    // mistyped id). A linked device leaves availableLinkedDevices, so a source that is simply absent is
+    // rejected as not-offered (below) rather than assumed already-linked.
+    if (srcBefore != null && srcBefore.linkedLocally == true) {
+        def existing = resolveLocal(beforeList)
+        mcpLog("info", "device", "hub_create_device: Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId}) is already linked${existing ? " as local ${existing.id}" : ''}")
+        def already = [
+            success: true,
+            alreadyLinked: true,
+            deviceId: existing?.id?.toString(),
+            name: existing?.name?.toString(),
+            sourceHubId: meshHubId,
+            sourceDeviceId: meshDeviceId,
+            linkedDevice: true,
+            message: "Hub Mesh device shared by hub ${meshHubId} was already linked here${existing ? " as local device ${existing.id}" : ''}.",
+            note: "This is a local proxy for a device on the peer hub; unlink it (local only) with hub_delete_device. Read all linked devices via hub_get_hub_mesh."
+        ]
+        if (existing == null) already.warnings = ["Already linked, but could not resolve the existing local id from hub_get_hub_mesh localLinkedDevices. Find it with hub_get_hub_mesh."]
+        return already
+    }
+    if (availBefore != null && srcBefore == null) {
+        throw new IllegalArgumentException(
+            "No shared device with hubId ${meshHubId} + deviceId ${meshDeviceId} is offered in " +
+            "hub_get_hub_mesh availableLinkedDevices[]. Copy the hubId + deviceId from an " +
+            "availableLinkedDevices[] row and retry; a device that is already linked no longer appears " +
+            "there -- find it in hub_get_hub_mesh localLinkedDevices instead.")
+    }
+
+    // A 30s read timeout can fire AFTER the hub applied the link, so a throw is an UNKNOWN outcome, not
+    // a definite failure: capture it and let the read-back decide (like the no-op path).
+    String linkThrew = null
+    try {
+        hubInternalGet("/device/createLinked/${meshHubId}/${meshDeviceId}", null, 30)
+    } catch (Exception e) {
+        mcpLogError("device", "hub_create_device Hub Mesh link GET errored (hub ${meshHubId}, device ${meshDeviceId})", e)
+        linkThrew = e.message ?: e.toString()
+    }
+
+    // Read-back with a short backoff for propagation lag. `linked` is a tri-state -- true (proven
+    // linked), false (proven still unlinked = silent no-op), null (mesh list unreadable / inconclusive).
+    Boolean linked = null
+    String newId = null
+    String newName = null
+    for (int attempt = 0; attempt < 3; attempt++) {
+        Map j = _meshJson()
+        def after = (j?.localLinkedDevices instanceof List) ? j.localLinkedDevices : null
+        def avail = (j?.availableLinkedDevices instanceof List) ? j.availableLinkedDevices : null
+        if (newId == null && before != null && after != null) {
+            def added = after.findAll { !before.contains(it.id?.toString()) }
+            def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
+            def pick = (fromSource.size() == 1) ? fromSource[0] : (added.size() == 1 ? added[0] : null)
+            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString() }
+        }
+        if (avail != null) {
+            // The source's own row is authoritative: still present-and-unlinked means the link did
+            // NOT take. Its ABSENCE means "took" only when the pair was offered before this call
+            // (srcBefore != null) -- otherwise the absence is inconclusive (null), not a false success.
+            def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
+            if (srcRow == null) {
+                linked = (srcBefore != null) ? true : null
+            } else {
+                linked = (srcRow.linkedLocally == true)
+            }
+        } else if (after != null && newId != null) {
+            // available list unreadable, but a new local link for THIS source showed up.
+            linked = true
+        }
+        if (linked == true && (newId != null || before == null)) break
+        if (attempt < 2) pauseExecution(500)
+    }
+
+    // Outcome 2: confirmed silent no-op -- the hub accepted the GET but no link appeared.
+    if (linked == false) {
+        mcpLogError("device", "hub_create_device Hub Mesh link was a silent no-op (hub ${meshHubId}, device ${meshDeviceId}): source still in availableLinkedDevices with linkedLocally=false", null)
+        return [success: false, isError: true,
+                error: "Linking the shared device (hub ${meshHubId}, device ${meshDeviceId}) did not take: the hub accepted the request but the device is still unlinked (availableLinkedDevices shows linkedLocally=false).",
+                note: "This is usually transient: Hub Mesh takes time to re-establish a peer connection after that peer " +
+                      "reboots or updates, and a link briefly no-ops during that window before clearing itself. Wait a bit " +
+                      "and retry. Check the peer in hub_get_hub_mesh peers[] (offline=false, warning=null). If it persists, " +
+                      "confirm this hub holds the peer's mesh token: get it from the peer's OWN hub_get_hub_mesh(include_token=true) " +
+                      "and store it with hub_update_hub_mesh(peer_hub_id, peer_token)."]
+    }
+
+    // Outcome 3a: the GET errored AND the read-back could not prove it linked -- unknown, not a definite
+    // failure (the timeout may have fired after the hub applied it). Fail, but say it MAY have applied.
+    if (linked == null && linkThrew != null) {
+        return [success: false, isError: true,
+                error: "Hub call errored linking the shared device (hub ${meshHubId}, device ${meshDeviceId}): ${linkThrew}",
+                note: "The link MAY have applied (a read timeout can fire after the hub commits) -- verify with " +
+                      "hub_get_hub_mesh before retrying. If it did not take, this is usually transient: Hub Mesh takes " +
+                      "time to re-establish a peer connection after that peer reboots or updates. If it persists, confirm " +
+                      "the peer in hub_get_hub_mesh peers[] (offline=false, warning=null) and that this hub holds its mesh " +
+                      "token (store it with hub_update_hub_mesh(peer_hub_id, peer_token), read from the peer's OWN " +
+                      "hub_get_hub_mesh(include_token=true))."]
+    }
+
+    // Outcome 3b: could not prove linked OR not-linked (mesh list unreadable / ambiguous) -- warn, don't fail.
+    def warnings = []
+    if (linked == null) {
+        warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh availableLinkedDevices (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
+    } else if (newId == null) {
+        warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
+    }
+
+    mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
+    return [
+        success: true,
+        deviceId: newId,
+        name: newName,
+        sourceHubId: meshHubId,
+        sourceDeviceId: meshDeviceId,
+        linkedDevice: true,
+        warnings: warnings ?: null,
+        message: "Linked the Hub Mesh device shared by hub ${meshHubId}${newId ? " as local device ${newId}" : ''}." + (warnings ? " WARNING: see warnings." : ""),
+        note: "This is a local proxy for a device on the peer hub; unlink it (local only) with hub_delete_device. Read all linked devices via hub_get_hub_mesh."
     ]
 }
 
@@ -4830,6 +5011,31 @@ def toolDeleteDevice(args) {
         }
     }
 
+    // Step 4b: Hub Mesh linked device. Deleting a linked device removes ONLY the local proxy;
+    // the source device on the peer hub is untouched. Mirror the Vue page's appsUsing warning so
+    // the caller knows which local apps reference the link and will break.
+    if (_deviceFlag(deviceInfo.linkedDevice)) {
+        warnings << "LINKED MESH DEVICE: This is a Hub Mesh linked device (a local proxy for a device shared by a peer hub). Deleting it removes ONLY the local link; the source device on the peer hub is untouched."
+        try {
+            // A mesh read that fails (null) OR a missing row is NOT "no apps use it": the appsUsing check
+            // simply did not run, so warn distinctly rather than let an unchecked delete look safe.
+            Map meshJson = _meshJson()
+            def meshRows = (meshJson?.localLinkedDevices instanceof List) ? meshJson.localLinkedDevices : null
+            def linkedRow = (meshRows != null) ? meshRows.find { it.id?.toString() == deviceId } : null
+            if (meshRows == null || linkedRow == null) {
+                warnings << "COULD NOT CHECK which local apps use this linked device (mesh read ${meshRows == null ? 'failed' : 'did not list this device'}); deletion may break apps that reference it. Review hub_get_hub_mesh localLinkedDevices before proceeding."
+            } else {
+                def apps = (linkedRow.appsUsing instanceof List) ? linkedRow.appsUsing : []
+                if (apps) {
+                    warnings << "IN USE BY ${apps.size()} APP(S): ${apps.join(', ')}. These apps reference the linked device and WILL BREAK after deletion."
+                }
+            }
+        } catch (Exception e) {
+            mcpLog("debug", "hub-admin", "Could not read Hub Mesh appsUsing for linked device ${deviceId}: ${e.message}")
+            warnings << "COULD NOT CHECK which local apps use this linked device (mesh read failed); deletion may break apps that reference it. Review hub_get_hub_mesh localLinkedDevices before proceeding."
+        }
+    }
+
     // Step 5: Check if any MCP rules reference this device
     try {
         def childApps = getChildApps()
@@ -4862,7 +5068,10 @@ def toolDeleteDevice(args) {
     // Step 6: Full audit log BEFORE deletion
     mcpLog("warn", "hub-admin", "DELETE DEVICE AUDIT: Deleting '${deviceName}' (ID: ${deviceId}, DNI: ${deviceDNI}, Type: ${deviceType}). Warnings: ${warnings.size() > 0 ? warnings.join(' | ') : 'none'}")
 
-    // Step 7: Execute force delete via hub internal API
+    // Step 7: Execute force delete via hub internal API. The /yes variant unlinks a Hub Mesh LINKED
+    // device too (live-verified: deleting a linked proxy via /yes removes only the local link and
+    // returns the source to availableLinkedDevices; the peer's source device is untouched), so the
+    // linked case needs no separate /json branch.
     try {
         def responseText = hubInternalGet("/device/forceDelete/${deviceId}/yes", null, 30)
         mcpLog("debug", "hub-admin", "Force delete response for device ${deviceId}: ${responseText?.take(500)}")
@@ -5376,9 +5585,9 @@ Only modify devices user explicitly requested. Pre-flight: read configuration, c
                     spammyThreshold: [type: "integer", minimum: 100, maximum: 2000, description: "Events per hour that trigger the too-many-events alert."],
                     defaultIcon: [type: "string", description: "Native custom icon identifier; empty string removes the override."],
                     dashboardIds: [type: "array", items: [type: "integer", minimum: 1], description: "Replace native dashboard assignments using configuration option IDs; [] clears. Requires confirm and recent backup."],
-                    meshEnabled: [type: "boolean", description: "Share through Hub Mesh when native selection is available. Requires confirm and recent backup."],
+                    meshEnabled: [type: "boolean", description: "Share through Hub Mesh.[[FLAT_TRIM]] When native selection is available; requires confirm and recent backup.[[/FLAT_TRIM]]"],
                     retryEnabled: [type: "boolean", description: "Enable native command retry when available for this device."],
-                    meshFullSync: [type: "boolean", description: "Regularly sync a linked device when Hub Mesh refresh is enabled. Requires confirm and recent backup."],
+                    meshFullSync: [type: "boolean", description: "Regularly sync a linked device.[[FLAT_TRIM]] When Hub Mesh refresh is enabled; requires confirm and recent backup.[[/FLAT_TRIM]]"],
                     homeKitEnabled: [type: "boolean", description: "Native Apple HomeKit assignment when supported/enabled. Requires confirm and recent backup."],
                     amazonAlexaEnabled: [type: "boolean", description: "Native Amazon Alexa assignment when installed and supported. Requires confirm and recent backup."],
                     googleHomeEnabled: [type: "boolean", description: "Native Google Home assignment when installed and supported. Requires confirm and recent backup."],
@@ -5390,15 +5599,14 @@ Only modify devices user explicitly requested. Pre-flight: read configuration, c
         // Device Admin
         [
             name: "hub_delete_device",
-            description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO. For ghost/orphaned/stuck devices only.
+            description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO.[[FLAT_TRIM]] Requires Write master + confirm. For ghost/orphaned/stuck devices only.[[/FLAT_TRIM]]
 
-PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation
-Device + history lost, automations break. Requires Write master.""",
+PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation. Device + history lost, automations break.[[FLAT_TRIM]] A Hub Mesh LINKED device unlinks locally only (the peer's source device is untouched) and warns on appsUsing. See hub_get_tool_guide(section='hub_admin_write_destructive').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "The device ID to permanently delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created, device was verified, and user explicitly approved the deletion."]
+                    deviceId: [type: "string", description: "Device ID to delete."],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true.[[FLAT_TRIM]] Confirms a backup exists (<24h), the device was verified, and the user approved the deletion.[[/FLAT_TRIM]]"]
                 ],
                 required: ["deviceId", "confirm"]
             ]
@@ -5439,15 +5647,17 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
         ],
         [
             name: "hub_create_device",
-            description: """Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device.[[/FLAT_TRIM]]""",
+            description: """Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device. Or LINK a peer hub's shared device over Hub Mesh: pass mesh_source_hub_id + mesh_source_device_id from hub_get_hub_mesh availableLinkedDevices[] instead of deviceTypeId; see hub_get_tool_guide(section='update_device').[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceTypeId: [type: "string", description: "Driver-type id to instantiate (the 'id' from hub_list_drivers(include='all'))."],
-                    label: [type: "string", description: "Optional display label for the new device."],
+                    deviceTypeId: [type: "string", description: "Driver-type id to instantiate (the 'id' from hub_list_drivers(include='all')).[[FLAT_TRIM]] Omit when linking a Hub Mesh device.[[/FLAT_TRIM]]"],
+                    label: [type: "string", description: "Optional display label for the new device.[[FLAT_TRIM]] Driver-based create only.[[/FLAT_TRIM]]"],
+                    mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedDevices[]; send with mesh_source_device_id, omit deviceTypeId.[[/FLAT_TRIM]]"],
+                    mesh_source_device_id: [type: "string", description: "Hub Mesh: peer device id.[[FLAT_TRIM]] From the same availableLinkedDevices[] row.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to create the device."]
                 ],
-                required: ["deviceTypeId", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
@@ -5502,7 +5712,7 @@ def _toolDisplayMeta_partDevices() {
         hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
         hub_update_device: [title: "Update Device Properties", summary: "Update applicable device identity, preferences, display, driver, history limits, or integration assignments."],
-        hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id (LAN/integration/software drivers; not radio hardware)."],
+        hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."],
         hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
     ]

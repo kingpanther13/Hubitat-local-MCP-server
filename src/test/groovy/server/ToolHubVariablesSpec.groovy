@@ -251,7 +251,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
         expect:
         values.every { key, value ->
-            def result = script.toolSetVariable(key, value)
+            def result = script.toolSetVariable([name: key, value: value])
             result.success && result.source == 'rule_engine' &&
                 stateMap.ruleVariables.containsKey(key) && script.getVariableValue(key) == value
         }
@@ -272,7 +272,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolSetVariable('vacation_mode', true)
+        def result = script.toolSetVariable([name: 'vacation_mode', value: true])
 
         then:
         captured == [vacation_mode: true]
@@ -287,7 +287,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         script.metaClass.setGlobalVar = { String name, Object value -> false }
 
         when:
-        def result = script.toolSetVariable('new_rule_var', 42)
+        def result = script.toolSetVariable([name: 'new_rule_var', value: 42])
 
         then: 'rule-engine state was updated'
         stateMap.ruleVariables == [new_rule_var: 42]
@@ -305,7 +305,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolSetVariable('weather_state', 'sunny')
+        def result = script.toolSetVariable([name: 'weather_state', value: 'sunny'])
 
         then:
         stateMap.ruleVariables == [weather_state: 'sunny']
@@ -323,12 +323,303 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolSetVariable('weather_state', 'sunny')
+        def result = script.toolSetVariable([name: 'weather_state', value: 'sunny'])
 
         then:
         captured == [weather_state: 'sunny']
         result.value == 'sunny'
         result.source == 'hub'
+    }
+
+    // -------- toolSetVariable Hub Mesh sharing --------
+
+    def "hub_set_variable shares a hub variable into the mesh (mesh_shared=true) and confirms via read-back"() {
+        given: 'the name is a hub variable, and the mesh share + read-back succeed'
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            '{"sharedHubVariables":[{"name":"vacationMode","type":"Boolean"}]}'
+        }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', mesh_shared: true])
+
+        then: 'the share endpoint was hit and the read-back confirmed it'
+        hubGet.calls.any { it.key == '/hub2/addVarToMesh/vacationMode' }
+        result.success == true
+        result.meshShared == true
+        result.meshShareConfirmed == true
+        !result.containsKey('value')   // mesh-only path did not touch the value leg
+    }
+
+    def "hub_set_variable unshares a hub variable (mesh_shared=false)"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/removeVarFromMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[]}' }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', mesh_shared: false])
+
+        then:
+        hubGet.calls.any { it.key == '/hub2/removeVarFromMesh/vacationMode' }
+        result.success == true
+        result.meshShared == false
+        result.meshShareConfirmed == true   // absent from sharedHubVariables == unshared
+
+        and: 'unshare carries the stale-copy / unlink-first caution'
+        result.note != null
+        result.note.contains('unlink the copy on those hubs first')
+        result.note.contains('STALE local copy')
+    }
+
+    def "hub_set_variable share (mesh_shared=true) does NOT carry the unshare caution; unshare does"() {
+        given: 'the mesh read-back reflects the applied state (so both legs confirm rather than fail)'
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        boolean shared = false
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> shared = true; '' }
+        hubGet.register('/hub2/removeVarFromMesh/vacationMode') { params -> shared = false; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([sharedHubVariables: shared ? [[name: 'vacationMode']] : []])
+        }
+
+        when: 'share'
+        def sharedResult = script.toolSetVariable([name: 'vacationMode', mesh_shared: true])
+
+        then: 'no unshare caution on the share path'
+        sharedResult.meshShareConfirmed == true
+        !(sharedResult.note?.contains('unlink the copy on those hubs first'))
+
+        when: 'unshare (read-back now confirms absent)'
+        def unshared = script.toolSetVariable([name: 'vacationMode', mesh_shared: false])
+
+        then: 'the unshare succeeds and appends the stale-copy caution'
+        unshared.success == true
+        unshared.meshShareConfirmed == true
+        unshared.note.contains('unlink the copy on those hubs first')
+    }
+
+    // Item: a readable sharedHubVariables that DISAGREES with the request is this hub's OWN state, so a
+    // confirmed mismatch is a real FAILURE (not a propagation-lag soft success).
+    def "hub_set_variable share FAILS when the read-back confirms the var is still not shared"() {
+        given: 'the share endpoint returns 200 but the read-back never shows the var shared'
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[]}' }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', mesh_shared: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.meshShareConfirmed == false
+        result.error.contains('did not take')
+        result.note.contains("this hub's own state")
+    }
+
+    def "hub_set_variable unshare FAILS when the read-back confirms the var is still shared"() {
+        given: 'the unshare endpoint returns 200 but the read-back still shows the var shared'
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/removeVarFromMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[{"name":"vacationMode"}]}' }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', mesh_shared: false])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.meshShareConfirmed == false
+        result.error.contains('did not take')
+    }
+
+    def "hub_set_variable applies BOTH a value write and a mesh share in one call"() {
+        given:
+        def captured = [:]
+        script.metaClass.setGlobalVar = { String n, Object v -> captured[n] = v; return true }
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: false] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[{"name":"vacationMode"}]}' }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', value: true, mesh_shared: true])
+
+        then:
+        captured == [vacationMode: true]
+        result.success == true
+        result.value == true
+        result.source == 'hub'
+        result.meshShared == true
+        result.meshShareConfirmed == true
+    }
+
+    // Item: value leg falls back to rule_engine when setGlobalVar returns false, WHILE the mesh share is
+    // still processed (the mesh_shared pre-check passed because getGlobalVar sees it as a hub variable).
+    def "hub_set_variable value+mesh: setGlobalVar false falls the value to rule_engine AND still processes the mesh share"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: false] }
+        script.metaClass.setGlobalVar = { String n, Object v -> false }   // hub write does not persist
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[{"name":"vacationMode"}]}' }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', value: true, mesh_shared: true])
+
+        then: 'value fell back to rule_engine'
+        result.success == true
+        result.source == 'rule_engine'
+        result.value == true
+
+        and: 'the mesh share was still processed and confirmed'
+        result.meshShared == true
+        result.meshShareConfirmed == true
+    }
+
+    // Item: a THROW from getGlobalVar in the mesh_shared pre-check is transient/unknown, NOT proof the
+    // name is not a hub variable -- it must not emit the "is not a hub variable" message.
+    def "hub_set_variable mesh_shared: a getGlobalVar throw surfaces an unable-to-verify message, not 'not a hub variable'"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> throw new RuntimeException('transient lookup error') }
+
+        when:
+        script.toolSetVariable([name: 'vacationMode', mesh_shared: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Unable to verify')
+        !ex.message.contains('is not a hub variable')
+    }
+
+    def "hub_set_variable rejects mesh_shared on a rule-only variable (validation before any write)"() {
+        given: 'the name is not a hub variable'
+        script.metaClass.getGlobalVar = { String n -> null }
+        def wrote = false
+        script.metaClass.setGlobalVar = { String n, Object v -> wrote = true; false }
+
+        when:
+        script.toolSetVariable([name: 'ruleOnly', mesh_shared: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('mesh_shared applies only to hub variables')
+        !wrote   // rejected before the value/mesh legs
+    }
+
+    def "hub_set_variable requires at least one of value or mesh_shared"() {
+        when:
+        script.toolSetVariable([name: 'vacationMode'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Provide value, mesh_shared, or both')
+    }
+
+    def "hub_set_variable rejects a non-boolean mesh_shared"() {
+        when:
+        script.toolSetVariable([name: 'vacationMode', mesh_shared: 'yes'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('mesh_shared must be a boolean')
+    }
+
+    def "hub_set_variable mesh share returns success with meshShareConfirmed null when the read-back is unreadable (warn-not-fail)"() {
+        given: 'the share endpoint succeeds but hubMeshJson is unreadable'
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', mesh_shared: true])
+
+        then: 'the share leg is not failed just because the read-back could not confirm'
+        result.success == true
+        result.meshShared == true
+        result.meshShareConfirmed == null
+    }
+
+    def "hub_set_variable mesh share reports an UNKNOWN outcome (may-have-applied) when the endpoint throws and the read-back is unreadable"() {
+        given: 'the share endpoint throws AND the read-back cannot confirm either way'
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> throw new RuntimeException('Hub API 500') }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', mesh_shared: true])
+
+        then: 'a throw is not a definite failure: say it MAY have applied and steer to verification'
+        result.success == false
+        result.isError == true
+        result.meshShareConfirmed == null
+        result.error.contains('errored')
+        result.note.contains('MAY have applied')
+        result.note.contains('hub_get_hub_mesh')
+        !result.note.contains('did not happen')
+    }
+
+    // Item: value commits, then the mesh call throws with an unreadable read-back -> valueApplied still
+    // reflects the committed value and the note is the unknown/verify wording (not "did not happen").
+    def "hub_set_variable value+mesh: value commits then the mesh throw is reported as unknown, not failed-to-happen"() {
+        given:
+        def captured = [:]
+        script.metaClass.setGlobalVar = { String n, Object v -> captured[n] = v; return true }
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: false] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> throw new RuntimeException('read timeout') }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', value: true, mesh_shared: true])
+
+        then: 'the value leg committed'
+        captured == [vacationMode: true]
+
+        and: 'the mesh throw is UNKNOWN, and valueApplied reflects the committed value'
+        result.success == false
+        result.valueApplied == true
+        result.note.contains('committed')
+        result.note.contains('MAY have applied')
+        !result.note.contains('did not happen')
+    }
+
+    def "hub_set_variable mesh share reports a definite failure when the endpoint throws but the read-back proves it did not apply"() {
+        given: 'the share endpoint throws AND the read-back confirms the var is still not shared'
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> throw new RuntimeException('Hub API 500') }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[]}' }
+
+        when:
+        def result = script.toolSetVariable([name: 'vacationMode', mesh_shared: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.meshShareConfirmed == false
+        result.error.contains('Failed to share')
+        result.note.contains('did not take')
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_set_variable(mesh_shared) passes args through the Map signature (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = true
+        script.metaClass.getGlobalVar = { String n -> [type: 'Boolean', value: true] }
+        hubGet.register('/hub2/addVarToMesh/vacationMode') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"sharedHubVariables":[{"name":"vacationMode"}]}' }
+
+        when:
+        def response = mcpDriver.callTool('hub_set_variable', [name: 'vacationMode', mesh_shared: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.meshShared == true
+
+        where:
+        useGateways << [true, false]
     }
 
     // -------- toolDeleteHubVariable --------
@@ -588,6 +879,27 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('forbidden character')
+    }
+
+    def "hub_create_variable with present-but-null mesh keys takes the create path, not the link form"() {
+        given: 'null mesh keys alongside a normal single create -- must NOT divert to link nor throw "not both"'
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> null }   // not an existing var
+
+        when: 'the create path may fail downstream in the (unstubbed) wizard -- fine; the assertion is which branch it chose'
+        def ex = null
+        try {
+            script.toolCreateVariable([name: 'vacationMode', type: 'String', value: 'off',
+                mesh_source_hub_id: null, mesh_source_name: null, confirm: true])
+        } catch (Exception e) { ex = e }
+
+        then: 'it chose the normal create path: no link GET, and no mutually-exclusive "not both" rejection'
+        !hubGet.calls.any { it.key?.toString()?.startsWith('/hub2/createLinkedHubVar/') }
+        !(ex instanceof IllegalArgumentException && ex.message?.toLowerCase()?.contains('not both'))
+        // Positive proof it proceeded PAST the link-vs-create gate into the real create path: it threw
+        // downstream on an unstubbed hub call (the create wizard was deliberately not mocked), rather
+        // than returning at the gate or diverting to the link GET.
+        ex != null
     }
 
     def "hub_create_variable rejects unknown type"() {
@@ -1035,6 +1347,325 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('not both')
     }
 
+    // -------- toolCreateVariable Hub Mesh linking --------
+
+    def "hub_create_variable links a mesh variable and confirms via the localLinkedHubVariables read-back"() {
+        given:
+        enableWrite()
+        def linked = []
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> linked << 'porchTemp'; '' }
+        // Real localLinkedHubVariables rows carry a DECORATED display name plus the bare sourceVarName
+        // and sourceHubId; the read-back must match the latter two, not `name`.
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: linked.collect {
+                [name: "${it} on Peer", sourceVarName: it, sourceHubId: 'HUB-A', type: 'string'] }])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'name is the DECORATED local name (feed-able to hub_get/delete_variable); the bare source name is sourceName'
+        hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
+        result.success == true
+        result.name == 'porchTemp on Peer'
+        result.sourceName == 'porchTemp'
+        result.sourceHubId == 'HUB-A'
+        result.linked == true
+        result.warnings == null
+    }
+
+    def "hub_create_variable mesh link passes the name segment LITERALLY (not pre-encoded -- the platform layer encodes the path)"() {
+        given: 'a non-ASCII name, a FRESH link (offered before, mirror appears after): the path segment reaches the HTTP layer literal, since pre-encoding double-encodes'
+        enableWrite()
+        def done = false
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/café') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            done ? '{"localLinkedHubVariables":[{"name":"café on Peer","sourceVarName":"café","sourceHubId":"HUB-A"}],"availableLinkedHubVariables":[]}'
+                 : '{"localLinkedHubVariables":[],"availableLinkedHubVariables":[{"hubId":"HUB-A","name":"café","linkedLocally":false}]}'
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'café', confirm: true])
+
+        then:
+        hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/café' }
+        result.success == true
+    }
+
+    // Item: linking an already-linked source must NOT issue a fresh GET nor claim a fresh success --
+    // it returns alreadyLinked:true with the existing local mirror name resolved.
+    def "hub_create_variable mesh link short-circuits with alreadyLinked when the source is already linked (no GET)"() {
+        given: 'the available row is already flagged linkedLocally:true and a local mirror exists'
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: true]],
+                localLinkedHubVariables: [[name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A']]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'reports already linked, resolves the decorated mirror name, and never re-issues the link GET'
+        result.success == true
+        result.alreadyLinked == true
+        result.name == 'porchTemp on Peer'
+        result.sourceName == 'porchTemp'
+        result.linked == true
+        !hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
+    }
+
+    def "hub_create_variable mesh link reports alreadyLinked (not 'not offered') when the source left availableLinkedHubVariables but a local mirror exists"() {
+        given: 'a linked source LEAVES availableLinkedHubVariables; the local mirror is the only evidence'
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                availableLinkedHubVariables: [],
+                localLinkedHubVariables: [[name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A']]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'recognized as already linked via the local mirror, not rejected as unoffered; no fresh GET'
+        result.success == true
+        result.alreadyLinked == true
+        result.name == 'porchTemp on Peer'
+        result.sourceName == 'porchTemp'
+        !hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
+    }
+
+    def "hub_create_variable mesh link alreadyLinked warns when the local mirror name cannot be resolved"() {
+        given: 'the available row shows linkedLocally:true but no local row surfaces'
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: true]],
+                localLinkedHubVariables: []
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then:
+        result.success == true
+        result.alreadyLinked == true
+        result.name == 'porchTemp'
+        result.warnings != null
+        !hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
+    }
+
+    // Outcome 1 (linked) via the availableLinkedHubVariables row flag, even when the name has not yet
+    // surfaced in localLinkedHubVariables.
+    def "hub_create_variable mesh link confirms via the availableLinkedHubVariables linkedLocally flag (outcome: linked)"() {
+        given:
+        enableWrite()
+        def done = false
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: done]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'linked via the linkedLocally flag, but no local row resolved -> name falls back to the source name WITH a caution that it may not identify the mirror'
+        result.success == true
+        result.name == 'porchTemp'
+        result.sourceName == 'porchTemp'
+        result.sourceHubId == 'HUB-A'
+        result.linked == true
+        result.warnings != null
+        result.warnings.any { it.toLowerCase().contains('mirror name') }
+    }
+
+    def "hub_create_variable mesh link warns when the source row disappears but no local mirror resolves"() {
+        given: 'the source is offered pre-call, then leaves availableLinkedHubVariables after the link, with no local row surfacing'
+        enableWrite()
+        def done = false
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: done ? [] : [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'row-disappeared (offered pre-call) proves the link, but the bare source name comes back with a mirror-name caution'
+        result.success == true
+        result.linked == true
+        result.name == 'porchTemp'
+        result.sourceName == 'porchTemp'
+        result.warnings != null
+        result.warnings.any { it.toLowerCase().contains('mirror name') }
+    }
+
+    // Outcome 2 (silent no-op): 200 from the GET but the source stays in availableLinkedHubVariables
+    // with linkedLocally:false and the name never surfaces locally -> FAILURE, not a warning.
+    def "hub_create_variable mesh link FAILS on a silent no-op (source stays unlinked)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('did not take')
+        and: 'the note leads with the transient re-establish/retry guidance, with the peer-token store as the persistent-cause fallback'
+        result.note.toLowerCase().contains('retry')
+        result.note.toLowerCase().contains('re-establish')
+        result.note.contains('mesh token')
+        result.note.contains('hub_update_hub_mesh(peer_hub_id, peer_token)')
+    }
+
+    // Outcome 3 (unresolvable): the link GET is accepted but the mesh list is unreadable -- we can
+    // prove neither linked nor not-linked -> warn, don't fail.
+    def "hub_create_variable mesh link warns (not fails) when the mesh list is unreadable"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then:
+        result.success == true
+        result.warnings != null
+        result.warnings.any { it.contains('could not confirm') }
+    }
+
+    // A throw with an unreadable read-back is an UNKNOWN outcome, not a definite failure: it MAY have
+    // applied, so the note steers to verification rather than claiming it did not happen.
+    def "hub_create_variable mesh link reports an unknown (may-have-applied) outcome when the GET throws and the mesh list is unreadable"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> throw new RuntimeException('Hub API 500') }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('linking the shared variable')
+        result.note.contains('MAY have applied')
+        result.note.contains('hub_get_hub_mesh')
+    }
+
+    def "hub_create_variable mesh link FAILS definitively when the GET throws but the read-back proves it did not link"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> throw new RuntimeException('Hub API 500') }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'porchTemp', hubName: 'Peer', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains('did not take')
+    }
+
+    def "hub_create_variable mesh link rejects mixing with a create field"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', name: 'x', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('not both')
+    }
+
+    def "hub_create_variable mesh link requires BOTH hub id and name"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('BOTH mesh_source_hub_id and mesh_source_name')
+    }
+
+    // A readable availableLinkedHubVariables list that does NOT offer the pair (typo/stale/peer stopped
+    // sharing) must throw BEFORE the createLinkedHubVar GET -- validation-before-side-effect -- rather
+    // than let the absent source row read as a false success.
+    def "hub_create_variable mesh link throws (no GET) when the pair is not offered in a readable available list"() {
+        given: 'the available list is readable but offers a DIFFERENT variable, not HUB-A/porchTemp'
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedHubVariables: [],
+                availableLinkedHubVariables: [[hubId: 'HUB-A', name: 'otherVar', hubName: 'Peer', linkedLocally: false]]
+            ])
+        }
+
+        when:
+        script.toolCreateVariable([mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then: 'rejected as a validation error and the createLinkedHubVar GET was never called'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('availableLinkedHubVariables')
+        !hubGet.calls.any { it.key == '/hub2/createLinkedHubVar/HUB-A/porchTemp' }
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_create_variable mesh link passes through (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/hub2/createLinkedHubVar/HUB-A/porchTemp') { params -> '' }
+        hubGet.register('/hub2/hubMeshJson') { params -> '{"localLinkedHubVariables":[{"name":"porchTemp on Peer","sourceVarName":"porchTemp","sourceHubId":"HUB-A"}]}' }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_variable',
+            [mesh_source_hub_id: 'HUB-A', mesh_source_name: 'porchTemp', confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.name == 'porchTemp on Peer'
+        inner.sourceName == 'porchTemp'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "hub_delete_variable hub-namespace wizard sequence: deleteGV then delConfirm"() {
         given:
         enableWrite()
@@ -1139,6 +1770,193 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         registry | note
         true     | "true"
         null     | "unreadable"
+    }
+
+    // -------- toolDeleteHubVariable Hub Mesh linked-mirror unlink --------
+    // A linked mirror is a normal local hub var whose DECORATED name ("<src> on <peer>") is what the
+    // caller passes. The hub's generic in-use registry ALWAYS marks a mirror in-use (the mesh link
+    // itself), so unlink keys on the mesh row's inUseByApps, not the registry. Mesh rows come from
+    // /hub2/hubMeshJson localLinkedHubVariables[].
+
+    def "hub_delete_variable unlinks a Hub Mesh mirror (inUseByApps=false) without force, bypassing the generic in-use guard"() {
+        given:
+        enableWrite()
+
+        and: 'the mirror exists pre-flight, gone after the wizard commits'
+        def calls = 0
+        script.metaClass.getGlobalVar = { String n ->
+            calls++
+            calls == 1 ? [name: 'porchTemp on Peer', type: 'Number', value: 21, deviceId: null, attribute: null] : null
+        }
+
+        and: 'the platform in-use registry says the mirror IS in use (the mesh link registration)'
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+
+        and: 'the mesh row reports NO real consuming app'
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', inUseByApps: false, type: 'Number']
+            ]])
+        }
+
+        and: 'wizard primitives recorded'
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'porchTemp on Peer', confirm: true])
+
+        then: 'the delete actually happened (wizard ran) despite the registry marking it in-use and no force'
+        buttonClicks == ['porchTemp on Peer', 'delConfirm']
+        result.success == true
+        result.deleted == true
+        result.unlinked == true
+        result.source == 'hub'
+
+        and: 'the message frames it as an unlink: local copy removed, peer untouched'
+        result.note.contains("Unlinked the Hub Mesh variable 'porchTemp on Peer'")
+        result.note.contains("removed this hub's local copy")
+        result.note.contains('untouched')
+    }
+
+    def "hub_delete_variable refuses to unlink a Hub Mesh mirror in real use (inUseByApps=true) without force, and names both facts"() {
+        given:
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'porchTemp on Peer', type: 'Number', value: 21, deviceId: null, attribute: null] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', inUseByApps: true, type: 'Number']
+            ]])
+        }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+
+        when:
+        script.toolDeleteHubVariable([name: 'porchTemp on Peer', confirm: true])
+
+        then: 'refused before any wizard click'
+        def ex = thrown(IllegalArgumentException)
+        buttonClicks.isEmpty()
+
+        and: 'the message names the linked-mirror nature AND that real apps break'
+        ex.message.contains('linked mirror')
+        ex.message.contains('untouched')
+        ex.message.contains('real app')
+        ex.message.contains('force=true')
+    }
+
+    def "hub_delete_variable refuses to unlink a Hub Mesh mirror with UNKNOWN inUseByApps without force (unknown = cautious)"() {
+        given: 'a mirror row missing the inUseByApps flag -- usage cannot be confirmed'
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'porchTemp on Peer', type: 'Number', value: 21, deviceId: null, attribute: null] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', type: 'Number']
+            ]])
+        }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+
+        when:
+        script.toolDeleteHubVariable([name: 'porchTemp on Peer', confirm: true])
+
+        then: 'refused before any wizard click; message names the mirror nature and the could-not-confirm reason'
+        def ex = thrown(IllegalArgumentException)
+        buttonClicks.isEmpty()
+        ex.message.contains('linked mirror')
+        ex.message.contains('could not confirm')
+        ex.message.contains('force=true')
+    }
+
+    def "hub_delete_variable force=true unlinks a Hub Mesh mirror even when a real app uses it (inUseByApps=true)"() {
+        given:
+        enableWrite()
+        def calls = 0
+        script.metaClass.getGlobalVar = { String n ->
+            calls++
+            calls == 1 ? [name: 'porchTemp on Peer', type: 'Number', value: 21, deviceId: null, attribute: null] : null
+        }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', inUseByApps: true, type: 'Number']
+            ]])
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'porchTemp on Peer', confirm: true, force: true])
+
+        then:
+        result.success == true
+        result.deleted == true
+        result.unlinked == true
+    }
+
+    def "hub_delete_variable does NOT relax the in-use guard for an ordinary (non-mirror) hub var"() {
+        given: 'an ordinary hub var the registry marks in-use, and a mesh list with no matching mirror'
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'shared', type: 'Number', value: 5, deviceId: null, attribute: null] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([localLinkedHubVariables: [
+                [name: 'porchTemp on Peer', sourceVarName: 'porchTemp', sourceHubId: 'HUB-A', sourceHubName: 'Peer', inUseByApps: false, type: 'Number']
+            ]])
+        }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+
+        when:
+        script.toolDeleteHubVariable([name: 'shared', confirm: true])
+
+        then: 'unchanged behaviour: refuses on the generic registry guard, no clicks'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('registered as in use')
+        ex.message.contains('force=true')
+        buttonClicks.isEmpty()
+    }
+
+    def "hub_delete_variable falls back to the generic guard when the mesh JSON is unreadable"() {
+        given: 'an in-use hub var whose mesh JSON cannot be read (so mirror status is unknown)'
+        enableWrite()
+        script.metaClass.getGlobalVar = { String n -> [name: 'shared', type: 'Number', value: 5, deviceId: null, attribute: null] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> true }
+        hubGet.register('/hub2/hubMeshJson') { params -> throw new RuntimeException('mesh JSON unreachable') }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            [status: 200]
+        }
+
+        when:
+        script.toolDeleteHubVariable([name: 'shared', confirm: true])
+
+        then: 'existing in-use guard applies (safe default), no clicks'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('registered as in use')
+        buttonClicks.isEmpty()
     }
 
     @spock.lang.Unroll

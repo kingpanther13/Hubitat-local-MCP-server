@@ -5912,7 +5912,7 @@ def executeTool(toolName, args) {
         case "hub_set_mode_manager": return toolSetModeManager(args)
         case "hub_list_variables": return toolListVariables(args)
         case "hub_get_variable": return toolGetVariable(args.name)
-        case "hub_set_variable": return toolSetVariable(args.name, args.value)
+        case "hub_set_variable": return toolSetVariable(args)
         case "hub_create_variable": return toolCreateVariable(args)
         case "hub_delete_variable": return toolDeleteHubVariable(args)
         case "hub_create_connector": return toolCreateConnector(args)
@@ -7113,6 +7113,24 @@ private void _hubRtLog(String method, String path, long elapsedMs, String outcom
  */
 def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
+}
+
+// One reader for /hub2/hubMeshJson: parses it ONCE and returns the whole Map (or null when the
+// endpoint is unreachable, the body is empty/unparseable, or it is not a JSON object). Callers pull
+// the localLinked*/availableLinked*/sharedHubVariables sections off a single snapshot, so a link
+// read-back attempt fetches once instead of once per section. Generic cross-domain helper (devices +
+// variables) -- lives in main per the helper-placement rule. toolGetHubMesh does NOT use it: that tool
+// needs distinct per-failure-mode error text and keeps its own read.
+private Map _meshJson() {
+    try {
+        def raw = hubInternalGet("/hub2/hubMeshJson")
+        if (!raw?.trim()) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        return (parsed instanceof Map) ? parsed : null
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Could not read Hub Mesh JSON (/hub2/hubMeshJson): ${e.message}")
+        return null
+    }
 }
 
 /**
@@ -9758,6 +9776,7 @@ The destructive/confirm-tier write tools require these steps (ordinary writes ne
 **hub_delete_device** - MOST DESTRUCTIVE, NO UNDO. For ghost/orphaned devices, stale DB records, stuck virtual devices.
 - Use hub_get_device to verify correct device
 - Warn if recent activity or Z-Wave/Zigbee (do exclusion first)
+- A Hub Mesh LINKED device (a local proxy for a peer's shared device) is UNLINKED local-only: only this hub's proxy is removed, the peer's source device is untouched. The tool warns when local apps use it (appsUsing), and distinctly when it could not check (mesh read failed / row missing).
 - All details logged to MCP debug logs for audit
 
 **hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
@@ -10002,7 +10021,20 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 - `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
 - `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
 
-Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool.
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled`), not this tool; `meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
+
+### Per-device and per-variable Hub Mesh linking & sharing
+
+The hub-LEVEL settings above are `hub_update_hub_mesh`; the per-entity share/link operations are folded into the device and variable tools (no dedicated tools):
+
+- **Share a device** into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
+- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
+- **Unlink a device**: `hub_delete_device(deviceId, confirm=true)` — removes only the local proxy; warns on `appsUsing`, and distinctly when it could not check.
+- **Share a variable**: `hub_set_variable(name, mesh_shared=true|false)` (hub variables only).
+- **Link a variable** a peer shares: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
+- **Unlink a variable**: `hub_delete_variable(name, confirm=true)` on the local mirror (its DECORATED `"<var> on <peer>"` name) — removes only the local copy, peer untouched; needs `force=true` when a real local app uses it OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false. Teardown order: unlink on the linking hub(s) first, THEN unshare on the owner (unsharing first strands the mirrors). Full reference in `hub_get_tool_guide(section='variables')`.
+
+The `createLinked` GET returns 200 with an empty body even when nothing links, so the link tools read mesh state back: a confirmed non-link (the source still shows `linkedLocally:false` in `hub_get_hub_mesh`) returns a FAILURE, not a soft warning; only an unreadable mesh list warns. A no-op is usually transient — the mesh takes time to re-establish a peer connection after that peer reboots/updates and briefly no-ops during that window, then clears — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
 
 ### hub_update_package
 
@@ -10107,6 +10139,16 @@ Omitted properties are preserved. The complete patch is validated before writes 
 Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
 
 If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
+
+### Hub Mesh: sharing, linking, and unlinking devices
+
+Hub Mesh shares devices between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Three device operations, split across tools:
+
+- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
+- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Unlink** a linked device: `hub_delete_device(deviceId, confirm=true)`. This removes ONLY the local proxy; the source device on the peer hub is untouched. The tool warns when the linked device is in use by local apps (`appsUsing`), which will break.
+
+Read the current mesh state (shared/linked/available lists, per-device `appsUsing`) with `hub_get_hub_mesh`; the hub-level mesh settings are in `hub_update_hub_mesh`.
 ''',
 
         rules: '''## Rule Structure Reference
@@ -11014,6 +11056,8 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 
 Apps that never register their use, such as webCoRE pistons, cannot be seen by any of these checks; the response's `coverageNote` says so and `platformInUse` reports what the registry said. Pass `force=true` to proceed anyway after acknowledging the breakage.
 
+Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable) is an UNLINK — see the "Hub Mesh: sharing and linking hub variables" subsection below. There the generic in-use refusal is relaxed (a clean mirror unlinks without `force`); `force=true` is needed when a real local app uses the mirror OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false.
+
 ### hub_list_variable_changes
 
 Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
@@ -11021,6 +11065,21 @@ Audit/debug what changed a hub variable and when, without polling hub_get_variab
 ### hub_create_connector
 
 For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped. The full Number/Decimal `connectorType` set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
+
+### hub_delete_connector
+
+Deletes the connector DEVICE backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. `confirm=true` required. No-op if the variable has no connector.
+
+### Hub Mesh: sharing and linking hub variables
+
+Hub Mesh shares hub variables between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Two variable operations, folded into the existing tools:
+
+- **Share / unshare** one of THIS hub's variables into the mesh: `hub_set_variable(name, mesh_shared=true|false)`. `mesh_shared` may stand alone or accompany a `value` write. It applies only to HUB variables — a rule_engine-only name is rejected. The result reports `meshShared` and `meshShareConfirmed` (null when the `sharedHubVariables` read-back is unavailable).
+- **Link** a variable a PEER hub shares onto this hub: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedHubVariables[]` (`hubId` + `name`), and is mutually exclusive with the create forms (`name`/`type`/`value` or `variables`). The `createLinkedHubVar` GET returns 200 with an empty body even when nothing links, so the tool reads mesh state back and keys on the source: if the variable links (its name appears in `localLinkedHubVariables[]`, or its `availableLinkedHubVariables[]` row flips `linkedLocally:true`) you get `success`; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Unlink** a variable a peer shares (remove this hub's local mirror): `hub_delete_variable(name, confirm=true)` on the LOCAL mirror. The mirror shows up as an ordinary local hub variable whose display name is DECORATED (`"<sourceVar> on <peerName>"`) — pass that decorated name. Unlinking removes only THIS hub's local copy; the peer's source variable is untouched. It needs `force=true` when a real local app uses the mirror (the mesh row's `inUseByApps` is `true`) OR when that use can't be confirmed (the row is missing / `inUseByApps` unreadable); only a clean unlink (`inUseByApps:false`) does NOT require force, even though the hub's generic in-use registry always marks a mirror in-use (that registration is the mesh link itself, not a consumer). A successful unlink returns `unlinked:true`.
+- **Teardown ORDER matters.** To fully undo a shared→linked variable, unlink on the linking hub(s) FIRST (`hub_delete_variable` there), THEN unshare on the owner (`hub_set_variable(name, mesh_shared=false)`). Unsharing first silently STRANDS the mirrors: the owner hub cannot see or notify who linked its variable, so each linking hub keeps a stale local copy (last value, no orphan flag) that consuming apps keep reading. The unshare result carries a caution to this effect.
+
+Read the current mesh variable state (shared/linked/available lists) with `hub_get_hub_mesh`.
 '''
     ,
         dashboards: '''## Dashboards
@@ -11215,7 +11274,8 @@ def getToolGuideSubSections() {
             hub_admin_write_system: ["hub_get_info", "hub_list_modes", "hub_manage_mode",
                                      "hub_set_mode_manager", "hub_get_hsm_status",
                                      "hub_set_system_settings", "hub_update_mcp_settings",
-                                     "hub_get_hub_mesh", "hub_update_hub_mesh"]
+                                     "hub_get_hub_mesh", "hub_update_hub_mesh",
+                                     "Per-device and per-variable Hub Mesh"]
         ],
         performance: [
             performance_overview: [],
