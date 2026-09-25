@@ -917,9 +917,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         when:
         script.handleMcpRequest()
 
-        then:
-        mcpDriver.lastRenderArgs.status == 200
-        mcpDriver.parseResponseJson().result.resultType == 'complete'
+        then: 'no error envelope; the result carries the modern stamp (a 200 render sets no explicit status)'
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.resultType == 'complete'
     }
 
     def "initialize excludes every modern-era revision the day a newer one joins the supported list"() {
