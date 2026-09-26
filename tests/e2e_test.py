@@ -1222,6 +1222,15 @@ def test(group: str):
 # ---------------------------------------------------------------------------
 
 
+def _is_stranded_button_controller(app: dict) -> bool:
+    """A Button Controller-5.1 child left by a test: it relabels itself after the device it binds,
+    so it is recognised by type plus a fixture-device name, never by the BAT_E2E_ prefix alone.
+    The parent "Button Controllers" app is a different type and never matches."""
+    name = str(app.get("name") or app.get("label") or "")
+    return (str(app.get("type") or "") == "Button Controller-5.1" and bool(app.get("parentId"))
+            and bool(str(app.get("id") or "")) and (PREFIX in name or "E2E_PERM_" in name))
+
+
 class TestRunner:
     def __init__(self, client: HubitatMcpClient, verbose: bool = False):
         self.client = client
@@ -1827,44 +1836,81 @@ class TestRunner:
         op_key, dur, ok = lo
         return f"{op_key} {dur:.1f}s{'' if ok else ' [err]'}"
 
-    def _capture_504_context(self, name: str) -> None:
-        """Print the server app's hub log (every level the hub kept) and the structured MCP
-        history for the two minutes before the 504-failed call through now, so the hub-side
-        timeline survives in the run log instead of rolling out of Past Logs before anyone
-        reads it. Raw _send, not call_tool: this must not enter op_timings or clobber the
-        failed op's identity in _last_op."""
+    def _capture_504_context(self, name: str, exc: BaseException | None = None,
+                             failed_at: datetime | None = None) -> None:
+        """Print the server app's hub log from two minutes before the 504-failed call's start, and
+        the latest structured MCP history, so the hub-side timeline survives in the run log instead
+        of rolling out of Past Logs before anyone reads it. The failed call is the one the exception
+        carries (_mcp_failed_op), not _last_op, which by now is whatever ran afterwards; the window is
+        anchored at `failed_at` (when the failure was caught), not at capture time, because the
+        capture runs after the retry settle. The hub log is read from the main app first and, when
+        that read fails or is still loading, from the watchdog, a separate app. Raw transport only,
+        so op_timings and _last_op are untouched."""
         app_id = getattr(self, "server_app_id", "")
         if not app_id:
             print(f"    [504-CONTEXT] {name}: HUBITAT_APP_ID not set -- cannot read the server app's hub log")
             return
-        last_op = getattr(self.client, "_last_op", None)
-        dur = float(last_op[1]) if last_op and isinstance(last_op[1], (int, float)) else 0.0
-        since = (datetime.now(UTC) - timedelta(seconds=dur + 120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        failed_op = getattr(exc, "_mcp_failed_op", None) or getattr(self.client, "_last_op", None)
+        dur = float(failed_op[1]) if failed_op and isinstance(failed_op[1], (int, float)) else 0.0
+        label = self._last_op_str(exc)
+        since = ((failed_at or datetime.now(UTC)) - timedelta(seconds=dur + 120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        def _print(source: str, entries: list) -> None:
+            print(f"    [504-CONTEXT] {name}: {source}, {len(entries)} entries (failed op {label}):")
+            for e in entries[-300:]:
+                ts = e.get("name") or e.get("timestamp") or e.get("time") or ""
+                if isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts / 1000, UTC).strftime("%H:%M:%S.%f")[:-3]
+                print(f"      {str(ts)[:23]} {str(e.get('level') or '')[:5]:5s} "
+                      f"{str(e.get('component') or '')[:12]} {str(e.get('message') or '')[:220]}")
+
+        def _read_main(args: dict) -> list:
+            """One log read; anything but a completed, usable list raises (the caller falls back)."""
+            raw = self.client._send("tools/call", {
+                "name": "hub_read_diagnostics", "arguments": {"tool": "hub_get_logs", "args": args}})
+            if not isinstance(raw, dict) or raw.get("isError") or raw.get("resultType") not in (None, "complete"):
+                raise ValueError(f"log read did not complete ({(raw or {}).get('resultType') or 'isError'})")
+            content = raw.get("content")
+            text = content[0].get("text") if isinstance(content, list) and content \
+                and isinstance(content[0], dict) else None
+            if not text:
+                raise ValueError("log read returned no content")
+            data = json.loads(text)
+            if not isinstance(data, dict) or data.get("status") == "in_progress" \
+                    or data.get("success") is False or data.get("error") \
+                    or data.get("message") == "No log data returned from hub":
+                raise ValueError(f"log read unusable: {str(data)[:120]}")
+            entries = data.get("logs") if "logs" in data else data.get("entries")
+            if not isinstance(entries, list):
+                raise ValueError("log read returned no entries list")
+            return entries
+
         try:
-            for mode, args in (("hub", {"mode": "hub", "appId": int(app_id), "since": since, "limit": 300}),
-                               ("mcp", {"mode": "mcp", "limit": 100})):
+            source, entries = None, None
+            try:
+                entries = _read_main({"mode": "hub", "appId": int(app_id), "since": since, "limit": 300})
+                source = f"hub log since {since}"
+            except Exception as exc_main:
                 try:
-                    raw = self.client._send("tools/call", {
-                        "name": "hub_read_diagnostics", "arguments": {"tool": "hub_get_logs", "args": args}})
-                    text = ((raw or {}).get("content") or [{}])[0].get("text") or "{}"
-                    data = json.loads(text)
-                except Exception as exc:
-                    print(f"    [504-CONTEXT] {name}: {mode} log read failed: {exc}")
-                    continue
-                entries = data.get("logs") or data.get("entries") or []
-                print(f"    [504-CONTEXT] {name}: {mode} log, {len(entries)} entries since {since} "
-                      f"(failed op {self._last_op_str()}):")
-                for e in entries[-300:]:
-                    ts = e.get("name") or e.get("timestamp") or e.get("time") or ""
-                    if isinstance(ts, (int, float)):
-                        ts = datetime.fromtimestamp(ts / 1000, UTC).strftime("%H:%M:%S.%f")[:-3]
-                    print(f"      {str(ts)[:23]} {str(e.get('level') or '')[:5]:5s} "
-                          f"{str(e.get('component') or '')[:12]} {str(e.get('message') or '')[:220]}")
-        except Exception as exc:
+                    # The watchdog filters only by level, so keep the server app's own lines; its
+                    # newest-first cap stands in for the time window.
+                    entries = [e for e in self._watchdog_hub_logs(level="", limit=300)
+                               if str(e.get("message") or "").startswith(f"app|{app_id}|")]
+                    source = f"hub log via watchdog, newest 300 (main read failed: {str(exc_main)[:80]})"
+                except Exception as exc_wd:
+                    print(f"    [504-CONTEXT] {name}: hub log unreadable (main: {str(exc_main)[:80]}; "
+                          f"watchdog: {str(exc_wd)[:80]})")
+            if entries is not None:
+                _print(source, entries)
+            try:
+                mcp_entries = _read_main({"mode": "mcp", "limit": 100})
+            except Exception as exc_mcp:
+                print(f"    [504-CONTEXT] {name}: mcp log read failed: {exc_mcp}")
+            else:
+                _print("mcp log, newest 100", mcp_entries)
+        except Exception as exc_any:
             # Diagnostics only: a failure here must never change the retry outcome.
-            print(f"    [504-CONTEXT] {name}: capture failed: {exc}")
-        finally:
-            self.client._last_op = last_op
+            print(f"    [504-CONTEXT] {name}: capture failed: {exc_any}")
 
     def _settle_before_504_retry(self, name: str) -> None:
         """After a relay 504, poll a trivial call until transport is responsive before re-running.
@@ -1872,7 +1918,6 @@ class TestRunner:
         Probe immediately because a dropped response does not prove the transport needs a fixed
         cooldown; only wait between probes while it is actually slow or unavailable.
         """
-        self._capture_504_context(name)
         print(f"    [BACKOFF] {name}: relay 504 -- settling before the single re-run "
               "(polling hub_get_info until it round-trips fast)")
         deadline = time.monotonic() + 30.0
@@ -1968,10 +2013,12 @@ class TestRunner:
                 if "504" in str(exc) and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} aborted by relay 504 -- re-running the test once")
+                    failed_at = datetime.now(UTC)
                     self._settle_before_504_retry(name)
+                    self._capture_504_context(name, exc, failed_at)
                     continue
                 if "504" in str(exc):
-                    self._capture_504_context(name)
+                    self._capture_504_context(name, exc, datetime.now(UTC))
                     print(f"    FULL-FAILURE {name}: persistent relay 504 across retry "
                           f"(failure op {self._last_op_str(exc)}): {exc}")
                     self._record(name, group, "fail",
@@ -1986,7 +2033,9 @@ class TestRunner:
                 if "504" in es and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
+                    failed_at = datetime.now(UTC)
                     self._settle_before_504_retry(name)
+                    self._capture_504_context(name, exc, failed_at)
                     continue
                 # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
                 # Bounce/recover the app (which escalates to a reboot at the configured threshold),
@@ -2003,7 +2052,7 @@ class TestRunner:
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
                 # extra run just to learn why a test failed.
                 if "504" in es:
-                    self._capture_504_context(name)
+                    self._capture_504_context(name, exc, datetime.now(UTC))
                 print(f"    FULL-FAILURE {name} (failure op {self._last_op_str(exc)}): {exc}")
                 self._record(name, group, "fail",
                              message=f"[{self._last_op_str(exc)}] {exc}"[:200], duration=elapsed)
@@ -5978,6 +6027,18 @@ class TestRunner:
             assert f"privateT.{pb_idx}" not in pb_after, \
                 f"the pre-rebuild privateBoolean row survived the retarget: {pb_after}"
 
+            # The same rebuild as a patches op, finalised by the batch's one updateRule.
+            pb_patch = self._patch_rule(caller_id, [
+                {"modifyAction": {"index": int(pb_new_idx), "mods": {"value": False}}}])
+            assert [e.get("op") for e in pb_patch] == ["modifyAction"] and pb_patch[0].get("success") is True, \
+                f"patches modifyAction did not succeed: {pb_patch}"
+            pb_patched_idx = pb_patch[0].get("newActionIndex")
+            pb_patched = self._get_persisted_rule_config(caller_id).get("settings") or {}
+            assert pb_patched_idx is not None \
+                and str(pb_patched.get(f"pvTF.{pb_patched_idx}")).lower() == "true" \
+                and f"privateT.{pb_new_idx}" not in pb_patched, \
+                f"patches modifyAction did not rebuild the action with value False: {pb_patch} / {pb_patched}"
+
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
             # RMUtils. Do not converge or resume here -- pause/resume behavior is covered by the
@@ -7704,6 +7765,14 @@ class TestRunner:
             assert self._setting_holds_exact(retarget_settings.get(f"tDev{new_tidx}"), sw) \
                 and str(retarget_settings.get(f"tstate{new_tidx}")).lower() == "on", \
                 f"patches addTrigger settings did not land on trigger {new_tidx}: {retarget_settings}"
+            # patches modifyTrigger: the same single-op helper, finalised by the batch's one updateRule.
+            patched_mod = self._patch_rule(app_id, [{"modifyTrigger": {"index": new_tidx, "mods": {"state": "off"}}}])
+            assert [e.get("op") for e in patched_mod] == ["modifyTrigger"] \
+                and patched_mod[0].get("success") is True and patched_mod[0].get("partial") is not True, \
+                f"patches modifyTrigger did not succeed cleanly: {patched_mod}"
+            patched_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert str(patched_settings.get(f"tstate{new_tidx}")).lower() == "off", \
+                f"patches modifyTrigger did not persist state 'off' on trigger {new_tidx}: {patched_settings}"
             self._set_rule(app_id, {"removeTrigger": {"index": new_tidx}}, strict=True)
             self._assert_rule_healthy(app_id)
 
@@ -8854,7 +8923,7 @@ class TestRunner:
                     f"refused adds left orphaned action rows behind: {health_c.get('orphanedActionRows')}"
                 known_c = {str(mu_idx), str(copy_idx)}
                 stray_c = [k for k in copy_settings
-                           if (str(k).startswith("numOp.") or str(k).startswith("customDev."))
+                           if str(k).startswith(("numOp.", "customDev."))
                            and str(k).split(".", 1)[1] not in known_c]
                 assert not stray_c, \
                     f"refused adds left stale mode fields outside the real actions {known_c}: {stray_c}"
@@ -15805,38 +15874,29 @@ class TestRunner:
             # Button Controller backstop: the button tests create Button Controller-5.1 children
             # with a BAT_E2E_ name, but the app relabels itself after the device it binds
             # ("Button Controller-5.1: E2E_PERM_Button"), so neither the RM list nor a bare
-            # PREFIX match ever sees them; every run stranded a few (312 found on the test hub
-            # 2026-09-26). Reap by type + a fixture-device name in the label. The parent
-            # "Button Controllers" app is a different type and is never touched.
+            # PREFIX match ever sees them. Reap by type + a fixture-device name in the label.
+            # One no-cursor read returns the whole list; paging by offset while deleting would
+            # skip rows.
             try:
-                cursor = None
+                listed = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_list_apps", "args": {"scope": "instances", "includeHidden": True}})
                 reaped = 0
-                while True:
-                    args = {"scope": "instances", "includeHidden": True}
-                    if cursor:
-                        args["cursor"] = cursor
-                    page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": args})
-                    for a in (page.get("apps", []) if isinstance(page, dict) else []):
-                        aname = str(a.get("name") or a.get("label") or "")
-                        if str(a.get("type") or "") != "Button Controller-5.1" or not a.get("parentId"):
+                for a in (listed.get("apps", []) if isinstance(listed, dict) else []):
+                    if not _is_stranded_button_controller(a):
+                        continue
+                    aname, aid = str(a.get("name") or a.get("label") or ""), str(a.get("id"))
+                    try:
+                        print(f"  Sweep: deleting Button Controller '{aname}' (id={aid})")
+                        res = self.client.call_tool("hub_manage_rule_machine", {
+                            "tool": "hub_delete_native_app",
+                            "args": {"appId": aid, "force": True, "confirm": True},
+                        })
+                        if isinstance(res, dict) and res.get("success") is False:
+                            print(f"  [WARN] Button Controller sweep delete refused for '{aname}': {res.get('error')}")
                             continue
-                        if PREFIX not in aname and "E2E_PERM_" not in aname:
-                            continue
-                        aid = str(a.get("id") or "")
-                        if not aid:
-                            continue
-                        try:
-                            print(f"  Sweep: deleting Button Controller '{aname}' (id={aid})")
-                            self.client.call_tool("hub_manage_rule_machine", {
-                                "tool": "hub_delete_native_app",
-                                "args": {"appId": aid, "force": True, "confirm": True},
-                            })
-                            reaped += 1
-                        except Exception as exc:
-                            print(f"  [WARN] Button Controller sweep delete failed for '{aname}': {exc}")
-                    cursor = page.get("nextCursor") if isinstance(page, dict) else None
-                    if not cursor:
-                        break
+                        reaped += 1
+                    except Exception as exc:
+                        print(f"  [WARN] Button Controller sweep delete failed for '{aname}': {exc}")
                 if reaped:
                     print(f"  Sweep: reaped {reaped} Button Controller instance(s)")
             except Exception as exc:

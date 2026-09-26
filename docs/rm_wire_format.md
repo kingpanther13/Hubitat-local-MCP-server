@@ -184,15 +184,16 @@ clear stale mode keys. Leftover hidden keys under a working action are normal RM
 RM's own UI keeps them when the variable type is switched mid-form.
 
 A refused add has already persisted `actType`/`actSubType` plus whatever fields landed before the
-refusal, and leaves the editor open on `actNdx=N` (the next add reopens row N pre-filled). So every
-mid-edit refusal after the editor opens (setVariable source modes, runCommand params, delay,
-rawSettings) attempts to cancel doActPage's editor with `actionCancel` (`cancelAct.<N>` is only
-the delay toggle). When cleanup confirms row removal, it consumes the index -- the next action
-gets N+1; an empty `tCustomAttr.<N>=""` key may remain. If removal cannot be confirmed, the
-response includes `wizardStuck`; action N's stale fields may remain and reopen on the next add.
-Verify with `hub_get_app_config`, then remove the row with
-`hub_set_rule(removeAction:{index:N}, confirm:true)` or restore the pre-write backup using
-`hub_restore_backup(scope='source', backupKey='<response.backup.backupKey>', confirm=true)`.
+refusal, and leaves the editor open on `actNdx=N` (the next add reopens row N pre-filled). So any
+refusal after `actType.<N>` is written attempts to cancel doActPage's editor with `actionCancel`
+(`cancelAct.<N>` is only the delay toggle). When cleanup confirms row removal, it consumes the
+index -- the next action gets N+1; blank `actType`/`actSubType` (and `tCustomAttr`) keys may
+remain. If removal cannot be confirmed, the response includes `wizardStuck`; action N's stale
+fields may remain and reopen on the next add. Close the editor first with
+`hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true)` (removeAction is refused
+while the editor holds `state.editAct`), verify with `hub_get_app_config`, then remove any
+surviving row with `hub_set_rule(removeAction:{index:N}, confirm:true)` or restore the pre-write
+backup using `hub_restore_backup(scope='source', backupKey='<response.backup.backupKey>', confirm=true)`.
 
 ---
 

@@ -857,12 +857,11 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         script.supportedProtocolVersions() == ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
         script.initializeProtocolVersions() == ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
 
-        and: 'the modern revision heads the supported list and is the only non-legacy entry'
+        and: 'the modern revision heads the supported list'
         script.supportedProtocolVersions()[0] == script.modernProtocolVersion()
 
         and: 'the initialize allowlist is exactly the supported list minus EVERY modern-era revision'
         script.initializeProtocolVersions().every { !script._modernEraVersion(it) }
-        !script.initializeProtocolVersions().contains(script.modernProtocolVersion())
 
         and: 'the initialize fallback is the newest LEGACY revision, not the newest supported one'
         script.defaultProtocolVersion() == script.initializeProtocolVersions()[0]

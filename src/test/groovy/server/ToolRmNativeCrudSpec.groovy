@@ -3027,7 +3027,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "replaceActions with a bad rule target (#label) is rejected BEFORE clearActions wipes the rule"() {
+    def "replaceActions with a bad spec (#label) is rejected BEFORE clearActions wipes the rule"() {
         // Wipe-then-drop guard: the replaceActions path clears the rule's actions before re-adding
         // the incoming list, so a bogus rule target must be caught pre-flight (ahead of the clear)
         // or the rule is destroyed and then the item is dropped. Assert the reject envelope AND
@@ -3081,6 +3081,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "missing id"           | [capability: "runRule", ruleIds: [999999]]                           | ["'999999'", "does not exist", "hub_list_rules"]
         "runRule this-rule"    | [capability: "runRule", ruleIds: ["*"]]                              | ['"this rule" target', "only for privateBoolean"]
         "privateBoolean mixed" | [capability: "privateBoolean", ruleIds: ["*", 999999], value: false] | ["'999999'", "does not exist"]
+        "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["patches[0].replaceActions[0]:", "numOp 'bogus' is not supported"]
+        "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["patches[0].replaceActions[0]:", "numOp is only supported with 'value'"]
+        "not a spec object"    | "switch on"                                                          | ["patches[0].replaceActions[0] must be an action spec object"]
+        "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["replaceActions[0]:", "numOp 'bogus' is not supported"]
+        "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["replaceActions[0]:", "numOp is only supported with 'value'"]
+        "not a spec object"    | "switch on"                                                          | ["replaceActions[0] must be an action spec object"]
     }
 
     def "_rmNormalizeRuleIdsForWrite canonicalizes decimal-form ids and wraps a scalar"() {
@@ -3241,7 +3247,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "patches replaceActions with a bad rule target (#label) is rejected as a per-op failure, before clearActions"() {
+    def "patches replaceActions with a bad spec (#label) is rejected as a per-op failure, before clearActions"() {
         // The patches path has a DIFFERENT error-capture shape than the top-level replaceActions:
         // a per-op try/catch turns the pre-flight throw into a {success:false} patch entry rather
         // than propagating. Assert the per-op failure AND that clearActions never ran.
@@ -6097,8 +6103,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "rollback falls back to the verified delAct leg when actionCancel leaves the row (deleteWorks=#deleteWorks)"() {
         // Step 3 is the settings-VERIFIED backstop: the hub answers 200 to a click that does
-        // nothing (the old cancelAct failure class), so a cancel that leaves the row must fall
-        // through to delAct. deleteWorks=true: the delete removes the row and the rollback still
+        // nothing, so a cancel that leaves the row must fall through to delAct. deleteWorks=true: the delete removes the row and the rollback still
         // answers true. deleteWorks=false: the row survives everything and the rollback answers
         // false so the caller surfaces the stuck marker.
         given:
@@ -25964,7 +25969,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "addAction #cap value with numOp 'add number' writes numOp.1='add number' plus valNumber.1"() {
+    def "addAction #cap value with numOp '#numOp' writes numOp.1='add number' plus valNumber.1"() {
         given:
         enableWrite()
         def ctl = wireSetVariableValueAdd("fires", cap == "setLocalVariable")
@@ -25972,7 +25977,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolSetRule([
             appId: 100,
-            addAction: [capability: cap, variable: "fires", numOp: "add number", value: 1],
+            addAction: [capability: cap, variable: "fires", numOp: numOp, value: 1],
             confirm: true
         ])
 
@@ -25982,8 +25987,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ctl.written["valNumber.1"].toString() == "1"
         result.success == true
 
-        where:
-        cap << ["setVariable", "setLocalVariable"]
+        where: "the caller's spelling is normalised to RM's enum value"
+        cap                | numOp
+        "setVariable"      | "add number"
+        "setLocalVariable" | "add number"
+        "setVariable"      | "Add Number"
+        "setVariable"      | " add number "
+    }
+
+    def "addAction setLocalVariable refuses an unknown numOp under its own label"() {
+        given:
+        enableWrite()
+        def ctl = wireSetVariableValueAdd("fires", true)
+
+        when:
+        def result = script.toolSetRule([appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "fires", numOp: "bogus", value: 1], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains("setLocalVariable: numOp 'bogus' is not supported")
+        (ctl.written as Map).isEmpty()
     }
 
     def "addAction setVariable value with an explicit numOp 'number' still writes numOp.1='number'"() {
@@ -26875,10 +26899,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def moreParamsFired = false
         def uVar2Written = false
+        def clicks = []
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsFired = true
+            if (path == "/installedapp/btn") clicks << [name: body?.name, page: body?.currentPage]
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
                     if (k.toString() == "settings[uVar2.1]") uVar2Written = true
@@ -26947,6 +26973,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.error?.contains("unknownVar")
         result.error?.contains("is not in the hub variable enum")
+
+        and: "a parameter refused mid-edit cancels the open editor instead of leaving the row to reopen"
+        clicks.count { it.name == "actionCancel" && it.page == "doActPage" } == 1
+        !clicks.any { it.name == "actionDone" }
     }
 
     def "addAction runCommand variable parameter: xVar field not revealed after uVar=true fails loud"() {
@@ -28306,8 +28336,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "the unverified cancel is surfaced -- the editor may still be open, so the envelope must not imply a clean retry"
         result.wizardStuck == true
-        result.error?.contains("could not be cancelled")
+        result.error?.contains("could not be confirmed removed")
+        result.error?.indexOf("button='actionCancel'") < result.error?.indexOf("removeAction:{index:1}")
         result.error?.contains("removeAction:{index:1}")
+
+        and: "the envelope's own recovery hint names the action-editor close, never the nothing-to-restore wording"
+        result.restoreHint?.contains("button='actionCancel', pageName='doActPage'")
+        !result.restoreHint?.toLowerCase()?.contains("not touched")
     }
 
     def "addAction setVariable fromDevice rejects missing deviceId"() {
@@ -43769,6 +43804,50 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.count { it.path == "/installedapp/btn" && it.body?.get("settings[updateRule]") == "clicked" } == 1
     }
 
+    def "patches modifyTrigger that skips a setting is partial and stops the batch before updateRule"() {
+        given: "the state write lands but its read-back fetch fails, so the write is reported skipped"
+        enableWrite()
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "r", install: true, error: null, sections: []],
+                settings: [tCapab1: "Switch", tstate1: "off"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            if (posts.any { it.path == "/installedapp/update/json" }) throw new IllegalStateException("page fetch failed")
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "Triggers", install: true, error: null,
+                             sections: [[title: "", input: [[name: "tstate1", type: "enum", options: ["on", "off"]]]]]],
+                settings: [tstate1: "off"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Switch"]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [
+            [modifyTrigger: [index: 1, mods: [state: "on"]]], [removeTrigger: [index: 1]]], confirm: true])
+
+        then:
+        result.patches[0].op == "modifyTrigger"
+        result.patches[0].partial == true
+        result.patches[1].notAttempted == true
+        result.bulkStoppedAfter == "patches[0]"
+        result.success == false
+        !posts.any { it.path == "/installedapp/btn" && it.body?.get("settings[updateRule]") == "clicked" }
+    }
+
     def "patches modifyAction routes through the position-preserving rebuild and finalises once"() {
         given: "the first of two actions is retargeted, so the rebuilt action walks up one slot"
         enableWrite()
@@ -43820,6 +43899,85 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.bulkStoppedAfter == "patches[0]"
         result.success == false
         !posts.any { it.path == "/installedapp/btn" }
+    }
+
+    def "patches refuses an item that carries two operations before any op runs"() {
+        // The dispatch chain runs only the first key it matches, so a second op in the same item
+        // would be dropped while the item reports success.
+        given:
+        enableWrite()
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Switch"]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [
+            [removeTrigger: [index: 1], addTrigger: [capability: "Switch", deviceIds: [1], state: "on"]]], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("patches[0] carries 2 operations")
+        result.error.contains("addTrigger") && result.error.contains("removeTrigger")
+        !posts.any { it.path == "/installedapp/btn" || it.path == "/installedapp/update/json" }
+    }
+
+    def "patches #op reports a bad #field as a per-op failure and stops the batch before updateRule"() {
+        given:
+        enableWrite()
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Switch"]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[(op): opSpec], [removeTrigger: [index: 1]]], confirm: true])
+
+        then:
+        result.patches[0].success == false
+        result.patches[0].error.contains(message)
+        result.patches[1].notAttempted == true
+        result.bulkStoppedAfter == "patches[0]"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.get("settings[updateRule]") == "clicked" }
+
+        where:
+        op              | field   | opSpec                          | message
+        "removeTrigger" | "index" | [index: "first"]                | "removeTrigger.index must be an integer index"
+        "modifyTrigger" | "index" | [mods: [state: "on"]]           | "modifyTrigger.index required"
+        "modifyTrigger" | "mods"  | [index: 1]                      | "modifyTrigger.mods is required and must be a Map (e.g. {state: 'on'})"
+        "modifyAction"  | "mods"  | [index: 1, mods: "ruleIds=300"] | "modifyAction.mods is required and must be a Map (e.g. {ruleIds: [123]})"
+    }
+
+    def "a bulk stop on an item that left an editor open reports wizardStuck and puts the close-editor step first"() {
+        given:
+        def stopItem = [success: false, index: 0,
+                        error: "setVariable: numOp failed [wizardStuck -- action 3's editor or row could not be confirmed removed after the refusal]"]
+
+        when:
+        def out = script._rmBulkStoppedResult(100, [backupKey: "k"], "addActions[0]", stopItem, [health: [ok: true]])
+
+        then:
+        out.wizardStuck == true
+        out.repairHints[0].contains("button='actionCancel', pageName='doActPage'")
+        out.repairHints.size() == 2
+    }
+
+    def "a bulk stop on an ordinary failure carries no wizardStuck flag"() {
+        when:
+        def out = script._rmBulkStoppedResult(100, [backupKey: "k"], "addActions[0]",
+            [success: false, error: "setVariable: numOp 'x' is not supported"], [health: [ok: true]])
+
+        then:
+        !out.containsKey("wizardStuck")
+        out.repairHints.size() == 1
     }
 
     // ---------- replaceActions inner-partial OR-clause (sibling of the addedOk!=addedTotal arm) ----------
@@ -46573,6 +46731,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.toString()?.contains("andStays must be boolean true or a {hours,minutes,seconds} map")
         result.error?.toString()?.contains("silently ignored by RM")
         !posts.any { it.body.containsKey("settings[stays-1]") }
+
+        and: "the refusal lands after actType.1 was written, so the editor is cancelled once and never committed"
+        posts.count { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" && it.body?.currentPage == "doActPage" } == 1
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+        !result.wizardStuck
     }
 
     // ---------- string *contains* comparator ----------

@@ -84,7 +84,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
 
 ALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are LAST RESORTS.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call; walkStep (one wizard page per call) covers capabilities no shortcut can represent.
 
-Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first hub_set_rule(button='cancelCapab', pageName=<page>, confirm=true) — restoreHint carries the exact command. On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]
+Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first run the close-editor click restoreHint names (cancelCapab for a condition sub-wizard, actionCancel for the action editor). On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]
 
 Deep reference + worked examples: guide:true inline, or hub_get_tool_guide(section='set_rule_reference').[[FLAT_TRIM]] Full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
@@ -3993,9 +3993,9 @@ private List _rmActionIndicesFromSettings(Map status) {
 }
 
 // Rows that hold an action or a structural keyword -- actType.<N> or actSubType.<N> with a value.
-// Excludes the blank-both rows RM's UI leaves behind after a delete. Used where the question is
-// "what is on this rule at the settings level" (clearActions): a row the compiled actionList never
-// listed still occupies its index, and a clear that ignores it leaves a permanent orphan.
+// Excludes rows whose actType/actSubType are both blank, which RM leaves behind after a delete or
+// a cancel. This answers "what is on this rule at the settings level": a row the compiled
+// actionList never listed still occupies its index, and ignoring it leaves a permanent orphan.
 private List _rmLiveActionIndicesFromSettings(Map status) {
     def live = [:]
     (status?.appSettings ?: []).each { s ->
@@ -4636,14 +4636,49 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     return out.findAll { k, v -> v != null }
 }
 
+private List _rmPatchModifyOpKeys() { ["removeTrigger", "modifyTrigger", "modifyAction"] }
+
+// Every operation key a patches[] item can carry. An item names exactly one: the dispatch chain
+// runs only the first key it matches, so a second key would be dropped while the item reports
+// success.
+private List _rmPatchOpKeys() {
+    ["settings", "button", "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression",
+     "replaceRequiredExpression", "addLocalVariable", "removeLocalVariable", "removeAction", "clearActions",
+     "replaceActions", "moveAction"] + _rmPatchModifyOpKeys()
+}
+
+// Refuse the whole batch, before any op runs, when an item carries more than one operation.
+private void _rmRejectMultiOpPatchItems(List patchesList) {
+    def opKeys = _rmPatchOpKeys()
+    patchesList.eachWithIndex { p, i ->
+        if (!(p instanceof Map)) return
+        def ops = opKeys.findAll { (p as Map).containsKey(it) }
+        if (ops.size() > 1) {
+            throw new IllegalArgumentException("patches[${i}] carries ${ops.size()} operations (${ops.join(', ')}); each patches item takes exactly one -- split them into separate items, in the order they should run. RM is not touched.")
+        }
+    }
+}
+
+private Integer _rmPatchOpIndex(String op, Object raw) {
+    if (raw instanceof Number) return (raw as Number).intValue()
+    String text = raw?.toString()?.trim()
+    if (text?.isInteger()) return text.toInteger()
+    throw new IllegalArgumentException("${op}.index must be an integer index (from hub_get_app_config), got '${raw}'")
+}
+
+private boolean _rmModifyTriggerInnerPartial(Map res) {
+    ((res?.settingsSkipped as List)?.size() ?: 0) > 0 || res?.verificationFetchFailed == true
+}
+
 // One patches[] removeTrigger / modifyTrigger / modifyAction op, via the same helpers as the
 // top-level ops. No updateRule here: the batch fires it once at the end.
 private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
-    String op = ["removeTrigger", "modifyTrigger", "modifyAction"].find { pm.containsKey(it) }
+    String op = _rmPatchModifyOpKeys().find { pm.containsKey(it) }
     def spec = pm[op]
     if (!(spec instanceof Map) || spec.index == null) throw new IllegalArgumentException("${op}.index required")
+    Integer index = _rmPatchOpIndex(op, spec.index)
     if (op == "removeTrigger") {
-        def rtRes = _rmRemoveTrigger(appId, spec.index as Integer)
+        def rtRes = _rmRemoveTrigger(appId, index)
         return [success: rtRes?.success != false, op: op, index: spec.index, removedIndex: rtRes?.removedIndex,
                 beforeIndices: rtRes?.beforeIndices, afterIndices: rtRes?.afterIndices, partial: rtRes?.partial == true]
     }
@@ -4652,12 +4687,10 @@ private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
         throw new IllegalArgumentException("${op}.mods is required and must be a Map (e.g. ${example})")
     }
     if (op == "modifyTrigger") {
-        def mtRes = _rmModifyTrigger(appId, spec.index as Integer, spec.mods as Map) ?: [:]
-        // Same inner-partial rule as the top-level modifyTrigger envelope.
-        boolean mtPartial = ((mtRes.settingsSkipped as List)?.size() ?: 0) > 0 || mtRes.verificationFetchFailed == true
-        return [op: op] + mtRes + [partial: mtPartial]
+        def mtRes = _rmModifyTrigger(appId, index, spec.mods as Map) ?: [:]
+        return [op: op] + mtRes + [partial: _rmModifyTriggerInnerPartial(mtRes)]
     }
-    return [op: op] + (_rmModifyAction(appId, spec.index as Integer, spec.mods as Map, reqT0) ?: [:])
+    return [op: op] + (_rmModifyAction(appId, index, spec.mods as Map, reqT0) ?: [:])
 }
 
 // Message for a throw AFTER modifyAction's delete leg committed. Neutralizes
@@ -5520,14 +5553,14 @@ private boolean _rmActionCapUsesActionVerb(String capRaw) {
 
 // Internal _rm helper -- not part of the tool surface.
 // Roll back a just-opened action row whose build threw -- an expression opener (ifThen / elseIf /
-// repeatWhile / waitExpression) or any plain action refused mid-edit (via
-// _rmCancelRefusedActionEditor) -- so the reject is ATOMIC: no orphan row remains (an orphan
-// opener would leave a "block opened but never closed" structural imbalance -- a success:false
-// call that mutated the rule). RM's cancel consumes the row's index and can leave an empty
-// tCustomAttr.<idx> key behind, so "pre-call" is net of those. Returns true when the row
-// is confirmed gone, false when it may persist (the caller then surfaces a stuck-orphan marker so the
-// envelope points at recovery). Every step is tolerant -- a rollback must never mask the original
-// error, and "nothing to cancel/delete" is a benign no-op.
+// repeatWhile / waitExpression) or any plain action refused mid-edit -- so the reject is ATOMIC:
+// no orphan row remains (an orphan opener would leave a "block opened but never closed" structural
+// imbalance -- a success:false call that mutated the rule). RM's cancel or delete consumes the
+// row's index and may leave blank actType/actSubType (and tCustomAttr) keys behind; "gone" means
+// no live actType/actSubType value. Returns true when the row is confirmed gone, false when it may
+// persist (the caller then surfaces a stuck marker so the envelope points at recovery). Every step
+// is tolerant -- a rollback must never mask the original error, and "nothing to cancel/delete" is
+// a benign no-op.
 private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean condWizardOpen = false) {
     // 1. Close the in-flight condition wizard ONLY when one is genuinely open and not already cancelled.
     //    On the walker-thrown path the walker's cancelInFlightActCond already issued the single allowed
@@ -5541,24 +5574,23 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
     }
     // 2. Abort the action editor via doActPage's Cancel button (actionCancel; "cancelAct" is only the
     //    delay "Cancelable?" toggle). This must precede step 3: RM silently no-ops delAct while
-    //    state.editAct is set. On success RM removes the uncommitted row's keys and consumes its
+    //    state.editAct is set. On success RM drops the uncommitted row's values and consumes its
     //    index; the click is best-effort, so step 3 verifies rather than assumes.
     try { _rmClickAppButton(appId, "actionCancel", null, "doActPage") } catch (Exception cancelExc) {
         // Editor may already be closed; step 3 verifies. Log the cause so a failing cancel is traceable.
         mcpLog("debug", "rm-native", "_rmRollbackInFlightAction: actionCancel click failed for app ${appId} action ${idx} (${cancelExc.message ?: cancelExc.toString()})")
     }
-    // 3. If the opener row still persists in settings (actType.<idx> written by this call), delete it.
+    // 3. If the row still persists in settings (actType.<idx> written by this call), delete it.
     try {
         // Settings, not the compiled list: an un-baked orphan row never reaches
         // ruleBuilderJson.actionList, so a compiled read would call it already gone.
-        // Live rows only: RM's delete leaves blank actType/actSubType keys behind, and a cancel
-        // can too, so the key-count view would report a gone row as present (a false wizardStuck)
-        // and delete a row that is already empty.
+        // Live rows only: the key-count view would report a blank row as present (a false
+        // wizardStuck) and delete a row that is already empty.
         if (!_rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)) return true
         _rmDeleteAction(appId, idx, true)   // our own uncommitted row: skip the structural pre-flight
         return !_rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)
     } catch (Exception delExc) {
-        mcpLog("warn", "rm-native", "_rmAddAction: rollback of orphan action ${idx} failed for app ${appId} (${delExc.message ?: delExc.toString()}) -- the expression block opener may persist; caller surfaces a stuck-orphan marker so the response points at recovery")
+        mcpLog("warn", "rm-native", "_rmRollbackInFlightAction: rollback of action ${idx} failed for app ${appId} (${delExc.message ?: delExc.toString()}) -- the action row may persist; caller surfaces a stuck-orphan marker so the response points at recovery")
         return false
     }
 }
@@ -5581,9 +5613,9 @@ private Map _rmWithClock(Map spec, Long reqT0) {
     return spec + [__reqT0: reqT0]
 }
 
-// Extracted from _rmAddAction to keep that method under the hub's per-method bytecode budget
-// (ci/groovy24-parse enforces it): every check here refuses a bad spec BEFORE any wizard
-// write, so RM is genuinely untouched on a throw.
+// Extracted from _rmAddAction to keep that method under the JVM's 64KB per-method bytecode
+// limit: every check here refuses a bad spec BEFORE any wizard write, so RM is genuinely
+// untouched on a throw.
 private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleIds) {
     // Pre-validate device IDs exist on the hub. RM 5.1 silently stores
     // {<bogusId>: null} for unknown IDs in any device-bearing setting and
@@ -5668,8 +5700,29 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
     }
 }
 
+// Every pure argument check a single add runs, applied to a whole replacement list, so a list
+// that would be refused partway is refused before clearActions empties the rule. Only the checks
+// that read nothing from the rule itself belong here; structural balance is checked separately.
+private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds) {
+    specs.eachWithIndex { spec, i ->
+        if (!(spec instanceof Map)) {
+            throw new IllegalArgumentException("${label}[${i}] must be an action spec object, got '${spec}'. RM is not touched.")
+        }
+        def sm = spec as Map
+        if (sm.discover == true) return
+        def cap = sm.capability?.toString()?.trim()
+        if (!cap) throw new IllegalArgumentException("${label}[${i}].capability is required. RM is not touched.")
+        try {
+            _rmValidateRoundZeroActionSpec(sm)
+            _rmPrevalidateActionSpec(sm, cap, validRuleIds)
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("${label}[${i}]: ${e.message}".toString(), e)
+        }
+    }
+}
+
 // The numOp a setVariable/setLocalVariable 'value' action writes. The other source modes
-// each write their own numOp, so a caller numOp there (or with no value) could only be
+// select their own source picker, so a caller numOp there (or with no value) could only be
 // silently dropped -- refuse it instead.
 private String _rmSetVariableValueNumOp(Map actionSpec) {
     if (actionSpec.numOp == null) return "number"
@@ -7258,18 +7311,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         // expression walk above — see pre-expression block.)
     }
     } catch (Exception exprExc) {
-        // Roll the just-opened block opener back so the reject is atomic. On confirmed removal the
-        // original exception re-raises unchanged (a capability-name reject already carries the
-        // "RM is not touched" sentinel, now accurate net of the rollback). If removal cannot be
-        // confirmed, the opener may persist: drop the "RM is not touched" claim so the envelope does
-        // not falsely promise an untouched rule, and add a wizardStuck-style marker pointing at
-        // hub_get_app_config + removeAction / hub_restore_backup.
-        def rolledBack = _rmRollbackInFlightAction(appId, idx, actCondWizardOpen)
-        if (rolledBack) {
-            throw exprExc
-        }
-        def stuckMsg = (exprExc.message ?: exprExc.toString()).replace(" RM is not touched.", "")
-        throw new IllegalStateException("${stuckMsg} [wizardStuck -- orphan action ${idx} (the expression block opener) could not be automatically rolled back and may persist; verify via hub_get_app_config(appId=${appId}) and remove it with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
+        // Roll the just-opened block opener back so the reject is atomic (a capability-name reject
+        // already carries the "RM is not touched" sentinel, accurate net of a confirmed rollback).
+        _rmCancelRefusedActionEditor(appId, idx, exprExc, actCondWizardOpen,
+            "orphan action ${idx} (the expression block opener) could not be automatically rolled back and may persist".toString())
     }
 
     // Every write below happens with the doActPage new-action editor still open on this row.
@@ -7982,7 +8027,11 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
     // half-open. Independent of preflight refusal (preflight never opens the wizard).
     def wizardStuck = msgStr.contains("wizardStuck") || msgStr.contains("cancelCapab cleanup failed")
     def health = null
-    try { health = _rmCheckRuleHealth(appId) } catch (Exception ignored) { /* best effort — never let a health read mask the real error */ }
+    // Best effort -- a health read must never mask the real error, but a failed one is reported.
+    try { health = _rmCheckRuleHealth(appId) } catch (Exception healthExc) {
+        health = [ok: false, unreadable: true, checkErrors: [healthExc.message ?: healthExc.toString()]]
+        mcpLog("warn", "rm-native", "_rmBuildUpdateErrorResponse: health probe failed for app ${appId}: ${healthExc.message}")
+    }
     def restoreHint
     if (isPreflightRefusal) {
         // Echo the disabled-rule cause specifically: it is the one refusal whose remedy is a
@@ -10766,8 +10815,7 @@ private void _rmWriteMathOperand(Integer appId, int idx, Object operandValue, St
     }
 }
 
-// Extracted from _rmAddAction to keep it under the hub's per-method bytecode budget
-// (ci/groovy24-parse enforces it).
+// Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
 private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, String actSubType, List applied, List skipped) {
     // Wait for Events: walk each event row using tCapab-<N>/tDev-<N>/
     // tstate-<N> (dash-separated index). A Mode event is the exception:
@@ -10992,8 +11040,7 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
     }
 }
 
-// Extracted from _rmAddAction to keep it under the hub's per-method bytecode budget
-// (ci/groovy24-parse enforces it).
+// Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
 private void _rmWriteActionDelayModifier(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
     // Optional Delay? modifier on an action. Verified live:
     //   delayAct.<N> options: ["none", "hrs:min:sec", "variable"]
@@ -11022,8 +11069,7 @@ private void _rmWriteActionDelayModifier(Integer appId, Integer idx, Map actionS
     }
 }
 
-// Extracted from _rmAddAction to keep it under the hub's per-method bytecode budget
-// (ci/groovy24-parse enforces it).
+// Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
 private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
     // runCommand parameters. Live-verified wire sequence (RM 5.1):
     //   For each parameter (including the first):
@@ -11121,28 +11167,28 @@ private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec
     }
 }
 
-// Abort the doActPage new-action editor after a mid-edit refusal, then rethrow. RM leaves the
-// editor open on this row when a write is refused; without the cancel the next add reopens the
-// row pre-filled with its stale fields. Cleanup is VERIFIED, not fire-and-forget: the hub
-// answers 200 to a click that does nothing (how the old no-op cancelAct stayed hidden), so
-// the settings-checked rollback runs, and only an unconfirmed removal is surfaced as a
-// wizardStuck marker -- the cleanup never masks the refusal itself.
-private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception refusal) {
+// Roll back an action row whose build was refused. RM leaves the doActPage editor open on the
+// row when a write is refused; without the rollback the next add reopens it pre-filled with its
+// stale fields. Cleanup is VERIFIED, not fire-and-forget: the hub answers 200 to a click that does
+// nothing, so the settings-checked rollback decides. On confirmed removal the original refusal is
+// re-raised unchanged. Otherwise an IllegalStateException carries the refusal text (minus its
+// "RM is not touched" claim) plus a wizardStuck marker whose recovery starts with actionCancel,
+// because removeAction is refused while the open editor holds state.editAct.
+private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception refusal,
+                                          boolean condWizardOpen = false, String stuckWhat = null) {
     boolean cleaned = false
     try {
-        cleaned = _rmRollbackInFlightAction(appId, idx)
+        cleaned = _rmRollbackInFlightAction(appId, idx, condWizardOpen)
     } catch (Exception rollbackExc) {
-        mcpLog("warn", "rm-native", "_rmAddAction: rollback after a refused action edit failed for app ${appId} action ${idx} (${rollbackExc.message ?: rollbackExc.toString()}) -- the editor may stay open with stale fields")
+        mcpLog("warn", "rm-native", "_rmCancelRefusedActionEditor: rollback threw for app ${appId} action ${idx} (${rollbackExc.message ?: rollbackExc.toString()})")
     }
-    if (!cleaned) {
-        // The plain refusal would falsely imply a clean retry; the next add can reopen this row.
-        throw new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "")} [wizardStuck -- the doActPage action editor could not be cancelled after the refusal and may retain action ${idx}'s fields, which the next add can reopen; verify via hub_get_app_config(appId=${appId}) and remove the row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
-    }
-    throw refusal
+    if (cleaned) throw refusal
+    String what = stuckWhat ?: "action ${idx}'s editor or row could not be confirmed removed after the refusal, and the next add can reopen it pre-filled".toString()
+    mcpLog("warn", "rm-native", "_rmCancelRefusedActionEditor: app ${appId}: ${what}")
+    throw new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "")} [wizardStuck -- ${what}; first close the editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true), verify via hub_get_app_config(appId=${appId}), then remove any surviving row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
 }
 
-// Extracted from _rmAddAction to keep it under the hub's per-method bytecode budget
-// (ci/groovy24-parse enforces it).
+// Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
 private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
     // setVariable copy-from-variable: source-variable field is schema-gated.
     // RM 5.1 reveals the source-variable enum ONLY after the copy selector lands:
@@ -13870,6 +13916,14 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
         repairHints: ["Stopped fail-closed after ${stoppedAfter}: later items were not attempted and the trailing updateRule was not fired. Items before it remain written and can already affect the rule (actions self-bake). Inspect with hub_get_app_config(appId=${appId}); repair the failed item and add the notAttempted items, or roll back via hub_restore_backup(backupKey='${backup?.backupKey}'). Fire hub_set_rule(button='updateRule') only once the rule is complete.".toString()],
         note: "Stopped after ${stoppedAfter} failed or was partial; finalisation not attempted.".toString()
     ]
+    // An item that left an editor open is reported the way the single-op envelope reports it:
+    // retrying the failed item first would reopen the stale row pre-filled.
+    boolean stuck = false
+    try { stuck = groovy.json.JsonOutput.toJson(stopItem ?: [:]).contains("[wizardStuck") } catch (Exception ignored) { stuck = false }
+    if (stuck) {
+        out.wizardStuck = true
+        out.repairHints = (["An item left an editor open (wizardStuck). Close it before any retry: hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for an action, or button='cancelCapab' with the wizard's pageName for a condition. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()] + (out.repairHints as List))
+    }
     out.putAll(extra ?: [:])
     return out
 }
@@ -14392,17 +14446,11 @@ def _applyNativeAppEdit(args) {
                 if (specIssues) {
                     throw new IllegalArgumentException("replaceActions blocked: the proposed action list is structurally imbalanced — ${specIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. RM is not touched and no actions are cleared.")
                 }
-                // Reject a bogus rule target BEFORE clearActions wipes the rule.
-                // Resolve the valid-rule-id set once here and reuse it in the re-add
-                // loop below, so a dangling runRule/cancelTimers/pauseRule/privateBoolean
-                // target fails loud with nothing destroyed rather than wipe-then-drop.
+                // Refuse anything a single add would refuse (a dangling rule target, an unknown
+                // device, an unsupported numOp, ...) BEFORE clearActions wipes the rule. The
+                // valid-rule-id set is resolved once here and reused by the re-add loop below.
                 replaceValidRuleIds = _rmSpecListTargetsRule(replaceActionsList) ? _rmValidRuleIds() : null
-                replaceActionsList.each { spec ->
-                    if (_rmSpecTargetsRule(spec)) {
-                        def sm = spec as Map
-                        _rmValidateRuleTargetExists(sm.capability?.toString()?.trim(), sm.ruleIds ?: sm.deviceIds, replaceValidRuleIds)
-                    }
-                }
+                _rmPrevalidateActionSpecList(replaceActionsList, "replaceActions", replaceValidRuleIds)
             }
             if (removeActionSpec) {
                 if (removeActionSpec.index == null) throw new IllegalArgumentException("removeAction.index is required")
@@ -14760,8 +14808,7 @@ def _applyNativeAppEdit(args) {
         // {success:false, partial:false}; every other dispatcher returns
         // partial:true on either of those conditions. Match the dispatcher-wide
         // contract.
-        def trigSkippedSize = (trigMutResult?.settingsSkipped as List)?.size() ?: 0
-        def trigInnerPartial = trigSkippedSize > 0 || trigMutResult?.verificationFetchFailed == true
+        def trigInnerPartial = _rmModifyTriggerInnerPartial(trigMutResult)
         // Inner-only partial hint (trigger inner skipped/verify-failed BUT the
         // trailing updateRule landed clean); without it the caller has to
         // drill into settingsSkipped[] to discover why partial flipped true.
@@ -14945,6 +14992,7 @@ def _applyNativeAppEdit(args) {
                 (pm.replaceActions instanceof List && _rmSpecListTargetsRule(pm.replaceActions as List))
         }
         def patchValidRuleIds = patchBatchTargetsRule ? _rmValidRuleIds() : null
+        _rmRejectMultiOpPatchItems(patchesList)
         // Fail closed, as the top-level bulk paths do: the first failed or partial op, or inner item of an
         // addTriggers/addActions/replaceActions op, stops every later op and the batch-end updateRule. Later
         // ops and inner items are reported notAttempted, and the stop is decided before any budget checkpoint,
@@ -15191,14 +15239,9 @@ def _applyNativeAppEdit(args) {
                         if (patchSpecIssues) {
                             throw new IllegalArgumentException("patches[${pi}].replaceActions blocked: the proposed action list is structurally imbalanced — ${patchSpecIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. RM is not touched and no actions are cleared.")
                         }
-                        // Reject a bogus rule target BEFORE clearActions wipes the rule
-                        // (same wipe-then-drop guard as the top-level replaceActions path).
-                        (pm.replaceActions as List).each { aspec ->
-                            if (_rmSpecTargetsRule(aspec)) {
-                                def sm = aspec as Map
-                                _rmValidateRuleTargetExists(sm.capability?.toString()?.trim(), sm.ruleIds ?: sm.deviceIds, patchValidRuleIds)
-                            }
-                        }
+                        // Refuse anything a single add would refuse BEFORE clearActions wipes the
+                        // rule (same guard as the top-level replaceActions path).
+                        _rmPrevalidateActionSpecList(pm.replaceActions as List, "patches[${pi}].replaceActions".toString(), patchValidRuleIds)
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
                         catch (Exception clearExc) {
@@ -15250,7 +15293,7 @@ def _applyNativeAppEdit(args) {
                             verifyHint: mvRes?.verifyHint,
                             partial: mvRes?.partial == true
                         ]
-                    } else if (pm.containsKey("removeTrigger") || pm.containsKey("modifyTrigger") || pm.containsKey("modifyAction")) {
+                    } else if (_rmPatchModifyOpKeys().any { pm.containsKey(it) }) {
                         patchResults << _rmPatchModifyOp(appId, pm, args?.__reqT0 as Long)
                     } else {
                         patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction.", spec: p]
