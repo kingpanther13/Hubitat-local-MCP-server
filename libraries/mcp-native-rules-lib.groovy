@@ -5551,9 +5551,12 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
     try {
         // Settings, not the compiled list: an un-baked orphan row never reaches
         // ruleBuilderJson.actionList, so a compiled read would call it already gone.
-        if (!_rmActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)) return true
+        // Live rows only: RM's delete leaves blank actType/actSubType keys behind, and a cancel
+        // can too, so the key-count view would report a gone row as present (a false wizardStuck)
+        // and delete a row that is already empty.
+        if (!_rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)) return true
         _rmDeleteAction(appId, idx, true)   // our own uncommitted row: skip the structural pre-flight
-        return !_rmActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)
+        return !_rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)
     } catch (Exception delExc) {
         mcpLog("warn", "rm-native", "_rmAddAction: rollback of orphan action ${idx} failed for app ${appId} (${delExc.message ?: delExc.toString()}) -- the expression block opener may persist; caller surfaces a stuck-orphan marker so the response points at recovery")
         return false
@@ -11133,7 +11136,7 @@ private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception 
     }
     if (!cleaned) {
         // The plain refusal would falsely imply a clean retry; the next add can reopen this row.
-        throw new IllegalStateException("${refusal.message ?: refusal.toString()} [wizardStuck -- the doActPage action editor could not be cancelled after the refusal and may retain action ${idx}'s fields, which the next add can reopen; verify via hub_get_app_config(appId=${appId}) and remove the row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
+        throw new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "")} [wizardStuck -- the doActPage action editor could not be cancelled after the refusal and may retain action ${idx}'s fields, which the next add can reopen; verify via hub_get_app_config(appId=${appId}) and remove the row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
     }
     throw refusal
 }

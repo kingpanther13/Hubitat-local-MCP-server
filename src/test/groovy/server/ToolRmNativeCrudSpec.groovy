@@ -6131,6 +6131,75 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         false       || false
     }
 
+    def "rollback treats the blank actType/actSubType keys RM leaves behind as a removed row (blankAfter=#blankAfter)"() {
+        // RM's delete (and a cancel) can leave actType.<N>/actSubType.<N> present with empty values.
+        // The rollback must read those as gone, like _rmDeleteAction's own verification does:
+        // otherwise a cancel that worked triggers a needless delAct on an empty row, and a delete
+        // that worked still reports the row present -- a false wizardStuck for a row that is gone.
+        given:
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        def blankRows = [[name: "actType.1", value: ""], [name: "actSubType.1", value: ""]]
+        def liveRows = [[name: "actType.1", value: "condActs"], [name: "actSubType.1", value: "getIfThen"]]
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            def deleted = posts.any { it.path == "/installedapp/btn" && it.body?.stateAttribute == "delAct" }
+            if (blankAfter == "cancel") return statusJson(100, blankRows)
+            return statusJson(100, deleted ? blankRows : liveRows)
+        }
+
+        when:
+        def rolledBack = script._rmRollbackInFlightAction(100, 1)
+
+        then:
+        rolledBack == true
+        posts.any { it.path == "/installedapp/btn" && it.body?.stateAttribute == "delAct" } == expectDelete
+
+        where:
+        blankAfter | expectDelete
+        "cancel"   | false
+        "delete"   | true
+    }
+
+    def "an uncancellable refused editor drops the untouched claim before adding the wizardStuck marker"() {
+        // _rmBuildUpdateErrorResponse tests "RM is not touched" before wizardStuck, so a refusal
+        // that keeps that sentence under the marker gets the nothing-to-restore hint while the
+        // refused row may still be on the rule. The expression path already strips it.
+        given:
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            (path == "/installedapp/btn" && body?.name == "actionCancel") ? [status: 500, location: null, data: ''] : [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [[name: "actType.1", value: "modeActs"], [name: "actSubType.1", value: "getSetVariable"]],
+                eventSubscriptions: [], scheduledJobs: [],
+                appState: [[name: "editAct", value: 1]],
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+
+        when:
+        script._rmCancelRefusedActionEditor(100, 1,
+            new IllegalArgumentException("setVariable: 'temp' is a String variable. RM is not touched."))
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.startsWith("setVariable: 'temp' is a String variable. [wizardStuck")
+        !ex.message.contains("RM is not touched")
+        ex.message.contains("removeAction:{index:1}")
+    }
+
     def "addRequiredExpression Lock codes fails loud even when the STPage picker OMITS the capability (firmware-independent)"() {
         // Required-Expression walker: with Lock codes ABSENT from the STPage picker
         // (rCapab_1 options are Switch/Contact only), the old flow would resolve the picker first and throw
