@@ -1,6 +1,7 @@
 package server
 
 import spock.lang.Shared
+import spock.lang.Unroll
 import support.TestChildApp
 import support.ToolSpecBase
 
@@ -817,6 +818,46 @@ class ToolImportUrlSpec extends ToolSpecBase {
         posts[1].body._action_update == 'Done'
         posts[1].body.currentPage == 'mainPage'
         posts[1].body.version == '7'
+    }
+
+    @Unroll
+    def "triggerUpdated protected=#protectedTarget Developer Mode=#developerMode respects the lifecycle gate"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = developerMode
+        atomicStateMap.protectedAppsPolicy = [ids: protectedTarget ? ['194'] : ['1']]
+        hubGet.register('/app/ajax/code') { '{"status":"ok","source":"old","version":5}' }
+        hubGet.register('/installedapp/configure/json/194') { instanceConfigJson(194) }
+        stubStatusJson(194, [])
+        def writes = []
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            writes << path
+            [success: true]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            writes << path
+            [status: 200, data: '']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+        boolean allowed = !protectedTarget || developerMode == true
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', source: 'new source', triggerUpdated: 194, confirm: true])
+
+        then:
+        result.success == true
+        result.triggerUpdated == 194
+        result.updatedFired == allowed
+        writes.contains('/app/saveOrUpdateJson')
+        writes.contains('/installedapp/update/json') == allowed
+        allowed || (result.partial == true && result.repairHints.join(' ').contains('App 194 is protected') &&
+            result.repairHints.join(' ').contains('requires Developer Mode'))
+        allowed || !hubGet.calls.any { it.path == '/installedapp/configure/json/194' }
+        allowed || (result.repairHints.join(' ').contains('No Done submit was sent') &&
+            !result.repairHints.join(' ').contains('failed:'))
+
+        where:
+        [protectedTarget, developerMode] << [[true, false], [true, false, null]].combinations()
     }
 
     def "hub_update_app with triggerUpdated reports updatedFired=false + repairHints when the Done submit throws"() {

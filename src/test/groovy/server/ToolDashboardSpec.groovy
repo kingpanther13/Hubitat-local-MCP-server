@@ -1095,6 +1095,25 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- create legacy ----------
 
+    def "create legacy refuses a protected parent before creating or configuring a dashboard"() {
+        given:
+        enableWrite()
+        registerLegacyParent(21)
+        atomicStateMap.protectedAppsPolicy = [ids: ['21']]
+        def rawPaths = stubCreateChild('850')
+        def forms = captureFormPosts()
+
+        when:
+        script.toolCreateDashboard([name: 'Patio', type: 'legacy'])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('protected')
+        error.message.contains('21')
+        rawPaths.empty
+        forms.empty
+    }
+
     def "create legacy: createchild under the legacy parent, then writes label + devicesPicked"() {
         given:
         enableWrite()
@@ -1958,4 +1977,47 @@ class ToolDashboardSpec extends ToolSpecBase {
         inner.type == 'legacy'
         inner.applied == ['name']
     }
+    def "create legacy reports unknown outcome when the create response is lost"() {
+        given:
+        enableWrite()
+        registerLegacyParent(21)
+        def rawPaths = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int timeout = 30, boolean raw = false ->
+            rawPaths << path
+            throw new IOException('connection reset after create')
+        }
+
+        when:
+        def result = script.toolCreateDashboard([name: 'Patio', type: 'legacy'])
+
+        then:
+        result.success == false
+        result.outcomeUnknown == true
+        result.parentAppId == 21
+        result.note.contains('may have been created')
+        result.note.contains('hub_list_dashboards')
+        result.note.contains('hub_list_apps')
+        result.note.contains('before retrying')
+        !result.note.contains('Nothing was created')
+        rawPaths == ['/installedapp/createchild/hubitat/Dashboard/parent/21']
+    }
+
+    def "create Easy reports unknown outcome when the create response is lost"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/dashboard/create') { throw new IOException('connection reset after create') }
+
+        when:
+        def result = script.toolCreateDashboard([name: 'Patio', deviceIds: ['1']])
+
+        then:
+        result.success == false
+        result.outcomeUnknown == true
+        result.note.contains('may have been created')
+        result.note.contains('hub_list_dashboards')
+        result.note.contains('before retrying')
+        !result.note.contains('Nothing was created')
+        hubGet.calls.count { it.path == '/dashboard/create' } == 1
+    }
+
 }

@@ -114,6 +114,25 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         atomicStateMap.unrelatedState == 'keep'
     }
 
+    def "updated() discards kept report errors unless error retention is on (#setting)"() {
+        given:
+        stubUpdatedDeps()
+        if (setting != null) settingsMap.retainReportErrors = setting
+        atomicStateMap.reportErrors = [[message: 'kept']]
+
+        when:
+        script.updated()
+
+        then:
+        atomicStateMap.containsKey('reportErrors') == kept
+
+        where:
+        setting | kept
+        null    | false
+        false   | false
+        true    | true
+    }
+
     // -----------------------------------------------------------------------
     // 1. Golden path: migration fires and forces enableCustomRuleEngine OFF
     // -----------------------------------------------------------------------

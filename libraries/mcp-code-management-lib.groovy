@@ -1570,6 +1570,13 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 }
                 successResult.triggerUpdated = triggerId
                 try {
+                    if (!settings.enableDeveloperMode && _protectedAppIds().contains(triggerId.toString())) {
+                        successResult.updatedFired = false
+                        successResult.partial = true
+                        successResult.repairHints = ["App ${triggerId} is protected: triggerUpdated requires Developer Mode. No Done submit was sent. The new code is deployed (success:true); enable Developer Mode or refresh the app manually through its Hubitat UI."]
+                        mcpLog("warn", "hub-admin", "triggerUpdated refused for protected instance ${triggerId}: Developer Mode is required; no Done submit was sent")
+                        return successResult
+                    }
                     // Submitting Done on an already-installed instance is what fires
                     // updated(). Goes through the SAME _submitAppDoneForm the install-commit
                     // uses -- one Done-submit implementation, one endpoint. The status check
@@ -2799,7 +2806,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() on after the code save, so its subscriptions/schedules/atomicState re-initialize against the new code. Mechanically this submits the app's mainPage 'Done' form, which RE-SENDS EVERY input on that page -- the tool rebuilds them from the instance's live settings so nothing is blanked, and REFUSES to submit (updatedFired:false, partial:true) if it cannot read them, rather than risk clearing device selections. On failure the code save still stands: success stays true with partial:true, updatedFired:false and repairHints. Omit it to match what the hub's own editor Save does (no lifecycle call)."],
+                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage's Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor's normal Save behavior (no lifecycle refresh)."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],

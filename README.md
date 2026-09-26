@@ -850,6 +850,13 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 </details>
 
 <details>
+<summary><b>Protected apps</b></summary>
+
+The **Protected apps** picker on the main app page blocks generic app, native-rule, and Dashboard mutations (Easy and legacy) for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Manage the selection in the Hubitat app UI and click **Done** to apply it.
+
+</details>
+
+<details>
 <summary><b>Item Backup & Restore</b></summary>
 
 When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hub_delete_item` (type: app|driver|library), the server automatically saves the **original source code** before making changes.
@@ -1661,6 +1668,8 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.4.3** - fix: hub_report_issue reports the real hub model; make bug-report error retention opt-in. PRs: [#468](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/468)
+- **v4.4.2** - fix: resolve verified issue 407 findings; fix: hub_get_info reports the real hardware model, not the internal hardwareID (#466); feat: add protected-app controls for generic app mutations. PRs: [#465](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/465), [#467](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/467), [#456](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/456)
 - **v4.4.1** - fix: keep producedBy/triggered provenance in device event history. PRs: [#459](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/459)
 - **v4.4.0** - feat: add hub-level Hub Mesh tools (hub_get_hub_mesh, hub_update_hub_mesh). PRs: [#438](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/438)
 - **v4.3.11** - chore: retire the Hub Security credential settings on firmware 2.5.0+. PRs: [#450](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/450)

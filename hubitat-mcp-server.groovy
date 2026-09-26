@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.4.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.4.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -90,6 +90,8 @@
 // Code-derived metadata is valid for one compiled class, including same-version deploys:
 // recompilation resets statics without needing updated() or a contributor version bump.
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
+// Serialize the one-time protected-app default across concurrent endpoint handlers.
+@groovy.transform.Field static final Map PROTECTED_APPS_LOCK = new java.util.HashMap()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
@@ -207,6 +209,7 @@ preferences {
 }
 
 def mainPage() {
+    _protectedAppIds()
     dynamicPage(name: "mainPage", title: "MCP Rule Server", install: true, uninstall: true) {
         section("MCP Endpoint") {
             if (!state.accessToken) {
@@ -256,6 +259,17 @@ def mainPage() {
             href name: "advancedOverrides", page: "advancedOverridesPage",
                  title: "Advanced: Per-tool Overrides & expert settings",
                  description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and configure Origin validation."
+        }
+
+        section("Protected apps") {
+            def choices = _protectedAppChoices()
+            input "protectedAppIds", "enum", title: "Protect installed apps from generic mutations",
+                  options: choices.options, multiple: true, required: false,
+                  description: "Selected apps cannot be edited, controlled, disabled, deleted, or have children created beneath them through generic app/native-rule/dashboard tools, even with Developer Mode on. Reads and dedicated Developer Mode maintenance remain available."
+            if (choices.inventoryUnavailable) {
+                paragraph "The installed-app list could not be loaded completely. Only the MCP server and previously protected apps are shown. Existing protection remains active; reopen this page to retry loading the full list."
+            }
+            paragraph "The MCP server is selected by default. You can remove it or clear the list; later updates preserve your choice. Click Done to apply protection changes."
         }
 
         section("Best-Practice Guidance") {
@@ -516,6 +530,12 @@ def advancedOverridesPage() {
                   description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit.",
                   defaultValue: false
         }
+        section("Bug report error retention") {
+            paragraph "Every MCP server error is already written to the hub's own Past Logs, which hub_report_issue reads. This option additionally keeps the ten newest errors in app state, so a bug report still includes them after they have rolled out of Past Logs. It costs an app-state write on every error, so it is off by default."
+            input "retainReportErrors", "bool", title: "Keep recent errors for bug reports",
+                  description: "Leave OFF (default): bug reports read errors from Past Logs only. Turn ON to keep the ten newest errors in app state; turning it back OFF discards them on save.",
+                  defaultValue: false
+        }
         section("Tool name number") {
             paragraph "Inserts a single digit after the \"hub\" prefix of every MCP tool name on the wire (e.g. hub_get_info becomes hub3_get_info). Lets multiple Hubitat MCP servers coexist in one client without tool-name collisions -- internal behavior is unchanged, only the names the client sees. MCP clients cache the tool list, so refresh or reconnect your client after changing this."
             input "enableHubToolNumber", "bool", title: "Add a digit to every tool name",
@@ -600,6 +620,7 @@ def getChildAppById(appId) {
 
 def installed() {
     log.info "MCP Rule Server installed"
+    _protectedAppIds(true)
     _invalidateToolMetadata()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         RETIRED_TOOL_STATE_CLEANED.clear()
@@ -618,6 +639,7 @@ def installed() {
 
 def updated() {
     log.info "MCP Rule Server updated"
+    _protectedAppIds(true)
     _invalidateToolMetadata()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         RETIRED_TOOL_STATE_CLEANED.clear()
@@ -626,6 +648,8 @@ def updated() {
     // Shed the retired publication toggle and its migration marker on upgraded hubs.
     app.removeSetting("publishOutputSchemas")
     atomicState.remove("publishOutputSchemasForcedOff")
+    // Error retention is opt-in; switching it off discards what it kept.
+    if (settings.retainReportErrors != true) atomicState.remove("reportErrors")
     _retireHubSecuritySettings()
     _cleanupRetiredToolState()
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
@@ -689,9 +713,132 @@ def uninstalled() {
     try { unschedule() } catch (Exception e) { /* best-effort teardown */ }
 }
 
+private String _protectedAppId(value) {
+    String id = value?.toString()?.trim()
+    return id?.isLong() && id.toLong() > 0L ? id.toLong().toString() : null
+}
+
+private Set<String> _protectedAppSelection(value) {
+    def values = value instanceof Collection ? value : (value == null ? [] : [value])
+    return values.collect { _protectedAppId(it) }.findAll { it != null } as Set
+}
+
+private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
+    def policy = atomicState.protectedAppsPolicy
+    if (!applyUiSelection && policy instanceof Map && policy.ids instanceof List) {
+        return _protectedAppSelection(policy.ids)
+    }
+    synchronized (PROTECTED_APPS_LOCK) {
+        policy = atomicState.protectedAppsPolicy
+        if (policy instanceof Map && policy.ids instanceof List) {
+            if (applyUiSelection) {
+                policy = [ids: _protectedAppSelection(settings.protectedAppIds) as List]
+                atomicState.protectedAppsPolicy = policy
+            }
+            return _protectedAppSelection(policy.ids)
+        }
+        def selected = _protectedAppSelection(settings.protectedAppIds)
+        String selfId = _protectedAppId(app?.id)
+        if (!selfId) return selected
+        boolean hasSelection = settings.protectedAppIds != null
+        if (!hasSelection) selected.add(selfId)
+        try {
+            if (!hasSelection) {
+                app.updateSetting('protectedAppIds', [type: 'enum', value: selected as List])
+            }
+            // Publish initialization and its effective selection together: concurrent handlers
+            // may retain older settings snapshots. Only installed()/updated() publish UI saves.
+            atomicState.protectedAppsPolicy = [ids: selected as List]
+        } catch (Exception e) {
+            // Keep enforcing the default even if persistence fails; the next request retries.
+            mcpLog('warn', 'server', "Could not save protected-app defaults; protection remains active and initialization will retry: ${e.message}")
+        }
+        return selected
+    }
+}
+
+private Map _protectedAppChoices() {
+    def selected = _protectedAppIds()
+    def options = [:]
+    def apps = _collectLiveApps()
+    (apps ?: [:]).each { id, details ->
+        String key = _protectedAppId(id)
+        if (key) {
+            String label = stripAppConfigHtml(details.name) ?: 'Installed app'
+            options.put(key, "${label} (ID ${key})".toString())
+        }
+    }
+    String selfId = _protectedAppId(app?.id)
+    if (selfId && !options.containsKey(selfId)) options.put(selfId, "${app?.label ?: 'MCP Rule Server'} (ID ${selfId})".toString())
+    selected.each { id ->
+        if (!options.containsKey(id)) options.put(id, "Unavailable app (ID ${id})".toString())
+    }
+    return [options: options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) },
+            inventoryUnavailable: apps == null]
+}
+
+private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
+    String id = _protectedAppId(targetId)
+    if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
+        throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps in the MCP server's Hubitat app UI. Developer Mode does not bypass this protection for generic tools.")
+    }
+}
+
+private boolean _requireUnprotectedAppDeletion(Integer appId, boolean allowMissing = false) {
+    // Use one policy snapshot for the entire cascading delete, not a DB read per node.
+    def protectedIds = _protectedAppIds()
+    _requireUnprotectedAppMutation(appId, "delete", protectedIds)
+    if (protectedIds.isEmpty()) return true
+    def parsed
+    try {
+        def text = hubInternalGet("/hub2/appsList")
+        parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: ${e.message}. No app was deleted.")
+    }
+    if (!(parsed instanceof Map) || !(parsed.apps instanceof List)) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is unavailable. No app was deleted.")
+    }
+    boolean found = false
+    boolean complete = true
+    def walk
+    walk = { node, boolean belowTarget ->
+        if (!(node instanceof Map) || (node.data != null && !(node.data instanceof Map)) ||
+                (node.children != null && !(node.children instanceof List))) {
+            complete = false
+            return
+        }
+        def rawId = node.data?.id != null ? node.data.id : node.id
+        Integer id = null
+        if (rawId != null) {
+            try {
+                if (!(rawId.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
+                id = rawId.toString().toInteger()
+            } catch (Exception ignored) { complete = false; return }
+        } else if (node.data != null) {
+            complete = false
+            return
+        }
+        boolean affected = belowTarget || id == appId
+        if (id == appId) found = true
+        if (affected && id != null) _requireUnprotectedAppMutation(id, "delete through parent app ${appId}", protectedIds)
+        (node.children ?: []).each { walk(it, affected) }
+    }
+    parsed.apps.each { walk(it, false) }
+    if (!complete) {
+        throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is incomplete. Retry after the full app inventory is available. No app was deleted.")
+    }
+    if (!found) {
+        // Dashboard deletion is retry-safe; absence is conclusive only after the full walk.
+        if (allowMissing) return false
+        throw new IllegalArgumentException("App ${appId} is absent from the installed-app tree. Refresh hub_list_apps to confirm the target ID; no app was deleted.")
+    }
+    return true
+}
+
+
 def initialize() {
-    // Stamp when THIS app instance came up. Any op record still marked "running" that
-    // started before this stamp was written by an instance that no longer exists: its
+    _protectedAppIds()
     if (!state.accessToken) {
         createAccessToken()
         log.info "Created access token"
@@ -816,6 +963,7 @@ def handleMcpRequest() {
 
     _cleanupRetiredToolState()
     _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
+    _protectedAppIds()
     _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
@@ -4668,7 +4816,7 @@ def getGatewayConfig() {
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start resets private boolean).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
                 hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Edits ensure a rollback baseline; same-app edits reuse it for one hour by default. For Rule Machine RULES use hub_set_rule (in hub_manage_rule_machine). Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
@@ -7835,7 +7983,7 @@ def clearDebugLogEntries(Map args = [:]) {
         int count = buffer.entries.size()
         String generation = java.util.UUID.randomUUID().toString()
         atomicState.debugLogGeneration = generation
-        atomicState.reportErrors = []
+        if (atomicState.reportErrors != null) atomicState.reportErrors = []
         buffer.generation = generation
         buffer.entries = []
         buffer.hydrated = true
@@ -7903,7 +8051,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
-        if (level == "error") _retainReportError(raw)
+        if (level == "error" && settings?.retainReportErrors == true) _retainReportError(raw)
         _emitNativeDebugLog(buffer, record, message)
         _appendDebugLogRecord(buffer, record)
     }
@@ -9473,7 +9621,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.4.1"
+    return "4.4.3"
 }
 
 
@@ -9744,9 +9892,11 @@ Creates a device from a driver TYPE id (the `id` from `hub_list_drivers(include=
 
 Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime, memory, temperature, DB size, MCP stats, security/toggle settings), it always returns three extra fields and supports two optional deep-dive flags. Use it for health checks, version lookups, or when triaging hub performance.
 
+**Hardware identity (part of the default payload):**
+- `model` — the hub HARDWARE model string (e.g. "C-7", "C-8 Pro"), read from /hub/details/json (hardwareVersion). Null if that read fails or hardwareVersion is missing or blank — never a placeholder.
+- `platformHardwareId` — the raw internal platform id (e.g. "000D"). It is the same on different hub models, so it is NOT the model.
+
 **Always returned (regardless of the flags below):**
-- `model` — the hub HARDWARE model string (e.g. "C-7", "C-8 Pro"), read from /hub/details/json (hardwareVersion). Null if that read fails or the field is missing — never a placeholder.
-- `platformHardwareId` — the raw internal platform id (e.g. "000D"), which is NOT the model (it is identical across different hardware, so do not treat it as one).
 - `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it).
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
 - `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
@@ -10237,7 +10387,7 @@ Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable cle
 
 ### hub_report_issue
 
-Reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
+With the opt-in advanced setting "Keep recent errors for bug reports" (off by default), reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. With it off, reports read errors from the native log history only. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
@@ -10322,6 +10472,8 @@ Only query devices the user has mentioned or that are relevant to their request.
 ''',
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
+
+Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule and Easy/legacy Dashboard mutations even with Developer Mode enabled. Creating children under protected parents is also refused. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list in the Hubitat UI and click Done to apply it.
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 
@@ -10448,11 +10600,11 @@ Curated sub-page directories by app type: HPM — prefOptions (main menu), prefP
 `action` selects which Rule Machine verb to invoke (default `rule`):
 
 - **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
-- **`actions`** → `runRuleAct`: run the action list directly, skipping condition evaluation.
+- **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
 - **`stop`**: halt the rule's in-progress actions.
 - **`start`**: re-enable a stopped rule (also resets its private boolean).
 
-`stop`/`start` toggle the stopRule UI button, not RMUtils (RMUtils has no startRule verb).
+`actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. Only `rule` still goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
 
 ### hub_set_native_app
 
@@ -10947,6 +11099,7 @@ Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
 
 - `confirm` (param) — Confirms a recent backup + user approval.
 - A legacy dashboard is removed through the classic force-delete (the Easy `/dashboard/delete` endpoint is a no-op for it); removal is confirmed by effect and the result carries its `type`.
+- If the protected-app inventory check confirms the target is already absent, returns `success: true, alreadyAbsent: true` without a delete. This also covers an ID that never existed; it does not prove a previous call deleted it.
 
 ### hub_clone_dashboard
 

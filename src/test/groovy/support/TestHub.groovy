@@ -34,14 +34,14 @@ class TestHub implements Hub {
     // location.hub.localIP — hub_get_info reports it, and the transport's Origin check
     // uses it as one of the server-known identities an inbound Origin may name.
     String localIP
-
-    // --- RUNTIME-ONLY (not on Hub interface — property-access only, resolved
-    // via Groovy's dynamic property dispatch when tools read e.g.
-    // location.hub.zwaveVersion — see hubitat-mcp-server.groovy for the
-    // zwaveVersion read and :5202 for the zigbeeChannel read) ---
-    String zwaveVersion
-    Integer zigbeeChannel
     // location.hub.hardwareID — internal platform id ("000D" on both a C-7 and a C-8 Pro).
     // hub_get_info surfaces it as platformHardwareId; the real model comes from /hub/details/json.
     String hardwareID
+
+    // --- RUNTIME-ONLY (not on Hub interface — property-access only, resolved
+    // via Groovy's dynamic property dispatch when tools read e.g.
+    // location.hub.zwaveVersion — read by toolGetHubInfo in libraries/mcp-system-lib.groovy
+    // and the radio tools in libraries/mcp-diagnostics-lib.groovy) ---
+    String zwaveVersion
+    Integer zigbeeChannel
 }

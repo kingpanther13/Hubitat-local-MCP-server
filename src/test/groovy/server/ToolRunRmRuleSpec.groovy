@@ -8,9 +8,9 @@ import support.ToolSpecBase
  * Spec for toolRunRmRule (libraries/mcp-native-rules-lib.groovy).
  * Gateway: hub_manage_native_rules_and_apps -> hub_call_rule.
  *
- * Covers: gate-throw, missing ruleId, action-to-rmAction mapping (rule/actions
- * via RMUtils; stop/start via the stopRule button toggle because RMUtils has
- * no startRule verb), idempotent stop/start behavior based on state.stopped,
+ * Covers: gate-throw, missing ruleId, action routing (rule via RMUtils; actions
+ * via the runAction page button; stop/start via the stopRule button toggle because
+ * RMUtils has no startRule verb), idempotent stop/start behavior based on state.stopped,
  * invalid action rejection, String ruleId coercion, non-numeric ruleId rejection.
  */
 class ToolRunRmRuleSpec extends ToolSpecBase {
@@ -130,19 +130,35 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "action=actions dispatches runRuleAct"() {
+    def "action=actions clicks the runAction button, not RMUtils"() {
+        given:
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
         when:
         def result = script.toolRunRmRule([ruleId: 102, action: 'actions'])
 
-        then:
+        then: "the Run Actions page button is the load-immune route the hub UI takes"
         result.success == true
-        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRuleAct' }
+        result.ruleId == 102
+        result.ruleIds == [102]
+        result.rmAction == 'runAction button'
+        posts.count { it.path == '/installedapp/btn' && it.body.name == 'runAction' && it.body.id == '102' } == 1
+        !rmUtils.calls.any { it.method == 'sendAction' }
     }
 
     @spock.lang.Unroll
-    def "hub_call_rule via dispatch action=actions dispatches runRuleAct (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch action=actions clicks the runAction button (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
 
         when:
         def response = mcpDriver.callTool('hub_call_rule', [ruleId: 102, action: 'actions'])
@@ -152,10 +168,56 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRuleAct' }
+        inner.ruleId == 102
+        posts.any { it.path == '/installedapp/btn' && it.body.name == 'runAction' }
+        !rmUtils.calls.any { it.method == 'sendAction' }
 
         where:
         useGateways << [true, false]
+    }
+
+    def "action=actions reports a failed runAction click without touching RMUtils"() {
+        given:
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new IllegalStateException('btn POST refused')
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: 109, action: 'actions'])
+
+        then:
+        result.success == false
+        result.ruleId == 109
+        result.error.contains('runAction button click failed')
+        result.error.contains('btn POST refused')
+        !rmUtils.calls.any { it.method == 'sendAction' }
+    }
+
+    def "array ruleId with action=actions clicks runAction per rule and aggregates"() {
+        given:
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (body.id == '121') throw new IllegalStateException('btn POST refused')
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [120, 121], action: 'actions'])
+
+        then: "one click per rule; the failed id is named and the survivor is not undone"
+        result.success == false
+        result.partial == true
+        result.ruleIds == [120, 121]
+        result.rmAction == 'runAction button x2'
+        result.failedRuleIds == [121]
+        result.results*.ruleId == [120, 121]
+        result.results[0].success == true
+        result.results[1].success == false
+        result.error.contains('runAction button failed for rule(s) 121')
+        result.note.contains('runs that rule\'s actions again')
+        posts.count { it.path == '/installedapp/btn' && it.body.name == 'runAction' } == 2
+        !rmUtils.calls.any { it.method == 'sendAction' }
     }
 
     def "action=stop clicks stopRule button when rule is currently running (state.stopped=false)"() {

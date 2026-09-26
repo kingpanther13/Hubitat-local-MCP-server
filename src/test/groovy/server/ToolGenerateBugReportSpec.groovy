@@ -16,6 +16,11 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         appExecutor.getLocation() >> sharedLocation
     }
 
+    def setup() {
+        // Retained-error reporting is an opt-in advanced setting; these specs cover it switched on.
+        settingsMap.retainReportErrors = true
+    }
+
     def cleanup() {
         sharedLocation.hub = null
     }
@@ -299,7 +304,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
     def "default invocation returns success with split env counts and a [bug] title"() {
         given:
-        sharedLocation.hub = new TestHub()
+        sharedLocation.hub = new TestHub(hardwareID: '000D')
+        hubGet.register('/hub/details/json') { params -> '{"hardwareVersion":"C-8 Pro"}' }
         seedLogs([])
 
         when:
@@ -313,6 +319,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.submitUrl.contains('?template=bug_report.yml')
         result.submitUrl.contains('&title=')
         result.report.contains('## Environment')
+        result.report.contains('**Hub model:** C-8 Pro')
         result.report.contains('**Rules in legacy custom rule engine:** 0')
         result.report.contains('**Native Rule Machine rules:** 0')
         result.report.contains('**Devices exposed to MCP:** 0')
