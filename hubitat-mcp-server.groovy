@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.4.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.4.5 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -940,8 +940,9 @@ def handleMcpGet() {
 //   404 -- unknown method, MODERN only; body keeps -32601 so a dual-era client can tell it
 //          from a legacy HTTP+SSE server's 404.
 //
-// "MODERN" = the header's VALUE is modernProtocolVersion(), not its presence (see the era
-// split below). Legacy revisions keep every pre-2026 behaviour, batch included.
+// "MODERN" = the header's VALUE is a modern-era version (2026-07-28 or later), not its
+// presence (see the era split below). Legacy revisions keep every pre-2026 behaviour,
+// batch included.
 def handleMcpRequest() {
     // Streamable HTTP security MUST: validate Origin on every inbound POST to
     // block DNS rebinding. First thing in the handler, so a rejected request costs
@@ -1015,7 +1016,7 @@ def handleMcpRequest() {
     // Compare the header value already in hand rather than re-scanning via _modernEraRequest():
     // same verdict, one header lookup instead of two. jsonRpcResult keeps its own read because it
     // runs outside this scope.
-    boolean modernRequest = headerVersion == modernProtocolVersion() && bodyCarriesRequest
+    boolean modernRequest = _modernEraVersion(headerVersion) && bodyCarriesRequest
     if (modernRequest) {
         def rejection = _modernRequestRejection(headerVersion, requestBody)
         if (rejection != null) {
@@ -1271,22 +1272,24 @@ def _authorityHost(String authority) {
     return s.isEmpty() ? null : s
 }
 
-// The one revision that defines the mirrored request-metadata headers, the
-// `resultType` result field, and the 400/404 status mappings. Named rather than
-// inlined because three places branch on it: the supported list, the initialize
-// exclusion, and the per-request era test.
+// The first revision that defines the mirrored request-metadata headers, the
+// `resultType` result field, and the 400/404 status mappings -- the start of the modern era.
 def modernProtocolVersion() { "2026-07-28" }
 
-// Era test for the modern revision, used by the request validation in
+// Spec terminology: Modern = 2026-07-28 and later, Legacy = 2025-11-25 and earlier.
+// Versions are YYYY-MM-DD, so string order is date order; a non-date value is never modern.
+boolean _modernEraVersion(String v) { v != null && v ==~ /\d{4}-\d{2}-\d{2}/ && v >= modernProtocolVersion() }
+
+// Era test for the current request, used by the request validation in
 // handleMcpRequest and by jsonRpcResult's resultType stamp. The header VALUE is the
 // switch, not its presence -- the header itself has been required since 2025-06-18.
 // Reads through _requestHeader, so a call from outside a request context (a scheduled
 // handler, a direct unit call) answers false instead of throwing.
 def _modernEraRequest() {
-    return _requestHeader("MCP-Protocol-Version") == modernProtocolVersion()
+    return _modernEraVersion(_requestHeader("MCP-Protocol-Version"))
 }
 
-// Modern-era (2026-07-28) body + mirrored-header validation. Returns a
+// Modern-era (2026-07-28 or later) body + mirrored-header validation. Returns a
 // ready-to-render JSON-RPC error for the caller to ship at HTTP 400, or null when the
 // request passes. The unsupported-version rejection is NOT here -- it lives in
 // handleMcpRequest because it applies to both eras.
@@ -1494,8 +1497,8 @@ def processJsonRpcMessage(msg) {
         return null
     }
 
-    // Dispatch is era-agnostic: a MODERN request (MCP-Protocol-Version ==
-    // modernProtocolVersion()) was already validated in handleMcpRequest -- Mcp-Method /
+    // Dispatch is era-agnostic: a MODERN request (MCP-Protocol-Version is a
+    // modern-era version) was already validated in handleMcpRequest -- Mcp-Method /
     // Mcp-Name and the header-vs-_meta version agreement -- so anything arriving here
     // has either passed that or is on a LEGACY revision.
     //
@@ -1577,7 +1580,7 @@ def serverInstructions() {
 // allowlist (any version here is served; anything else is a -32022), and the
 // `supported` list a -32022 rejection hands back.
 //
-// modernProtocolVersion() is advertised now that its prerequisite is in: the standard
+// modernProtocolVersion() is advertised because the standard
 // request headers (MCP-Protocol-Version / Mcp-Method / Mcp-Name) are validated against
 // the body in handleMcpRequest. A header naming one of the LEGACY entries is served as
 // legacy -- those revisions define no mirrored headers to check.
@@ -1585,16 +1588,15 @@ def supportedProtocolVersions() {
     [modernProtocolVersion(), "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 }
 
-// The subset `initialize` may negotiate: every supported revision EXCEPT the modern
-// one. `initialize` is a legacy-era method -- 2026-07-28 deleted the handshake in
-// favour of per-request metadata -- so a client that reaches it is speaking the old
-// era by construction and must never be handed a modern version to cache. Derived
-// from the list above so a future revision cannot drift the two apart.
+// The subset `initialize` may negotiate: every supported LEGACY revision (modern era =
+// 2026-07-28 or later). `initialize` is a legacy-era method -- 2026-07-28 deleted the
+// handshake in favour of per-request metadata -- so a client that reaches it is speaking
+// the old era by construction and must never be handed a modern version to cache.
 def initializeProtocolVersions() {
-    supportedProtocolVersions().findAll { it != modernProtocolVersion() }
+    supportedProtocolVersions().findAll { !_modernEraVersion(it) }
 }
 // Newest revision `initialize` will negotiate -- what a client that omits (or
-// requests an unknown, or requests the modern) protocolVersion negotiates down to.
+// requests an unknown, or requests a modern-era) protocolVersion negotiates down to.
 def defaultProtocolVersion() { initializeProtocolVersions()[0] }
 
 // The version initialize answers with for a requested one -- the NEGOTIATED version, never the
@@ -1626,9 +1628,9 @@ def serverIdentity() {
 
 def handleInitialize(msg) {
     // Echo the client's requested protocolVersion when it is one initialize may
-    // negotiate; otherwise the default. Omitted, unknown, AND "2026-07-28" all land
-    // on the default -- see initializeProtocolVersions() for why the modern revision
-    // is not negotiable through this legacy-era handshake.
+    // negotiate; otherwise the default. Omitted, unknown, AND modern-era versions all land
+    // on the default -- see initializeProtocolVersions() for why modern revisions
+    // are not negotiable through this legacy-era handshake.
     def requested = msg.params?.protocolVersion
     def negotiated = _negotiatedProtocolVersion(requested)
     def info = msg.params?.clientInfo
@@ -1902,7 +1904,7 @@ def handleToolsCall(msg) {
     if (!toolName) return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
     if (requestState != null && !_modernEraRequest()) {
         return jsonRpcError(msg.id, -32602,
-            "Invalid params: requestState requires MCP-Protocol-Version ${modernProtocolVersion()}.")
+            "Invalid params: requestState requires MCP-Protocol-Version ${modernProtocolVersion()} or later.")
     }
 
     boolean eligible = _modernEraRequest() && _mrtrEligibleCall(toolName, reactiveToolName, args)
@@ -5920,7 +5922,7 @@ def executeTool(toolName, args) {
         case "hub_set_mode_manager": return toolSetModeManager(args)
         case "hub_list_variables": return toolListVariables(args)
         case "hub_get_variable": return toolGetVariable(args.name)
-        case "hub_set_variable": return toolSetVariable(args.name, args.value)
+        case "hub_set_variable": return toolSetVariable(args)
         case "hub_create_variable": return toolCreateVariable(args)
         case "hub_delete_variable": return toolDeleteHubVariable(args)
         case "hub_create_connector": return toolCreateConnector(args)
@@ -7121,6 +7123,24 @@ private void _hubRtLog(String method, String path, long elapsedMs, String outcom
  */
 def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
+}
+
+// One reader for /hub2/hubMeshJson: parses it ONCE and returns the whole Map (or null when the
+// endpoint is unreachable, the body is empty/unparseable, or it is not a JSON object). Callers pull
+// the localLinked*/availableLinked*/sharedHubVariables sections off a single snapshot, so a link
+// read-back attempt fetches once instead of once per section. Generic cross-domain helper (devices +
+// variables) -- lives in main per the helper-placement rule. toolGetHubMesh does NOT use it: that tool
+// needs distinct per-failure-mode error text and keeps its own read.
+private Map _meshJson() {
+    try {
+        def raw = hubInternalGet("/hub2/hubMeshJson")
+        if (!raw?.trim()) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        return (parsed instanceof Map) ? parsed : null
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Could not read Hub Mesh JSON (/hub2/hubMeshJson): ${e.message}")
+        return null
+    }
 }
 
 /**
@@ -9065,7 +9085,7 @@ private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
         def aType = _rmActionSettingText(settingsByName, "actType", idx)
         def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
         if (aType == null && sType == null) return
-        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; it does hold index ${idx}, so new actions are allocated above it.".toString())
+        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
     }
     out
 }
@@ -9619,7 +9639,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.4.3"
+    return "4.4.5"
 }
 
 
@@ -9766,6 +9786,7 @@ The destructive/confirm-tier write tools require these steps (ordinary writes ne
 **hub_delete_device** - MOST DESTRUCTIVE, NO UNDO. For ghost/orphaned devices, stale DB records, stuck virtual devices.
 - Use hub_get_device to verify correct device
 - Warn if recent activity or Z-Wave/Zigbee (do exclusion first)
+- A Hub Mesh LINKED device (a local proxy for a peer's shared device) is UNLINKED local-only: only this hub's proxy is removed, the peer's source device is untouched. The tool warns when local apps use it (appsUsing), and distinctly when it could not check (mesh read failed / row missing).
 - All details logged to MCP debug logs for audit
 
 **hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
@@ -10012,7 +10033,20 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 - `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
 - `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
 
-Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled` / `meshFullSync`), not this tool.
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled`), not this tool; `meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
+
+### Per-device and per-variable Hub Mesh linking & sharing
+
+The hub-LEVEL settings above are `hub_update_hub_mesh`; the per-entity share/link operations are folded into the device and variable tools (no dedicated tools):
+
+- **Share a device** into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
+- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
+- **Unlink a device**: `hub_delete_device(deviceId, confirm=true)` — removes only the local proxy; warns on `appsUsing`, and distinctly when it could not check.
+- **Share a variable**: `hub_set_variable(name, mesh_shared=true|false)` (hub variables only).
+- **Link a variable** a peer shares: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
+- **Unlink a variable**: `hub_delete_variable(name, confirm=true)` on the local mirror (its DECORATED `"<var> on <peer>"` name) — removes only the local copy, peer untouched; needs `force=true` when a real local app uses it OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false. Teardown order: unlink on the linking hub(s) first, THEN unshare on the owner (unsharing first strands the mirrors). Full reference in `hub_get_tool_guide(section='variables')`.
+
+The `createLinked` GET returns 200 with an empty body even when nothing links, so the link tools read mesh state back: a confirmed non-link (the source still shows `linkedLocally:false` in `hub_get_hub_mesh`) returns a FAILURE, not a soft warning; only an unreadable mesh list warns. A no-op is usually transient — the mesh takes time to re-establish a peer connection after that peer reboots/updates and briefly no-ops during that window, then clears — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
 
 ### hub_update_package
 
@@ -10117,6 +10151,16 @@ Omitted properties are preserved. The complete patch is validated before writes 
 Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
 
 If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
+
+### Hub Mesh: sharing, linking, and unlinking devices
+
+Hub Mesh shares devices between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Three device operations, split across tools:
+
+- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
+- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Unlink** a linked device: `hub_delete_device(deviceId, confirm=true)`. This removes ONLY the local proxy; the source device on the peer hub is untouched. The tool warns when the linked device is in use by local apps (`appsUsing`), which will break.
+
+Read the current mesh state (shared/linked/available lists, per-device `appsUsing`) with `hub_get_hub_mesh`; the hub-level mesh settings are in `hub_update_hub_mesh`.
 ''',
 
         rules: '''## Rule Structure Reference
@@ -10800,7 +10844,7 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
   - **NOTE:** fan `setSpeed` takes a fixed enum speed only (low / medium-low / medium / medium-high / high / on / off / auto); RM has no variable-sourced fan speed (unlike dimmer `setLevel`'s `levelVariable`) because the classic wizard exposes a variable toggle only for numeric/text value fields, not enum pickers. For a variable-driven speed, use `capability='runCommand'` with `command='setSpeed'` + `parameters=[{type:'string', variable:'<varName>'}]` (per-parameter variable sourcing).
 - **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `hub_list_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
-- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. `sourceVariable` works for Number, Decimal and String targets (a String target is written through RM's `valStringOp.<N>="Copy variable"` picker); a Boolean or DateTime target is refused before any write. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
+- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. With `value`, an optional `numOp` picks the operation: `number` (default, sets the variable to value) or `add number` (adds value to it); any other `numOp`, or `numOp` without `value`, is refused before any write. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. `sourceVariable` works for Number, Decimal and String targets (a String target is written through RM's `valStringOp.<N>="Copy variable"` picker); a Boolean or DateTime target is refused before any write. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Rule-local Variable** (`capability='setLocalVariable'`): identical shape and source modes to `setVariable` (`variable` target + exactly one of `value`/`sourceVariable`/`fromDevice`/`math`), EXCEPT the `variable` target is validated against the rule's LOCAL variables (`state.allLocalVars`) instead of hub globals. Use this -- not `setVariable` -- when a local and a hub variable share a name and you mean the local; it cannot silently target the global. `sourceVariable`/`math` operands may be either local or hub (RM's source picker spans both; validated against the live revealed enum). Create a local first via `addLocalVariable`; list current locals via `hub_list_rule_local_variables` (in `hub_read_rules`). The picker section headers ` --LOCAL VARIABLES--` / ` --HUB VARIABLES--` are rejected as targets.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
@@ -11024,6 +11068,8 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 
 Apps that never register their use, such as webCoRE pistons, cannot be seen by any of these checks; the response's `coverageNote` says so and `platformInUse` reports what the registry said. Pass `force=true` to proceed anyway after acknowledging the breakage.
 
+Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable) is an UNLINK — see the "Hub Mesh: sharing and linking hub variables" subsection below. There the generic in-use refusal is relaxed (a clean mirror unlinks without `force`); `force=true` is needed when a real local app uses the mirror OR when that use can't be confirmed (`inUseByApps` true or unreadable), not when `inUseByApps` is confirmed false.
+
 ### hub_list_variable_changes
 
 Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
@@ -11031,6 +11077,21 @@ Audit/debug what changed a hub variable and when, without polling hub_get_variab
 ### hub_create_connector
 
 For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped. The full Number/Decimal `connectorType` set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
+
+### hub_delete_connector
+
+Deletes the connector DEVICE backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. `confirm=true` required. No-op if the variable has no connector.
+
+### Hub Mesh: sharing and linking hub variables
+
+Hub Mesh shares hub variables between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Two variable operations, folded into the existing tools:
+
+- **Share / unshare** one of THIS hub's variables into the mesh: `hub_set_variable(name, mesh_shared=true|false)`. `mesh_shared` may stand alone or accompany a `value` write. It applies only to HUB variables — a rule_engine-only name is rejected. The result reports `meshShared` and `meshShareConfirmed` (null when the `sharedHubVariables` read-back is unavailable).
+- **Link** a variable a PEER hub shares onto this hub: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedHubVariables[]` (`hubId` + `name`), and is mutually exclusive with the create forms (`name`/`type`/`value` or `variables`). The `createLinkedHubVar` GET returns 200 with an empty body even when nothing links, so the tool reads mesh state back and keys on the source: if the variable links (its name appears in `localLinkedHubVariables[]`, or its `availableLinkedHubVariables[]` row flips `linkedLocally:true`) you get `success`; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Unlink** a variable a peer shares (remove this hub's local mirror): `hub_delete_variable(name, confirm=true)` on the LOCAL mirror. The mirror shows up as an ordinary local hub variable whose display name is DECORATED (`"<sourceVar> on <peerName>"`) — pass that decorated name. Unlinking removes only THIS hub's local copy; the peer's source variable is untouched. It needs `force=true` when a real local app uses the mirror (the mesh row's `inUseByApps` is `true`) OR when that use can't be confirmed (the row is missing / `inUseByApps` unreadable); only a clean unlink (`inUseByApps:false`) does NOT require force, even though the hub's generic in-use registry always marks a mirror in-use (that registration is the mesh link itself, not a consumer). A successful unlink returns `unlinked:true`.
+- **Teardown ORDER matters.** To fully undo a shared→linked variable, unlink on the linking hub(s) FIRST (`hub_delete_variable` there), THEN unshare on the owner (`hub_set_variable(name, mesh_shared=false)`). Unsharing first silently STRANDS the mirrors: the owner hub cannot see or notify who linked its variable, so each linking hub keeps a stale local copy (last value, no orphan flag) that consuming apps keep reading. The unshare result carries a caution to this effect.
+
+Read the current mesh variable state (shared/linked/available lists) with `hub_get_hub_mesh`.
 '''
     ,
         dashboards: '''## Dashboards
@@ -11225,7 +11286,8 @@ def getToolGuideSubSections() {
             hub_admin_write_system: ["hub_get_info", "hub_list_modes", "hub_manage_mode",
                                      "hub_set_mode_manager", "hub_get_hsm_status",
                                      "hub_set_system_settings", "hub_update_mcp_settings",
-                                     "hub_get_hub_mesh", "hub_update_hub_mesh"]
+                                     "hub_get_hub_mesh", "hub_update_hub_mesh",
+                                     "Per-device and per-variable Hub Mesh"]
         ],
         performance: [
             performance_overview: [],

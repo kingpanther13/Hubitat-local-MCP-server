@@ -141,8 +141,8 @@ Maps to `actType=modeActs`, `actSubType=getSetVariable`.
 | Field | Value | Notes |
 |---|---|---|
 | `xVarV.<N>` | hub variable name | Target variable (enum from hub variables list). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. |
-| `numOp.<N>` | `"number"`, `"variable"`, `"device attribute"`, or `"variable math"` | The source-mode enum. `"number"` = constant; `"variable"` (full word) = copy-from-variable; `"device attribute"` = read a device attribute; `"variable math"` = structured math. Live-verified: the short form `"var"` is NOT accepted by RM 5.1 and causes the action to bake without a source. `numOp` is gated by `xVarV.<N>` -- it does not render until the target variable is written, so `xVarV` is always written first. `numOp` renders ONLY for a Number/Decimal target variable; for a String or Boolean target it is not rendered at all (live-verified; a String target gets `valStringOp.<N>` instead), so the addAction path rejects `value`/`fromDevice`/`math` into a non-numeric target up-front with `success=false` rather than writing a numOp that never lands. A `"variable"` copy also stores `valOffset.<N>`. |
-| `valNumber.<N>` | numeric constant | Written when `numOp=number`. Only numeric constants are supported. A String target is copied with `sourceVariable`; Boolean/DateTime targets need `rawSettings`. |
+| `numOp.<N>` | `"number"`, `"add number"`, `"variable"`, `"device attribute"`, or `"variable math"` | The source-mode enum (full RM list below). `"number"` = constant; `"add number"` = add a constant to the current value; `"variable"` (full word) = copy-from-variable; `"device attribute"` = read a device attribute; `"variable math"` = structured math. Live-verified: the short form `"var"` is NOT accepted by RM 5.1 and causes the action to bake without a source. `numOp` is gated by `xVarV.<N>` -- it does not render until the target variable is written, so `xVarV` is always written first. `numOp` renders ONLY for a Number/Decimal target variable; for a String or Boolean target it is not rendered at all (live-verified; a String target gets `valStringOp.<N>` instead), so the addAction path rejects `value`/`fromDevice`/`math` into a non-numeric target up-front with `success=false` rather than writing a numOp that never lands. A `"variable"` copy also stores `valOffset.<N>`. |
+| `valNumber.<N>` | numeric constant | Written when `numOp=number` or `numOp="add number"` (the `value` form's optional `numOp`). Only numeric constants are supported. A String target is copied with `sourceVariable`; Boolean/DateTime targets need `rawSettings`. |
 | `valStringOp.<N>` | `"Copy variable"` (for `sourceVariable`) | A String target renders no `numOp`; its source picker is `valStringOp.<N>` (options include `Set string`, `Device attribute`, `Copy variable`, ...). The `sourceVariable` form writes `"Copy variable"`, which reveals the same `xVar3.<N>` source enum. Captured from the RM UI on fw 2.5.1.183: stored `valStringOp.1="Copy variable"`, `xVar3.1="AMGateA_Shared"`, rendered "Set GT1 to AMGateA_Shared". |
 | `xVar3.<N>` | source variable name | Written when `numOp=variable` or, for a String target, `valStringOp="Copy variable"` (the `sourceVariable` form). Schema-gated: revealed by RM only after that selector is written. The field name `xVar3` is live-verified for RM 5.1; discovered from the live schema rather than hardcoded. Must be an existing hub variable name -- an unknown name is rejected before the hub write. |
 | `valOffset.<N>` | `0` | Written after `xVar3.<N>` for a Number/Decimal `sourceVariable` copy. RM adds it to the source value when the rule runs, and the RM UI stores `0` by default. Without it the action saves and renders normally, but running it throws `Ambiguous method overloading for method java.lang.Long#plus`, the target is not set and the rest of the rule's actions are skipped. Captured from the RM UI on fw 2.5.1.183: `numOp.1="variable"`, `xVar3.1="zzCopySrc"`, `valOffset.1=0`. Not rendered for a String copy. |
@@ -153,7 +153,7 @@ Maps to `actType=modeActs`, `actSubType=getSetVariable`.
 | `xVar4.<N>` / `valConst2.<N>` | second math operand | Written for BINARY operators only. Revealed after the binary `valMathOp.<N>` is written. Same shape as the first operand: a variable name in `xVar4.<N>`, or `"(constant)"` revealing `valConst2.<N>`. A variable-name operand is existence-validated against the hub variable list before the write; the chosen `xVar4` option is also validated against the field's revealed enum. |
 
 `value`, `sourceVariable`, `fromDevice`, and `math` are mutually exclusive; exactly
-one source mode is required. The `value` path always writes `numOp=number` +
+one source mode is required. The `value` path writes `numOp=number` (or `"add number"`) +
 `valNumber` -- the hub's wire format does not expose separate type-specific constant
 slots for string/boolean/datetime at this subtype. Use `sourceVariable` to copy into a
 Number, Decimal or String target, or `rawSettings` to supply advanced wire fields directly.
@@ -161,6 +161,15 @@ The restriction is on the target; the source is validated separately against the
 A `sourceVariable` copy into a Boolean or DateTime target is refused before any action row is
 written: their copy picker has not been mapped yet. (Live: `numOp` is not rendered for a Boolean
 target, so writing it is rejected `not_in_schema`.)
+
+**`numOp` enum and "add number":** for a Number hub/local variable RM offers exactly `number`,
+`add number`, `sensor value`, `variable`, `variable math`, `current time`, `current hour`,
+`current minute`, `epoch time`, `device attribute`, `string`, `string length`, `Rule Function`,
+`time difference`. `"add number"` reveals the same single `valNumber.<N>` slot as `"number"` (UI
+label "Number to add to <var>"), and `numOp.<N>="add number"` + `valNumber.<N>=<n>` renders
+"Add <n> to <var>" (captured live, fw 2.5.1.181 / RM 5.1.8). The `value` form accepts an optional
+`numOp` of `number` (default) or `add number`; any other `numOp`, or `numOp` without `value`, is
+refused before any write.
 
 **Reveal order (every mode writes `xVarV.<N>` first, then its selector. The selector is `numOp.<N>`, except for a `sourceVariable` copy into a String target, which writes `valStringOp.<N>`; `value`, `fromDevice` and `math` are refused for a String target):**
 - `sourceVariable`, Number/Decimal target: `numOp="variable"` -> reveals `xVar3.<N>` -> write the source name -> write `valOffset.<N>=0`.
@@ -171,7 +180,20 @@ target, so writing it is rejected `not_in_schema`.)
 **Orphan-field note:** RM does NOT auto-clean mode-specific keys when `numOp` changes
 (e.g. `customDev.<N>` lingers after switching to `variable math`). The addAction path
 builds each action fresh, so this is harmless here; a future setVariable-EDIT path must
-clear stale mode keys.
+clear stale mode keys. Leftover hidden keys under a working action are normal RM behavior:
+RM's own UI keeps them when the variable type is switched mid-form.
+
+A refused add has already persisted `actType`/`actSubType` plus whatever fields landed before the
+refusal, and leaves the editor open on `actNdx=N` (the next add reopens row N pre-filled). So any
+refusal after `actType.<N>` is written attempts to cancel doActPage's editor with `actionCancel`
+(`cancelAct.<N>` is only the delay toggle). When cleanup confirms row removal, it consumes the
+index -- the next action gets N+1; blank `actType`/`actSubType` (and `tCustomAttr`) keys may
+remain. If removal cannot be confirmed, the response includes `wizardStuck`; action N's stale
+fields may remain and reopen on the next add. Close the editor first with
+`hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true)` (removeAction is refused
+while the editor holds `state.editAct`), verify with `hub_get_app_config`, then remove any
+surviving row with `hub_set_rule(removeAction:{index:N}, confirm:true)` or restore the pre-write
+backup using `hub_restore_backup(scope='source', backupKey='<response.backup.backupKey>', confirm=true)`.
 
 ---
 

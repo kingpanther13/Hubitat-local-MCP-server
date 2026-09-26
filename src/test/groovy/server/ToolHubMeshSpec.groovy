@@ -623,6 +623,10 @@ class ToolHubMeshSpec extends ToolSpecBase {
         !result.applied.contains('peer_token')
         result.error.contains('Failed to store the peer hub')
         result.note.contains('non-JSON')
+
+        and: 'the store is described as UNCONFIRMED (a non-JSON body does not establish the outcome), not proven-not-stored, and steers to the read-back'
+        result.note.contains('unconfirmed')
+        result.note.contains('hub_get_hub_mesh peers[]')
     }
 
     def "an empty-map setHubMeshToken body is SUCCESS (the endpoint answers 200 {} on success)"() {
@@ -638,6 +642,23 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.applied == ['peer_token']
     }
 
+    def "a non-Map JSON setHubMeshToken body (e.g. a parsed List) is a failure -- peer_token is NOT applied"() {
+        given: 'hubInternalPostJson returns a parsed JSON List -- not this endpoint proven success shape (a Map)'
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> return ['unexpected'] }
+
+        when:
+        def result = script.toolUpdateHubMesh([peer_hub_id: '12', peer_token: 'tok'])
+
+        then: 'unexpected JSON shape is not proof of a store -> fail-closed, peer_token not recorded, store unconfirmed'
+        result.success == false
+        result.applied == []
+        !result.applied.contains('peer_token')
+        result.error.contains('Failed to store the peer hub')
+        result.note.contains('unconfirmed')
+        result.note.contains('hub_get_hub_mesh peers[]')
+    }
+
     def "a null setHubMeshToken body (dropped/truncated response) is a failure -- peer_token is NOT applied"() {
         given: 'hubInternalPostJson returns null for an EMPTY body -- a dropped write is an unknown commit'
         enableWrite()
@@ -651,6 +672,10 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.applied == []
         !result.applied.contains('peer_token')
         result.error.contains('Failed to store the peer hub')
+
+        and: 'the note is case-specific: a dropped/empty body is an UNKNOWN commit'
+        result.error.contains('no response body')
+        result.note.contains('unconfirmed')
     }
 
     def "an explicit [success:false] setHubMeshToken body is a failure -- peer_token is NOT applied"() {
@@ -666,6 +691,10 @@ class ToolHubMeshSpec extends ToolSpecBase {
         result.applied == []
         !result.applied.contains('peer_token')
         result.error.contains('Failed to store the peer hub')
+
+        and: 'the note is case-specific: an explicit success:false is a hub REJECTION'
+        result.error.contains('rejected the request')
+        result.note.contains('rejected')
     }
 
     def "an oversized all-digits peer_hub_id passes through as a STRING and earlier legs survive"() {
