@@ -38,7 +38,7 @@ def _bash(script: str) -> subprocess.CompletedProcess:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def do_POST(self):  # noqa: N802 (http.server API)
+    def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         if self.path == "/slow":
             time.sleep(3)
