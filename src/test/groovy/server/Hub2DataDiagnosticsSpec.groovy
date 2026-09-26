@@ -164,9 +164,9 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = hubOnFirmware('2.5.0.143')
         hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
-        // Seed the app-version-check snapshot + no-op the async refresh so appUpdate carries real values.
-        stateMap.updateCheck = [latestVersion: '9.9.9', updateAvailable: true]
-        script.metaClass.doUpdateCheck = { -> /* no-op: return the seeded snapshot */ }
+        // Seed a prior completed check + no-op the async refresh so appUpdate carries the last snapshot.
+        stateMap.updateCheck = [latestVersion: '9.9.9', updateAvailable: true, checkedAt: 1700000000000L]
+        script.metaClass.doUpdateCheck = { -> /* no-op: keep the seeded snapshot */ }
 
         when:
         def result = script.toolGetHubInfo([includeAppUpdate: true])
@@ -174,9 +174,45 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         then:
         result.platformUpdate.available == true             // pending HUB firmware
         result.platformUpdate.availableVersion == '2.5.0.153'
-        result.appUpdate.latestVersion == '9.9.9'           // folded-in MCP server app check, real values
-        result.appUpdate.updateAvailable == true
+        result.appUpdate.latestVersion == '9.9.9'           // folded-in MCP server app check
+        result.appUpdate.updateAvailable == true            // derived: 9.9.9 is newer than the installed version
+        result.appUpdate.checkInProgress == true            // a fresh async check was kicked off for next time
         (result.appUpdate.installedVersion as String) ==~ /\d+\.\d+\.\d+.*/
+    }
+
+    def "hub_get_info appUpdate derives updateAvailable from the versions, so a stale flag can't survive an upgrade"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        // Reproduce the post-HPM-upgrade state: the last check recorded updateAvailable:true against an
+        // older installed version, and still says true even though latest now equals the installed version.
+        def installed = script.currentVersion()
+        stateMap.updateCheck = [latestVersion: installed, updateAvailable: true, checkedAt: 1700000000000L]
+        script.metaClass.doUpdateCheck = { -> /* no-op */ }
+
+        when:
+        def result = script.toolGetHubInfo([includeAppUpdate: true])
+
+        then:
+        result.appUpdate.latestVersion == installed
+        result.appUpdate.updateAvailable == false           // latest == installed -> no update; the stale true is ignored
+    }
+
+    def "hub_get_info appUpdate reports in-progress when no prior check has completed"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        stateMap.updateCheck = null
+        script.metaClass.doUpdateCheck = { -> /* no-op */ }
+
+        when:
+        def result = script.toolGetHubInfo([includeAppUpdate: true])
+
+        then:
+        result.appUpdate.latestVersion == 'unknown (check in progress)'
+        result.appUpdate.updateAvailable == false
+        result.appUpdate.lastChecked == 'never'
+        result.appUpdate.checkInProgress == true
     }
 
     def "hub_get_info appUpdate surfaces an app-check error without losing the firmware read"() {

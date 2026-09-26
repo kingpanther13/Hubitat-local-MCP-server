@@ -244,15 +244,25 @@ def toolGetHubInfo(args = null) {
     // so it must not run on a basic info read.
     if (args?.includeAppUpdate == true) {
         try {
-            if (state.updateCheck) state.updateCheck.checkedAt = null
-            doUpdateCheck()
             def uc = state.updateCheck ?: [:]
+            // doUpdateCheck() is async (asynchttpGet -> handleUpdateCheckResponse writes state
+            // LATER), so these values reflect the PRIOR completed check, not this call's fetch --
+            // hence checkInProgress and the prior checkedAt timestamp. Kick the refresh off after
+            // snapshotting so the next call sees fresher data.
+            def installed = currentVersion()
+            def latest = uc.latestVersion
+            def haveLatest = latest && latest != "unknown (check in progress)"
             info.appUpdate = [
-                installedVersion: currentVersion(),
-                latestVersion: uc.latestVersion ?: "unknown (check in progress)",
-                updateAvailable: uc.updateAvailable ?: false,
-                lastChecked: uc.checkedAt ? formatTimestamp(uc.checkedAt) : "checking now"
+                installedVersion: installed,
+                latestVersion: haveLatest ? latest : "unknown (check in progress)",
+                // Derived from the versions actually shown so it can never contradict them -- a
+                // stale updateAvailable:true survived an HPM upgrade and read as "update available"
+                // while latest == installed.
+                updateAvailable: haveLatest ? isNewerVersion(latest, installed) : false,
+                lastChecked: uc.checkedAt ? formatTimestamp(uc.checkedAt) : "never",
+                checkInProgress: true
             ]
+            doUpdateCheck()
         } catch (Exception e) {
             info.appUpdate = [error: "App-version check failed: ${e.message}", installedVersion: currentVersion()]
         }
@@ -1251,7 +1261,7 @@ def _getAllToolDefinitions_partSystem() {
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
-                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.", default: false]
+                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate. The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.", default: false]
                 ]
             ]
         ],
