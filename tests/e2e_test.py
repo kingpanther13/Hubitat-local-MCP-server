@@ -9363,17 +9363,34 @@ class TestRunner:
             assert bulk_kept in page and bulk_skipped not in page, \
                 f"addActions stop must keep the clean prefix and never write the tail: {page}"
 
-            # Fail-closed replacement: the old list is cleared before the adds, so only the clean first
-            # replacement item remains; skipping finalisation is not a rollback.
+            # A replacement item that any single add would refuse is caught before the clear: the call
+            # is refused whole and the existing list survives.
             repl_kept, repl_skipped = "E2E replace stop kept", "E2E replace stop skipped"
-            repl_stop = self._rm_stop_call(app_id, {"replaceActions": [
+            pre_clear = self._rm_stop_call(app_id, {"replaceActions": [
                 {"capability": "log", "message": repl_kept},
                 refused_spec,
                 {"capability": "log", "message": repl_skipped},
             ]})
+            assert pre_clear.get("success") is False and not pre_clear.get("addedActions") \
+                and "replaceActions[1]:" in str(pre_clear.get("error", "")) \
+                and "action:" in str(pre_clear.get("error", "")), \
+                f"expected a whole-call refusal naming replaceActions[1] before anything was cleared: {pre_clear}"
+            page = self._rule_page_text(app_id)
+            assert bulk_kept in page and repl_kept not in page, \
+                f"a replaceActions refused before the clear must leave the existing list intact: {page}"
+
+            # Fail-closed replacement: an item refused only inside its add (an unknown switch verb passes
+            # the pre-clear checks) stops the batch after the clear, so only the clean first replacement
+            # item remains; skipping finalisation is not a rollback.
+            repl_stop = self._rm_stop_call(app_id, {"replaceActions": [
+                {"capability": "log", "message": repl_kept},
+                {"capability": "switch", "action": "blink", "deviceIds": [int(self.get_test_switch_id())]},
+                {"capability": "log", "message": repl_skipped},
+            ]})
             added = repl_stop.get("addedActions") or []
             assert len(added) == 3 and added[0].get("success") is not False \
-                and not added[0].get("partial") and added[1].get("success") is False, \
+                and not added[0].get("partial") and added[1].get("success") is False \
+                and "Unknown switch action 'blink'" in str(added[1].get("error", "")), \
                 f"expected a clean replacement item, then the refusal, then the skipped tail: {repl_stop}"
             self._assert_bulk_stop(repl_stop, "replaceActions[1]", added[2:])
             page = self._rule_page_text(app_id)
