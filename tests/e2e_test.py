@@ -1833,14 +1833,15 @@ class TestRunner:
         timeline survives in the run log instead of rolling out of Past Logs before anyone
         reads it. Raw _send, not call_tool: this must not enter op_timings or clobber the
         failed op's identity in _last_op."""
-        if not self.server_app_id:
+        app_id = getattr(self, "server_app_id", "")
+        if not app_id:
             print(f"    [504-CONTEXT] {name}: HUBITAT_APP_ID not set -- cannot read the server app's hub log")
             return
         last_op = getattr(self.client, "_last_op", None)
         dur = float(last_op[1]) if last_op and isinstance(last_op[1], (int, float)) else 0.0
         since = (datetime.now(UTC) - timedelta(seconds=dur + 120)).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
-            for mode, args in (("hub", {"mode": "hub", "appId": int(self.server_app_id), "since": since, "limit": 300}),
+            for mode, args in (("hub", {"mode": "hub", "appId": int(app_id), "since": since, "limit": 300}),
                                ("mcp", {"mode": "mcp", "limit": 100})):
                 try:
                     raw = self.client._send("tools/call", {
@@ -1859,6 +1860,9 @@ class TestRunner:
                         ts = datetime.fromtimestamp(ts / 1000, UTC).strftime("%H:%M:%S.%f")[:-3]
                     print(f"      {str(ts)[:23]} {str(e.get('level') or '')[:5]:5s} "
                           f"{str(e.get('component') or '')[:12]} {str(e.get('message') or '')[:220]}")
+        except Exception as exc:
+            # Diagnostics only: a failure here must never change the retry outcome.
+            print(f"    [504-CONTEXT] {name}: capture failed: {exc}")
         finally:
             self.client._last_op = last_op
 
