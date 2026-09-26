@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -1827,12 +1827,48 @@ class TestRunner:
         op_key, dur, ok = lo
         return f"{op_key} {dur:.1f}s{'' if ok else ' [err]'}"
 
+    def _capture_504_context(self, name: str) -> None:
+        """Print the server app's hub log (every level the hub kept) and the structured MCP
+        history for the two minutes before the 504-failed call through now, so the hub-side
+        timeline survives in the run log instead of rolling out of Past Logs before anyone
+        reads it. Raw _send, not call_tool: this must not enter op_timings or clobber the
+        failed op's identity in _last_op."""
+        if not self.server_app_id:
+            print(f"    [504-CONTEXT] {name}: HUBITAT_APP_ID not set -- cannot read the server app's hub log")
+            return
+        last_op = getattr(self.client, "_last_op", None)
+        dur = float(last_op[1]) if last_op and isinstance(last_op[1], (int, float)) else 0.0
+        since = (datetime.now(UTC) - timedelta(seconds=dur + 120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            for mode, args in (("hub", {"mode": "hub", "appId": int(self.server_app_id), "since": since, "limit": 300}),
+                               ("mcp", {"mode": "mcp", "limit": 100})):
+                try:
+                    raw = self.client._send("tools/call", {
+                        "name": "hub_read_diagnostics", "arguments": {"tool": "hub_get_logs", "args": args}})
+                    text = ((raw or {}).get("content") or [{}])[0].get("text") or "{}"
+                    data = json.loads(text)
+                except Exception as exc:
+                    print(f"    [504-CONTEXT] {name}: {mode} log read failed: {exc}")
+                    continue
+                entries = data.get("logs") or data.get("entries") or []
+                print(f"    [504-CONTEXT] {name}: {mode} log, {len(entries)} entries since {since} "
+                      f"(failed op {self._last_op_str()}):")
+                for e in entries[-300:]:
+                    ts = e.get("name") or e.get("timestamp") or e.get("time") or ""
+                    if isinstance(ts, (int, float)):
+                        ts = datetime.fromtimestamp(ts / 1000, UTC).strftime("%H:%M:%S.%f")[:-3]
+                    print(f"      {str(ts)[:23]} {str(e.get('level') or '')[:5]:5s} "
+                          f"{str(e.get('component') or '')[:12]} {str(e.get('message') or '')[:220]}")
+        finally:
+            self.client._last_op = last_op
+
     def _settle_before_504_retry(self, name: str) -> None:
         """After a relay 504, poll a trivial call until transport is responsive before re-running.
 
         Probe immediately because a dropped response does not prove the transport needs a fixed
         cooldown; only wait between probes while it is actually slow or unavailable.
         """
+        self._capture_504_context(name)
         print(f"    [BACKOFF] {name}: relay 504 -- settling before the single re-run "
               "(polling hub_get_info until it round-trips fast)")
         deadline = time.monotonic() + 30.0
@@ -1931,6 +1967,7 @@ class TestRunner:
                     self._settle_before_504_retry(name)
                     continue
                 if "504" in str(exc):
+                    self._capture_504_context(name)
                     print(f"    FULL-FAILURE {name}: persistent relay 504 across retry "
                           f"(failure op {self._last_op_str(exc)}): {exc}")
                     self._record(name, group, "fail",
@@ -1961,6 +1998,8 @@ class TestRunner:
                 # failure goes to the run log here -- a truncated structured response
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
                 # extra run just to learn why a test failed.
+                if "504" in es:
+                    self._capture_504_context(name)
                 print(f"    FULL-FAILURE {name} (failure op {self._last_op_str(exc)}): {exc}")
                 self._record(name, group, "fail",
                              message=f"[{self._last_op_str(exc)}] {exc}"[:200], duration=elapsed)
@@ -15759,6 +15798,45 @@ class TestRunner:
                                 print(f"  [WARN] Visual Rule sweep delete failed for '{vname}': {exc}")
             except Exception as exc:
                 print(f"  [WARN] Visual Rule sweep failed: {exc}")
+            # Button Controller backstop: the button tests create Button Controller-5.1 children
+            # with a BAT_E2E_ name, but the app relabels itself after the device it binds
+            # ("Button Controller-5.1: E2E_PERM_Button"), so neither the RM list nor a bare
+            # PREFIX match ever sees them; every run stranded a few (312 found on the test hub
+            # 2026-09-26). Reap by type + a fixture-device name in the label. The parent
+            # "Button Controllers" app is a different type and is never touched.
+            try:
+                cursor = None
+                reaped = 0
+                while True:
+                    args = {"scope": "instances", "includeHidden": True}
+                    if cursor:
+                        args["cursor"] = cursor
+                    page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": args})
+                    for a in (page.get("apps", []) if isinstance(page, dict) else []):
+                        aname = str(a.get("name") or a.get("label") or "")
+                        if str(a.get("type") or "") != "Button Controller-5.1" or not a.get("parentId"):
+                            continue
+                        if PREFIX not in aname and "E2E_PERM_" not in aname:
+                            continue
+                        aid = str(a.get("id") or "")
+                        if not aid:
+                            continue
+                        try:
+                            print(f"  Sweep: deleting Button Controller '{aname}' (id={aid})")
+                            self.client.call_tool("hub_manage_rule_machine", {
+                                "tool": "hub_delete_native_app",
+                                "args": {"appId": aid, "force": True, "confirm": True},
+                            })
+                            reaped += 1
+                        except Exception as exc:
+                            print(f"  [WARN] Button Controller sweep delete failed for '{aname}': {exc}")
+                    cursor = page.get("nextCursor") if isinstance(page, dict) else None
+                    if not cursor:
+                        break
+                if reaped:
+                    print(f"  Sweep: reaped {reaped} Button Controller instance(s)")
+            except Exception as exc:
+                print(f"  [WARN] Button Controller sweep failed: {exc}")
 
         # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
         # Target' (instance + code class), the @test("app_code_update") tests create the

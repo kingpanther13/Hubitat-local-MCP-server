@@ -882,6 +882,47 @@ def test_call_with_limiter_bounce_propagates_non_limiter_errors():
         runner._call_with_limiter_bounce("hub_manage_rule_machine", "hub_call_rule", {}, "probe")
 
 
+def test_capture_504_context_prints_both_logs_and_preserves_last_op(capsys):
+    """The 504 capture reads the server app's hub log and the MCP history over the raw
+    transport, prints every entry, and leaves the failed op's identity untouched."""
+    sent = []
+
+    class Client:
+        _last_op = ("hub_update_device", 10.3, False)
+
+        def _send(self, method, params, headers=None):
+            sent.append(params)
+            mode = params["arguments"]["args"]["mode"]
+            entries = ([{"name": "2026-09-26 06:07:01.100", "level": "WARN", "message": "[hubrt] slow internal GET"}]
+                       if mode == "hub" else
+                       [{"timestamp": 1790402821000, "level": "debug", "component": "mrtr", "message": "slice scheduled"}])
+            return {"content": [{"text": json.dumps({"logs": entries})}]}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = Client()
+    runner.server_app_id = "38"
+
+    runner._capture_504_context("test_device_configuration_matrix")
+
+    out = capsys.readouterr().out
+    assert [p["arguments"]["args"]["mode"] for p in sent] == ["hub", "mcp"]
+    assert sent[0]["arguments"]["args"]["appId"] == 38
+    assert "since" in sent[0]["arguments"]["args"]
+    assert "[hubrt] slow internal GET" in out and "slice scheduled" in out
+    assert "failed op hub_update_device 10.3s [err]" in out
+    assert runner.client._last_op == ("hub_update_device", 10.3, False)
+
+
+def test_capture_504_context_without_app_id_says_so(capsys):
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(_last_op=None, _send=lambda *a, **k: pytest.fail("must not read logs without an app id"))
+    runner.server_app_id = ""
+
+    runner._capture_504_context("probe")
+
+    assert "HUBITAT_APP_ID not set" in capsys.readouterr().out
+
+
 def test_run_artifact_suffix_is_stable_and_unique_per_github_attempt():
     first_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "1"}
     second_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "2"}
