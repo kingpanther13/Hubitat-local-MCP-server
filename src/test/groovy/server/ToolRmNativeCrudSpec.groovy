@@ -3059,6 +3059,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // A committed action is present, so a clear (if it ran) would produce a real trashActs POST.
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
         hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        hubGet.register('/device/fullJson/99999') { params -> "" }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3081,12 +3082,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "missing id"           | [capability: "runRule", ruleIds: [999999]]                           | ["'999999'", "does not exist", "hub_list_rules"]
         "runRule this-rule"    | [capability: "runRule", ruleIds: ["*"]]                              | ['"this rule" target', "only for privateBoolean"]
         "privateBoolean mixed" | [capability: "privateBoolean", ruleIds: ["*", 999999], value: false] | ["'999999'", "does not exist"]
-        "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["patches[0].replaceActions[0]:", "numOp 'bogus' is not supported"]
-        "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["patches[0].replaceActions[0]:", "numOp is only supported with 'value'"]
-        "not a spec object"    | "switch on"                                                          | ["patches[0].replaceActions[0] must be an action spec object"]
         "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["replaceActions[0]:", "numOp 'bogus' is not supported"]
         "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["replaceActions[0]:", "numOp is only supported with 'value'"]
         "not a spec object"    | "switch on"                                                          | ["replaceActions[0] must be an action spec object"]
+        "unknown device"       | [capability: "switch", action: "off", deviceIds: [99999]]            | ["replaceActions[0]:", "'99999'", "does not exist"]
     }
 
     def "_rmNormalizeRuleIdsForWrite canonicalizes decimal-form ids and wraps a scalar"() {
@@ -3299,6 +3298,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "missing id"           | [capability: "runRule", ruleIds: [999999]]                           | ["'999999'", "does not exist", "hub_list_rules"]
         "runRule this-rule"    | [capability: "runRule", ruleIds: ["*"]]                              | ['"this rule" target', "only for privateBoolean"]
         "privateBoolean mixed" | [capability: "privateBoolean", ruleIds: ["*", 999999], value: false] | ["'999999'", "does not exist"]
+        "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["patches[0].replaceActions[0]:", "numOp 'bogus' is not supported"]
+        "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["patches[0].replaceActions[0]:", "numOp is only supported with 'value'"]
+        "not a spec object"    | "switch on"                                                          | ["patches[0].replaceActions[0] must be an action spec object"]
     }
 
     @spock.lang.Unroll
@@ -8574,7 +8576,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson(100, cleared ? [] : [[name: "actType.1", value: "switchActs"]])
         }
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-        hubGet.register('/device/fullJson/99999') { params -> "" }
+        // Both specs pass the pre-clear checks; the first add fails only once the wizard runs.
+        def addCalls = 0
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->
+            addCalls++
+            throw new IllegalStateException("doActPage rejected actSubType.1")
+        }
         def updateRuleClicks = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -8592,8 +8599,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def result = script.toolSetRule([
             appId: 100,
             replaceActions: [
-                [capability: "switch", action: "off", deviceIds: [99999]],
-                [capability: "switch", action: "off", deviceIds: [8]]
+                [capability: "switch", action: "off", deviceIds: [8]],
+                [capability: "switch", action: "on", deviceIds: [8]]
             ],
             confirm: true
         ])
@@ -8603,10 +8610,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.removedIndices?.size() == 1
         result.addedActions?.size() == 2
 
-        and: "the bogus-id sub-spec fails inline and the batch stops there (fail-closed): later items are notAttempted"
+        and: "the failed add is reported inline and the batch stops there (fail-closed): later items are notAttempted"
         result.addedActions[0].success == false
-        result.addedActions[0].error?.toString()?.contains("99999")
+        result.addedActions[0].error?.toString()?.contains("doActPage rejected actSubType.1")
         result.addedActions[1].notAttempted == true
+        addCalls == 1
 
         and: "finalisation is not attempted after the failure"
         updateRuleClicks == 0

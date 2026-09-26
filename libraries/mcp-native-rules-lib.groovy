@@ -14181,6 +14181,7 @@ def _applyNativeAppEdit(args) {
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
+        if (patchesList != null) _rmRejectMultiOpPatchItems(patchesList)
         // Same pre-snapshot slot, covering EVERY edit shape: Hubitat renders no configuration page
         // for a disabled app and every branch below drives that page. Unconditional because the
         // unguarded paths are worse than a refusal -- verified live on fw 2.5.1.177: removeAction
@@ -14517,14 +14518,10 @@ def _applyNativeAppEdit(args) {
                 replaceActionsList.eachWithIndex { spec, i ->
                     // Fail closed: the first failed or partial item stops every later add and finalisation.
                     if (replaceStopAfter) { addedResults << _rmBulkNotAttempted(replaceStopAfter); return }
-                    if (!(spec instanceof Map)) {
-                        addedResults << [success: false, error: "replaceActions[${i}] is not a Map", spec: spec]
-                    } else {
-                        try { addedResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, replaceValidRuleIds) }
-                        catch (Exception ae) {
-                            addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
-                            mcpLog("warn", "rm-native", "hub_set_rule: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
-                        }
+                    try { addedResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, replaceValidRuleIds) }
+                    catch (Exception ae) {
+                        addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
+                        mcpLog("warn", "rm-native", "hub_set_rule: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                     }
                     if (_rmBulkItemBlocks(addedResults.last())) { replaceStopAfter = "replaceActions[${i}]".toString(); replaceStopItem = addedResults.last() }
                 }
@@ -14992,7 +14989,6 @@ def _applyNativeAppEdit(args) {
                 (pm.replaceActions instanceof List && _rmSpecListTargetsRule(pm.replaceActions as List))
         }
         def patchValidRuleIds = patchBatchTargetsRule ? _rmValidRuleIds() : null
-        _rmRejectMultiOpPatchItems(patchesList)
         // Fail closed, as the top-level bulk paths do: the first failed or partial op, or inner item of an
         // addTriggers/addActions/replaceActions op, stops every later op and the batch-end updateRule. Later
         // ops and inner items are reported notAttempted, and the stop is decided before any budget checkpoint,
