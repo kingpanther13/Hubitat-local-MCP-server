@@ -145,6 +145,27 @@ fi
 echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- delivered via the package bundle (section 2), the HPM way (no redundant per-library install)."
 
 # ---------------------------------------------------------------------------
+# mcp_probe <url> <json-body> <max-time> -- one POST to the server's /mcp endpoint. Sets PROBE_BODY
+# (the response body) and PROBE_DIAG, one line saying what actually came back: curl's exit code and
+# error, HTTP status, bytes, time, content type, and the body's first 300 chars. A failed readiness or
+# bind-check attempt logs it, so the run records what the runner received rather than only that it
+# was unusable. Never fails the script (the caller judges the body); substrings instead of `| head`
+# so no pipeline can die of SIGPIPE under pipefail.
+# ---------------------------------------------------------------------------
+mcp_probe() {
+  local url="$1" payload="$2" max_time="$3" body_file err_file meta curl_err head rc=0
+  body_file=$(mktemp); err_file=$(mktemp)
+  meta=$(curl -sS --max-time "$max_time" -X POST "$url" -H "Content-Type: application/json" \
+    --data-binary "$payload" -o "$body_file" \
+    -w 'http=%{http_code} bytes=%{size_download} time=%{time_total}s type=%{content_type}' 2>"$err_file") || rc=$?
+  PROBE_BODY=$(cat "$body_file")
+  curl_err=$(tr '\r\n' '  ' < "$err_file")
+  head=${PROBE_BODY:0:300}; head=${head//$'\r'/ }; head=${head//$'\n'/ }
+  PROBE_DIAG="curl exit ${rc}${curl_err:+ (${curl_err:0:200})}; ${meta:-no response metadata}; body: ${head:-<empty>}"
+  rm -f "$body_file" "$err_file"
+}
+
+# ---------------------------------------------------------------------------
 # verify_includes_current <probe|enforce> -- check every #include'd library on
 # the hub: exactly ONE copy per namespace+name (two = the duplicate-library
 # trap; the app's #include binds to only one, so a bundle update can land in
@@ -579,18 +600,18 @@ else
       MAIN_MCP_URL="${HUBITAT_HUB_URL}/apps/${SERVER_APP_ID}/mcp?access_token=${HUBITAT_ACCESS_TOKEN}"
       READY="false"
       for ATTEMPT in 1 2 3 4 5 6 7 8 9; do
-        INIT_RESP=$(curl -sS --max-time 30 -X POST "$MAIN_MCP_URL" -H "Content-Type: application/json" \
-          --data-binary '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e-deploy-readiness","version":"1"}}}' 2>/dev/null || true)
+        mcp_probe "$MAIN_MCP_URL" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e-deploy-readiness","version":"1"}}}' 30
+        INIT_RESP=$PROBE_BODY
         if printf '%s' "$INIT_RESP" | jq -e '.result.protocolVersion // empty' >/dev/null 2>&1; then
           READY="true"
           echo "Server endpoint answered initialize on readiness attempt ${ATTEMPT} -- app ${SERVER_APP_ID} is serving."
           break
         fi
-        echo "  ...readiness attempt ${ATTEMPT}/9: endpoint not answering yet; retrying in 10s..."
+        echo "  ...readiness attempt ${ATTEMPT}/9: no initialize result (${PROBE_DIAG}); retrying in 10s..."
         sleep 10
       done
       if [ "$READY" != "true" ]; then
-        echo "::error::Server app ${SERVER_APP_ID} is ENABLED but its /mcp endpoint never answered initialize within ~90s after the throttle bounce. Investigate before the tests bury this signal."
+        echo "::error::Server app ${SERVER_APP_ID} is ENABLED but its /mcp endpoint never answered initialize within ~90s after the throttle bounce. Investigate before the tests bury this signal. Last attempt: ${PROBE_DIAG}"
         exit 1
       fi
     else
@@ -614,19 +635,23 @@ if [ -n "${HUBITAT_HUB_URL:-}" ] && [ -n "${HUBITAT_ACCESS_TOKEN:-}" ] && [ -n "
   BIND_MCP_URL="${HUBITAT_HUB_URL}/apps/${SERVER_APP_ID}/mcp?access_token=${HUBITAT_ACCESS_TOKEN}"
   BIND_STATE="pending"; TL_RESP=""; BAD_LIB=""
   for ATTEMPT in 1 2 3 4 5 6; do
-    TL_RESP=$(curl -sS --max-time 45 -X POST "$BIND_MCP_URL" -H "Content-Type: application/json" \
-      --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' 2>/dev/null || true)
+    mcp_probe "$BIND_MCP_URL" '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' 45
+    TL_RESP=$PROBE_BODY
     TL_TOOLS=$(printf '%s' "$TL_RESP" | jq -r '.result.tools | length' 2>/dev/null || echo "")
     case "$TL_TOOLS" in ''|*[!0-9]*) TL_TOOLS="" ;; esac
     if [ -n "$TL_TOOLS" ] && [ "$TL_TOOLS" -gt 0 ]; then
       echo "Post-deploy bind-check OK on attempt ${ATTEMPT}: tools/list served ${TL_TOOLS} tools -- all ${#INCLUDES[@]} #include'd library(ies) inlined."
       BIND_STATE="ok"; break
     fi
-    # A genuine inline failure names a missing aggregator part-method -- stop and fail fast.
-    BAD_LIB=$(printf '%s' "$TL_RESP" | grep -oiE '_(getAllToolDefinitions|readOnlyToolNames|idempotentWriteToolNames|openWorldToolNames|toolDisplayMeta)_part[A-Za-z0-9_]+' | head -1)
+    # A genuine inline failure names a missing aggregator part-method -- stop and fail fast. `|| true`:
+    # grep exits 1 on no match, which under pipefail + errexit would end the script silently here,
+    # skipping the retries and every message below.
+    BAD_LIB=$(printf '%s' "$TL_RESP" | grep -oiE '_(getAllToolDefinitions|readOnlyToolNames|idempotentWriteToolNames|openWorldToolNames|toolDisplayMeta)_part[A-Za-z0-9_]+' | head -1) || true
     if [ -n "$BAD_LIB" ]; then BIND_STATE="unbound"; break; fi
-    # Otherwise empty/non-JSON/transient (relay, warmup, throttle) -- not a proven bind failure; retry.
-    echo "  bind-check attempt ${ATTEMPT}/6: no usable catalog yet and no inline-failure signature (relay/warmup/throttle?); retrying in 10s..."
+    # Otherwise not a proven bind failure; log what came back and retry.
+    TL_JSON="empty body"
+    if [ -n "$TL_RESP" ]; then TL_JSON=$(printf '%s' "$TL_RESP" | jq -e . 2>&1 >/dev/null) || true; TL_JSON=${TL_JSON:-parses}; fi
+    echo "  bind-check attempt ${ATTEMPT}/6: no usable catalog and no inline-failure signature -- ${PROBE_DIAG}; json: ${TL_JSON}; retrying in 10s..."
     sleep 10
   done
   if [ "$BIND_STATE" = "unbound" ]; then
@@ -634,7 +659,7 @@ if [ -n "${HUBITAT_HUB_URL:-}" ] && [ -n "${HUBITAT_ACCESS_TOKEN:-}" ] && [ -n "
     echo "::error::Post-deploy BIND-CHECK FAILED -- a bundled library LANDED but did NOT inline into the app (${BAD_LIB}() is undefined), so its part-methods are uncallable and EVERY tool is dead. Failing the deploy now instead of running the whole suite against a broken app. tools/list error: ${BIND_ERR:-<none>}"
     exit 1
   elif [ "$BIND_STATE" != "ok" ]; then
-    echo "::error::Post-deploy BIND-CHECK could not get a usable tools/list after 6 attempts, with NO library-inline-failure signature -- likely a relay/transport or post-bounce warmup/throttle problem rather than a bind failure. Re-run. Last response: $(printf '%s' "$TL_RESP" | head -c 300)"
+    echo "::error::Post-deploy BIND-CHECK could not get a usable tools/list after 6 attempts, with NO library-inline-failure signature -- so not a proven bind failure; each attempt's line above records what came back. Last attempt: ${PROBE_DIAG}"
     exit 1
   fi
 else
