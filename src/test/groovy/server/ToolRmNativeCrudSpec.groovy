@@ -28345,8 +28345,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the unverified cancel is surfaced -- the editor may still be open, so the envelope must not imply a clean retry"
         result.wizardStuck == true
         result.error?.contains("could not be confirmed removed")
-        result.error?.indexOf("button='actionCancel'") < result.error?.indexOf("removeAction:{index:1}")
+        result.error?.contains("button='actionCancel'")
         result.error?.contains("removeAction:{index:1}")
+        result.error.indexOf("button='actionCancel'") < result.error.indexOf("removeAction:{index:1}")
 
         and: "the envelope's own recovery hint names the action-editor close, never the nothing-to-restore wording"
         result.restoreHint?.contains("button='actionCancel', pageName='doActPage'")
