@@ -882,6 +882,130 @@ def test_call_with_limiter_bounce_propagates_non_limiter_errors():
         runner._call_with_limiter_bounce("hub_manage_rule_machine", "hub_call_rule", {}, "probe")
 
 
+def _logs_body(payload):
+    return {"resultType": "complete", "content": [{"text": json.dumps(payload)}]}
+
+
+def test_capture_504_context_names_the_failed_call_and_anchors_the_window(capsys):
+    """Label and window come from the exception's failed op and the failure time, not _last_op or now."""
+    sent = []
+
+    class Client:
+        _last_op = ("hub_get_visual_rule", 0.8, True)
+
+        def _send(self, method, params, headers=None):
+            sent.append(params)
+            if params["arguments"]["args"]["mode"] == "hub":
+                return _logs_body({"logs": [{"name": "2026-09-26 06:07:01.100", "level": "WARN",
+                                             "message": "app|38|MCP|[hubrt] slow GET"}]})
+            return _logs_body({"entries": [{"timestamp": 1790402821000, "level": "debug",
+                                            "component": "mrtr", "message": "slice scheduled"}]})
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = Client()
+    runner.server_app_id = "38"
+    exc = et.McpError("504 Gateway Timeout on tools/call")
+    exc._mcp_failed_op = ("hub_set_visual_rule", 10.3, False)
+    failed_at = et.datetime(2026, 9, 26, 13, 5, 40, tzinfo=et.UTC)
+
+    runner._capture_504_context("test_visual_rule_editor_form_lifecycle", exc, failed_at)
+
+    out = capsys.readouterr().out
+    assert [p["arguments"]["args"]["mode"] for p in sent] == ["hub", "mcp"]
+    assert sent[0]["arguments"]["args"]["appId"] == 38
+    assert sent[0]["arguments"]["args"]["since"] == "2026-09-26T13:03:29Z"   # failed_at - (10.3s + 120s)
+    assert "failed op hub_set_visual_rule 10.3s [err]" in out
+    assert "hub_get_visual_rule" not in out
+    assert "[hubrt] slow GET" in out and "slice scheduled" in out
+    assert runner.client._last_op == ("hub_get_visual_rule", 0.8, True)
+
+
+@pytest.mark.parametrize("main_reply", [
+    pytest.param("raise", id="main-read-504"),
+    pytest.param(_logs_body({"status": "in_progress", "retryable": True}), id="snapshot-still-loading"),
+    pytest.param(_logs_body({"logs": [], "error": "Unexpected log format from hub"}), id="error-body"),
+    pytest.param({"resultType": "input_required", "requestState": "x"}, id="continuation-not-followed"),
+    pytest.param({"isError": True, "content": [{"text": "{}"}]}, id="is-error"),
+])
+def test_capture_504_context_falls_back_to_the_watchdog_when_the_main_read_is_unusable(capsys, monkeypatch, main_reply):
+    """A failed, still-loading or errored main read must fall back, never print as '0 entries'."""
+
+    class Client:
+        _last_op = None
+
+        def _send(self, method, params, headers=None):
+            if params["arguments"]["args"]["mode"] == "hub":
+                if main_reply == "raise":
+                    raise et.RelayLostResponseError("504 Gateway Timeout on tools/call")
+                return main_reply
+            return _logs_body({"entries": []})
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = Client()
+    runner.server_app_id = "38"
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", lambda *a, **k: _watchdog_response([
+        {"name": "2026-09-26 06:07:01.100", "level": "warn", "message": "app|38|MCP Rule Server|slow slice"},
+        {"name": "2026-09-26 06:07:01.200", "level": "info", "message": "app|5993|Watchdog|unrelated"},
+    ]))
+
+    runner._capture_504_context("probe")
+
+    out = capsys.readouterr().out
+    assert "hub log via watchdog" in out
+    assert "slow slice" in out and "unrelated" not in out
+    assert "hub log since" not in out
+
+
+def test_capture_504_context_reports_both_hub_log_sources_unreadable(capsys, monkeypatch):
+    class Client:
+        _last_op = None
+
+        def _send(self, method, params, headers=None):
+            raise et.RelayLostResponseError("504 Gateway Timeout on tools/call")
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = Client()
+    runner.server_app_id = "38"
+    runner.watchdog_url = ""
+
+    runner._capture_504_context("probe")
+
+    out = capsys.readouterr().out
+    assert "hub log unreadable (main:" in out and "watchdog:" in out
+    assert "mcp log read failed" in out
+
+
+def test_capture_504_context_without_app_id_says_so(capsys):
+    runner = object.__new__(et.TestRunner)
+    runner.client = SimpleNamespace(_last_op=None, _send=lambda *a, **k: pytest.fail("must not read logs without an app id"))
+    runner.server_app_id = ""
+
+    runner._capture_504_context("probe")
+
+    assert "HUBITAT_APP_ID not set" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("app, stranded", [
+    pytest.param({"id": 46736, "type": "Button Controller-5.1", "parentId": 7242,
+                  "name": "Button Controller-5.1: E2E_PERM_Button"}, True, id="relabelled-after-perm-button"),
+    pytest.param({"id": 46737, "type": "Button Controller-5.1", "parentId": 7242,
+                  "name": "Button Controller-5.1: BAT_E2E_WalkBtnDev"}, True, id="relabelled-after-bat-device"),
+    pytest.param({"id": 7242, "type": "Button Controllers", "parentId": None,
+                  "name": "Button Controllers"}, False, id="parent-app"),
+    pytest.param({"id": 50, "type": "Button Controller-5.1", "parentId": None,
+                  "name": "Button Controller-5.1: E2E_PERM_Button"}, False, id="no-parent"),
+    pytest.param({"id": 17765, "type": "Button Controller-5.1", "parentId": 7242,
+                  "name": "Button Controller-5.1"}, False, id="unlabelled"),
+    pytest.param({"id": 60, "type": "Button Controller-5.1", "parentId": 7242,
+                  "name": "Button Controller-5.1: Kitchen Pico"}, False, id="real-device"),
+    pytest.param({"id": 61, "type": "Rule-5.1", "parentId": 216,
+                  "name": "BAT_E2E_Rule"}, False, id="other-type"),
+])
+def test_is_stranded_button_controller(app, stranded):
+    assert et._is_stranded_button_controller(app) is stranded
+
+
 def test_run_artifact_suffix_is_stable_and_unique_per_github_attempt():
     first_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "1"}
     second_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "2"}

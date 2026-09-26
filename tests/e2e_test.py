@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -67,10 +67,11 @@ MODERN_PROTOCOL_VERSION = "2026-07-28"
 SUPPORTED_PROTOCOL_VERSIONS = [MODERN_PROTOCOL_VERSION, "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
 # Mirrors initializeProtocolVersions() / defaultProtocolVersion(): the handshake negotiates
-# every supported revision EXCEPT the modern one. 2026-07-28 deleted `initialize`, so a client
-# that reaches it is legacy-era by construction and must never be handed a version it cannot
-# speak. Derived from the transport list above so the two cannot drift.
-INITIALIZE_PROTOCOL_VERSIONS = [v for v in SUPPORTED_PROTOCOL_VERSIONS if v != MODERN_PROTOCOL_VERSION]
+# every supported revision OLDER than the modern era (2026-07-28 or later). 2026-07-28 deleted
+# `initialize`, so a client that reaches it is legacy-era by construction and must never be handed
+# a version it cannot speak. Derived from the transport list above so the two cannot drift;
+# YYYY-MM-DD strings compare correctly as plain strings.
+INITIALIZE_PROTOCOL_VERSIONS = [v for v in SUPPORTED_PROTOCOL_VERSIONS if v < MODERN_PROTOCOL_VERSION]
 DEFAULT_PROTOCOL_VERSION = INITIALIZE_PROTOCOL_VERSIONS[0]
 # The revision the legacy_protocol group speaks on the wire. 2025-06-18 is the one that made
 # MCP-Protocol-Version REQUIRED on every POST, and it is what the shipping production clients
@@ -809,7 +810,7 @@ class HubitatMcpClient:
             version = headers.get("MCP-Protocol-Version")
             assert version is not None and version not in {
                 supported for supported in SUPPORTED_PROTOCOL_VERSIONS
-                if supported != MODERN_PROTOCOL_VERSION
+                if supported < MODERN_PROTOCOL_VERSION
             }, (
                 "raw E2E requests may use only 2026-07-28 or an unsupported-version "
                 "negative control; headerless and legacy revisions are forbidden"
@@ -1219,6 +1220,15 @@ def test(group: str):
 # ---------------------------------------------------------------------------
 # Test runner
 # ---------------------------------------------------------------------------
+
+
+def _is_stranded_button_controller(app: dict) -> bool:
+    """A Button Controller-5.1 child left by a test: it relabels itself after the device it binds,
+    so it is recognised by type plus a fixture-device name, never by the BAT_E2E_ prefix alone.
+    The parent "Button Controllers" app is a different type and never matches."""
+    name = str(app.get("name") or app.get("label") or "")
+    return (str(app.get("type") or "") == "Button Controller-5.1" and bool(app.get("parentId"))
+            and bool(str(app.get("id") or "")) and (PREFIX in name or "E2E_PERM_" in name))
 
 
 class TestRunner:
@@ -1826,6 +1836,82 @@ class TestRunner:
         op_key, dur, ok = lo
         return f"{op_key} {dur:.1f}s{'' if ok else ' [err]'}"
 
+    def _capture_504_context(self, name: str, exc: BaseException | None = None,
+                             failed_at: datetime | None = None) -> None:
+        """Print the server app's hub log from two minutes before the 504-failed call's start, and
+        the latest structured MCP history, so the hub-side timeline survives in the run log instead
+        of rolling out of Past Logs before anyone reads it. The failed call is the one the exception
+        carries (_mcp_failed_op), not _last_op, which by now is whatever ran afterwards; the window is
+        anchored at `failed_at` (when the failure was caught), not at capture time, because the
+        capture runs after the retry settle. The hub log is read from the main app first and, when
+        that read fails or is still loading, from the watchdog, a separate app. Raw transport only,
+        so op_timings and _last_op are untouched."""
+        app_id = getattr(self, "server_app_id", "")
+        if not app_id:
+            print(f"    [504-CONTEXT] {name}: HUBITAT_APP_ID not set -- cannot read the server app's hub log")
+            return
+        failed_op = getattr(exc, "_mcp_failed_op", None) or getattr(self.client, "_last_op", None)
+        dur = float(failed_op[1]) if failed_op and isinstance(failed_op[1], (int, float)) else 0.0
+        label = self._last_op_str(exc)
+        since = ((failed_at or datetime.now(UTC)) - timedelta(seconds=dur + 120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        def _print(source: str, entries: list) -> None:
+            print(f"    [504-CONTEXT] {name}: {source}, {len(entries)} entries (failed op {label}):")
+            for e in entries[-300:]:
+                ts = e.get("name") or e.get("timestamp") or e.get("time") or ""
+                if isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts / 1000, UTC).strftime("%H:%M:%S.%f")[:-3]
+                print(f"      {str(ts)[:23]} {str(e.get('level') or '')[:5]:5s} "
+                      f"{str(e.get('component') or '')[:12]} {str(e.get('message') or '')[:220]}")
+
+        def _read_main(args: dict) -> list:
+            """One log read; anything but a completed, usable list raises (the caller falls back)."""
+            raw = self.client._send("tools/call", {
+                "name": "hub_read_diagnostics", "arguments": {"tool": "hub_get_logs", "args": args}})
+            if not isinstance(raw, dict) or raw.get("isError") or raw.get("resultType") not in (None, "complete"):
+                raise ValueError(f"log read did not complete ({(raw or {}).get('resultType') or 'isError'})")
+            content = raw.get("content")
+            text = content[0].get("text") if isinstance(content, list) and content \
+                and isinstance(content[0], dict) else None
+            if not text:
+                raise ValueError("log read returned no content")
+            data = json.loads(text)
+            if not isinstance(data, dict) or data.get("status") == "in_progress" \
+                    or data.get("success") is False or data.get("error") \
+                    or data.get("message") == "No log data returned from hub":
+                raise ValueError(f"log read unusable: {str(data)[:120]}")
+            entries = data.get("logs") if "logs" in data else data.get("entries")
+            if not isinstance(entries, list):
+                raise ValueError("log read returned no entries list")
+            return entries
+
+        try:
+            source, entries = None, None
+            try:
+                entries = _read_main({"mode": "hub", "appId": int(app_id), "since": since, "limit": 300})
+                source = f"hub log since {since}"
+            except Exception as exc_main:
+                try:
+                    # The watchdog filters only by level, so keep the server app's own lines; its
+                    # newest-first cap stands in for the time window.
+                    entries = [e for e in self._watchdog_hub_logs(level="", limit=300)
+                               if str(e.get("message") or "").startswith(f"app|{app_id}|")]
+                    source = f"hub log via watchdog, newest 300 (main read failed: {str(exc_main)[:80]})"
+                except Exception as exc_wd:
+                    print(f"    [504-CONTEXT] {name}: hub log unreadable (main: {str(exc_main)[:80]}; "
+                          f"watchdog: {str(exc_wd)[:80]})")
+            if entries is not None:
+                _print(source, entries)
+            try:
+                mcp_entries = _read_main({"mode": "mcp", "limit": 100})
+            except Exception as exc_mcp:
+                print(f"    [504-CONTEXT] {name}: mcp log read failed: {exc_mcp}")
+            else:
+                _print("mcp log, newest 100", mcp_entries)
+        except Exception as exc_any:
+            # Diagnostics only: a failure here must never change the retry outcome.
+            print(f"    [504-CONTEXT] {name}: capture failed: {exc_any}")
+
     def _settle_before_504_retry(self, name: str) -> None:
         """After a relay 504, poll a trivial call until transport is responsive before re-running.
 
@@ -1927,9 +2013,12 @@ class TestRunner:
                 if "504" in str(exc) and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} aborted by relay 504 -- re-running the test once")
+                    failed_at = datetime.now(UTC)
                     self._settle_before_504_retry(name)
+                    self._capture_504_context(name, exc, failed_at)
                     continue
                 if "504" in str(exc):
+                    self._capture_504_context(name, exc, datetime.now(UTC))
                     print(f"    FULL-FAILURE {name}: persistent relay 504 across retry "
                           f"(failure op {self._last_op_str(exc)}): {exc}")
                     self._record(name, group, "fail",
@@ -1944,7 +2033,9 @@ class TestRunner:
                 if "504" in es and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
+                    failed_at = datetime.now(UTC)
                     self._settle_before_504_retry(name)
+                    self._capture_504_context(name, exc, failed_at)
                     continue
                 # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
                 # Bounce/recover the app (which escalates to a reboot at the configured threshold),
@@ -1960,6 +2051,8 @@ class TestRunner:
                 # failure goes to the run log here -- a truncated structured response
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
                 # extra run just to learn why a test failed.
+                if "504" in es:
+                    self._capture_504_context(name, exc, datetime.now(UTC))
                 print(f"    FULL-FAILURE {name} (failure op {self._last_op_str(exc)}): {exc}")
                 self._record(name, group, "fail",
                              message=f"[{self._last_op_str(exc)}] {exc}"[:200], duration=elapsed)
@@ -5934,6 +6027,18 @@ class TestRunner:
             assert f"privateT.{pb_idx}" not in pb_after, \
                 f"the pre-rebuild privateBoolean row survived the retarget: {pb_after}"
 
+            # The same rebuild as a patches op, finalised by the batch's one updateRule.
+            pb_patch = self._patch_rule(caller_id, [
+                {"modifyAction": {"index": int(pb_new_idx), "mods": {"value": False}}}])
+            assert [e.get("op") for e in pb_patch] == ["modifyAction"] and pb_patch[0].get("success") is True, \
+                f"patches modifyAction did not succeed: {pb_patch}"
+            pb_patched_idx = pb_patch[0].get("newActionIndex")
+            pb_patched = self._get_persisted_rule_config(caller_id).get("settings") or {}
+            assert pb_patched_idx is not None \
+                and str(pb_patched.get(f"pvTF.{pb_patched_idx}")).lower() == "true" \
+                and f"privateT.{pb_new_idx}" not in pb_patched, \
+                f"patches modifyAction did not rebuild the action with value False: {pb_patch} / {pb_patched}"
+
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
             # RMUtils. Do not converge or resume here -- pause/resume behavior is covered by the
@@ -7641,7 +7746,34 @@ class TestRunner:
                 and "removetrigger" in str(rejected.get("error", "")).lower() \
                 and "not touched" in str(rejected.get("restoreHint", "")).lower(), \
                 f"modifyTrigger state-change token should refuse pre-write: {rejected}"
-            self._set_rule(app_id, {"removeTrigger": {"index": tidx}}, strict=True)
+            # Retarget in ONE patches call: removeTrigger + addTrigger both run under the single
+            # trailing updateRule. The replacement uses state "on" so it cannot be confused with the
+            # removed trigger (modified to "off" above) if RM hands the freed index back.
+            retarget = self._patch_rule(app_id, [
+                {"removeTrigger": {"index": tidx}},
+                {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}},
+            ])
+            assert [e.get("op") for e in retarget] == ["removeTrigger", "addTrigger"] \
+                and all(e.get("success") is True for e in retarget), \
+                f"patches retarget did not run both sub-ops successfully: {retarget}"
+            new_tidx = retarget[1].get("triggerIndex")
+            assert new_tidx is not None, \
+                f"patches addTrigger did not return a triggerIndex: {retarget}"
+            assert str(tidx) not in [str(i) for i in retarget[0].get("afterIndices") or []], \
+                f"patches removeTrigger left trigger {tidx} in the rule: {retarget}"
+            retarget_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert self._setting_holds_exact(retarget_settings.get(f"tDev{new_tidx}"), sw) \
+                and str(retarget_settings.get(f"tstate{new_tidx}")).lower() == "on", \
+                f"patches addTrigger settings did not land on trigger {new_tidx}: {retarget_settings}"
+            # patches modifyTrigger: the same single-op helper, finalised by the batch's one updateRule.
+            patched_mod = self._patch_rule(app_id, [{"modifyTrigger": {"index": new_tidx, "mods": {"state": "off"}}}])
+            assert [e.get("op") for e in patched_mod] == ["modifyTrigger"] \
+                and patched_mod[0].get("success") is True and patched_mod[0].get("partial") is not True, \
+                f"patches modifyTrigger did not succeed cleanly: {patched_mod}"
+            patched_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert str(patched_settings.get(f"tstate{new_tidx}")).lower() == "off", \
+                f"patches modifyTrigger did not persist state 'off' on trigger {new_tidx}: {patched_settings}"
+            self._set_rule(app_id, {"removeTrigger": {"index": new_tidx}}, strict=True)
             self._assert_rule_healthy(app_id)
 
             # Fail-closed bulk triggers: a clean Switch-off trigger lands, the refused state-change
@@ -8772,12 +8904,29 @@ class TestRunner:
                     and copy_settings.get(f"xVarV.{copy_idx}") == str_var_name \
                     and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
                     f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
-                # What the copy itself WROTE. The persisted rule can still hold numOp/customDev at
-                # this index: the refused numeric-target fromDevice case above (the switch
-                # attribute) leaves settings without an actType, so the next add reuses that index.
+                # The refused numeric-target fromDevice case above (the switch attribute) opened a
+                # row and wrote numOp/customDev before refusing; its actionCancel drops that row
+                # and consumes its index, so the copy must carry none of those leftovers.
                 copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
                 assert not any(k.startswith("numOp.") for k in copy_applied), \
                     f"String copy wrote a numOp field: settingsApplied={copy_applied}"
+                stale = [k for k in (f"numOp.{copy_idx}", f"customDev.{copy_idx}") if k in copy_settings]
+                assert not stale, \
+                    f"String copy at index {copy_idx} inherited the refused add's fields {stale}: {copy_settings}"
+                # The cancelled rows themselves must be GONE: a refusal that left its actType
+                # behind would show up as an orphaned settings row in rule health, and its mode
+                # fields (numOp/customDev) must not linger at any index outside the rule's two
+                # real actions (the math unary owns its numOp; the String copy owns neither).
+                health_c = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_get_rule_health", "args": {"appId": app_c}})
+                assert not health_c.get("orphanedActionRows"), \
+                    f"refused adds left orphaned action rows behind: {health_c.get('orphanedActionRows')}"
+                known_c = {str(mu_idx), str(copy_idx)}
+                stray_c = [k for k in copy_settings
+                           if str(k).startswith(("numOp.", "customDev."))
+                           and str(k).split(".", 1)[1] not in known_c]
+                assert not stray_c, \
+                    f"refused adds left stale mode fields outside the real actions {known_c}: {stray_c}"
                 # A Boolean target's copy picker is uncaptured, so it is refused before any write.
                 bool_copy = self._patch_rule(app_c, [
                     {"addAction": {"capability": "setVariable", "variable": bool_var_name,
@@ -8789,20 +8938,28 @@ class TestRunner:
             finally:
                 self._delete_native(app_c)
 
-            # Rule D: Number copy, then RUN the actions. The persisted settings alone do not prove
-            # it: without valOffset.<N> RM throws "Ambiguous method overloading ... Long#plus" at
-            # run time and leaves the target unchanged, although the rule saves and reads healthy.
+            # Rule D: Number copy, then numOp "add number", then RUN the actions. The persisted
+            # settings alone do not prove it: without valOffset.<N> RM throws "Ambiguous method
+            # overloading ... Long#plus" at run time and leaves the target unchanged, although the
+            # rule saves and reads healthy. The run lands 7 + 3 = 10 only if both actions execute.
             self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": var_name, "value": 0}})
             copy_spec = {"capability": "setVariable", "variable": var_name,
                          "sourceVariable": num_src_name}
-            app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec]})
+            add_spec = {"capability": "setVariable", "variable": var_name,
+                        "numOp": "add number", "value": 3}
+            app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec, add_spec]})
             try:
                 d_settings = self._get_persisted_rule_config(app_d).get("settings") or {}
                 d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
                               if str(k).startswith("numOp.") and v == "variable"), None)
                 assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
                 assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
+                add_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
+                                if str(k).startswith("numOp.") and v == "add number"), None)
+                assert add_idx is not None, f"no numOp.<N>='add number' persisted: {d_settings}"
+                assert str(d_settings.get(f"valNumber.{add_idx}")) in ("3", "3.0"), \
+                    f"add-number constant did not persist on index {add_idx}: {d_settings}"
                 self._assert_rule_healthy(app_d)
                 run, limited = self._call_with_limiter_bounce(
                     "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_d, "action": "actions"},
@@ -8812,19 +8969,19 @@ class TestRunner:
                 while time.time() < deadline:
                     got = self.client.call_tool("hub_manage_variables", {
                         "tool": "hub_get_variable", "args": {"name": var_name}}).get("value")
-                    if str(got) in ("7", "7.0"):
+                    if str(got) in ("10", "10.0"):
                         break
                     time.sleep(1.0)
                 # The limiter can abort the reply to a run that already happened, so the variable
                 # read above is the verdict; the run's own outcome explains a miss.
-                if str(got) not in ("7", "7.0"):
+                if str(got) not in ("10", "10.0"):
                     assert not limited, (
                         f"hub_call_rule(action=actions) stayed blocked by the platform load limiter "
-                        f"and {var_name} never reached 7 (got {got!r}): {limited}")
+                        f"and {var_name} never reached 10 (got {got!r}): {limited}")
                     assert not (isinstance(run, dict) and run.get("success") is False), \
                         f"hub_call_rule(action=actions) reported failure and {var_name} is {got!r}: {run}"
-                assert str(got) in ("7", "7.0"), \
-                    f"running the Number copy did not set {var_name} to 7 (got {got!r}; run result {run})"
+                assert str(got) in ("10", "10.0"), \
+                    f"running copy (7) then add number (3) did not set {var_name} to 10 (got {got!r}; run result {run})"
             finally:
                 self._delete_native(app_d)
         finally:
@@ -9206,17 +9363,34 @@ class TestRunner:
             assert bulk_kept in page and bulk_skipped not in page, \
                 f"addActions stop must keep the clean prefix and never write the tail: {page}"
 
-            # Fail-closed replacement: the old list is cleared before the adds, so only the clean first
-            # replacement item remains; skipping finalisation is not a rollback.
+            # A replacement item that any single add would refuse is caught before the clear: the call
+            # is refused whole and the existing list survives.
             repl_kept, repl_skipped = "E2E replace stop kept", "E2E replace stop skipped"
-            repl_stop = self._rm_stop_call(app_id, {"replaceActions": [
+            pre_clear = self._rm_stop_call(app_id, {"replaceActions": [
                 {"capability": "log", "message": repl_kept},
                 refused_spec,
                 {"capability": "log", "message": repl_skipped},
             ]})
+            assert pre_clear.get("success") is False and not pre_clear.get("addedActions") \
+                and "replaceActions[1]:" in str(pre_clear.get("error", "")) \
+                and "action:" in str(pre_clear.get("error", "")), \
+                f"expected a whole-call refusal naming replaceActions[1] before anything was cleared: {pre_clear}"
+            page = self._rule_page_text(app_id)
+            assert bulk_kept in page and repl_kept not in page, \
+                f"a replaceActions refused before the clear must leave the existing list intact: {page}"
+
+            # Fail-closed replacement: an item refused only inside its add (an unknown switch verb passes
+            # the pre-clear checks) stops the batch after the clear, so only the clean first replacement
+            # item remains; skipping finalisation is not a rollback.
+            repl_stop = self._rm_stop_call(app_id, {"replaceActions": [
+                {"capability": "log", "message": repl_kept},
+                {"capability": "switch", "action": "blink", "deviceIds": [int(self.get_test_switch_id())]},
+                {"capability": "log", "message": repl_skipped},
+            ]})
             added = repl_stop.get("addedActions") or []
             assert len(added) == 3 and added[0].get("success") is not False \
-                and not added[0].get("partial") and added[1].get("success") is False, \
+                and not added[0].get("partial") and added[1].get("success") is False \
+                and "Unknown switch action 'blink'" in str(added[1].get("error", "")), \
                 f"expected a clean replacement item, then the refusal, then the skipped tail: {repl_stop}"
             self._assert_bulk_stop(repl_stop, "replaceActions[1]", added[2:])
             page = self._rule_page_text(app_id)
@@ -11515,8 +11689,10 @@ class TestRunner:
                     "addActions": [{"capability": "privateBoolean", "ruleIds": [int(app_id)], "value": False}],
                 })
                 try:
-                    run = self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_call_rule", "args": {"ruleId": int(setter_id), "action": "actions"}})
+                    run, run_limited = self._call_with_limiter_bounce(
+                        "hub_manage_rule_machine", "hub_call_rule",
+                        {"ruleId": int(setter_id), "action": "actions"}, "helper rule hub_call_rule(action=actions)")
+                    assert not run_limited, f"helper rule's Run Actions stayed blocked by the platform load limiter: {run_limited}"
                     assert run.get("success") is True, f"helper rule's Run Actions did not succeed: {run}"
                 finally:
                     self._delete_native(setter_id)
@@ -15712,6 +15888,36 @@ class TestRunner:
                                 print(f"  [WARN] Visual Rule sweep delete failed for '{vname}': {exc}")
             except Exception as exc:
                 print(f"  [WARN] Visual Rule sweep failed: {exc}")
+            # Button Controller backstop: the button tests create Button Controller-5.1 children
+            # with a BAT_E2E_ name, but the app relabels itself after the device it binds
+            # ("Button Controller-5.1: E2E_PERM_Button"), so neither the RM list nor a bare
+            # PREFIX match ever sees them. Reap by type + a fixture-device name in the label.
+            # One no-cursor read returns the whole list; paging by offset while deleting would
+            # skip rows.
+            try:
+                listed = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_list_apps", "args": {"scope": "instances", "includeHidden": True}})
+                reaped = 0
+                for a in (listed.get("apps", []) if isinstance(listed, dict) else []):
+                    if not _is_stranded_button_controller(a):
+                        continue
+                    aname, aid = str(a.get("name") or a.get("label") or ""), str(a.get("id"))
+                    try:
+                        print(f"  Sweep: deleting Button Controller '{aname}' (id={aid})")
+                        res = self.client.call_tool("hub_manage_rule_machine", {
+                            "tool": "hub_delete_native_app",
+                            "args": {"appId": aid, "force": True, "confirm": True},
+                        })
+                        if isinstance(res, dict) and res.get("success") is False:
+                            print(f"  [WARN] Button Controller sweep delete refused for '{aname}': {res.get('error')}")
+                            continue
+                        reaped += 1
+                    except Exception as exc:
+                        print(f"  [WARN] Button Controller sweep delete failed for '{aname}': {exc}")
+                if reaped:
+                    print(f"  Sweep: reaped {reaped} Button Controller instance(s)")
+            except Exception as exc:
+                print(f"  [WARN] Button Controller sweep failed: {exc}")
 
         # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
         # Target' (instance + code class), the @test("app_code_update") tests create the

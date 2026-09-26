@@ -940,8 +940,9 @@ def handleMcpGet() {
 //   404 -- unknown method, MODERN only; body keeps -32601 so a dual-era client can tell it
 //          from a legacy HTTP+SSE server's 404.
 //
-// "MODERN" = the header's VALUE is modernProtocolVersion(), not its presence (see the era
-// split below). Legacy revisions keep every pre-2026 behaviour, batch included.
+// "MODERN" = the header's VALUE is a modern-era version (2026-07-28 or later), not its
+// presence (see the era split below). Legacy revisions keep every pre-2026 behaviour,
+// batch included.
 def handleMcpRequest() {
     // Streamable HTTP security MUST: validate Origin on every inbound POST to
     // block DNS rebinding. First thing in the handler, so a rejected request costs
@@ -1015,7 +1016,7 @@ def handleMcpRequest() {
     // Compare the header value already in hand rather than re-scanning via _modernEraRequest():
     // same verdict, one header lookup instead of two. jsonRpcResult keeps its own read because it
     // runs outside this scope.
-    boolean modernRequest = headerVersion == modernProtocolVersion() && bodyCarriesRequest
+    boolean modernRequest = _modernEraVersion(headerVersion) && bodyCarriesRequest
     if (modernRequest) {
         def rejection = _modernRequestRejection(headerVersion, requestBody)
         if (rejection != null) {
@@ -1271,22 +1272,24 @@ def _authorityHost(String authority) {
     return s.isEmpty() ? null : s
 }
 
-// The one revision that defines the mirrored request-metadata headers, the
-// `resultType` result field, and the 400/404 status mappings. Named rather than
-// inlined because three places branch on it: the supported list, the initialize
-// exclusion, and the per-request era test.
+// The first revision that defines the mirrored request-metadata headers, the
+// `resultType` result field, and the 400/404 status mappings -- the start of the modern era.
 def modernProtocolVersion() { "2026-07-28" }
 
-// Era test for the modern revision, used by the request validation in
+// Spec terminology: Modern = 2026-07-28 and later, Legacy = 2025-11-25 and earlier.
+// Versions are YYYY-MM-DD, so string order is date order; a non-date value is never modern.
+boolean _modernEraVersion(String v) { v != null && v ==~ /\d{4}-\d{2}-\d{2}/ && v >= modernProtocolVersion() }
+
+// Era test for the current request, used by the request validation in
 // handleMcpRequest and by jsonRpcResult's resultType stamp. The header VALUE is the
 // switch, not its presence -- the header itself has been required since 2025-06-18.
 // Reads through _requestHeader, so a call from outside a request context (a scheduled
 // handler, a direct unit call) answers false instead of throwing.
 def _modernEraRequest() {
-    return _requestHeader("MCP-Protocol-Version") == modernProtocolVersion()
+    return _modernEraVersion(_requestHeader("MCP-Protocol-Version"))
 }
 
-// Modern-era (2026-07-28) body + mirrored-header validation. Returns a
+// Modern-era (2026-07-28 or later) body + mirrored-header validation. Returns a
 // ready-to-render JSON-RPC error for the caller to ship at HTTP 400, or null when the
 // request passes. The unsupported-version rejection is NOT here -- it lives in
 // handleMcpRequest because it applies to both eras.
@@ -1494,8 +1497,8 @@ def processJsonRpcMessage(msg) {
         return null
     }
 
-    // Dispatch is era-agnostic: a MODERN request (MCP-Protocol-Version ==
-    // modernProtocolVersion()) was already validated in handleMcpRequest -- Mcp-Method /
+    // Dispatch is era-agnostic: a MODERN request (MCP-Protocol-Version is a
+    // modern-era version) was already validated in handleMcpRequest -- Mcp-Method /
     // Mcp-Name and the header-vs-_meta version agreement -- so anything arriving here
     // has either passed that or is on a LEGACY revision.
     //
@@ -1577,7 +1580,7 @@ def serverInstructions() {
 // allowlist (any version here is served; anything else is a -32022), and the
 // `supported` list a -32022 rejection hands back.
 //
-// modernProtocolVersion() is advertised now that its prerequisite is in: the standard
+// modernProtocolVersion() is advertised because the standard
 // request headers (MCP-Protocol-Version / Mcp-Method / Mcp-Name) are validated against
 // the body in handleMcpRequest. A header naming one of the LEGACY entries is served as
 // legacy -- those revisions define no mirrored headers to check.
@@ -1585,16 +1588,15 @@ def supportedProtocolVersions() {
     [modernProtocolVersion(), "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 }
 
-// The subset `initialize` may negotiate: every supported revision EXCEPT the modern
-// one. `initialize` is a legacy-era method -- 2026-07-28 deleted the handshake in
-// favour of per-request metadata -- so a client that reaches it is speaking the old
-// era by construction and must never be handed a modern version to cache. Derived
-// from the list above so a future revision cannot drift the two apart.
+// The subset `initialize` may negotiate: every supported LEGACY revision (modern era =
+// 2026-07-28 or later). `initialize` is a legacy-era method -- 2026-07-28 deleted the
+// handshake in favour of per-request metadata -- so a client that reaches it is speaking
+// the old era by construction and must never be handed a modern version to cache.
 def initializeProtocolVersions() {
-    supportedProtocolVersions().findAll { it != modernProtocolVersion() }
+    supportedProtocolVersions().findAll { !_modernEraVersion(it) }
 }
 // Newest revision `initialize` will negotiate -- what a client that omits (or
-// requests an unknown, or requests the modern) protocolVersion negotiates down to.
+// requests an unknown, or requests a modern-era) protocolVersion negotiates down to.
 def defaultProtocolVersion() { initializeProtocolVersions()[0] }
 
 // The version initialize answers with for a requested one -- the NEGOTIATED version, never the
@@ -1626,9 +1628,9 @@ def serverIdentity() {
 
 def handleInitialize(msg) {
     // Echo the client's requested protocolVersion when it is one initialize may
-    // negotiate; otherwise the default. Omitted, unknown, AND "2026-07-28" all land
-    // on the default -- see initializeProtocolVersions() for why the modern revision
-    // is not negotiable through this legacy-era handshake.
+    // negotiate; otherwise the default. Omitted, unknown, AND modern-era versions all land
+    // on the default -- see initializeProtocolVersions() for why modern revisions
+    // are not negotiable through this legacy-era handshake.
     def requested = msg.params?.protocolVersion
     def negotiated = _negotiatedProtocolVersion(requested)
     def info = msg.params?.clientInfo
@@ -1902,7 +1904,7 @@ def handleToolsCall(msg) {
     if (!toolName) return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
     if (requestState != null && !_modernEraRequest()) {
         return jsonRpcError(msg.id, -32602,
-            "Invalid params: requestState requires MCP-Protocol-Version ${modernProtocolVersion()}.")
+            "Invalid params: requestState requires MCP-Protocol-Version ${modernProtocolVersion()} or later.")
     }
 
     boolean eligible = _modernEraRequest() && _mrtrEligibleCall(toolName, reactiveToolName, args)
@@ -9065,7 +9067,7 @@ private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
         def aType = _rmActionSettingText(settingsByName, "actType", idx)
         def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
         if (aType == null && sType == null) return
-        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; it does hold index ${idx}, so new actions are allocated above it.".toString())
+        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
     }
     out
 }
@@ -10800,7 +10802,7 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
   - **NOTE:** fan `setSpeed` takes a fixed enum speed only (low / medium-low / medium / medium-high / high / on / off / auto); RM has no variable-sourced fan speed (unlike dimmer `setLevel`'s `levelVariable`) because the classic wizard exposes a variable toggle only for numeric/text value fields, not enum pickers. For a variable-driven speed, use `capability='runCommand'` with `command='setSpeed'` + `parameters=[{type:'string', variable:'<varName>'}]` (per-parameter variable sourcing).
 - **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `hub_list_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
-- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. `sourceVariable` works for Number, Decimal and String targets (a String target is written through RM's `valStringOp.<N>="Copy variable"` picker); a Boolean or DateTime target is refused before any write. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
+- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. With `value`, an optional `numOp` picks the operation: `number` (default, sets the variable to value) or `add number` (adds value to it); any other `numOp`, or `numOp` without `value`, is refused before any write. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. `sourceVariable` works for Number, Decimal and String targets (a String target is written through RM's `valStringOp.<N>="Copy variable"` picker); a Boolean or DateTime target is refused before any write. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Rule-local Variable** (`capability='setLocalVariable'`): identical shape and source modes to `setVariable` (`variable` target + exactly one of `value`/`sourceVariable`/`fromDevice`/`math`), EXCEPT the `variable` target is validated against the rule's LOCAL variables (`state.allLocalVars`) instead of hub globals. Use this -- not `setVariable` -- when a local and a hub variable share a name and you mean the local; it cannot silently target the global. `sourceVariable`/`math` operands may be either local or hub (RM's source picker spans both; validated against the live revealed enum). Create a local first via `addLocalVariable`; list current locals via `hub_list_rule_local_variables` (in `hub_read_rules`). The picker section headers ` --LOCAL VARIABLES--` / ` --HUB VARIABLES--` are rejected as targets.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
