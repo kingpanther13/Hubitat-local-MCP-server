@@ -9472,7 +9472,8 @@ private Map _rmCollectInputSchema(Map configPage) {
                     title: i.title?.toString(),
                     range: i.range?.toString(),
                     pattern: i.pattern?.toString(),
-                    disabled: i.disabled == true
+                    disabled: i.disabled == true,
+                    defaultValue: i.defaultValue
                 ])
             }
         }
@@ -9556,6 +9557,14 @@ private List _uiNavigationViolations(Map schema, Map values) {
 // The browser's input type=email syntax (WHATWG "valid e-mail address").
 private String _uiEmailPattern() {
     return '[a-zA-Z0-9.!#\$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*'
+}
+
+// The value Hubitat's page submits for an input: its stored value, or -- when nothing is stored --
+// the input's defaultValue, which every page template (text/number/decimal, textarea, bool, enum)
+// pre-fills. A Done built without it posts "" where the UI posts the default (a Room Lighting
+// "illuminance rises" condition then saves lux=null instead of the page's 100).
+private _uiValueOrDefault(v, Map meta) {
+    return (_uiValueIsEmpty(v) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
 
 private boolean _uiValueIsEmpty(v) {

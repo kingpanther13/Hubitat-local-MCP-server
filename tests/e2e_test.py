@@ -5707,7 +5707,7 @@ class TestRunner:
             assert periodic.get("success") is False and "periodic" in str(periodic.get("error", "")).lower(), \
                 f"Periodic Schedule minutes:1 should fail loud steering to periodic, got: {periodic}"
             # The pre-flight refusal mutated nothing, so the edit-path restoreHint must report
-            # that RM was not touched -- NOT the misleading "Backup saved before write; call
+            # that the app was not touched -- NOT the misleading "Backup saved before write; call
             # hub_restore_backup" prompt for a write that never ran.
             assert "not touched" in str(periodic.get("restoreHint", "")).lower() \
                 and "backup saved before write" not in str(periodic.get("restoreHint", "")).lower(), \

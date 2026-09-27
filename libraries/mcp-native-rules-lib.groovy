@@ -5094,7 +5094,7 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
     schema.each { name, meta ->
-        def v = liveSettings.get(name)
+        def v = _uiValueOrDefault(liveSettings.get(name), meta)
         if (v == null) v = ""
         settingsMap.put(name, v)
     }
@@ -5215,7 +5215,7 @@ private Map _rmSubmitMainPageDone(Integer appId) {
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
     schema.each { name, meta ->
-        def v = liveSettings.get(name)
+        def v = _uiValueOrDefault(liveSettings.get(name), meta)
         if (v == null) v = ""
         settingsMap.put(name, v)
     }
@@ -8030,7 +8030,7 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null) 
         (backup.baselineReused == true
             ? " The backupKey on this response is the baseline reused from an earlier edit; restoring it reverts every edit since it was taken, not just this one."
             : " The backupKey on this response is an unused snapshot taken before the refusal.")
-    "Pre-flight refusal -- RM was not touched, so nothing needs to be restored.${snapshot}${why}"
+    "Pre-flight refusal -- the app was not touched, so nothing needs to be restored.${snapshot}${why}"
 }
 
 // Build the standard error response shape for _applyNativeAppEdit catch
@@ -9011,6 +9011,9 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
         } else if (meta?.type == 'button') {
             // Buttons carry no persisted value; the UI serializes them empty.
             fullMap.put(name, "")
+        } else if (meta?.defaultValue != null) {
+            // Nothing stored: the page renders -- and the UI submits -- the input's default.
+            fullMap.put(name, meta.defaultValue)
         } else {
             // Non-button input absent from the page settings map. If it is also
             // not among the inputs being written this submit (extraSettings), it

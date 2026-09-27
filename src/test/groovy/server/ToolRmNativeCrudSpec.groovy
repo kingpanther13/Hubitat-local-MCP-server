@@ -1927,7 +1927,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         expect:
         schema.get(inputName) == [name: inputName, type: 'bool', multiple: false, required: true,
-                                  title: null, range: null, pattern: null, disabled: false]
+                                  title: null, range: null, pattern: null, disabled: false, defaultValue: null]
         script._rmBuildSettingsBody(100, [(inputName): false], schema).get("settings[${inputName}]".toString()) == 'false'
         script._rmBuildSettingsBody(100, [(inputName): 0], schema).get("settings[${inputName}]".toString()) == '0'
         script._rmBuildSettingsBody(100, [(inputName): null], schema).get("settings[${inputName}]".toString()) == ''
@@ -4835,7 +4835,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "restoreHint is the pre-flight (not-touched) form, NOT the misleading 'Backup saved before write' restore prompt"
         result.restoreHint?.contains("Pre-flight refusal")
-        result.restoreHint?.contains("RM was not touched")
+        result.restoreHint?.contains("the app was not touched")
         !result.restoreHint?.contains("Backup saved before write")
 
         and: "no rule-write POST committed -- the refusal happened before any hub round-trip"
@@ -5172,7 +5172,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "restoreHint is the pre-flight (not-touched) form, NOT the misleading 'Backup saved before write' restore prompt"
         result.restoreHint?.contains("Pre-flight refusal")
-        result.restoreHint?.contains("RM was not touched")
+        result.restoreHint?.contains("the app was not touched")
         !result.restoreHint?.contains("Backup saved before write")
 
         and: "no rule-write POST committed -- the refusal happened before any hub round-trip"
@@ -5379,7 +5379,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "a caller reading only the hint still learns a disabled rule cannot be edited"
         result.success == false
-        result.restoreHint.contains("RM was not touched")
+        result.restoreHint.contains("the app was not touched")
         result.restoreHint.contains("disabled")
         result.restoreHint.contains("does not allow editing a disabled app")
 
@@ -7671,6 +7671,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "no blankedInputs key when nothing was blanked"
         !resp2.containsKey("blankedInputs")
+    }
+
+    def "full-form submit sends an unstored input's defaultValue instead of blanking it"() {
+        given:
+        enableWrite()
+        def schema = ["luxOff": [type: "number", defaultValue: 100], "trashActs": [type: "enum", multiple: true]]
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << body; [status: 200, location: null, data: '']
+        }
+
+        when:
+        def resp = script._rmSubmitFullPageForm(100, "selectActions", [app: [label: "r", version: 7]], schema, [:], ["trashActs": ["1"]])
+
+        then: "the page's default rides the submit, as the UI sends it, and nothing is reported blanked"
+        posts[0]["settings[luxOff]"] == "100"
+        !resp.containsKey("blankedInputs")
     }
 
     // S2-replaceActions-empty-normalizes-to-clear: `replaceActions: []` is
@@ -25038,7 +25055,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // sentinel keeps the edit-path restoreHint from falsely prompting a 'Backup saved before
         // write' restore for a rule that was never touched.
         result.error?.contains("RM is not touched")
-        result.restoreHint?.contains("RM was not touched")
+        result.restoreHint?.contains("the app was not touched")
         !result.restoreHint?.contains("Backup saved before write")
     }
 
@@ -25280,7 +25297,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the sentinel keeps the edit-path restoreHint from falsely prompting a 'Backup saved before
         // write' restore for a rule that was never touched.
         result.error?.contains("RM is not touched")
-        result.restoreHint?.contains("RM was not touched")
+        result.restoreHint?.contains("the app was not touched")
         !result.restoreHint?.contains("Backup saved before write")
     }
 
@@ -25310,7 +25327,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "the pre-write input-shape refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
         result.error?.contains("RM is not touched")
-        result.restoreHint?.contains("RM was not touched")
+        result.restoreHint?.contains("the app was not touched")
         !result.restoreHint?.contains("Backup saved before write")
     }
 
@@ -25339,7 +25356,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "the pre-write input-shape refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
         result.error?.contains("RM is not touched")
-        result.restoreHint?.contains("RM was not touched")
+        result.restoreHint?.contains("the app was not touched")
         !result.restoreHint?.contains("Backup saved before write")
     }
 
@@ -47280,6 +47297,35 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         cleanup:
         script.HUB_PAGE_BREADCRUMBS.clear()
+    }
+
+
+    def "a sub-page Done submits an unset input's defaultValue, as the page does (lux 100, not null)"() {
+        given: "Room Lighting's 'illuminance rises' fields: sensor chosen, lux never touched (default 100)"
+        hubGet.register('/installedapp/configure/json/654/offMeansPage') { params ->
+            JsonOutput.toJson([app: [id: 654, name: "Room Lights", version: 3, appType: [name: "Room Lights", namespace: "hubitat"]],
+                configPage: [name: "offMeansPage", install: false, error: null, sections: [[title: "", input: [
+                    [name: "offMeans", type: "enum", multiple: true],
+                    [name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, required: true],
+                    [name: "luxOff", type: "number", defaultValue: 100]
+                ]]]], settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/654') { params ->
+            statusJson(654, [[name: "offMeans", type: "enum", multiple: true, value: '["illuminance rises"]'],
+                             [name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, value: null, deviceIdsForDeviceList: [696]]])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmSubmitSubPageDone(654, "offMeansPage", "mainPage", "name", null)
+
+        then:
+        def done = posts.find { it.body?._action_previous == "Done" }
+        done.body["settings[luxOff]"] == "100"
+        done.body["settings[illumsOff]"] == "696"
     }
 
 }
