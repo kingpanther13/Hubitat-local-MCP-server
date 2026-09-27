@@ -1943,6 +1943,14 @@ private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
         if (!frequency) {
             throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Pass {discover:true} for the full periodic field schema. RM is not touched.")
         }
+        // A key the walker never reads would be dropped with no trace (e.g. time for startingTime).
+        def periodicKeys = ["frequency", "everyN", "startingTime", "weekdaysOnly", "selectedHours", "selectedMinutes",
+                            "selectedDaysOfMonth", "daysOfWeek", "dayOfWeek", "dayOfMonth", "everyNMonths", "months",
+                            "weekOfMonth", "minutesOffset", "cronString", "rawSettings"]
+        def unknownKeys = periodic.keySet().collect { it?.toString() }.findAll { !(it in periodicKeys) }
+        if (unknownKeys) {
+            throw new IllegalArgumentException("Periodic Schedule: unknown periodic key(s) ${unknownKeys}; accepted keys are ${periodicKeys}. Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        }
         if ((frequency == "Seconds" || frequency == "Minutes") && periodic.everyN != null) {
             def allowedCounts = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
             def requestedCount = null

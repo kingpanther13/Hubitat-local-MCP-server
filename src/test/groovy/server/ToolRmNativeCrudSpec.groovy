@@ -15572,6 +15572,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
+    def "addTrigger Periodic with an unknown periodic key is refused before any write, naming the key"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "time instead of startingTime"
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, time: "08:00"]],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error.toString().contains("unknown periodic key(s) [time]")
+        result.error.toString().contains("startingTime")
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
     def "addTrigger Periodic Yearly writes yearlyMonthCX1/weeklyYC1/dailyYC1, NOT the dead yearlyMonthC1"() {
         // Yearly is ALWAYS nth-weekday. The month lives in yearlyMonthCX1 (the
         // X-suffixed reveal field); yearlyMonthC1 alone never completes.
