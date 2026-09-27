@@ -1648,6 +1648,8 @@ class TestRunner:
         "switch_b": ("E2E_PERM_Switch_B", "Virtual Switch"),
         "dimmer":   ("E2E_PERM_Dimmer",   "Virtual Dimmer"),
         "button":   ("E2E_PERM_Button",   "Virtual Button"),
+        "motion":   ("E2E_PERM_Motion",   "Virtual Motion Sensor"),
+        "omni":     ("E2E_PERM_Omni",     "Virtual Omni Sensor"),
     }
 
     def _ensure_perm_fixture(self, key: str) -> str:
@@ -6635,6 +6637,99 @@ class TestRunner:
                     "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True}}),
                 lambda: not self._app_still_present(app_id),
                 "basic_rule delete",
+            )
+            if not dw["relayDropped"] or dw["committed"]:
+                self._untrack_native_app(app_id)
+
+    @test("native_apps")
+    def test_set_native_app_room_lighting_lifecycle(self) -> None:
+        # Issues #460/#461. Room Lighting: create by appType, the sub-pages its page links, a device
+        # picker written as the {id: label} map hub_get_app_config returns, the motion inputs that
+        # live on onMeansPage, and a sub-page Done that Hubitat's own page refuses while a required
+        # input (marked * in the UI) is empty. Needs the Room Lighting parent app on the test hub.
+        switch_a = self._ensure_perm_fixture("switch_a")
+        switch_b = self._ensure_perm_fixture("switch_b")
+        motion = self._ensure_perm_fixture("motion")
+        omni = self._ensure_perm_fixture("omni")
+        create_label = f"{PREFIX}RoomLights"
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "room_lighting", "name": create_label, "confirm": True}}),
+            lambda: self._find_app_id_by_label(create_label),
+            "room_lighting create",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], f"room_lighting create lost to relay 504 and never committed ({create_label})"
+            app_id = cw["evidence"]
+        else:
+            app_id = cw["response"].get("appId")
+            assert app_id, f"room_lighting create did not return an appId: {cw['response']}"
+        self.created_native_app_ids.append(str(app_id))
+
+        def call_native(args: dict) -> dict:
+            return self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app", "args": {"appId": app_id, "confirm": True, **args}})
+
+        def settings() -> dict:
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            return cfg.get("settings") or {}
+
+        try:
+            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
+            assert (cfg.get("app") or {}).get("name") == "Room Lights", f"unexpected Room Lights config: {cfg}"
+
+            # The page links its sub-pages; the listing reads them instead of claiming a single page.
+            pages = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_app_pages", "args": {"appId": app_id}})
+            names = [p.get("name") for p in (pages.get("pages") or [])]
+            assert {"onMeansPage", "offMeansPage"} <= set(names), f"Room Lights sub-pages not listed: {pages}"
+            assert "onMeansPage" in [h.get("page") for h in ((cfg.get("page") or {}).get("hrefs") or [])], \
+                f"hub_get_app_config should expose the page's sub-page links: {cfg.get('page')}"
+
+            # #460: the {id: label} map shape the read returns is accepted on write...
+            wr = call_native({"settings": {"roomDevsL": {switch_a: "a", switch_b: "b"}}})
+            assert wr.get("success") is not False, f"device-map write failed: {wr}"
+            assert set((settings().get("roomDevsL") or {}).keys()) == {switch_a, switch_b}, \
+                f"roomDevsL should hold both switches: {settings().get('roomDevsL')}"
+            # ...and takes effect: the Update commit re-subscribes the instance to the new devices.
+            health = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert (health.get("eventSubscriptionCount") or 0) >= 2, \
+                f"the write must reach the running instance (subscriptions), not just storage: {health}"
+
+            # #461: the motion trigger lives on onMeansPage, revealed by choosing the means first.
+            on = call_native({"walkStep": {"operation": "drive", "steps": [
+                {"page": "mainPage", "operation": "navigate", "navigate": {"targetPage": "onMeansPage"}},
+                {"page": "onMeansPage", "operation": "write", "write": {"onMeans": ["motion becomes active"]},
+                 "hrefContext": {"fromPage": "mainPage"}},
+                {"page": "onMeansPage", "operation": "write", "write": {"motions": [motion]},
+                 "hrefContext": {"fromPage": "mainPage"}},
+                {"page": "onMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
+            assert on.get("success") is True, f"onMeansPage drive failed: {on}"
+            assert (on["steps"][1].get("valueEcho") or {}).get("match") is True, \
+                f"a multi-select enum write should echo as matching: {on['steps'][1]}"
+            assert motion in (settings().get("motions") or {}), f"motions not set: {settings().get('motions')}"
+
+            # The UI refuses this Done while the required illuminance picker is empty; so does the tool.
+            off = call_native({"walkStep": {"operation": "drive", "steps": [
+                {"page": "mainPage", "operation": "navigate", "navigate": {"targetPage": "offMeansPage"}},
+                {"page": "offMeansPage", "operation": "write", "write": {"offMeans": ["illuminance rises"]},
+                 "hrefContext": {"fromPage": "mainPage"}},
+                {"page": "offMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
+            assert off.get("success") is False and "required but empty" in str(off), \
+                f"Done with an empty required input must be refused: {off}"
+            fixed = call_native({"walkStep": {"operation": "drive", "steps": [
+                {"page": "offMeansPage", "operation": "write", "write": {"illumsOff": [omni]},
+                 "hrefContext": {"fromPage": "mainPage"}},
+                {"page": "offMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
+            assert fixed.get("success") is True, f"Done should pass once the required input is set: {fixed}"
+            assert omni in (settings().get("illumsOff") or {}), f"illumsOff not set: {settings().get('illumsOff')}"
+        finally:
+            dw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}}),
+                lambda: not self._app_still_present(app_id),
+                "room_lighting delete",
             )
             if not dw["relayDropped"] or dw["committed"]:
                 self._untrack_native_app(app_id)

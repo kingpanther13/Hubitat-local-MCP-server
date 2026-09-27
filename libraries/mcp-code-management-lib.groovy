@@ -593,6 +593,10 @@ def toolGetAppConfig(args) {
         childApps: children,
         endpoint: path
     ]
+    // Sub-pages this page links to. Their inputs are not in `sections`; read one with
+    // pageName=<page>, or drive it with hub_set_native_app walkStep (navigate, write, done).
+    def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
+    if (pageHrefs) result.page.hrefs = pageHrefs
 
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
@@ -682,12 +686,14 @@ def toolListAppPages(args) {
         appTypeName: appTypeName
     ]
 
-    // Curated directory dispatch -- case-insensitive substring matching for robustness.
+    // HPM keeps a curated directory (case-insensitive substring match); every other app type gets
+    // its live primary page plus whatever that page links to.
     def appTypeNameLower = appTypeName.toLowerCase()
     def pages
     def note = null
+    boolean curatedHpm = appTypeNameLower.contains("hubitat package manager")
 
-    if (appTypeNameLower.contains("hubitat package manager")) {
+    if (curatedHpm) {
         pages = [
             [name: "prefOptions",    title: "Main Menu",                role: "navigation"],
             [name: "prefPkgUninstall", title: "Uninstall / Full Package List", role: "full_package_list"],
@@ -695,24 +701,19 @@ def toolListAppPages(args) {
             [name: "prefPkgInstall", title: "Install New Package",       role: "install_flow"],
             [name: "prefPkgMatchUp", title: "Match Up Packages",         role: "matching_flow"]
         ]
-    } else if (appTypeNameLower.contains("rule-5") || appTypeNameLower.contains("rule machine")) {
-        pages = [
-            [name: "mainPage", title: appLabel ?: "Rule Settings", role: "primary"]
-        ]
-        note = "Rule Machine rules are single-page. No sub-pages available."
-    } else if (appTypeNameLower.contains("room lights") || appTypeNameLower.contains("room lighting")) {
-        pages = [
-            [name: "mainPage", title: appLabel ?: "Room Lighting Settings", role: "primary"]
-        ]
-        note = "Room Lighting instances use a single mainPage. No named sub-pages."
-    } else if (appTypeNameLower.contains("mode manager")) {
-        pages = [
-            [name: "mainPage", title: "Manage Setting of Modes", role: "primary"]
-        ]
-        note = "Mode Manager uses a single mainPage. No named sub-pages."
     } else {
         pages = [primaryPage]
-        note = "App-type-specific page directory not curated; only primary page known. For multi-page apps, consult the app's Groovy source or the Web UI navigation for sub-page names."
+    }
+    // Every sub-page the live primary page links to, read from the page itself rather than a
+    // hard-coded directory: RM rules link selectTriggers/selectActions and Room Lighting links
+    // onDevicesPage/onMeansPage/offMeansPage, where a static "single page" note used to be.
+    def knownNames = pages.collect { it.name } as Set
+    def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
+    linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
+    if (linked) {
+        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Drive them with hub_set_native_app walkStep (navigate, write, done); for Rule Machine rules use hub_set_rule's structured shortcuts."
+    } else if (!curatedHpm) {
+        note = "The primary page links no sub-pages."
     }
 
     return [
@@ -915,6 +916,15 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
             settingsMap.put(name, pageValues.containsKey(name) ? pageValues.get(name) : "")
         }
     }
+    // The UI will not submit this Done while the page fails its own checks (required fields,
+    // number bounds, patterns); refuse the same way. No POST is issued, so nothing is committed.
+    def uiProblems = _uiNavigationViolations(schema, settingsMap)
+    if (uiProblems) {
+        def detail = uiProblems.collect { "${it.name} (${it.title}): ${it.problem}" }.join("; ")
+        return [status: null, page: page, submitted: false, uiBlocked: true,
+                uiReason: "Hubitat's app page would refuse Done on page '${page}': ${detail}. Set these values first (required fields are the ones marked *), then retry.".toString(),
+                liveSettingsUnavailable: liveSettingsUnavailable, shapeRejections: shapeRejections]
+    }
     def body = _rmBuildSettingsBody(instanceId, settingsMap, schema)
     body.formAction = "update"
     body.currentPage = page
@@ -935,11 +945,9 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
         }
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-    // Fields the classic "Done" form also submits. _rmSubmitMainPageDone (RM)
-    // omits them and gets away with it because RM commits via updateRule first
-    // and tolerates a failing Done; here Done is the whole operation, and the
-    // hub's update handler 500s without these (verified live). The UI's
-    // referrer/url fields are navigation hints only and are NOT required.
+    // Fields the classic "Done" form also submits (_rmSubmitMainPageDone sends them too); the
+    // hub's update handler 500s without these (verified live). The UI's referrer/url fields are
+    // navigation hints only and are NOT required.
     body.appTypeId = ""
     body.appTypeName = ""
     body._cancellable = "false"
@@ -977,6 +985,15 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     // defaults ARE correct and refusing over an unreadable statusJson would block the install for
     // nothing. The degradation still has to be VISIBLE, so it rides out as a note below.
     def submit = _submitAppDoneForm(instanceId, pageName, false)
+    if (submit.uiBlocked) {
+        return [
+            success: false,
+            error: submit.uiReason,
+            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(appId:${instanceId}, settings:{...}), then commit the install again.".toString(),
+            scheduledJobCount: 0,
+            eventSubscriptionCount: 0
+        ]
+    }
     def st = submit.status
     def page = submit.page
     if (st != null && st >= 400) {
@@ -1588,6 +1605,9 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     def submit = _submitAppDoneForm(triggerId, null, true)
                     if (submit?.liveSettingsUnavailable) {
                         throw new IllegalStateException("the instance's live settings (statusJson) could not be read, so the Done was NOT submitted -- submitting it would have re-sent this page's defaults and cleared the instance's configured settings, device selections included")
+                    }
+                    if (submit?.uiBlocked) {
+                        throw new IllegalStateException("the Done was NOT submitted: ${submit.uiReason}".toString())
                     }
                     def submitStatus = submit?.status
                     if (submitStatus != null && submitStatus >= 400) {

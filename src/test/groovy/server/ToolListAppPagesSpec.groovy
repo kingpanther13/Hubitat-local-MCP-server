@@ -13,8 +13,10 @@ import support.ToolSpecBase
  *  - Blank appId validation (throws before HTTP)
  *  - Non-numeric appId validation (throws before HTTP)
  *  - Golden path HPM: pages list contains all curated HPM pages
- *  - Golden path RM rule: single-page result with note
- *  - Unknown app type: single-page result with uncurated note
+ *  - Golden path RM rule: the sub-pages its mainPage links to (selectTriggers/selectActions)
+ *  - Room Lighting: the live sub-page links replace the old hard-coded "single mainPage" note
+ *  - Unknown app type / Mode Manager: no links -> primary page only, "links no sub-pages" note
+ *  - Duplicate links and links back to the primary page are listed once / not at all
  *  - Empty hub response: returns success=false
  *  - Unknown appId (hub returns {app:null}): 'missing app' fingerprint, success=false
  *  - Not-found 404/410 throw (deleted / mid-delete / install shell whose config page
@@ -41,7 +43,8 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     // Helper: build a minimal hub response for /installedapp/configure/json/<id>
-    private static String makeAppJson(String appTypeName, String primaryPageName = 'mainPage', String pageTitle = 'Settings') {
+    // `hrefs` = [[page, title], ...] rendered as body href elements, the only place the hub puts page links.
+    private static String makeAppJson(String appTypeName, String primaryPageName = 'mainPage', String pageTitle = 'Settings', List hrefs = []) {
         def data = [
             app: [
                 id       : 35,
@@ -67,13 +70,19 @@ class ToolListAppPagesSpec extends ToolSpecBase {
                 title  : pageTitle,
                 install: true,
                 refreshInterval: null,
-                sections: []
+                sections: hrefs ? [[input: [], body: hrefs.collect { [element: 'href', page: it[0], title: it[1]] }]] : []
             ],
             settings : [:],
             childApps: []
         ]
         return JsonOutput.toJson(data)
     }
+
+    // Live link sets (titles as the hub renders them, HTML included), fw 2.5.1.181.
+    private static final List RM_HREFS = [['selectTriggers', 'Select Trigger Events'], ['selectActions', 'Select <b>Actions</b> to Run']]
+    private static final List RL_HREFS = [['onDevicesPage', 'Set Up Lighting Periods or Re-Capture Devices'],
+                                          ['onMeansPage', 'Select Means to Activate Lights'],
+                                          ['offMeansPage', 'Select Means to Turn Off Lights']]
 
     // -------------------------------------------------------------------------
     // Gate enforcement
@@ -278,14 +287,14 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // Golden path -- Rule Machine rule (single-page)
+    // Golden path -- Rule Machine rule: the sub-pages its mainPage links to
     // -------------------------------------------------------------------------
 
-    def "golden path RM rule: returns single mainPage with single-page note"() {
+    def "golden path RM rule: lists the selectTriggers/selectActions sub-pages its mainPage links to"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            makeAppJson('Rule-5.1', 'mainPage', 'My Rule')
+            makeAppJson('Rule-5.1', 'mainPage', 'My Rule', RM_HREFS)
         }
 
         when:
@@ -293,20 +302,20 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.pages.size() == 1
-        result.pages[0].name == 'mainPage'
-        result.pages[0].role == 'primary'
-        result.note != null
-        result.note.toLowerCase().contains('single')
+        result.pages*.name == ['mainPage', 'selectTriggers', 'selectActions']
+        result.pages*.role == ['primary', 'sub-page', 'sub-page']
+        // Link titles arrive as HTML; the listing carries plain text.
+        result.pages[2].title == 'Select Actions to Run'
+        result.note.contains('hub_set_rule')
     }
 
     @spock.lang.Unroll
-    def "hub_list_app_pages via dispatch returns single mainPage with RM rule note (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch lists an RM rule's linked sub-pages (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            makeAppJson('Rule-5.1', 'mainPage', 'My Rule')
+            makeAppJson('Rule-5.1', 'mainPage', 'My Rule', RM_HREFS)
         }
 
         when:
@@ -317,21 +326,19 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.pages.size() == 1
-        inner.pages[0].name == 'mainPage'
-        inner.pages[0].role == 'primary'
-        inner.note != null
-        inner.note.toLowerCase().contains('single')
+        inner.pages*.name == ['mainPage', 'selectTriggers', 'selectActions']
+        inner.pages*.role == ['primary', 'sub-page', 'sub-page']
+        inner.note.contains('hub_set_rule')
 
         where:
         useGateways << [true, false]
     }
 
     // -------------------------------------------------------------------------
-    // Unknown app type -- uncurated note
+    // Unknown app type with no links -- primary page only
     // -------------------------------------------------------------------------
 
-    def "unknown app type: returns primary page only with uncurated note"() {
+    def "unknown app type with no page links: returns the primary page only"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -345,13 +352,11 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         result.success == true
         result.pages.size() == 1
         result.pages[0].name == 'mainPage'
-        // Note must hint that directory is not curated
-        result.note != null
-        result.note.toLowerCase().contains('not curated') || result.note.toLowerCase().contains('uncurated') || result.note.toLowerCase().contains('not available') || result.note.contains('only primary page known')
+        result.note == 'The primary page links no sub-pages.'
     }
 
     @spock.lang.Unroll
-    def "hub_list_app_pages via dispatch returns primary page only with uncurated note (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns the primary page only when it links nothing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -369,8 +374,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         inner.success == true
         inner.pages.size() == 1
         inner.pages[0].name == 'mainPage'
-        inner.note != null
-        inner.note.toLowerCase().contains('not curated') || inner.note.toLowerCase().contains('uncurated') || inner.note.toLowerCase().contains('not available') || inner.note.contains('only primary page known')
+        inner.note == 'The primary page links no sub-pages.'
 
         where:
         useGateways << [true, false]
@@ -641,11 +645,13 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     // Curated dispatch -- parametric coverage for known appType variants
     // -------------------------------------------------------------------------
 
-    def "Room Lighting curated match: '#appTypeName' returns mainPage with Room Lighting note"() {
+    // Issue #461: this used to return a hard-coded "Room Lighting instances use a single mainPage"
+    // note while the live page linked three sub-pages holding the motion/illuminance inputs.
+    def "Room Lights: lists the onDevicesPage/onMeansPage/offMeansPage sub-pages its mainPage links to"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            makeAppJson(appTypeName, 'mainPage', 'Room Settings')
+            makeAppJson('Room Lights', 'mainPage', 'Kitchen Lights', RL_HREFS)
         }
 
         when:
@@ -653,22 +659,19 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.pages.size() == 1
-        result.pages[0].name == 'mainPage'
-        result.note != null
-        result.note.toLowerCase().contains('room lighting') || result.note.toLowerCase().contains('room lights')
-
-        where:
-        appTypeName << ['Room Lights', 'Room Lighting']
+        result.pages*.name == ['mainPage', 'onDevicesPage', 'onMeansPage', 'offMeansPage']
+        result.pages[2] == [name: 'onMeansPage', title: 'Select Means to Activate Lights', role: 'sub-page']
+        result.note.contains('walkStep')
+        !result.note.toLowerCase().contains('single')
     }
 
     @spock.lang.Unroll
-    def "hub_list_app_pages via dispatch Room Lighting curated match '#appTypeName' returns Room Lighting note (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch lists a Room Lights instance's linked sub-pages (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            makeAppJson(appTypeName, 'mainPage', 'Room Settings')
+            makeAppJson('Room Lights', 'mainPage', 'Kitchen Lights', RL_HREFS)
         }
 
         when:
@@ -679,68 +682,75 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.pages.size() == 1
-        inner.pages[0].name == 'mainPage'
-        inner.note != null
-        inner.note.toLowerCase().contains('room lighting') || inner.note.toLowerCase().contains('room lights')
-
-        where:
-        useGateways | appTypeName
-        true        | 'Room Lights'
-        false       | 'Room Lights'
-        true        | 'Room Lighting'
-        false       | 'Room Lighting'
-    }
-
-    def "Mode Manager curated match returns mainPage with Mode Manager note"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/installedapp/configure/json/35') { params ->
-            makeAppJson('Mode Manager', 'mainPage', 'Manage Setting of Modes')
-        }
-
-        when:
-        def result = script.toolListAppPages([appId: 35])
-
-        then:
-        result.success == true
-        result.pages.size() == 1
-        result.pages[0].name == 'mainPage'
-        result.note != null
-        result.note.toLowerCase().contains('mode manager')
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_app_pages via dispatch Mode Manager curated match returns Mode Manager note (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        settingsMap.enableRead = true
-        hubGet.register('/installedapp/configure/json/35') { params ->
-            makeAppJson('Mode Manager', 'mainPage', 'Manage Setting of Modes')
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.pages.size() == 1
-        inner.pages[0].name == 'mainPage'
-        inner.note != null
-        inner.note.toLowerCase().contains('mode manager')
+        inner.pages*.name == ['mainPage', 'onDevicesPage', 'onMeansPage', 'offMeansPage']
+        inner.pages*.role == ['primary', 'sub-page', 'sub-page', 'sub-page']
 
         where:
         useGateways << [true, false]
     }
 
-    def "Rule Machine parent app curated match returns mainPage with single-page note"() {
+    def "a link repeated on the page is listed once, and a link back to the primary page is not listed"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppJson('Room Lights', 'mainPage', 'Kitchen Lights',
+                [['onMeansPage', 'Means'], ['mainPage', 'Back'], ['onMeansPage', 'Means again']])
+        }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.pages*.name == ['mainPage', 'onMeansPage']
+        result.pages[1].title == 'Means'
+    }
+
+    def "Mode Manager (no page links) returns its mainPage only"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppJson('Mode Manager', 'mainPage', 'Manage Setting of Modes')
+        }
+
+        when:
+        def result = script.toolListAppPages([appId: 35])
+
+        then:
+        result.success == true
+        result.pages.size() == 1
+        result.pages[0].name == 'mainPage'
+        result.note == 'The primary page links no sub-pages.'
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_app_pages via dispatch Mode Manager (no page links) returns its mainPage only (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppJson('Mode Manager', 'mainPage', 'Manage Setting of Modes')
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.pages.size() == 1
+        inner.pages[0].name == 'mainPage'
+        inner.note == 'The primary page links no sub-pages.'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "Rule Machine parent app with no page links returns its mainPage only"() {
         given:
         settingsMap.enableRead = true
         // "Rule Machine" is the parent app container (not an individual rule).
-        // The production matcher uses contains("rule machine") -- should match.
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Rule Machine', 'mainPage', 'Rule Machine')
         }
@@ -752,8 +762,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         result.success == true
         result.pages.size() == 1
         result.pages[0].name == 'mainPage'
-        result.note != null
-
+        result.note == 'The primary page links no sub-pages.'
     }
 
     @spock.lang.Unroll

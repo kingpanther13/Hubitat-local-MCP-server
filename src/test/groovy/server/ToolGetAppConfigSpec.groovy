@@ -293,6 +293,35 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
+    // Sub-page links (issue #461)
+    // -------------------------------------------------------------------------
+
+    // Room Lighting's motion/illuminance inputs live on sub-pages; without the links in the
+    // result an AI had no way to know those pages exist.
+    def "page.hrefs lists the sub-pages the page links to; a page with no links omits it"() {
+        given:
+        settingsMap.enableRead = true
+        def sections = [[title: '', input: [], body: [
+            [element: 'paragraph', description: 'Set up Automation for the Lights in a Room'],
+            [element: 'href', page: 'onMeansPage', title: 'Select Means to Activate Lights'],
+            [element: 'href', page: 'offMeansPage', title: '<b>Select Means to Turn Off Lights</b>']
+        ]]]
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Kitchen Lights', install: true, refreshInterval: null, sections: sections]])
+        }
+        hubGet.register('/installedapp/configure/json/36') { params -> makeAppConfigJson() }
+
+        when:
+        def linked = script.toolGetAppConfig([appId: 35])
+        def unlinked = script.toolGetAppConfig([appId: 36])
+
+        then:
+        linked.page.hrefs == [[page: 'onMeansPage', title: 'Select Means to Activate Lights'],
+                              [page: 'offMeansPage', title: 'Select Means to Turn Off Lights']]
+        !unlinked.page.containsKey('hrefs')
+    }
+
+    // -------------------------------------------------------------------------
     // Golden path — single-page app
     // -------------------------------------------------------------------------
 

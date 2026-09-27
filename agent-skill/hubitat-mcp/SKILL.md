@@ -62,6 +62,10 @@ MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, 
 
 Prefer the **native** rule engines for new automations: Visual Rules Builder (`hub_set_visual_rule` — one clean JSON write) and Rule Machine (`hub_set_rule` — the full authoring surface), both in the `hub_manage_rule_machine` gateway. The MCP-native custom rule engine (`hub_*_custom_rule` tools, via the `hub_manage_custom_rules` / `hub_read_rules` gateways) is **legacy**: still supported, but don't reach for it first. See `hub_get_tool_guide(section='rules')` for the custom-rule reference and `section='set_rule_reference'` / `section='visual_rule_reference'` for the native surfaces.
 
+### Other classic apps (Room Lighting, Button Controllers, Groups, Notifier, ...)
+
+`hub_set_native_app` drives any classic app generically, including ones with no dedicated shortcut. Before deciding something can't be done, look at the app's pages: `hub_list_app_pages` lists every sub-page the app's page links to, and `hub_get_app_config(pageName=...)` shows a page's inputs plus the further pages it links (`page.hrefs`). Inputs that live on a sub-page, or that appear only after an earlier choice (Room Lighting's motion and illuminance sensors, for example), are reached with `walkStep` (navigate, write, done). An app with no `appType` can usually still be created through its parent app's own page, such as the Room Lighting parent's "Create Room Lights from Group, Scene or Scene Transition" input. Navigation (`walkStep` navigate/done, a page's Done) is refused, as in Hubitat's UI, while a required input is empty or a value is out of range; the error names the fields.
+
 Custom rules have **triggers** (what starts it), **conditions** (what must be true), and **actions** (what to do), created via `hub_create_custom_rule` with a JSON structure:
 
 ```json

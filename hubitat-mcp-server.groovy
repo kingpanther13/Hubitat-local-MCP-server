@@ -4629,7 +4629,7 @@ def getGatewayConfig() {
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
                 hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?",
-                hub_list_app_pages: "List known page names for a multi-page app (HPM, Room Lighting, etc.). Args: appId",
+                hub_list_app_pages: "List an app's page names: every sub-page its live page links to (any classic app), plus a curated directory for HPM. Args: appId",
                 hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true surfaces missing-required/orphan components. Args: hpmAppId?, includeDrift?, packageFilter?"
             ],
             searchHints: [
@@ -8155,7 +8155,7 @@ private Integer normalizeRuleId(def ruleId) {
  *   - button_controller (parent),  Button Controller-5.1, parentType="Button Controllers"
  *   - button_rule (under controller), Button Rule-5.1, parentType=<a specific Button Controller>
  *   - basic_rule, parentType="Basic Rules"
- *   - room_lighting, parentType="Room Lighting"
+ *   - room_lighting (Room Lights), parentType="Room Lighting" -- verified fw 2.5.1.181
  *   - groups_scenes (Group-2.1 / Scene-2.1), parentType="Groups and Scenes"
  *   - notifier (Notifier), parentType="Notifications"
  *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
@@ -8179,7 +8179,9 @@ private Map _appTypeRegistry() {
         // failure mode on these app types is a separate mechanism, documented and
         // fixed at _rmLiveSettingsFromStatus.)
         button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
-        groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
+        // Group-2.1 takes its label from its own required `name` input (no origLabel input);
+        // writing `name` relabels the app immediately (verified live, fw 2.5.1.181).
+        groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes", labelInput: "name"],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
         // visual_rule stays registered so appType detection (_rmBackupRuleSnapshot's
         // reverse-map) and parentTypeName lookups keep working, but neither classic creation
@@ -8198,10 +8200,14 @@ private Map _appTypeRegistry() {
         // selectActions, not mainPage) and it is submitOnChange with no
         // updateRule button, so commitButton is null -- _resolveCommitButton
         // then returns null (real verdict) instead of defaulting to "updateRule".
-        button_rule: [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null]
-        // button_controller, groups_scenes, notifier child appName values were
-        // verified on the live hub. Room Lighting parent exists but has no
-        // probed children yet -- add when needed.
+        button_rule: [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null],
+        // Room Lights instances live under the "Room Lighting" parent. Its page has no updateRule:
+        // the clicked "updateRule" is a silent no-op, so written settings never reached the running
+        // instance. The page's own "Update" button (btn name=update) re-initializes subscriptions,
+        // exactly as the UI does (verified live, fw 2.5.1.181).
+        room_lighting: [namespace: "hubitat", appName: "Room Lights", parentTypeName: "Room Lighting", commitButton: "update"]
+        // button_controller, groups_scenes, notifier and room_lighting child appName values were
+        // verified on the live hub.
     ]
 }
 
@@ -9424,12 +9430,129 @@ private Map _rmCollectInputSchema(Map configPage) {
                     name: i.name.toString(),
                     type: i.type?.toString(),
                     multiple: i.multiple == true,
-                    required: i.required == true
+                    required: i.required == true,
+                    title: i.title?.toString(),
+                    range: i.range?.toString(),
+                    pattern: i.pattern?.toString(),
+                    disabled: i.disabled == true
                 ])
             }
         }
     }
     return schema
+}
+
+// The sub-pages a classic configPage links to, in page order: [[page, title], ...]. Links live
+// only in each section's `body` (element "href"); `input` carries no hrefs.
+private List _rmPageHrefs(Map configPage) {
+    def out = []
+    for (s in (configPage?.sections ?: [])) {
+        for (b in (s?.body ?: [])) {
+            if (b instanceof Map && b.element == "href" && b.page) {
+                out << [page: b.page.toString(), title: _uiPlainTitle(b.title)]
+            }
+        }
+    }
+    return out
+}
+
+// Mirrors the check Hubitat's classic app UI runs before every page-navigation submit
+// (appUI.js jsonSubmit(validate=true): Done, Next, Back, and following an href into a sub-page).
+// The UI posts nothing until the page passes, so a raw navigation POST that skips it bypasses
+// Hubitat. Every constraint comes from the configure/json input fields, exactly as the page
+// templates in main.js render them:
+//   required=true      -> must be non-empty (device picker: at least one device; select: one option)
+//   number             -> integer (step 1) and >= 0, unless `range` "lo..hi" supplies the bounds
+//   decimal            -> at most two decimals (step 0.01), bounded by `range` when present
+//   range "lo..hi"     -> min/max; "*" leaves that side unbounded
+//   pattern            -> the whole value must match
+//   email              -> browser email syntax
+// Disabled inputs are skipped and empty optional values pass, as in the browser. Value writes
+// and app-button clicks are never validated by the UI, so callers apply this to navigation only.
+// Returns [[name, title, problem], ...]; empty when the UI would submit.
+private List _uiNavigationViolations(Map schema, Map values) {
+    def problems = []
+    schema?.each { rawName, meta ->
+        def name = rawName.toString()
+        if (meta?.disabled == true || meta?.type == "button") return
+        def v = values?.get(name)
+        def empty = _uiValueIsEmpty(v)
+        def title = _uiPlainTitle(meta?.title) ?: name
+        if (empty) {
+            if (meta?.required == true) problems << [name: name, title: title, problem: "required but empty"]
+            return
+        }
+        def t = meta?.type?.toString()
+        if (t in ["number", "decimal"]) {
+            def n
+            try { n = new BigDecimal(v.toString().trim()) }
+            catch (Exception notNumber) {
+                problems << [name: name, title: title, problem: "'${v}' is not a number".toString()]
+                return
+            }
+            def bounds = _uiRangeBounds(meta?.range)
+            def min = bounds != null ? bounds.min : (t == "number" ? BigDecimal.ZERO : null)
+            if (min != null && n < min) problems << [name: name, title: title, problem: "${v} is below the minimum ${min}".toString()]
+            if (bounds?.max != null && n > bounds.max) problems << [name: name, title: title, problem: "${v} is above the maximum ${bounds.max}".toString()]
+            def step = (t == "number") ? BigDecimal.ONE : new BigDecimal("0.01")
+            def base = min ?: BigDecimal.ZERO
+            // BigDecimal.remainder, not %: Groovy 2.4's % does not support BigDecimal operands.
+            if ((n - base).remainder(step).compareTo(BigDecimal.ZERO) != 0) {
+                problems << [name: name, title: title, problem: (t == "number" ? "${v} is not a whole number" : "${v} has more than two decimal places").toString()]
+            }
+        } else if (meta?.pattern) {
+            def matched
+            try { matched = (v.toString() ==~ meta.pattern.toString()) }
+            catch (Exception badPattern) { matched = true }
+            if (!matched) problems << [name: name, title: title, problem: "'${v}' does not match the required format".toString()]
+        } else if (t == "email" && !(v.toString() ==~ _uiEmailPattern())) {
+            problems << [name: name, title: title, problem: "'${v}' is not a valid email address".toString()]
+        }
+    }
+    return problems
+}
+
+// Empty as the browser sees it: no value, a blank string, no selected options, no devices.
+// Multi-selects reach here as a List, a JSON-array string ("[]" from statusJson), or a device
+// id->label Map, depending on which read built the values.
+// The browser's input type=email syntax (WHATWG "valid e-mail address").
+private String _uiEmailPattern() {
+    return '[a-zA-Z0-9.!#\$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*'
+}
+
+private boolean _uiValueIsEmpty(v) {
+    if (v == null) return true
+    if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
+    if (v instanceof Map) return v.isEmpty()
+    def s = v.toString().trim()
+    return s.isEmpty() || s == "[]" || s == "null"
+}
+
+private Map _uiRangeBounds(range) {
+    if (!range || !range.toString().contains("..")) return null
+    def parts = range.toString().split(/\.\./, 2)
+    def parse = { String p ->
+        def q = p?.trim()
+        if (!q || q == "*") return null
+        try { return new BigDecimal(q) } catch (Exception ignored) { return null }
+    }
+    return [min: parse(parts[0]), max: parts.size() > 1 ? parse(parts[1]) : null]
+}
+
+private String _uiPlainTitle(title) {
+    if (!title) return null
+    return title.toString().replaceAll(/<[^>]*>/, "").trim() ?: null
+}
+
+// Throws when Hubitat's UI would refuse this navigation submit (see _uiNavigationViolations).
+// `action` names the submit for the message, e.g. "Done on page 'offMeansPage'".
+private void _requireUiNavigationValid(Integer appId, String action, Map schema, Map values) {
+    def problems = _uiNavigationViolations(schema, values)
+    if (!problems) return
+    def detail = problems.collect { "${it.name} (${it.title}): ${it.problem}" }.join("; ")
+    throw new IllegalStateException("Hubitat's app page would refuse ${action} on app ${appId}: ${detail}. " +
+        "The UI blocks this submit until these are fixed (required fields are the ones marked *). " +
+        "Write the missing values first, or deselect the option that revealed them, then retry.")
 }
 
 /**
@@ -9478,16 +9601,19 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         // Capability multi: CSV ("8,9"). Enum multi: JSON-array ('["X","Y"]').
         // Everything else: toString.
         def serialized
-        if (rawVal instanceof List) {
+        // A device picker reads back from configure/json as an {id: label} map; the update
+        // endpoint takes the ids. Sent as the map's toString ("[9:Lamp]") the hub answers 500.
+        def val = (rawVal instanceof Map && isCapability) ? rawVal.keySet().collect { it?.toString() } : rawVal
+        if (val instanceof List) {
             if (isEnum) {
-                serialized = groovy.json.JsonOutput.toJson(rawVal.collect { it?.toString() }.findAll { it != null })
+                serialized = groovy.json.JsonOutput.toJson(val.collect { it?.toString() }.findAll { it != null })
             } else {
-                serialized = rawVal.collect { it?.toString() }.findAll { it != null }.join(",")
+                serialized = val.collect { it?.toString() }.findAll { it != null }.join(",")
             }
-        } else if (rawVal == null) {
+        } else if (val == null) {
             serialized = ""
         } else {
-            serialized = rawVal.toString()
+            serialized = val.toString()
         }
         body["settings[${key}]".toString()] = serialized
 
@@ -10536,13 +10662,13 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
 - **hub_get_app_config** — read an installed app's configuration page (Read master required)
   - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
   - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
-  - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call hub_list_app_pages first to discover available page names for any multi-page app.
+  - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting also have sub-pages linked from mainPage (RM: selectTriggers, selectActions; Room Lighting: onDevicesPage, onMeansPage, offMeansPage, with optionsOnPage/optionsOffPage one level deeper). Call hub_list_app_pages first -- it lists every sub-page the live page links to. Author RM rules with hub_set_rule's shortcuts; drive other apps' sub-pages with hub_set_native_app walkStep (navigate / write / done).
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
   - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
 
 - **hub_list_app_pages** — discover what pageNames a given app accepts (Read master required)
   - Input: appId
-  - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
+  - Returns the live primary page plus every sub-page it links to (read from the page itself, any app type), with a curated directory added for HPM
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
 ### hub_read_apps_code (2 tools) — HPM package state introspection (Read master required)
@@ -10634,7 +10760,7 @@ The `filter` enum values select which category of instances to return (scope='in
 
 ### hub_list_app_pages (curated page-name directory)
 
-Curated sub-page directories by app type: HPM — prefOptions (main menu), prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefPkgInstall (install flow), prefPkgMatchUp (match-up flow); Rule Machine rules — mainPage only (rules are single-page); Room Lighting — mainPage; Mode Manager — mainPage. Unknown app types return the live primary page only.
+Sub-pages are read from the live primary page: every page it links to is listed with its title, for any app type (Rule Machine rules link selectTriggers/selectActions; Room Lighting links onDevicesPage/onMeansPage/offMeansPage). Pages linked only from a sub-page (e.g. Room Lighting's optionsOnPage under onMeansPage) show up in hub_get_app_config(pageName=<sub-page>).hrefs. HPM additionally gets a curated directory: prefOptions (main menu), prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefPkgInstall (install flow), prefPkgMatchUp (match-up flow).
 
 
 ### hub_call_rule
@@ -10662,7 +10788,7 @@ This is the generic upsert tool for ANY classic SmartApp. It is separate from th
 
 **Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and destructive Required Expression replacement always take a fresh snapshot.
 
-**CREATE is limited to the 5 enum `appType`s** (`rule_machine` / `button_controller` / `groups_scenes` / `notifier` / `basic_rule`). Other classic apps (e.g. Room Lighting, Scenes) are EDIT/DELETE-only via `appId` — there is NO create path for them here.
+**CREATE by `appType`** covers the enum types (`rule_machine` / `button_controller` / `groups_scenes` / `notifier` / `basic_rule` / `room_lighting`). Other classic apps can usually still be created through their PARENT app's own page, driven like any other app: e.g. the Room Lighting parent's "Create Room Lights from Group, Scene or Scene Transition" input (`newScene`) creates a Room Lights instance from an existing group or scene when written with `hub_set_native_app(appId=<parent id>, settings={newScene:[<group/scene app id>]})`. Inspect the parent with `hub_get_app_config` or `walkStep` introspect first.
 
 ### hub_get_rule_health
 
@@ -10941,6 +11067,8 @@ Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}
 - `navigate` -- forward into a sub-page via its href.
 - `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
 
+`navigate` and `done` are page navigation, which Hubitat's own app page refuses until the page being left passes its checks: every required input (marked * in the UI) filled, numbers within their range (whole and non-negative unless the input's range says otherwise), and values matching any required format. The tool refuses the same way and names each field; fill it, or deselect the option that revealed it, then retry. `write` and `click` are never checked, as in the UI.
+
 The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health` in each step's snapshot -- they are the fail-loud signals. A page that rendered empty on a `navigate` (or on an `hrefContext` re-render) is re-read once and `opResult.navRetried: true` says the re-read supplied the page; if `after` is still empty the page really is (see `commitSignal`). A page RM could not build comes back with `pageError` (RM's own render text, e.g. a `doActPage` entered by name without the wizard state it expects) and a repair hint -- that empty schema has a stated cause and is never re-read. On health: `skipped: true` means the probe was deliberately not run (time budget spent) and `unreadable: true` means it could not be read -- neither is evidence of breakage; only a checked verdict (broken/issues with unreadable false) is.
 
 Worked `drive` example (a multi-device switch trigger committed in one call, the `steps[]` form of the raw-mode example below). The trailing `done` is what runs the mainPage Done finalize (raw-mode step 6, `updateRule`); without it the trigger is written to settings but never subscribed, so the rule looks created yet never fires:
@@ -11016,7 +11144,7 @@ The action-clear path commits synchronously, but a thin verify-retry guards agai
 `appType` selects which class of native app to create. NOTE: this selector belongs to `hub_set_native_app` -- `hub_set_rule` always creates `rule_machine` rules. Default: `rule_machine`.
 
 - `rule_machine` — Rule Machine 5.1 (verified live; the only FULLY-supported type — the others have partial label/config handling).
-- `button_controller`, `groups_scenes`, `notifier`, `basic_rule` — registered classic types using the same endpoint family. Other classic SmartApps (e.g. Room Lighting) can be registered in `_appTypeRegistry` to enable creation. `hub_set_native_app` / `hub_delete_native_app` already work on them today via their `appId`.
+- `button_controller`, `groups_scenes`, `notifier`, `basic_rule`, `room_lighting` — registered classic types using the same endpoint family. `room_lighting` creates a Room Lights instance; its edits commit with the page's own Update button. Other classic SmartApps are edited and deleted by `appId`, and can often be created through their parent app's own page (see hub_get_tool_guide(section='builtin_app_tools_crud')).
 - Visual Rules are NOT created here — they are Vue-JSON apps; use `hub_set_visual_rule` (see `hub_get_tool_guide(section='visual_rule_reference')`).
 
 ### Partial-success protocol
