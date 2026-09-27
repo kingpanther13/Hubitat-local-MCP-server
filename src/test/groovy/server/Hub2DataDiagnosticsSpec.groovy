@@ -164,9 +164,9 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = hubOnFirmware('2.5.0.143')
         hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
-        // Seed a prior completed check + no-op the async refresh so appUpdate carries the last snapshot.
+        // Seed a prior completed check + stub the async refresh as started so appUpdate carries the snapshot.
         stateMap.updateCheck = [latestVersion: '9.9.9', updateAvailable: true, checkedAt: 1700000000000L]
-        script.metaClass.doUpdateCheck = { -> /* no-op: keep the seeded snapshot */ }
+        script.metaClass.doUpdateCheck = { -> true }        // refresh scheduled
 
         when:
         def result = script.toolGetHubInfo([includeAppUpdate: true])
@@ -188,7 +188,7 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         // older installed version, and still says true even though latest now equals the installed version.
         def installed = script.currentVersion()
         stateMap.updateCheck = [latestVersion: installed, updateAvailable: true, checkedAt: 1700000000000L]
-        script.metaClass.doUpdateCheck = { -> /* no-op */ }
+        script.metaClass.doUpdateCheck = { -> true }
 
         when:
         def result = script.toolGetHubInfo([includeAppUpdate: true])
@@ -203,7 +203,7 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         sharedLocation.hub = hubOnFirmware('2.5.0.143')
         hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
         stateMap.updateCheck = null
-        script.metaClass.doUpdateCheck = { -> /* no-op */ }
+        script.metaClass.doUpdateCheck = { -> true }
 
         when:
         def result = script.toolGetHubInfo([includeAppUpdate: true])
@@ -213,6 +213,38 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         result.appUpdate.updateAvailable == false
         result.appUpdate.lastChecked == 'never'
         result.appUpdate.checkInProgress == true
+    }
+
+    def "hub_get_info appUpdate reports checkInProgress from doUpdateCheck (false when the refresh did not start)"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        stateMap.updateCheck = [latestVersion: '9.9.9', updateAvailable: true, checkedAt: 1700000000000L]
+        script.metaClass.doUpdateCheck = { -> false }       // refresh failed to start
+
+        when:
+        def result = script.toolGetHubInfo([includeAppUpdate: true])
+
+        then: "we don't claim a refresh is pending when it never started"
+        result.appUpdate.checkInProgress == false
+        result.appUpdate.latestVersion == '9.9.9'           // the prior snapshot still surfaces
+    }
+
+
+    def "hub_get_info appUpdate surfaces lastCheckError when the last check failed"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        // A failed check advances checkedAt + lastError but keeps the older latestVersion.
+        stateMap.updateCheck = [latestVersion: '9.9.9', checkedAt: 1700000000000L, lastError: 'http 503']
+        script.metaClass.doUpdateCheck = { -> true }
+
+        when:
+        def result = script.toolGetHubInfo([includeAppUpdate: true])
+
+        then: "the error is surfaced so lastChecked doesn't imply a fresher version than we have"
+        result.appUpdate.lastCheckError == 'http 503'
+        result.appUpdate.latestVersion == '9.9.9'
     }
 
     def "hub_get_info appUpdate surfaces an app-check error without losing the firmware read"() {

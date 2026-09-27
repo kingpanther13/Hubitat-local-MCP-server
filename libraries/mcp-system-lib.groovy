@@ -244,11 +244,11 @@ def toolGetHubInfo(args = null) {
     // so it must not run on a basic info read.
     if (args?.includeAppUpdate == true) {
         try {
+            // Kick the async refresh off first so checkInProgress reflects whether it actually
+            // started (asynchttpGet can throw before scheduling). It's async -- handleUpdateCheck-
+            // Response writes state LATER -- so the snapshot below still reflects the PRIOR check.
+            def refreshStarted = doUpdateCheck()
             def uc = state.updateCheck ?: [:]
-            // doUpdateCheck() is async (asynchttpGet -> handleUpdateCheckResponse writes state
-            // LATER), so these values reflect the PRIOR completed check, not this call's fetch --
-            // hence checkInProgress and the prior checkedAt timestamp. Kick the refresh off after
-            // snapshotting so the next call sees fresher data.
             def installed = currentVersion()
             def latest = uc.latestVersion
             def haveLatest = latest && latest != "unknown (check in progress)"
@@ -260,9 +260,11 @@ def toolGetHubInfo(args = null) {
                 // while latest == installed.
                 updateAvailable: appUpdateAvailable(),
                 lastChecked: uc.checkedAt ? formatTimestamp(uc.checkedAt) : "never",
-                checkInProgress: true
+                checkInProgress: refreshStarted
             ]
-            doUpdateCheck()
+            // When the last completed check FAILED, checkedAt/lastError advanced but latestVersion did
+            // not -- surface the error so lastChecked doesn't imply the version is fresher than it is.
+            if (uc.lastError) info.appUpdate.lastCheckError = uc.lastError
         } catch (Exception e) {
             info.appUpdate = [error: "App-version check failed: ${e.message}", installedVersion: currentVersion()]
         }
@@ -1176,6 +1178,9 @@ def checkForUpdate() {
     }
 }
 
+// Returns true when the async request was scheduled, false when asynchttpGet threw before scheduling
+// it -- callers (hub_get_info) surface that as checkInProgress so they never claim a refresh that
+// isn't actually pending.
 def doUpdateCheck() {
     try {
         def params = [
@@ -1184,8 +1189,10 @@ def doUpdateCheck() {
             timeout: 30
         ]
         asynchttpGet("handleUpdateCheckResponse", params)
+        return true
     } catch (Exception e) {
         mcpLog("warn", "server", "Failed to initiate version check: ${e.message}")
+        return false
     }
 }
 
