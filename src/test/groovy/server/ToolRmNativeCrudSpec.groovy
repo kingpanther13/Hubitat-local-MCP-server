@@ -36283,12 +36283,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "create fail-closed: a failed trigger stops later triggers, the Required Expression, actions and finalisation"() {
-        given: "a trigger that passes the argument checks but fails in the live wizard"
+        given: "a trigger that passes the argument checks but is refused in the live wizard (capability outside its picker)"
         enableWrite()
         def posts = stubCreateShell(974)
-        script.metaClass._rmAddTrigger = { Integer id, Map spec ->
-            throw new IllegalArgumentException("addTrigger.capability 'Nope' not in Hubitat's trigger capability list.")
-        }
 
         when:
         def result = script.toolSetRule([name: "fail-closed-create",
@@ -36307,10 +36304,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.bulkStoppedAfter == "triggers[0]"
         result.finalisationNotAttempted == true
 
-        and: "after the label commit nothing further is posted: no wizard writes, no updateRule, no mainPage Done"
+        and: "after the label commit only the trigger-editor open is posted: no wizard writes, no updateRule, no mainPage Done"
         def labelCommit = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
         labelCommit >= 0
-        labelCommit == posts.size() - 1
+        def after = posts.drop(labelCommit + 1)
+        after.every { it.path == "/installedapp/btn" && it.body?.stateAttribute == "moreCond" }
+        !after.any { it.path == "/installedapp/update/json" }
     }
 
     def "create refuses a bundled item that fails its argument checks before the rule is created"() {
