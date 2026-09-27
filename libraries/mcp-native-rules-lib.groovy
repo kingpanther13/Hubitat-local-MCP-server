@@ -4288,7 +4288,7 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
             id: appId.toString(),
             formAction: "update",
             currentPage: "selectTriggers",
-            pageBreadcrumbs: '["mainPage"]'
+            pageBreadcrumbs: _rmPageBreadcrumbs(appId, "selectTriggers", '["mainPage"]')
         ]
         if (cfgForVersion?.app?.version != null) commitBody.version = cfgForVersion.app.version.toString()
         try { hubInternalPostForm("/installedapp/update/json", commitBody) } catch (Exception postExc) {
@@ -4958,7 +4958,7 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         id: appId.toString(),
         formAction: "update",
         currentPage: fromPage,
-        pageBreadcrumbs: '["mainPage"]',
+        pageBreadcrumbs: _rmPageBreadcrumbs(appId, fromPage, '["mainPage"]'),
         (actionMarker): ""
     ]
     if (hrefParams != null && !hrefParams.isEmpty()) {
@@ -5107,9 +5107,9 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     if (hrefParams != null && !hrefParams.isEmpty()) {
         body.paramsForPage = groovy.json.JsonOutput.toJson(hrefParams)
     }
-    body.pageBreadcrumbs = parentPage ?
+    body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, parentPage ?
         groovy.json.JsonOutput.toJson(["mainPage", parentPage]) :
-        '["mainPage"]'
+        '["mainPage"]')
     // Per-type sidecars the form-encoded UI emits. _rmBuildSettingsBody
     // already handles settings[X], X.type, and X.multiple (only when
     // multi=true). For Done we also need:
@@ -5229,7 +5229,7 @@ private Map _rmSubmitMainPageDone(Integer appId) {
     body.formAction = "update"
     body.currentPage = commitPage
     body._action_update = "Done"
-    body.pageBreadcrumbs = "[]"
+    body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, commitPage, "[]")
     schema.each { name, meta ->
         def t = meta?.type?.toString()
         if (meta?.multiple != true) {
@@ -5308,7 +5308,7 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // accumulators) and corrupts subsequent renders. Periodic schedule writes keep state.n
     // alive via paramsForPage on the Done back-nav (see _rmSubmitSubPageDone),
     // not via re-firing the action_href on every write.
-    body.pageBreadcrumbs = '[]'
+    body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, '[]')
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
     def postResp = hubInternalPostForm("/installedapp/update/json", body)
     // Post-write verification. The classic dynamicPage submit RETURNS the re-rendered page model
@@ -5545,7 +5545,7 @@ private void _rmInitSelectActionsPage(Integer appId) {
         // Kept "mainPage" for BOTH page graphs: on Button Rules the hub accepts
         // it for this transition (verified live -- the e2e authors an action on
         // a fresh button rule through exactly this path).
-        pageBreadcrumbs: '["mainPage"]'
+        pageBreadcrumbs: _rmPageBreadcrumbs(appId, editorPage, '["mainPage"]')
     ]
     def v = cfg?.app?.version
     if (v != null) body.version = v.toString()
@@ -8396,7 +8396,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
             def body = _rmBuildSettingsBody(appId, [(writtenKey): writtenValue], fullSchemaMap)
             body.formAction = "update"
             body.currentPage = page
-            body.pageBreadcrumbs = '["mainPage"]'
+            body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, '["mainPage"]')
             hrefContextMarkers.each { k, v -> body.put(k, v) }
             try {
                 def cfg = _rmFetchConfigJson(appId, hrefContext.fromPage?.toString() ?: page)
@@ -8421,7 +8421,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
             def body = _rmBuildSettingsBody(appId, [(writtenKey): writtenValue], fullSchemaMap)
             body.formAction = "update"
             body.currentPage = page
-            body.pageBreadcrumbs = '["mainPage"]'
+            body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, '["mainPage"]')
             if (beforeCfg?.app?.version != null) body.version = beforeCfg.app.version.toString()
             _rmPostSettings(appId, body, walkCache)
         } else {
@@ -8692,7 +8692,7 @@ private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map s
         def body = _rmBuildSettingsBody(appId, settingsMap, schema)
         body.formAction = "update"
         body.currentPage = pageName
-        body.pageBreadcrumbs = '["mainPage"]'
+        body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, pageName, '["mainPage"]')
         // The carried POST echo already holds the current version token; a live read is the fallback.
         def cfg = _rmFetchConfigJson(appId, pageName, cache)
         if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
@@ -9033,7 +9033,7 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
     // handler during the page re-render instead of only persisting the value.
     body.formAction = "update"
     body.currentPage = pageName
-    body.pageBreadcrumbs = '["mainPage"]'
+    body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, pageName, '["mainPage"]')
     // appTypeId / appTypeName are empty for Rule Machine (the native UI sends
     // them blank); emitted explicitly so the body matches the wire capture.
     body.appTypeId = ""

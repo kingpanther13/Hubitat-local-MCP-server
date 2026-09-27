@@ -47242,4 +47242,44 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.unknownSettingsWarning.contains("walkStep")
     }
 
+
+    def "pageBreadcrumbs carry forward: the trail the hub returned for a page is reused when submitting from that page"() {
+        given: "an update/json answer rendering offMeansPage, trail as the hub encodes it"
+        def answer = '{"status":"success","pageBreadcrumbs":"%5B%22mainPage%22%5D","cancelButton":false,' +
+                     '"configPage":{"popToAncestor":null,"onUpdate":null,"name":"offMeansPage","sections":[{"input":[{"name":"offMeans"}]}]}}'
+
+        when:
+        script._rmNoteHubBreadcrumbs("2518", [status: 200, data: answer])
+
+        then: "same app + same page -> the hub's own trail, byte for byte"
+        script._rmPageBreadcrumbs(2518, "offMeansPage", '["mainPage","mainPage"]') == '%5B%22mainPage%22%5D'
+
+        and: "another page or another app -> the caller's default"
+        script._rmPageBreadcrumbs(2518, "mainPage", '[]') == '[]'
+        script._rmPageBreadcrumbs(2519, "offMeansPage", 'X') == 'X'
+
+        when: "the recorded trail is older than the TTL"
+        script.HUB_PAGE_BREADCRUMBS.get("2518").at = 0L
+
+        then:
+        script._rmPageBreadcrumbs(2518, "offMeansPage", 'X') == 'X'
+
+        cleanup:
+        script.HUB_PAGE_BREADCRUMBS.clear()
+    }
+
+    def "pageBreadcrumbs carry forward ignores answers without a rendered page and never throws"() {
+        when:
+        script._rmNoteHubBreadcrumbs("2518", [status: 200, data: '{"status":"success"}'])
+        script._rmNoteHubBreadcrumbs("2518", [status: 500, data: null])
+        script._rmNoteHubBreadcrumbs(null, [status: 200, data: '{"pageBreadcrumbs":"%5B%5D","configPage":{"name":"x"}}'])
+
+        then:
+        script.HUB_PAGE_BREADCRUMBS.isEmpty()
+        script._rmPageBreadcrumbs(2518, "offMeansPage", 'X') == 'X'
+
+        cleanup:
+        script.HUB_PAGE_BREADCRUMBS.clear()
+    }
+
 }

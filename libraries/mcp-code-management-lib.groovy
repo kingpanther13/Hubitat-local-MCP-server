@@ -929,7 +929,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     body.formAction = "update"
     body.currentPage = page
     body._action_update = "Done"
-    body.pageBreadcrumbs = "[]"
+    body.pageBreadcrumbs = _rmPageBreadcrumbs(instanceId, page, "[]")
     // Per-type sidecars the form-encoded UI emits (matches _rmSubmitMainPageDone).
     schema.each { name, meta ->
         def t = meta?.type?.toString()

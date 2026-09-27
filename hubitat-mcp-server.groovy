@@ -7355,9 +7355,47 @@ def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, b
  * that require application/x-www-form-urlencoded.
  */
 def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
-    _hubRequest('POST', path, [body: body, timeout: timeout,
+    def resp = _hubRequest('POST', path, [body: body, timeout: timeout,
                               requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
                               returnShape: 'struct', isRetry: isRetry])
+    if (path == "/installedapp/update/json" || path == "/installedapp/btn") _rmNoteHubBreadcrumbs(body?.id, resp)
+    return resp
+}
+
+// Hubitat's classic app UI does not compute pageBreadcrumbs: every page render it receives carries
+// the trail to send on the next submit from that page, and appUI.js posts it back unchanged. The
+// tool does the same -- the last trail the hub returned for an app is kept here, keyed by app id,
+// and reused while the tool is still submitting from that same page. A trail older than
+// HUB_BREADCRUMB_TTL_MS, or for a different page, is ignored in favour of the caller's default.
+@groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_PAGE_BREADCRUMBS = new java.util.concurrent.ConcurrentHashMap()
+@groovy.transform.Field static final long HUB_BREADCRUMB_TTL_MS = 30L * 60L * 1000L
+
+// Regex, not a JSON parse: update/json answers with the whole rendered page (RM pages run to
+// hundreds of KB) and only two top-level fields are needed. configPage's first keys precede its
+// inputs, so the first "name" inside it is the page name.
+private void _rmNoteHubBreadcrumbs(appId, resp) {
+    if (appId == null) return
+    try {
+        def data = (resp instanceof Map) ? resp.data : null
+        if (!(data instanceof String) || !data.contains('"pageBreadcrumbs"')) return
+        def crumbs = (data =~ /"pageBreadcrumbs"\s*:\s*"([^"]*)"/)
+        def page = (data =~ /"configPage"\s*:\s*\{[^{}\[]*?"name"\s*:\s*"([^"]+)"/)
+        if (crumbs.find() && page.find()) {
+            HUB_PAGE_BREADCRUMBS.put(appId.toString(), [page: page.group(1), crumbs: crumbs.group(1), at: now()])
+        }
+    } catch (Exception noteExc) {
+        logDebug("_rmNoteHubBreadcrumbs: could not read the returned trail for app ${appId}: ${noteExc.message}")
+    }
+}
+
+// The pageBreadcrumbs value to submit from `page`: the hub's own trail when it last rendered that
+// page for this app, otherwise `fallback` (the tool's long-standing fixed value for that page).
+private String _rmPageBreadcrumbs(appId, String page, String fallback) {
+    def rec = (appId == null) ? null : HUB_PAGE_BREADCRUMBS.get(appId.toString())
+    if (rec instanceof Map && rec.page == page && (now() - (rec.at as Long)) < HUB_BREADCRUMB_TTL_MS) {
+        return rec.crumbs as String
+    }
+    return fallback
 }
 
 /**
@@ -8475,7 +8513,7 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
         // depth (live-captured fw 2.5.0.123). The only thing that would break
         // this hardcode is a future button-click directly on a depth-2 page;
         // verify against a network capture if a new wizard level rejects clicks.
-        body.pageBreadcrumbs = '["mainPage"]'
+        body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, pageName, '["mainPage"]')
         // The hub uses `version` to detect concurrent edits. Fetch the
         // current value so we replay the exact one the UI would send.
         try {
@@ -8588,7 +8626,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
         def body = _rmBuildSettingsBody(appId, settingsMap, schemaForBuild)
         body.formAction = "update"
         body.currentPage = pageName
-        body.pageBreadcrumbs = '["mainPage"]'
+        body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, pageName, '["mainPage"]')
         if (config?.app?.version != null) body.version = config.app.version.toString()
         writeResp = _rmPostSettings(appId, body, cache)
     } else {
