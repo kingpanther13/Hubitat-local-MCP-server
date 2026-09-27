@@ -47205,6 +47205,34 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
     }
 
+    def "walkStep sub-page device pick that committed is not reported as a silent_rejection skip"() {
+        given: "a device picker that reveals no further input when set (Room Lighting illumsOff)"
+        enableWrite()
+        def committed = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/offMeansPage') { params ->
+            ruleConfigJson(100, "r", [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, value: null, deviceIdsForDeviceList: committed]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            def ids = body["settings[illumsOff]"]
+            if (ids) { committed.clear(); committed.addAll(ids.toString().split(",").collect { it as Integer }) }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([appId: 100, confirm: true,
+            walkStep: [page: "offMeansPage", operation: "write", write: [illumsOff: [696]]]])
+
+        then: "the ids landed, so the skip is the informational device-list reason, not silent_rejection"
+        committed == [696]
+        result.valueEcho.match == true
+        !(result.opResult.skipped ?: []).any { it.reason == "silent_rejection" }
+    }
+
     def "a settings object on a non-device input is refused before any backup or write; on a device input it is sent as ids"() {
         given:
         enableWrite()

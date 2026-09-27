@@ -8414,6 +8414,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
             def pageSkipped = []
             _rmWriteSettingOnPage(appId, page, writtenKey, writtenValue, pageApplied, null, pageSkipped, walkCache)
             _rmVerifySubPageMultipleFlags(appId, page, [(writtenKey): writtenValue], fullSchemaMap, walkCache)
+            // A committed device pick reveals nothing and reads as silent_rejection; re-tag it as addAction does.
+            _rmReclassifyDeviceListSkips(appId, pageSkipped)
             if (pageSkipped) opResult.skipped = pageSkipped
         } else if (page && page != "mainPage") {
             // Unresolved key: keep walkStep's contract of attempting the exact requested key (with the
