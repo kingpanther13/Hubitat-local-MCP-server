@@ -222,7 +222,7 @@ def mainPage() {
                 paragraph "Clients that expect header auth can instead send the token as <code>Authorization: Bearer &lt;token&gt;</code> (no <code>?access_token=</code> needed) -- the Hubitat platform accepts it on both endpoints."
                 paragraph "<b>App ID:</b> ${app.id}"
                 paragraph "<b>Version:</b> ${currentVersion()}"
-                if (state.updateCheck?.updateAvailable) {
+                if (appUpdateAvailable()) {
                     paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v${currentVersion()}). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
                 href name: "regenerateToken", page: "confirmRegenerateTokenPage",
@@ -1618,7 +1618,7 @@ def serverIdentity() {
         name: "hubitat-mcp-rule-server",
         version: currentVersion()
     ]
-    if (state.updateCheck?.updateAvailable) {
+    if (appUpdateAvailable()) {
         info.updateAvailable = state.updateCheck.latestVersion
     }
     return info

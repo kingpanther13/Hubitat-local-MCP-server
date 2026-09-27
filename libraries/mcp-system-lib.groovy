@@ -255,10 +255,10 @@ def toolGetHubInfo(args = null) {
             info.appUpdate = [
                 installedVersion: installed,
                 latestVersion: haveLatest ? latest : "unknown (check in progress)",
-                // Derived from the versions actually shown so it can never contradict them -- a
+                // appUpdateAvailable() derives from the versions, so it can never contradict them -- a
                 // stale updateAvailable:true survived an HPM upgrade and read as "update available"
                 // while latest == installed.
-                updateAvailable: haveLatest ? isNewerVersion(latest, installed) : false,
+                updateAvailable: appUpdateAvailable(),
                 lastChecked: uc.checkedAt ? formatTimestamp(uc.checkedAt) : "never",
                 checkInProgress: true
             ]
@@ -1123,6 +1123,16 @@ def isNewerVersion(String remote, String local) {
         mcpLog("warn", "server", "Version comparison failed: ${e.message}")
         return false
     }
+}
+
+// Single source of truth for "is an app update available", derived LIVE from the last checked
+// latestVersion vs the version installed NOW -- not the stored updateCheck.updateAvailable boolean,
+// which goes stale after an upgrade (it stays true until the next async check overwrites it, so a
+// hub already on the newest release shows "update available: <older>"). Every consumer -- the UI
+// banner, hub_get_info, server identity, the diagnostics blocks -- reads through this.
+def appUpdateAvailable() {
+    def latest = state.updateCheck?.latestVersion
+    return latest && latest != "unknown (check in progress)" && isNewerVersion(latest, currentVersion())
 }
 
 def checkForUpdate() {

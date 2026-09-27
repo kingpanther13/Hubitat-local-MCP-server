@@ -474,6 +474,48 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         "not-a-version" | "0.12.0"    | false   // non-semver string: semver pattern guard fires
     }
 
+    // ---- appUpdateAvailable(): derive-live so a stale stored flag can't survive an upgrade -------
+    // The stored updateCheck.updateAvailable goes stale after an HPM upgrade (it stays true, with an
+    // older latestVersion, until the next async check overwrites it). appUpdateAvailable() ignores the
+    // stored boolean and recomputes from latestVersion vs the version installed NOW.
+
+    @Unroll
+    def "appUpdateAvailable() derives from the versions, ignoring a stale stored flag (#scenario)"() {
+        given:
+        stateMap.updateCheck = (latest == "__NONE__") ? null
+            : (latest == "__INSTALLED__") ? [latestVersion: script.currentVersion(), updateAvailable: true]
+            : [latestVersion: latest, updateAvailable: storedFlag]
+
+        expect:
+        script.appUpdateAvailable() == expected
+
+        where:
+        scenario                          | latest                        | storedFlag || expected
+        "no completed check"              | "__NONE__"                    | false      || false
+        "check in progress"              | "unknown (check in progress)" | false      || false
+        "latest newer (stored flag off)"  | "999.0.0"                     | false      || true
+        "stale true, latest == installed" | "__INSTALLED__"               | true       || false
+        "stale true, latest older"        | "0.0.1"                       | true       || false
+    }
+
+    def "serverIdentity() omits updateAvailable when the stored flag is stale (already on latest)"() {
+        given:
+        stateMap.updateCheck = [latestVersion: "0.0.1", updateAvailable: true]   // older than installed, stale true
+
+        when:
+        def id = script.serverIdentity()
+
+        then:
+        !id.containsKey("updateAvailable")
+
+        when: "a genuinely newer version is known"
+        stateMap.updateCheck = [latestVersion: "999.0.0", updateAvailable: true]
+        def id2 = script.serverIdentity()
+
+        then:
+        id2.updateAvailable == "999.0.0"
+    }
+
     // Dispatch-surface regression: a core system write tool must route cleanly through the
     // JSON-RPC envelope under BOTH gateway modes. Replaces the former hub_get_update_status
     // companion (that tool folded into hub_get_info); the version-comparison helper itself is
