@@ -6646,7 +6646,8 @@ class TestRunner:
         # Issues #460/#461. Room Lighting: create by appType, the sub-pages its page links, a device
         # picker written as the {id: label} map hub_get_app_config returns, the motion inputs that
         # live on onMeansPage, and a sub-page Done that Hubitat's own page refuses while a required
-        # input (marked * in the UI) is empty. Needs the Room Lighting parent app on the test hub.
+        # input (marked * in the UI) is empty. A hub without the Room Lighting parent gets it from the
+        # create itself (Add Built-In App), once; this test deletes only its child.
         switch_a = self._ensure_perm_fixture("switch_a")
         switch_b = self._ensure_perm_fixture("switch_b")
         motion = self._ensure_perm_fixture("motion")
