@@ -1,0 +1,62 @@
+name: tmp hub2 classic-UI diff
+
+on:
+  push:
+    branches: [ci/tmp-460-hub2]
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install jsbeautifier==1.15.1
+      - name: Beautify and diff vendored vs live 2.5.1.181
+        run: |
+          mkdir -p out
+          old=resources/hub2-source
+          new=resources/hub2-source/live-2.5.1.181
+          {
+            echo "| file | vendored bytes | live bytes | byte-identical | beautified lines vendored | beautified lines live | diff lines (+/-) |"
+            echo "|---|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for f in appUI.js main.js helpers.js hub2utils.js hubitat.min.js success-compiled.js; do
+            js-beautify "$old/$f" > "out/old_$f"
+            js-beautify "$new/$f" > "out/new_$f"
+            diff -u "out/old_$f" "out/new_$f" > "out/$f.diff" || true
+            same=$(cmp -s "$old/$f" "$new/$f" && echo yes || echo no)
+            changed=$(grep -cE '^[+-][^+-]' "out/$f.diff" || true)
+            echo "| $f | $(wc -c < "$old/$f") | $(wc -c < "$new/$f") | $same | $(wc -l < "out/old_$f") | $(wc -l < "out/new_$f") | $changed |" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Extract jsonSubmit validation block from both appUI.js copies
+        run: |
+          python - <<'EOF'
+          import re, os
+          def block(path):
+              s = open(path).read()
+              i = s.find('jsonSubmit = function')
+              if i < 0:
+                  m = re.search(r'jsonSubmit\s*=\s*function', s)
+                  i = m.start() if m else -1
+              return s[i:i+3500] if i >= 0 else 'jsonSubmit NOT FOUND'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              for tag, p in [('vendored 2.5.0.143', 'out/old_appUI.js'), ('live 2.5.1.181', 'out/new_appUI.js')]:
+                  out.write(f"\n### jsonSubmit ({tag})\n```js\n{block(p)}\n```\n")
+          EOF
+      - name: Required/range/pattern template fragments in both main.js copies
+        run: |
+          python - <<'EOF'
+          import re, os
+          pats = ['btn-device-required', 'required="required"', 'is-invalid', 'splitLeft', 'pattern="', 'step="0.01"', 'step="1" min="0"']
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write("\n### main.js template constraint markers (count vendored / live)\n")
+              a = open('resources/hub2-source/main.js').read(); b = open('resources/hub2-source/live-2.5.1.181/main.js').read()
+              for p in pats:
+                  out.write(f"- `{p}`: {a.count(p)} / {b.count(p)}\n")
+          EOF
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hub2-classic-ui-diffs
+          path: out/
