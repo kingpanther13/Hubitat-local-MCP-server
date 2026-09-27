@@ -5737,6 +5737,32 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
     }
 }
 
+// The argument checks _rmAddTrigger runs before it opens the trigger editor, applied to a whole
+// list so a create can refuse a bad trigger before the rule exists. Device ids are read-only lookups.
+private void _rmPrevalidateTriggerSpecList(List specs, String label) {
+    specs.eachWithIndex { spec, i ->
+        if (!(spec instanceof Map)) {
+            throw new IllegalArgumentException("${label}[${i}] must be a trigger spec object, got '${spec}'. RM is not touched.")
+        }
+        def sm = spec as Map
+        if (sm.discover == true) return
+        try {
+            _rmValidateRoundZeroTriggerSpec(sm)
+            if (!sm.capability?.toString()?.trim()) {
+                throw new IllegalArgumentException("addTrigger.capability is required. Pass {discover: true} to get the full structured schema. RM is not touched.")
+            }
+            _rmValidateDeviceIdsExist("addTrigger.deviceIds", sm.deviceIds)
+            if (sm.condition instanceof Map) {
+                def cm = sm.condition as Map
+                _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds ?: (cm.deviceId != null ? [cm.deviceId] : null))
+            }
+            _rmValidateRoundZeroPeriodicSpec(sm)
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("${label}[${i}]: ${e.message}".toString(), e)
+        }
+    }
+}
+
 // Every pure argument check a single add runs, applied to a whole replacement list, so a list
 // that would be refused partway is refused before clearActions empties the rule. Only the checks
 // that read nothing from the rule itself belong here; structural balance is checked separately.
@@ -9670,6 +9696,16 @@ def toolSetRule(args) {
         def acts = []
         if (args?.addActions instanceof List) acts.addAll(args.addActions)
         if (args?.addAction instanceof Map) acts << args.addAction
+        // Refuse a bundled item that fails its argument checks BEFORE the rule is created: the
+        // create otherwise leaves an empty or half-built rule behind for an error known up front.
+        // Only checks decided from the arguments (and read-only device / rule-id lookups) run here;
+        // anything only the live wizard can judge still stops the create fail-closed.
+        try {
+            _rmPrevalidateTriggerSpecList(trigs, "triggers")
+            _rmPrevalidateActionSpecList(acts, "actions", _rmSpecListTargetsRule(acts) ? _rmValidRuleIds() : null)
+        } catch (IllegalArgumentException refusal) {
+            throw new IllegalArgumentException("hub_set_rule create refused: ${refusal.message} No rule was created.".toString(), refusal)
+        }
         if (trigs) createArgs.triggers = trigs
         if (acts) createArgs.actions = acts
         if (args?.addRequiredExpression instanceof Map) createArgs.requiredExpression = args.addRequiredExpression

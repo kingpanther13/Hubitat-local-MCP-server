@@ -9769,9 +9769,34 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
-        # Fail-closed create across sections: the clean trigger lands, the refused trigger stops the
-        # create, and the Required Expression and action sections are never written. A new rule has
-        # no pre-operation backup, so this fixture is deleted rather than restored.
+        # An argument the checks can refuse up front is refused BEFORE the rule is created: no rule
+        # with the label may exist afterwards.
+        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
+        refused_label = f"{PREFIX}CreateRefused_{_run_artifact_suffix()}_{self._native_rule_fixture_seq}"
+        try:
+            refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "name": refused_label,
+                    "addTriggers": [
+                        {"capability": "Switch", "deviceIds": [sw], "state": "on"},
+                        {"capability": "Temperature", "value": "increased"},
+                    ],
+                    "confirm": True,
+                }})
+            raise AssertionError(f"a create with an argument-refused trigger must be refused, got: {refused}")
+        except McpToolError as exc:
+            assert "No rule was created" in str(exc) and "triggers[1]" in str(exc), \
+                f"the create refusal must name the item and say no rule was created: {exc}"
+        leftover = self._find_app_id_by_label(refused_label)
+        if leftover:
+            self._delete_native(leftover)
+            raise AssertionError(f"an argument-refused create left rule {leftover} behind")
+
+        # Fail-closed create across sections: the clean trigger lands, a trigger only the live wizard
+        # can refuse (a capability outside its picker) stops the create, and the Required Expression
+        # and action sections are never written. A new rule has no pre-operation backup, so this
+        # fixture is deleted rather than restored.
         self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
         stop_label = f"{PREFIX}CreateStop_{_run_artifact_suffix()}_{self._native_rule_fixture_seq}"
         skipped_msg = "E2E create stop skipped action"
@@ -9782,7 +9807,7 @@ class TestRunner:
                     "name": stop_label,
                     "addTriggers": [
                         {"capability": "Switch", "deviceIds": [sw], "state": "on"},
-                        {"capability": "Temperature", "value": "increased"},
+                        {"capability": "E2E Not A Trigger Capability"},
                     ],
                     "addRequiredExpression": {"conditions": [
                         {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},

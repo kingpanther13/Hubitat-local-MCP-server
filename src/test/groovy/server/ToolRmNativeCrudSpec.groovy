@@ -36283,13 +36283,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "create fail-closed: a failed trigger stops later triggers, the Required Expression, actions and finalisation"() {
-        given:
+        given: "a trigger that passes the argument checks but fails in the live wizard"
         enableWrite()
         def posts = stubCreateShell(974)
+        script.metaClass._rmAddTrigger = { Integer id, Map spec ->
+            throw new IllegalArgumentException("addTrigger.capability 'Nope' not in Hubitat's trigger capability list.")
+        }
 
         when:
         def result = script.toolSetRule([name: "fail-closed-create",
-            addTriggers: ["not a map", [capability: "Switch", deviceIds: [8], state: "on"]],
+            addTriggers: [[capability: "Nope"], [capability: "Switch", deviceIds: [8], state: "on"]],
             addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
             addActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true])
@@ -36308,6 +36311,50 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def labelCommit = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
         labelCommit >= 0
         labelCommit == posts.size() - 1
+    }
+
+    def "create refuses a bundled item that fails its argument checks before the rule is created"() {
+        given:
+        enableWrite()
+        def posts = stubCreateShell(974)
+        def created = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            created << path; [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+
+        when:
+        script.toolSetRule([name: "refused-create",
+            addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"],
+                          [capability: "Certain Time (and optional date)", time: "17:30"]],
+            addActions: [[capability: "switch", action: "on", deviceIds: [8]]],
+            confirm: true])
+
+        then: "the refusal names the item and says no rule exists; nothing was created or written"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("triggers[1]: addTrigger.time must be one of")
+        e.message.contains("No rule was created.")
+        created.isEmpty()
+        posts.isEmpty()
+    }
+
+    def "create refuses a bundled action that fails its argument checks before the rule is created"() {
+        given:
+        enableWrite()
+        def posts = stubCreateShell(974)
+        def created = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            created << path; [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+
+        when:
+        script.toolSetRule([name: "refused-create-action", addActions: ["not a map"], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("actions[0] must be an action spec object")
+        e.message.contains("No rule was created.")
+        created.isEmpty()
+        posts.isEmpty()
     }
 
     def "create fail-closed: a genuinely partial action stops later actions and finalisation"() {
