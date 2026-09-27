@@ -1005,9 +1005,28 @@ private Map sendRmActionFallback(List<Integer> ruleIds, String rmAction, String 
 // null) for types that override it. A null return means "no commit click" --
 // the app's inputs are submitOnChange and clicking updateRule would poison
 // the render (e.g. Basic Rule's "For input string: updateRule").
+// Repair hint for a session-end mainPage Done that did not commit. A Done the page itself refused
+// (uiBlocked) posted nothing: the fix is the named fields, not a commit click.
+private String _rmMainPageDoneRepairHint(Integer appId, Map done) {
+    if (done?.uiBlocked == true) {
+        return "The closing mainPage Done was refused, as Hubitat's app page would refuse it (${done.reason}). Settings are already written; set the listed fields with hub_set_native_app(appId=${appId}, settings={...}), which re-runs the Done.".toString()
+    }
+    return "The session-end mainPage Done click did not commit (${done?.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()
+}
+
+// True when configAppName is a registry type (matching as _resolveCommitButton does) or the Room
+// Lighting parent, i.e. its commit button is known rather than defaulted.
+private boolean _appTypeRegistryKnows(String configAppName) {
+    if (!configAppName) return false
+    if (configAppName == "Room Lighting") return true
+    def versioned = (configAppName =~ /^(.+) [0-9]+(?:\.[0-9]+)*$/)
+    def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
+    return _appTypeRegistry().any { typeKey, reg -> reg.appName == configAppName || (bare != null && reg.appName == bare) }
+}
+
 private String _resolveCommitButton(String configAppName) {
     if (!configAppName) return "updateRule"
-    // Parent apps with no updateRule button and no create entry of their own. A settings write on
+    // The Room Lighting parent has no updateRule button and no create entry of its own. A settings write on
     // the Room Lighting parent (e.g. newScene) already does its work; clicking updateRule there
     // throws MissingMethodException in its appButtonHandler (verified live, fw 2.5.1.181).
     if (configAppName == "Room Lighting") return null
@@ -8411,6 +8430,11 @@ Map _rmWalkStep(Integer appId, Map spec) {
         def schemaInput = resolved.input
         writtenKey = resolved.key
         if (resolved.rebound) opResult.rebound = [requestedKey: requestedWriteKey, resolvedKey: writtenKey]
+        // A device input given the {id: label} map hub_get_app_config returns is written (and echoed)
+        // as its id list, as the settings path sends it.
+        if (writtenValue instanceof Map && schemaInput?.type?.toString()?.startsWith("capability.")) {
+            writtenValue = (writtenValue as Map).keySet().collect { it?.toString() }
+        }
         // Validate against schema if asked.
         if (!schemaInput) {
             opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: ${beforeSchema.inputs.collect { it.name }}. The write will be attempted but the hub may silently drop it."
@@ -9931,12 +9955,9 @@ def _createNativeAppShell(args) {
     }
 
     try {
-        // First page of a fresh classic SmartApp is the label page. The
-        // input name is conventionally `origLabel` across all the app
-        // types in the registry (RM 5.1, Button Controller-5.1, Basic
-        // Rules, Room Lighting, etc. — all derive from the same
-        // SmartApp framework). Schema is introspected from configure/json
-        // so the 3-field capability contract applies uniformly.
+        // First page of a fresh classic SmartApp is the label page; its label input is `origLabel`
+        // unless the registry names another (labelInput). Schema is introspected from
+        // configure/json so the 3-field capability contract applies uniformly.
         def firstPage = _rmFetchConfigJson(newId)
         def schema = _rmCollectInputSchema(firstPage?.configPage)
         def labelInput = reg.labelInput ?: "origLabel"
@@ -10160,10 +10181,10 @@ def _createNativeAppShell(args) {
             // never initialized (a false-clean create). RM-family creates already fired updateRule
             // above to commit each section, so a missed trailing Done there is a state-marker
             // cleanup caveat (surfaced via the repairHint), not a creation failure.
-            if (_resolveCommitButton(_appTypeRegistry()[appType]?.appName) == null) {
+            if (createDone.uiBlocked == true || _resolveCommitButton(_appTypeRegistry()[appType]?.appName) == null) {
                 result.success = false
             }
-            result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${createDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${newId}) and re-commit via hub_set_native_app(appId=${newId}, button='updateRule') for RM-family apps.".toString()]
+            result.repairHints = (result.repairHints ?: []) + [_rmMainPageDoneRepairHint(newId as Integer, createDone)]
         }
         if (createStopAfter) {
             result.success = false
@@ -14378,18 +14399,21 @@ def _applyNativeAppEdit(args) {
                     // result is NOT clean -- flip success so callers branching on it don't treat a
                     // half-committed edit as done.
                     result.success = false
-                    result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${walkDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()]
+                    result.repairHints = (result.repairHints ?: []) + [_rmMainPageDoneRepairHint(appId, walkDone)]
                 }
             }
             return result
         } catch (Exception e) {
             mcpLogError("rm-native", "walkStep failed for app ${appId}", e)
+            // A page-check refusal is decided before anything is posted, so this call changed nothing.
+            def uiRefusal = (e instanceof IllegalStateException) && e.message?.startsWith("Hubitat's app page would refuse")
             return [
                 success: false,
                 appId: appId,
                 error: e.message ?: e.toString(),
                 backup: backup,
-                restoreHint: "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
+                restoreHint: uiRefusal ? _rmPreflightRestoreHint(null, backup) :
+                    "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
             ]
         }
     }
@@ -15852,6 +15876,13 @@ def _applyNativeAppEdit(args) {
             // null for submitOnChange apps like Basic Rule, whose inputs have
             // already committed -- clicking updateRule poisons their render).
             def editCommitButton = _resolveCommitButton(config?.app?.appType?.name)
+            // An app type the registry does not know gets the RM default, but a page without that
+            // button (e.g. a user app) throws MissingMethodException in its appButtonHandler when it
+            // is clicked; its settings commit through the closing Done instead.
+            if (editCommitButton == "updateRule" && !_appTypeRegistryKnows(config?.app?.appType?.name?.toString()) &&
+                    _rmCollectInputSchema(config?.configPage as Map).get("updateRule")?.type != "button") {
+                editCommitButton = null
+            }
             if (!button && isMainPage && knownSettings && editCommitButton) {
                 _rmClickAppButton(appId, editCommitButton)
                 implicitCommitButton = editCommitButton
@@ -16002,10 +16033,10 @@ def _applyNativeAppEdit(args) {
             // completed action. (finalConfig.app.appType.name is live-confirmed populated on the
             // base configure/json endpoint; _resolveCommitButton fails safe to non-null on a
             // degraded/absent name, i.e. toward NOT flipping.)
-            if (_resolveCommitButton(finalConfig?.app?.appType?.name?.toString()) == null) {
+            if (editDone.uiBlocked == true || _resolveCommitButton(finalConfig?.app?.appType?.name?.toString()) == null) {
                 result.success = false
             }
-            result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${editDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()]
+            result.repairHints = (result.repairHints ?: []) + [_rmMainPageDoneRepairHint(appId, editDone)]
         }
         return result
     } catch (Exception e) {

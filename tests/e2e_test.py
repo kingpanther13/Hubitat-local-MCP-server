@@ -5712,6 +5712,18 @@ class TestRunner:
             assert "not touched" in str(periodic.get("restoreHint", "")).lower() \
                 and "backup saved before write" not in str(periodic.get("restoreHint", "")).lower(), \
                 f"periodic pre-flight refusal should carry a not-touched restoreHint, got: {periodic.get('restoreHint')!r}"
+            # A periodic key the walker does not read would be dropped silently; it is refused by name.
+            unknown_key = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule",
+                         "periodic": {"frequency": "Daily", "everyN": 1, "time": "08:00"}}, "confirm": True}})
+            assert unknown_key.get("success") is False and "unknown periodic key(s) [time]" in str(unknown_key.get("error", "")), \
+                f"an unknown periodic key should be refused by name, got: {unknown_key}"
+            # A Certain Time trigger's time is its mode picker; a clock value there is refused.
+            bad_time = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Certain Time (and optional date)",
+                         "time": "17:30"}, "confirm": True}})
+            assert bad_time.get("success") is False and "addTrigger.time must be one of" in str(bad_time.get("error", "")), \
+                f"a Certain Time time outside its options should be refused, got: {bad_time}"
             # The remaining handler-level validators run as ordered patches in one logical
             # continuation-aware call. Each is pre-write, so the batch may continue after a
             # refusal without accumulating mutations; the final config read below is binding.
@@ -6690,7 +6702,7 @@ class TestRunner:
 
             # #460: the {id: label} map shape the read returns is accepted on write...
             wr = call_native({"settings": {"roomDevsL": {switch_a: "a", switch_b: "b"}}})
-            assert wr.get("success") is not False, f"device-map write failed: {wr}"
+            assert wr.get("success") is True, f"device-map write failed: {wr}"
             assert set((settings().get("roomDevsL") or {}).keys()) == {switch_a, switch_b}, \
                 f"roomDevsL should hold both switches: {settings().get('roomDevsL')}"
             # ...and takes effect: the Update commit re-subscribes the instance to the new devices.
@@ -6717,14 +6729,26 @@ class TestRunner:
                 {"page": "offMeansPage", "operation": "write", "write": {"offMeans": ["illuminance rises"]},
                  "hrefContext": {"fromPage": "mainPage"}},
                 {"page": "offMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
-            assert off.get("success") is False and "required but empty" in str(off), \
+            assert off.get("success") is False and "required but empty" in str((off.get("steps") or [{}])[-1].get("error")), \
                 f"Done with an empty required input must be refused: {off}"
+            # The same refusal as a single step posts nothing, so it must not steer toward a backup restore.
+            single = call_native({"walkStep": {"page": "offMeansPage", "operation": "done",
+                                               "hrefContext": {"fromPage": "mainPage"}}})
+            assert single.get("success") is False and "the app was not touched" in str(single.get("restoreHint")), \
+                f"a refused Done must report that nothing was submitted: {single}"
+            # The {id: label} map form is accepted by walkStep too, and echoes as the committed id.
             fixed = call_native({"walkStep": {"operation": "drive", "steps": [
-                {"page": "offMeansPage", "operation": "write", "write": {"illumsOff": [omni]},
+                {"page": "offMeansPage", "operation": "write", "write": {"illumsOff": {omni: "omni"}},
                  "hrefContext": {"fromPage": "mainPage"}},
                 {"page": "offMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
             assert fixed.get("success") is True, f"Done should pass once the required input is set: {fixed}"
-            assert omni in (settings().get("illumsOff") or {}), f"illumsOff not set: {settings().get('illumsOff')}"
+            assert (fixed["steps"][0].get("valueEcho") or {}).get("match") is True, \
+                f"a map-form device write should echo as matching: {fixed['steps'][0]}"
+            off_settings = settings()
+            assert omni in (off_settings.get("illumsOff") or {}), f"illumsOff not set: {off_settings.get('illumsOff')}"
+            # An input left unset is saved with the page's default, as the UI submits it.
+            assert str(off_settings.get("luxOff")) == "100", \
+                f"luxOff should hold the page default 100, not blank: {off_settings.get('luxOff')}"
         finally:
             dw = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {

@@ -47331,6 +47331,104 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !(result.opResult.skipped ?: []).any { it.reason == "silent_rejection" }
     }
 
+    def "walkStep device pick written as the {id: label} map is sent and echoed as its id list"() {
+        given:
+        enableWrite()
+        def committed = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/offMeansPage') { params ->
+            ruleConfigJson(100, "r", [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, value: null, deviceIdsForDeviceList: committed]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def sent = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            def ids = body["settings[illumsOff]"]
+            if (ids) { sent << ids; committed.clear(); committed.addAll(ids.toString().split(",").collect { it as Integer }) }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([appId: 100, confirm: true,
+            walkStep: [page: "offMeansPage", operation: "write", write: [illumsOff: ["696": "omni"]]]])
+
+        then:
+        sent == ["696"]
+        result.valueEcho.match == true
+        result.success == true
+        !(result.opResult.skipped ?: []).any { it.reason == "silent_rejection" }
+    }
+
+    def "a walkStep done the page refuses says nothing was submitted instead of pointing at a backup restore"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/onMeansPage') { params ->
+            ruleConfigJson(100, "r", [[name: "motions", type: "capability.motionSensor", multiple: true, required: true, title: "Motion Sensors that become active"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([appId: 100, confirm: true, walkStep: [page: "onMeansPage", operation: "done"]])
+
+        then:
+        result.success == false
+        result.error.contains("motions (Motion Sensors that become active): required but empty")
+        result.restoreHint.contains("the app was not touched")
+        !posts.any { it.body?._action_previous == "Done" }
+    }
+
+    def "the closing-Done repair hint names the fields when the page refused it, and the commit button otherwise"() {
+        expect:
+        def refused = script._rmMainPageDoneRepairHint(5, [done: false, uiBlocked: true, reason: "name (Select name for Group): required but empty"])
+        refused.contains("was refused")
+        refused.contains("hub_set_native_app(appId=5, settings=")
+        !refused.contains("updateRule")
+        script._rmMainPageDoneRepairHint(5, [done: false, reason: "status 500"]).contains("button='updateRule'")
+    }
+
+    def "a settings edit on an app type the registry does not know skips the updateRule click when its page has no such button"() {
+        given:
+        enableWrite()
+        def cfg = { boolean withButton ->
+            JsonOutput.toJson([app: [id: 101, name: "My App", label: "m", installed: true, appType: [name: "My App", namespace: "me"]],
+                configPage: [name: "mainPage", install: true, error: null, sections: [[title: "", input:
+                    [[name: "sw", type: "capability.switch", multiple: false]] + (withButton ? [[name: "updateRule", type: "button"]] : [])]]],
+                settings: [:], childApps: []])
+        }
+        def withButton = false
+        hubGet.register('/installedapp/configure/json/101') { params -> cfg(withButton) }
+        hubGet.register('/installedapp/configure/json/101/mainPage') { params -> cfg(withButton) }
+        hubGet.register('/installedapp/statusJson/101') { params -> statusJson(101) }
+        hubGet.register('/device/fullJson/555') { params -> '{"id":"555","name":"S"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when: "the page offers no updateRule button"
+        script.toolSetNativeApp([appId: 101, settings: [sw: 555], confirm: true])
+
+        then:
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+
+        when: "the page does offer it"
+        posts.clear()
+        withButton = true
+        script.toolSetNativeApp([appId: 101, settings: [sw: 555], confirm: true])
+
+        then:
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+    }
+
     def "a settings object on a non-device input is refused before any backup or write; on a device input it is sent as ids"() {
         given:
         enableWrite()

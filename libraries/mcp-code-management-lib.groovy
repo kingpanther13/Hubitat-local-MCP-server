@@ -810,6 +810,16 @@ private Map _createUserAppInstance(Integer codeAppId) {
             committed: false
         ]
     }
+    if (commit?.uiBlocked) {
+        // Deleting and retrying would meet the same refusal: keep the shell and fill it in.
+        return [
+            success: false,
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(appId:${newId}, settings:{...}); that call's closing Done installs the app.".toString(),
+            codeAppId: codeAppId,
+            instanceAppId: newId,
+            committed: false
+        ]
+    }
     if (!commit?.success) {
         return [
             success: false,
@@ -988,8 +998,9 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     if (submit.uiBlocked) {
         return [
             success: false,
+            uiBlocked: true,
             error: submit.uiReason,
-            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(appId:${instanceId}, settings:{...}), then commit the install again.".toString(),
+            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(appId:${instanceId}, settings:{...}); that call's closing Done installs it.".toString(),
             scheduledJobCount: 0,
             eventSubscriptionCount: 0
         ]
@@ -2966,7 +2977,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
         // Hub Admin App Pages Directory
         [
             name: "hub_list_app_pages",
-            description: """List page names for a multi-page installed app: the live-introspected primary page plus a curated directory of sub-pages for well-known app types (HPM, Rule Machine, Room Lighting, Mode Manager).[[FLAT_TRIM]] Unknown app types return the primary page only, with a note to consult the app's source or Web UI for other page names.[[/FLAT_TRIM]]
+            description: """List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]
 
 Use before hub_get_app_config on multi-page apps to avoid guessing page names. Requires Read master.""",
             inputSchema: [

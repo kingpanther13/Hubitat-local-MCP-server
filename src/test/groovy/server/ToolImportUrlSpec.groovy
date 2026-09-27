@@ -408,6 +408,27 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.error.contains('7777')
     }
 
+    def "hub_create_app installAsUserApp keeps the shell and points at its settings when the page refuses the install Done"() {
+        given: "a first page with a required device input nothing can fill at create time"
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/8888/mainPage', data: '']
+        }
+        def commit = stubInstallCommit(sections: [[input: [[name: 'sw', type: 'capability.switch', required: true, title: 'Switch']]]])
+
+        when:
+        def result = script.toolInstallApp([codeAppId: 315, confirm: true])
+
+        then: "no Done is posted, and the advice is to fill the shell rather than delete and retry into the same refusal"
+        commit.donePath == null
+        result.success == false
+        result.committed == false
+        result.instanceAppId == 8888
+        result.error.contains("sw (Switch): required but empty")
+        result.error.contains("hub_set_native_app(appId:8888")
+        !result.error.contains("delete")
+    }
+
     def "hub_create_app installAsUserApp rejects a shell that 200s the Done but reads app.installed=false"() {
         given:
         enableWrite()

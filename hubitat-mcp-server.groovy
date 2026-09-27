@@ -8507,15 +8507,10 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
     if (pageName) {
         body.formAction = "update"
         body.currentPage = pageName
-        // Breadcrumb depth is correct for this path: _rmClickAppButton only
-        // clicks buttons on pages that are DIRECT children of mainPage
-        // (hasAll on selectTriggers, actionDone on selectActions), so a single
-        // mainPage ancestor is right. RM DOES nest deeper sub-pages today
-        // (Periodic Schedule, Cron String, etc.) -- but those commit through
-        // _rmSubmitSubPageDone, which emits the correct '["mainPage",parent]'
-        // depth (live-captured fw 2.5.0.123). The only thing that would break
-        // this hardcode is a future button-click directly on a depth-2 page;
-        // verify against a network capture if a new wizard level rejects clicks.
+        // The hub's own trail for this page when it rendered it recently; otherwise a single mainPage
+        // ancestor, right for the pages this clicks on (hasAll on selectTriggers, actionDone on
+        // selectActions are direct children of mainPage; deeper pages commit through
+        // _rmSubmitSubPageDone).
         body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, pageName, '["mainPage"]')
         // The hub uses `version` to detect concurrent edits. Fetch the
         // current value so we replay the exact one the UI would send.
@@ -9554,9 +9549,6 @@ private List _uiNavigationViolations(Map schema, Map values) {
     return problems
 }
 
-// Empty as the browser sees it: no value, a blank string, no selected options, no devices.
-// Multi-selects reach here as a List, a JSON-array string ("[]" from statusJson), or a device
-// id->label Map, depending on which read built the values.
 // The browser's input type=email syntax (WHATWG "valid e-mail address").
 private String _uiEmailPattern() {
     return '[a-zA-Z0-9.!#\$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*'
@@ -9570,6 +9562,9 @@ private _uiValueOrDefault(v, Map meta) {
     return (_uiValueIsEmpty(v) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
 
+// Empty as the browser sees it: no value, a blank string, no selected options, no devices.
+// Multi-selects reach here as a List, a JSON-array string ("[]" from statusJson), or a device
+// id->label Map, depending on which read built the values.
 private boolean _uiValueIsEmpty(v) {
     if (v == null) return true
     if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
@@ -11117,7 +11112,7 @@ Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}
 - `navigate` -- forward into a sub-page via its href.
 - `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
 
-`navigate` and `done` are page navigation, which Hubitat's own app page refuses until the page being left passes its checks: every required input (marked * in the UI) filled, numbers within their range (whole and non-negative unless the input's range says otherwise), and values matching any required format. The tool refuses the same way and names each field; fill it, or deselect the option that revealed it, then retry. `write` and `click` are never checked, as in the UI.
+`navigate` and `done` are page navigation, which Hubitat's own app page refuses until the page being left passes its checks: every required input (marked * in the UI) filled, numbers within their range (number inputs whole and non-negative, decimal inputs at most two decimal places, unless the input's range says otherwise), and values matching any required format. The tool refuses the same way and names each field; fill it, or deselect the option that revealed it, then retry. `write` and `click` are never checked, as in the UI.
 
 The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health` in each step's snapshot -- they are the fail-loud signals. A page that rendered empty on a `navigate` (or on an `hrefContext` re-render) is re-read once and `opResult.navRetried: true` says the re-read supplied the page; if `after` is still empty the page really is (see `commitSignal`). A page RM could not build comes back with `pageError` (RM's own render text, e.g. a `doActPage` entered by name without the wizard state it expects) and a repair hint -- that empty schema has a stated cause and is never re-read. On health: `skipped: true` means the probe was deliberately not run (time budget spent) and `unreadable: true` means it could not be read -- neither is evidence of breakage; only a checked verdict (broken/issues with unreadable false) is.
 

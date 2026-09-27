@@ -665,10 +665,10 @@ The installed-apps reads (`hub_list_apps` scope=instances, `hub_list_device_depe
   - See usage tips above for full details on response shape, pageName navigation, and includeSettings flag
   - Workflow: `hub_list_apps` (scope=instances) or `hub_list_rules` to find an `appId`, then `hub_get_app_config` to inspect it
 
-- **`hub_list_app_pages`** — list known page names for a multi-page app (Read master)
+- **`hub_list_app_pages`** — list an app's page names: the primary page plus the sub-pages it links to (Read master)
   - Returns the primary page (introspected from the hub) plus every sub-page that page links to, read from the live page for any app type
   - HPM additionally gets a curated directory (prefOptions, prefPkgUninstall, prefPkgModify, prefPkgInstall, prefPkgMatchUp); pages linked only from a sub-page appear in `hub_get_app_config(pageName=<sub-page>).page.hrefs`
-  - Unknown app types: returns the primary page only plus a note about consulting the app's source or Web UI for additional page names
+  - An app whose primary page links nothing returns the primary page only, with the note "The primary page links no sub-pages."
   - Use this before `hub_get_app_config` on multi-page apps to avoid guessing page names
   - Args: `appId` (required)
 
