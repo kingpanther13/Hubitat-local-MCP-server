@@ -2655,7 +2655,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // cleanly (settingsApplied populated, health.ok). Our POSTs already carry n
         // via hrefParams; the noise is on RM's render, which we do not control. Do
         // NOT chase it into this fragile sub-page flow to silence RM's own log line.
-        _rmNavigateToPage(appId, "selectTriggers", "periodic", periodicHrefIndex, periodicHrefName, hrefParams)
+        _rmNavigateToPage(appId, "selectTriggers", "periodic", periodicHrefIndex, periodicHrefName, hrefParams, null, null, false, true)
         // Closure that wraps _rmWriteSubPageField with applied/skipped routing
         // based on the helper's persistence verification (Map return). Use this
         // for every periodic-sub-page field write so silent rejections are
@@ -2828,7 +2828,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // Triggers" button submits a form with `_action_href_name|mainPage|0`
     // that signals the page transition. This ensures trigger state is
     // fully baked before the next addTrigger call (or final updateRule).
-    _rmNavigateToPage(appId, "selectTriggers", "mainPage")
+    _rmNavigateToPage(appId, "selectTriggers", "mainPage", 0, "name", null, null, null, false, true)
 
     // Final config-error check.
     def finalConfig
@@ -4973,8 +4973,12 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     } catch (Exception versionExc) {
         mcpLog("debug", "rm-native", "_rmNavigateToPage: version fetch on ${fromPage} failed for app ${appId} (${versionExc.message}) -- sending POST without version")
     }
-    // uiValidate: this navigation stands for a UI link click, which the UI refuses while the page
-    // being left fails its checks. Internal re-renders of a page the caller is already on pass false.
+    // uiValidate: this navigation stands for a UI page exit or link click, which the UI refuses while
+    // the page being left fails its checks. Mapped live in the RM UI (fw 2.5.1.181): leaving
+    // selectTriggers after hasAll is the UI's "Done with Trigger Events" (_action_previous), leaving
+    // doActPage after actionDone is the UI's own automatic _action_previous, and entering a sub-page
+    // is a link click -- all validated by the UI. Internal re-renders of a page the caller is already
+    // on pass false.
     if (uiValidate && fromCfg?.configPage instanceof Map) {
         def fromValues = (fromCfg.settings instanceof Map) ? (Map) fromCfg.settings : [:]
         _requireUiNavigationValid(appId, "leaving page '${fromPage}' for '${targetPage}'".toString(), _rmCollectInputSchema(fromCfg.configPage as Map), fromValues)
@@ -7380,7 +7384,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // Mirror the navigation by POSTing to selectActions's update/json
     // endpoint with a minimal form body -- the server will commit the
     // action's settings and bake into actions[].
-    _rmNavigateToPage(appId, "doActPage", "selectActions")
+    _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, null, null, false, true)
 
     // Final config-error check.
     def finalConfig
@@ -10696,12 +10700,12 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     // missing or not passing validation" on STPage. Without this nav,
     // STPage shows a validation error after addRequiredExpression completes;
     // with it, STPage opens cleanly.
-    def navBack = _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, cache)
+    def navBack = _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, cache, null, false, true)
     // A plain name-nav render carries no param-state, so it equals a live selectActions GET;
     // _rmNavigateToPage deliberately doesn't self-store its render, so cache it here for the
     // mainPage nav's version read (drops one more re-GET).
     if (navBack?.configPage != null) _rmCacheStore(cache, appId, "selectActions", navBack)
-    _rmNavigateToPage(appId, "selectActions", "mainPage", 0, "name", null, cache)
+    _rmNavigateToPage(appId, "selectActions", "mainPage", 0, "name", null, cache, null, false, true)
 
     mcpLog("info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
 }
