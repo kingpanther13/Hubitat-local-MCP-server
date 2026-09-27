@@ -1926,7 +1926,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ]]]])
 
         expect:
-        schema.get(inputName) == [name: inputName, type: 'bool', multiple: false, required: true]
+        schema.get(inputName) == [name: inputName, type: 'bool', multiple: false, required: true,
+                                  title: null, range: null, pattern: null, disabled: false]
         script._rmBuildSettingsBody(100, [(inputName): false], schema).get("settings[${inputName}]".toString()) == 'false'
         script._rmBuildSettingsBody(100, [(inputName): 0], schema).get("settings[${inputName}]".toString()) == '0'
         script._rmBuildSettingsBody(100, [(inputName): null], schema).get("settings[${inputName}]".toString()) == ''

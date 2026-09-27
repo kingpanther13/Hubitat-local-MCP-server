@@ -119,7 +119,11 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
     // A navigation submit (an _action_* marker) is one the UI validates first: refuse it where the
     // cloner's own page would, with the values this POST is about to send overlaid on its current ones.
     if (extras?.keySet()?.any { it.toString().startsWith("_action_") }) {
-        def navCfg = _rmFetchConfigJson(clonerAppId, currentPage)
+        def navCfg = null
+        try { navCfg = _rmFetchConfigJson(clonerAppId, currentPage) } catch (Exception readExc) {
+            // An unreadable page cannot be checked; the cloner's own flow verifies the transition.
+            mcpLog("debug", "rm-native", "appCloner: page read for the navigation check on ${currentPage} failed (${readExc.message}); submitting unchecked")
+        }
         if (navCfg?.configPage instanceof Map) {
             def navValues = (navCfg.settings instanceof Map) ? new LinkedHashMap(navCfg.settings as Map) : [:]
             extras.each { k, v ->

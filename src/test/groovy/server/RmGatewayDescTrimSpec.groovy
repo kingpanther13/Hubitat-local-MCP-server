@@ -48,16 +48,17 @@ class RmGatewayDescTrimSpec extends ToolSpecBase {
         desc.toLowerCase().contains('visual rules builder')
     }
 
-    def "hub_set_native_app appType documents the create-vs-edit limitation and the enum is the 5 create-capable types"() {
+    def "hub_set_native_app appType lists the create-capable types and points other apps at their parent page"() {
         when:
         def appType = toolDef('hub_set_native_app').inputSchema.properties.appType
 
-        then: 'CREATE is limited to the registered types; Room Lighting etc. are edit/delete-only'
-        (appType.description as String).contains('EDIT/DELETE-only')
-        (appType.description as String).contains('Room Lighting')
+        then: 'apps without an appType are created through their parent app page (Room Lighting newScene)'
+        (appType.description as String).contains("parent app's own page")
+        (appType.description as String).contains('newScene')
+        !(appType.description as String).contains('EDIT/DELETE-only')
 
-        and: 'enum is exactly the create-capable classic types'
-        appType.enum == ['rule_machine', 'button_controller', 'groups_scenes', 'notifier', 'basic_rule']
+        and: 'enum is exactly the create-capable classic types, room_lighting included (issue #461)'
+        appType.enum == ['rule_machine', 'button_controller', 'groups_scenes', 'notifier', 'basic_rule', 'room_lighting']
     }
 
     def "hub_set_app_disabled uses appId (app_id -> appId rename)"() {

@@ -8041,7 +8041,9 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null) 
 // hub_get_rule_health call.
 private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
     def msgStr = msg?.toString() ?: ""
-    def isPreflightRefusal = msgStr.contains("RM is not touched")
+    // No backup means the refusal fired before the baseline snapshot, so nothing was written: a
+    // pre-flight refusal whatever its wording (a non-RM app's message carries no RM sentinel).
+    def isPreflightRefusal = msgStr.contains("RM is not touched") || backup == null
     // wizardStuck: mid-walk cancelCapab cleanup may have failed leaving the wizard
     // half-open. Independent of preflight refusal (preflight never opens the wizard).
     def wizardStuck = msgStr.contains("wizardStuck") || msgStr.contains("cancelCapab cleanup failed")
