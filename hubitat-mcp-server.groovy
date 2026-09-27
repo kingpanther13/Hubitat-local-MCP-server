@@ -7378,10 +7378,13 @@ private void _rmNoteHubBreadcrumbs(appId, resp) {
     try {
         def data = (resp instanceof Map) ? resp.data : null
         if (!(data instanceof String) || !data.contains('"pageBreadcrumbs"')) return
-        def crumbs = (data =~ /"pageBreadcrumbs"\s*:\s*"([^"]*)"/)
+        // The trail comes URL-encoded on some answers and as a JSON-escaped string (["mainPage"] with
+        // escaped quotes) on others, e.g. RM's back-navigation to mainPage; unescape it to the value the UI echoes.
+        def crumbs = (data =~ /"pageBreadcrumbs"\s*:\s*"((?:[^"\\]|\\.)*)"/)
         def page = (data =~ /"configPage"\s*:\s*\{[^{}\[]*?"name"\s*:\s*"([^"]+)"/)
         if (crumbs.find() && page.find()) {
-            HUB_PAGE_BREADCRUMBS.put(appId.toString(), [page: page.group(1), crumbs: crumbs.group(1), at: now()])
+            def trail = new groovy.json.JsonSlurper().parseText('["' + crumbs.group(1) + '"]')[0]
+            HUB_PAGE_BREADCRUMBS.put(appId.toString(), [page: page.group(1), crumbs: trail?.toString(), at: now()])
         }
     } catch (Exception noteExc) {
         logDebug("_rmNoteHubBreadcrumbs: could not read the returned trail for app ${appId}: ${noteExc.message}")

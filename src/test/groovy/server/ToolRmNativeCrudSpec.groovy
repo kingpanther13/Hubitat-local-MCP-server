@@ -47313,6 +47313,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.HUB_PAGE_BREADCRUMBS.clear()
     }
 
+    def "pageBreadcrumbs carry forward unescapes a JSON-escaped trail (RM back-navigation to mainPage)"() {
+        given: "the hub answers a selectTriggers -> mainPage navigation with an escaped, not URL-encoded, trail"
+        def answer = '{"status":"success","pageBreadcrumbs":"[\\"mainPage\\"]","cancelButton":false,' +
+                     '"configPage":{"name":"mainPage","sections":[]}}'
+
+        when:
+        script._rmNoteHubBreadcrumbs("2524", [status: 200, data: answer])
+
+        then: "the whole trail is kept, unescaped -- not cut at the first escaped quote"
+        script._rmPageBreadcrumbs(2524, "mainPage", 'X') == '["mainPage"]'
+
+        cleanup:
+        script.HUB_PAGE_BREADCRUMBS.clear()
+    }
+
     def "pageBreadcrumbs carry forward ignores answers without a rendered page and never throws"() {
         when:
         script._rmNoteHubBreadcrumbs("2518", [status: 200, data: '{"status":"success"}'])
