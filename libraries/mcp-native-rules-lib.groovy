@@ -1916,6 +1916,12 @@ private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
         throw new IllegalArgumentException("${offendingField}:'${effState}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not ${offendingField}. Pass {discover:true} for this capability's field schema. RM is not touched.")
     }
 
+    // time is the trigger's mode picker; the UI offers only these options, the clock rides in atTime.
+    if (cap.equalsIgnoreCase("Certain Time (and optional date)") && triggerSpec.time != null &&
+            !(triggerSpec.time?.toString() in ["A specific time", "Sunrise", "Sunset"])) {
+        throw new IllegalArgumentException("addTrigger.time must be one of ['A specific time', 'Sunrise', 'Sunset']; got '${triggerSpec.time}'. Put the clock time in atTime (e.g. time:'A specific time', atTime:'17:30'). Pass {discover: true} for the full trigger schema. RM is not touched.")
+    }
+
     if (cap.equalsIgnoreCase("Periodic Schedule") && !(triggerSpec.periodic instanceof Map)) {
         def strayKeys = triggerSpec.keySet().findAll {
             !(it?.toString() in _rmRecognizedTriggerKeys())

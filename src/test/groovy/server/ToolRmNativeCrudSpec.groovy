@@ -15572,6 +15572,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
+    def "addTrigger Certain Time with a time outside its options is refused before any write"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "the clock passed as the mode picker"
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Certain Time (and optional date)", time: "17:30"],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error.toString().contains("addTrigger.time must be one of")
+        result.error.toString().contains("atTime")
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
     def "addTrigger Periodic with an unknown periodic key is refused before any write, naming the key"() {
         given:
         enableWrite()
