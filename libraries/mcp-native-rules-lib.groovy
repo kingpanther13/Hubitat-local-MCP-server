@@ -15166,6 +15166,11 @@ def _applyNativeAppEdit(args) {
                 def pm = p as Map
                 try {
                     if (pm.containsKey("settings")) {
+                        // The same object-value refusal as the top-level settings path: a map on a
+                        // non-device input would otherwise reach the hub as map text.
+                        if (pm.settings instanceof Map && (pm.settings as Map).values().any { it instanceof Map }) {
+                            _rmRejectNonDeviceMapSettings(appId, pm.pageName?.toString()?.trim() ?: null, pm.settings as Map)
+                        }
                         // Apply settings via _rmUpdateAppSettings (no auto-updateRule).
                         def cfg = _rmFetchConfigJson(appId, pm.pageName?.toString())
                         def schema = _rmCollectInputSchema(cfg?.configPage)

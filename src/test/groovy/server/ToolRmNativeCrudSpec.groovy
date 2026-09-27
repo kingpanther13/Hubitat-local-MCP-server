@@ -47429,6 +47429,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
     }
 
+    def "a patches settings object on a non-device input is refused, not written as map text"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[settings: [origLabel: [a: "b"]]]], confirm: true])
+
+        then:
+        result.success == false
+        result.toString().contains("only device inputs accept")
+        !posts.any { it.body?.containsKey("settings[origLabel]") }
+    }
+
     def "a settings object on a non-device input is refused before any backup or write; on a device input it is sent as ids"() {
         given:
         enableWrite()

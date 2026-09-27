@@ -5718,6 +5718,11 @@ class TestRunner:
                          "periodic": {"frequency": "Daily", "everyN": 1, "time": "08:00"}}, "confirm": True}})
             assert unknown_key.get("success") is False and "unknown periodic key(s) [time]" in str(unknown_key.get("error", "")), \
                 f"an unknown periodic key should be refused by name, got: {unknown_key}"
+            # A patch writing an object to a non-device input is refused instead of saved as map text.
+            map_patch = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "patches": [{"settings": {"origLabel": {"a": "b"}}}], "confirm": True}})
+            assert map_patch.get("success") is False and "only device inputs accept" in str(map_patch), \
+                f"a map on a non-device input in patches should be refused, got: {map_patch}"
             # A Certain Time trigger's time is its mode picker; a clock value there is refused.
             bad_time = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addTrigger": {"capability": "Certain Time (and optional date)",
