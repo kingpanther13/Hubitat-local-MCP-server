@@ -2909,9 +2909,17 @@ class TestRunner:
         assert dev_id, "Failed to get the shared scaffold switch"
 
         for supplied_id in (0, "0"):
-            refused = self._refusal_call("hub_list_device_events", {
-                "deviceId": supplied_id, "hoursBack": 1, "limit": 1})
-            assert refused.get("source") != "location" and "Device not found: 0" in str(refused.get("error", "")), \
+            try:
+                refused = self.client.call_tool("hub_list_device_events", {
+                    "deviceId": supplied_id, "hoursBack": 1, "limit": 1})
+            except McpToolError as exc:
+                refused = _tool_error_payload(exc)
+            # Bypass ON reaches native metadata; OFF refuses at the selection gate.
+            error = str(refused.get("error", "")) if isinstance(refused, dict) else ""
+            assert isinstance(refused, dict) and refused.get("success") is False \
+                and refused.get("source") != "location" and (
+                    error == "Device metadata fetch failed (/device/fullJson/0)"
+                    or error == "Device not found: 0" or error.startswith("Device not found: 0 ")), \
                 f"supplied zero must be validated as a device ID: {supplied_id!r} -> {refused}"
 
         def _iso_epoch_ms(s: str) -> int:

@@ -391,6 +391,34 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def "hub_list_device_events with bypass refuses #inputId at native metadata (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/fullJson/0') { '{"device":null}' }
+        hubGet.register('/logs/eventsJson') { '[]' }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: inputId, hoursBack: 1])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error == 'Device metadata fetch failed (/device/fullJson/0)'
+        inner.source != 'location'
+        hubGet.calls*.path == ['/device/fullJson/0']
+
+        where:
+        useGateways | inputId
+        false       | 0
+        false       | '0'
+        true        | 0
+        true        | '0'
+    }
+
+    @Unroll
     def "hub_list_device_events via dispatch preserves location history for #idCase deviceId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
