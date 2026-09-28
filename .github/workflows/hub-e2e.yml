@@ -331,7 +331,9 @@ jobs:
   # Explicit maintenance only. Normal E2E calls the standing watchdog but never edits its code.
   watchdog-maintenance:
     needs: [approve]
-    if: github.event_name == 'workflow_dispatch' && inputs.watchdog_update == 'true'
+    if: >-
+      !cancelled() && needs.approve.result == 'success'
+      && github.event_name == 'workflow_dispatch' && inputs.watchdog_update == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

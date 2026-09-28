@@ -149,6 +149,7 @@ def test_watchdog_maintenance_is_exclusive_and_never_called_by_e2e():
         assert "watchdog_maintenance.sh" not in body
     maintenance = source.split("\n  watchdog-maintenance:\n", 1)[1].split("\n  probe:\n", 1)[0]
     assert "github.event_name == 'workflow_dispatch' && inputs.watchdog_update == 'true'" in maintenance
+    assert "!cancelled() && needs.approve.result == 'success'" in maintenance
     assert "group: hub-e2e-serialized" in maintenance
     assert "watchdog_maintenance_ci_gate.sh" in maintenance
     assert 'lease_acquire.sh' in maintenance and 'lease_release.sh' in maintenance
