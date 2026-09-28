@@ -9639,7 +9639,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.4.5"
+    return "4.4.6"
 }
 
 
