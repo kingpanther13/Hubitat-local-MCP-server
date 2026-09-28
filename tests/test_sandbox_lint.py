@@ -1824,6 +1824,29 @@ def test_guide_builder_accepts_comments_between_complete_sections():
     assert sl._load_tool_guide_builder().render(source, _GENERATED_LIB) == _rendered_guide()
 
 
+@pytest.mark.parametrize("delegated", [False, True], ids=["inline", "delegated"])
+@pytest.mark.parametrize(("raw", "expected"), [
+    (r"before \''' after", "before ''' after"),
+    (r"before '\'' after", "before ''' after"),
+    (r"before ''\' after", "before ''' after"),
+    (r"before \'\'\' after", "before ''' after"),
+    (r"before \\\''' after", "before \\''' after"),
+    (r"ends with \\", "ends with \\"),
+    ("one '\n two ''\nthree", "one '\n two ''\nthree"),
+    ("continued\\\nline", "continuedline"),
+])
+def test_guide_builder_preserves_escaped_quotes_and_section_boundaries(delegated, raw, expected):
+    value = "_quotedGuideSection()" if delegated else "'''" + raw + "'''"
+    source = _GENERATED_SERVER.replace("        device_authorization:",
+        "        quoted: " + value + ",\n        device_authorization:")
+    library = _GENERATED_LIB + "\nprivate String _quotedGuideSection() { return '''" + raw + "''' }\n"
+    builder = sl._load_tool_guide_builder()
+    sections = builder.served_sections(source, library)
+    assert sections == [("quoted", expected)] + builder.served_sections(_GENERATED_SERVER, _GENERATED_LIB)
+    assert builder.render(source, library) == _rendered_guide().replace(
+        "## Device Authorization", expected + "\n\n## Device Authorization", 1)
+
+
 
 # ---------------------------------------------------------------------------
 # check_include_library_lockstep — #include <-> library file <-> build-bundle
