@@ -42,6 +42,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         appExecutor.getApp() >> sharedAppStub
     }
 
+    def setup() {
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+    }
+
     // --- formatAge singular grammar (v0.7.7) --------------------------------
     //
     // Before the fix, formatAge(now - 1h) returned "1 hours ago" because the
@@ -390,7 +394,6 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         def result = script.toolUpdateAppCode([appId: '50', source: 'new source', confirm: true])
 
         then: 'update POST carries the fresh version=12, NOT the cached stale version=5'
@@ -528,7 +531,6 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         def result = script.toolUpdateAppCode([appId: '50', source: 'new source', confirm: true])
 
         then: 'best-effort fallback — use the cached version=5 rather than failing outright'
