@@ -713,11 +713,8 @@ jobs:
 
       - name: Configure test environment (capture pre-state + enable toggles)
         if: steps.gate.outputs.available == 'true'
-        # Captures enableCustomRuleEngine / enableRead
-        # to $RUNNER_TEMP/mcp_pre_state.json, then enables all three so the
-        # tests can exercise the rule engine + hub admin read paths regardless
-        # of the test hub's prior toggle state. Refuses if Developer Mode
-        # itself is off (UI-only to enable).
+        # Enables Developer Mode through the standing watchdog if needed, verifies it,
+        # captures the legacy engine setting for cleanup, then pins gateway mode ON.
         run: bash .github/scripts/mcp_setup_env.sh
 
       - name: Clear stale watchdog flag

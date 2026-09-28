@@ -432,6 +432,102 @@ class WatchdogV2Spec extends Specification {
         thrown(Exception)
     }
 
+    private static Map mcpConfig(boolean enabled) {
+        [app: [id: 194, version: 3, appType: [namespace: 'mcp', name: 'MCP Rule Server']],
+         configPage: [name: 'mainPage'],
+         settings: [enableDeveloperMode: enabled.toString(), enableCustomRuleEngine: 'false']]
+    }
+
+    @Unroll
+    def "Developer Mode bootstrap verifies the setting after POST (#scenario)"() {
+        given:
+        def reads = []
+        def posts = []
+        script.metaClass.hubGet = { String path, Map query ->
+            reads << path
+            groovy.json.JsonOutput.toJson(mcpConfig(reads.size() > 1 && landed))
+        }
+        script.metaClass.hubPostForm = { String path, Map body ->
+            posts << [path, body]
+            [status: postStatus, data: '']
+        }
+
+        when:
+        def result = script.executeAdminTool('hub_set_mcp_developer_mode',
+            [appId: '0194', enabled: true, confirm: true])
+
+        then:
+        result.success == landed
+        reads == ['/installedapp/configure/json/194', '/installedapp/configure/json/194']
+        posts == [['/installedapp/update/json', [id: '194', version: '3',
+            'settings[enableDeveloperMode]': 'true', 'enableDeveloperMode.type': 'bool',
+            currentPage: 'mainPage', pageBreadcrumbs: '[]', formAction: 'update']]]
+
+        where:
+        scenario                       | postStatus | landed
+        'normal write'                 | 200        | true
+        'lost response but committed'  | null       | true
+        'HTTP success without change'  | 200        | false
+        'failed write'                 | 500        | false
+    }
+
+    def "Developer Mode bootstrap is a no-op when already enabled"() {
+        given:
+        def posts = []
+        script.metaClass.hubGet = { String path, Map query -> groovy.json.JsonOutput.toJson(mcpConfig(true)) }
+        script.metaClass.hubPostForm = { String path, Map body -> posts << body; [:] }
+
+        when:
+        def result = script.adminSetMcpDeveloperMode([appId: '194', enabled: true, confirm: true])
+
+        then:
+        result.success && !result.changed
+        posts.empty
+    }
+
+    @Unroll
+    def "Developer Mode bootstrap refuses unverified app identity (#scenario)"() {
+        given:
+        def config = mcpConfig(false)
+        mutate(config)
+        def posts = []
+        script.metaClass.hubGet = { String path, Map query -> groovy.json.JsonOutput.toJson(config) }
+        script.metaClass.hubPostForm = { String path, Map body -> posts << body; [:] }
+
+        expect:
+        !script.adminSetMcpDeveloperMode([appId: '194', enabled: true, confirm: true]).success
+        posts.empty
+
+        where:
+        scenario             | mutate
+        'different instance' | { c -> c.app.id = 195 }
+        'different app'      | { c -> c.app.appType.name = 'Unrelated app' }
+        'wrong namespace'    | { c -> c.app.appType.namespace = 'other' }
+        'missing version'    | { c -> c.app.remove('version') }
+        'wrong page'         | { c -> c.configPage.name = 'otherPage' }
+        'missing identity'   | { c -> c.remove('app') }
+    }
+
+    @Unroll
+    def "Developer Mode bootstrap requires a confirmed enable and valid instance (#args)"() {
+        given:
+        def reads = []
+        script.metaClass.hubGet = { String path, Map query -> reads << path; null }
+
+        when:
+        script.adminSetMcpDeveloperMode(args)
+
+        then:
+        thrown(IllegalArgumentException)
+        reads.empty
+
+        where:
+        args << [[appId: '194', enabled: true],
+                 [appId: '194', enabled: false, confirm: true],
+                 [appId: '0', enabled: true, confirm: true],
+                 [appId: 'abc', enabled: true, confirm: true]]
+    }
+
     @Unroll
     def "adminSetAppDisabled posts the Vue wire format and trusts only the read-back (#scenario)"() {
         given:
