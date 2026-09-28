@@ -73,6 +73,10 @@ on:
     # reintroduce a workflow-level paths: filter here (it recreates the never-reports deadlock).
   workflow_dispatch:
     inputs:
+      watchdog_update:
+        description: 'MAINTENANCE ONLY: update the standing watchdog from this ref after all non-E2E CI passes, then verify Developer Mode bootstrap. Runs no E2E tests.'
+        required: false
+        default: 'false'
       pr_number:
         description: 'PR number to test (blank = current ref)'
         required: false
@@ -287,7 +291,7 @@ jobs:
   fork-bundle:
     needs: [lane-gate, approve]
     if: >-
-      inputs.probe_only != 'true' && needs.lane-gate.outputs.run == 'true'
+      inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && needs.lane-gate.outputs.run == 'true'
       && ((github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
       || (github.event_name == 'workflow_dispatch' && inputs.pr_number != ''))
     runs-on: ubuntu-latest
@@ -324,13 +328,67 @@ jobs:
           DESC: 'fork bundle publish failed; e2e did not run -- re-run this workflow'
         run: bash .github/scripts/post_e2e_gate.sh
 
+  # Explicit maintenance only. Normal E2E calls the standing watchdog but never edits its code.
+  watchdog-maintenance:
+    needs: [approve]
+    if: github.event_name == 'workflow_dispatch' && inputs.watchdog_update == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: hub-e2e-serialized
+      queue: max
+      cancel-in-progress: false
+    env:
+      MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      GH_TOKEN: ${{ github.token }}
+      LEASE_WAIT_TIMEOUT_S: '0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check maintenance inputs and exact-ref CI
+        env:
+          PR_INPUT: ${{ inputs.pr_number }}
+          PROBE_INPUT: ${{ inputs.probe_only }}
+        run: |
+          test -z "$PR_INPUT" && test "$PROBE_INPUT" != 'true' || {
+            echo '::error::Maintenance uses only the dispatched ref; do not combine with pr_number or probe_only.'
+            exit 1
+          }
+          bash .github/scripts/watchdog_maintenance_ci_gate.sh
+      - name: Mask hub tokens
+        run: |
+          for U in "$MCP_URL" "$WATCHDOG_URL"; do
+            TOKEN="$(printf '%s' "$U" | sed -nE 's|.*access_token=(.*)|\1|p')"
+            if [ -n "$TOKEN" ]; then echo "::add-mask::$TOKEN"; fi
+          done
+      - name: Acquire test hub lease
+        id: lease
+        run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
+      - name: Update watchdog and verify Developer Mode bootstrap
+        run: bash .github/scripts/watchdog_maintenance.sh
+      - name: Preserve prior watchdog source
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: watchdog-before-maintenance
+          path: ${{ runner.temp }}/watchdog-before.groovy
+          if-no-files-found: ignore
+      - name: Release test hub lease
+        if: always() && steps.lease.outcome == 'success'
+        run: bash .github/scripts/lease_release.sh "ci-run-${{ github.run_id }}"
+
   # Read-only hub inventory dump (dispatch with probe_only=true). Diagnoses test-hub
   # state -- devices, apps, rules, jobs, memory, watchdog flags -- without deploying or
   # mutating anything beyond one labeled command round-trip on the BAT scaffold switch.
   # Shares the e2e job's hub-e2e-serialized concurrency group so it never overlaps a live e2e run.
   probe:
     needs: [approve]
-    if: inputs.probe_only == 'true'
+    if: inputs.probe_only == 'true' && inputs.watchdog_update != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -412,7 +470,7 @@ jobs:
     # fork-bundle is SKIPPED for same-repo PRs; a skipped need would skip this job under the implicit
     # success(), so the needs are checked explicitly.
     if: >-
-      !cancelled() && inputs.probe_only != 'true' && needs.lane-gate.outputs.run == 'true'
+      !cancelled() && inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && needs.lane-gate.outputs.run == 'true'
       && needs.approve.result == 'success'
       && (needs.fork-bundle.result == 'success' || needs.fork-bundle.result == 'skipped')
     runs-on: ubuntu-latest

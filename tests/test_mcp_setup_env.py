@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -101,3 +102,55 @@ def test_setup_bootstraps_only_verified_off_state(tmp_path, scenario, succeeds, 
         assert "hub_create_backup" not in names
         assert "hub_manage_mcp" not in names
         assert not (tmp_path / "mcp_pre_state.json").exists()
+
+
+WORKFLOWS = [
+    "unit-tests.yml", "groovy24-parse.yml", "groovy2x-spock.yml", "python-tests.yml",
+    "ruff.yml", "sandbox-lint.yml", "pr-guard.yml", "self-deploy-recovery.yml",
+    "lease-scripts-test.yml", "lane-gate-test.yml",
+]
+
+
+@pytest.mark.parametrize("scenario", ["green", "missing", "wrong_sha", "failed", "newer_pending"])
+def test_watchdog_maintenance_requires_complete_current_ci(tmp_path, scenario):
+    runs = [
+        {"path": f".github/workflows/{name}", "head_sha": "expected",
+         "status": "completed", "conclusion": "success", "run_number": 1, "run_attempt": 1}
+        for name in WORKFLOWS
+    ]
+    if scenario == "missing":
+        runs.pop()
+    elif scenario == "wrong_sha":
+        runs[-1]["head_sha"] = "old"
+    elif scenario == "failed":
+        runs[-1]["conclusion"] = "failure"
+    elif scenario == "newer_pending":
+        runs.append({**runs[-1], "run_number": 2, "status": "in_progress", "conclusion": None})
+    payload = tmp_path / "runs.json"
+    payload.write_text(json.dumps({"workflow_runs": runs}))
+    gh = tmp_path / "gh"
+    gh.write_text(f'#!/bin/sh\ncat "{payload}"\n')
+    gh.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(ROOT / ".github/scripts/watchdog_maintenance_ci_gate.sh")],
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}",
+             "GITHUB_SHA": "expected", "GITHUB_REPOSITORY": "fixture/repo"},
+        capture_output=True, text=True, check=False,
+    )
+    assert (result.returncode == 0) == (scenario == "green"), result.stdout + result.stderr
+
+
+def test_watchdog_maintenance_is_exclusive_and_never_called_by_e2e():
+    source = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
+    for job in ["e2e", "probe", "fork-bundle"]:
+        # Split at the next two-space job key, not the indented body.
+        body = re.split(r"\n  [a-z][\w-]*:\n", source.split(f"\n  {job}:\n", 1)[1])[0]
+        assert "inputs.watchdog_update != 'true'" in body
+        assert "watchdog_maintenance.sh" not in body
+    maintenance = source.split("\n  watchdog-maintenance:\n", 1)[1].split("\n  probe:\n", 1)[0]
+    assert "github.event_name == 'workflow_dispatch' && inputs.watchdog_update == 'true'" in maintenance
+    assert "group: hub-e2e-serialized" in maintenance
+    assert "watchdog_maintenance_ci_gate.sh" in maintenance
+    assert 'lease_acquire.sh' in maintenance and 'lease_release.sh' in maintenance
+    assert maintenance.index("watchdog_maintenance_ci_gate.sh") < maintenance.index("lease_acquire.sh")
+    assert "tests/e2e_test.py" not in maintenance
