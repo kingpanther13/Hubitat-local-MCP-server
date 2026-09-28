@@ -4686,17 +4686,19 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_backup: [
-            description: "Hub-database backup management plus source-code backup restore (issue #259 item #1): list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, and restore source-code backups. Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops). Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
-            tools: ["hub_list_backups", "hub_get_backup", "hub_restore_backup", "hub_delete_backup"],
+            description: "Hub-database backup management plus source-code backup restore: list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, restore source-code backups, and read the automatic-backup schedule. Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops). Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup are also in hub_read_apps_code; hub_get_backup_schedule is also in hub_read_diagnostics).",
+            tools: ["hub_list_backups", "hub_get_backup", "hub_get_backup_schedule", "hub_restore_backup", "hub_delete_backup"],
             summaries: [
                 hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all. Args: scope?, cursor?",
                 hub_get_backup: "Get source from a code backup. Args: backupKey",
+                hub_get_backup_schedule: "Read the automatic-backup schedule: localBackupFrequency/cloudBackupFrequency (days, 0=off) + daily hour/minute. Cloud password never returned",
                 hub_restore_backup: "Restore a code/rule backup (scope=source + backupKey) OR the whole hub DB (scope=hub_local + fileName | hub_cloud + cloudBackupPassword | hub_uploaded + backupUrl -- REBOOTS). Args: scope?, backupKey?/fileName?/cloudBackupPassword?/backupUrl?, confirm",
                 hub_delete_backup: "Delete a whole-hub DB backup. Args: location (local|cloud), fileName?/path?, confirm"
             ],
             searchHints: [
                 hub_list_backups: "list show backups code source whole hub database local cloud restore points",
                 hub_get_backup: "view read saved previous version revision source",
+                hub_get_backup_schedule: "backup schedule frequency automatic auto local cloud how often daily time hour minute when backups run read view current",
                 hub_restore_backup: "restore revert roll back code rule whole hub database disaster recovery migration upload reboot",
                 hub_delete_backup: "delete remove prune hub database backup local cloud free space recovery point"
             ]
@@ -4807,8 +4809,8 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_diagnostics: [
-            description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
+            description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, saved state snapshots, and the automatic-backup schedule. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots, set backup schedule) live in hub_manage_logs / hub_manage_diagnostics / hub_create_backup.",
+            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states", "hub_get_backup_schedule"],
             summaries: [
                 hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
@@ -4817,7 +4819,8 @@ def getGatewayConfig() {
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
                 hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee)",
-                hub_list_captured_states: "List saved device state snapshots"
+                hub_list_captured_states: "List saved device state snapshots",
+                hub_get_backup_schedule: "Read the automatic-backup schedule: localBackupFrequency/cloudBackupFrequency (days, 0=off) + daily hour/minute. Cloud password never returned"
             ],
             searchHints: [
                 hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
@@ -4827,7 +4830,8 @@ def getGatewayConfig() {
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate",
                 hub_get_radio_details: "zwave zigbee matter thread fabric mesh network frequency firmware channel pan coordinator radio commissioned node",
-                hub_list_captured_states: "saved snapshot bookmark remember device values"
+                hub_list_captured_states: "saved snapshot bookmark remember device values",
+                hub_get_backup_schedule: "backup schedule frequency automatic auto local cloud how often daily time hour minute when backups run read view current"
             ]
         ],
         hub_read_rules: [
@@ -6063,6 +6067,7 @@ def executeTool(toolName, args) {
         // Item Backup Tools
         case "hub_list_backups": return toolListItemBackups(args)
         case "hub_get_backup": return toolGetItemBackup(args)
+        case "hub_get_backup_schedule": return toolGetBackupSchedule(args)
         case "hub_restore_backup": return toolRestoreItemBackup(args)
 
         // File Manager Tools
@@ -10572,6 +10577,10 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 ### hub_create_backup
 
 Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-23, minute 0-59, localBackupFrequency, cloudBackupFrequency (days; enum 0,1,2,3,5,7,14,21,28; 0=off)}. `scheduleOnly=true` (with a schedule) sets the schedule only and creates no backup. Omitted schedule fields are read-merged (keep their current value). If cloud backup is or stays enabled you MUST pass `cloudBackupPassword` (the hub does not expose it for read-back), or pass `cloudBackupFrequency=0` to disable cloud backup -- otherwise the call is refused (a wholesale write would blank the password).
+
+### hub_get_backup_schedule
+
+Read the current automatic-backup schedule without a write (the read-only counterpart to hub_create_backup's `schedule`). Returns `localBackupFrequency` and `cloudBackupFrequency` (both in DAYS, 0=off), the daily `hour`/`minute`, `localBackupEnabled`/`cloudBackupEnabled` convenience flags, and the `hasCloudBackupEntitlements`/`hasCloudRestoreEntitlements` cloud flags. The cloud-backup password is **never** returned (it is a secret, and the hub reads it back masked). Present in both hub_read_diagnostics (pure-read) and hub_manage_backup. To change any of these fields, call hub_create_backup with a `schedule` object.
 
 ### hub_list_backups
 

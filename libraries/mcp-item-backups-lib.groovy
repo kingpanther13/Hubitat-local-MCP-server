@@ -747,6 +747,42 @@ private _setHubBackupSchedule(Map schedule) {
     }
 }
 
+// Read the current automatic-backup schedule from GET /hub2/backup/json -- the same source
+// _setHubBackupSchedule read-merges before a write. Field names differ from the write endpoint
+// (read = databaseCleanupTimeHour/databaseCleanupJobMinute; write = hour/minute). The cloud-backup
+// password (backupPassword) is deliberately NEVER returned -- it is a secret and the hub reads it
+// back masked anyway.
+def toolGetBackupSchedule(args = null) {
+    def cur
+    try {
+        def raw = hubInternalGet("/hub2/backup/json")
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (!(parsed instanceof Map)) {
+            return [success: false, error: "The hub did not return a readable backup schedule (/hub2/backup/json).",
+                    note: "Retry; if it persists the hub may be busy. See hub_get_tool_guide(section='backup')."]
+        }
+        cur = parsed
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "could not read current backup schedule", e)
+        return [success: false, error: "Could not read the backup schedule (/hub2/backup/json): ${e.message}",
+                note: "Retry; if it persists the hub may be busy. See hub_get_tool_guide(section='backup')."]
+    }
+    Integer localFreq = (cur.localBackupFrequency != null) ? (cur.localBackupFrequency as Integer) : null
+    Integer cloudFreq = (cur.cloudBackupFrequency != null) ? (cur.cloudBackupFrequency as Integer) : null
+    return [
+        success: true,
+        localBackupFrequency: localFreq,
+        cloudBackupFrequency: cloudFreq,
+        hour: (cur.databaseCleanupTimeHour != null) ? (cur.databaseCleanupTimeHour as Integer) : null,
+        minute: (cur.databaseCleanupJobMinute != null) ? (cur.databaseCleanupJobMinute as Integer) : null,
+        localBackupEnabled: (localFreq ?: 0) > 0,
+        cloudBackupEnabled: (cloudFreq ?: 0) > 0,
+        hasCloudBackupEntitlements: cur.hasCloudBackupEntitlements,
+        hasCloudRestoreEntitlements: cur.hasCloudRestoreEntitlements,
+        note: "Frequencies are in DAYS (0=off). hour/minute is the daily backup time. The cloud-backup password is never returned. Change the schedule via hub_create_backup(schedule=...)."
+    ]
+}
+
 // Fetch + normalize the hub-DB backup lists (GET /hub2/localBackups, /hub2/cloudBackups). Used by
 // toolListItemBackups when scope includes hub-DB. Returns [local: [...], cloud: [...], errors: [...]].
 private _listHubBackups(boolean wantLocal, boolean wantCloud) {
@@ -950,7 +986,7 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
         [
             name: "hub_create_backup",
-            description: """Create a full hub-database backup (whole-hub .lzf). REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.[[/FLAT_TRIM]]
+            description: """Create a full hub-database backup. REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Whole-hub .lzf. Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.[[/FLAT_TRIM]]
 A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 """,
             inputSchema: [
@@ -971,8 +1007,16 @@ A transport drop can lose the response while the hub still commits this write; v
             ]
         ],
         [
+            name: "hub_get_backup_schedule",
+            description: """Read the automatic-backup schedule. Read-only.[[FLAT_TRIM]] Returns localBackupFrequency/cloudBackupFrequency (DAYS, 0=off), hour/minute, localBackupEnabled/cloudBackupEnabled, and cloud entitlement flags. The cloud-backup password is never returned. Change the schedule with hub_create_backup(schedule=...). See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ]
+        ],
+        [
             name: "hub_delete_backup",
-            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE — removes a recovery point; tell the user first). Write master + confirm + a recent backup.""",
+            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE; tell the user first). Write master + confirm + a recent backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1036,7 +1080,9 @@ def _readOnlyToolNames_partItemBackups() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Apps/drivers (read)
-        "hub_list_backups", "hub_get_backup"
+        "hub_list_backups", "hub_get_backup",
+        // Hub-DB schedule (read)
+        "hub_get_backup_schedule"
     ]
 }
 
@@ -1064,6 +1110,7 @@ def _toolDisplayMeta_partItemBackups() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         hub_create_backup: [title: "Create Hub Backup", summary: "Create a whole-hub database backup (and optionally set the auto-backup schedule)."],
+        hub_get_backup_schedule: [title: "Get Backup Schedule", summary: "Read the automatic-backup schedule (frequencies + daily time); the cloud password is never returned."],
         hub_delete_backup: [title: "Delete Hub Backup", summary: "Delete a whole-hub database backup (local or cloud)."],
         hub_list_backups: [title: "List Backups", summary: "List source-code backups and (by scope) whole-hub database backups."],
         hub_get_backup: [title: "Get Code Backup", summary: "Read source code from a backup."],

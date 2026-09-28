@@ -12406,6 +12406,27 @@ class TestRunner:
         assert total <= 20, f"shared source-backup retention contract failed: {src}"
 
     @test("system_tools")
+    def test_get_backup_schedule_read(self) -> None:
+        # hub_get_backup_schedule is a pure READ of the automatic-backup schedule (issue #431 item #1):
+        # unlike the destructive schedule WRITE (folded into hub_create_backup), reading it live is safe
+        # and touches nothing. Route through the pure-read gateway. Assert the schedule fields come back
+        # AND that the cloud-backup password is NEVER present (the reporter's explicit exclusion).
+        sched = self.client.call_tool(
+            "hub_read_diagnostics", {"tool": "hub_get_backup_schedule", "args": {}}
+        )
+        assert isinstance(sched, dict), f"hub_get_backup_schedule returned {type(sched).__name__}"
+        assert sched.get("success") is True, f"hub_get_backup_schedule not successful: {sched}"
+        for key in ("localBackupFrequency", "cloudBackupFrequency", "hour", "minute"):
+            assert key in sched, f"hub_get_backup_schedule missing {key!r}: {sorted(sched.keys())}"
+        assert isinstance(sched.get("localBackupEnabled"), bool), \
+            f"localBackupEnabled must be a bool: {sched}"
+        assert isinstance(sched.get("cloudBackupEnabled"), bool), \
+            f"cloudBackupEnabled must be a bool: {sched}"
+        # The password must NEVER be returned, under any spelling.
+        leaked = [k for k in sched if "password" in k.lower()]
+        assert not leaked, f"hub_get_backup_schedule leaked a password field: {leaked}"
+
+    @test("system_tools")
     def test_backup_gate_list_fallback(self) -> None:
         # Issue #361: the destructive-confirm gate must accept a real backup from the hub's OWN
         # local backup list when this app's private stamp is stale (a scheduled/UI backup is a

@@ -164,6 +164,75 @@ class ToolBackupSpec extends ToolSpecBase {
         posted.path == '/hub2/updateBackupSchedule'
     }
 
+    // ---------- hub_get_backup_schedule (read-only) ----------
+
+    def "hub_get_backup_schedule reads the current schedule and NEVER returns the password"() {
+        when:
+        def r = script.toolGetBackupSchedule([:])
+
+        then: 'the schedule fields come straight off /hub2/backup/json (with the read->write name skew resolved)'
+        r.success == true
+        r.localBackupFrequency == 1
+        r.cloudBackupFrequency == 0
+        r.hour == 3                 // from databaseCleanupTimeHour
+        r.minute == 0              // from databaseCleanupJobMinute
+        r.localBackupEnabled == true
+        r.cloudBackupEnabled == false
+
+        and: 'no password field leaks under any spelling'
+        !r.keySet().any { it.toLowerCase().contains('password') }
+    }
+
+    def "hub_get_backup_schedule reports cloudBackupEnabled + entitlements when cloud is on"() {
+        given: 'a schedule with cloud backup enabled and entitlements present'
+        hubGet.register('/hub2/backup/json') { params ->
+            '{"localBackupFrequency":7,"cloudBackupFrequency":14,"databaseCleanupTimeHour":2,"databaseCleanupJobMinute":30,"backupPassword":"s3cret","hasCloudBackupEntitlements":true,"hasCloudRestoreEntitlements":true}'
+        }
+
+        when:
+        def r = script.toolGetBackupSchedule([:])
+
+        then:
+        r.success == true
+        r.cloudBackupFrequency == 14
+        r.cloudBackupEnabled == true
+        r.hour == 2
+        r.minute == 30
+        r.hasCloudBackupEntitlements == true
+        r.hasCloudRestoreEntitlements == true
+
+        and: 'the cloud-backup password is still never surfaced even when the hub returns one'
+        !r.keySet().any { it.toLowerCase().contains('password') }
+        !r.values().contains('s3cret')
+    }
+
+    def "hub_get_backup_schedule returns a structured error (no throw) when the hub read fails"() {
+        given:
+        hubGet.register('/hub2/backup/json') { params -> throw new RuntimeException('boom') }
+
+        when:
+        def r = script.toolGetBackupSchedule([:])
+
+        then:
+        r.success == false
+        r.error?.toLowerCase()?.contains('backup schedule')
+        r.note != null
+    }
+
+    def "hub_get_backup_schedule reaches the hub through the MCP dispatch surface"() {
+        when:
+        def response = mcpDriver.callTool('hub_get_backup_schedule', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        response.result?.isError != true
+        inner.success == true
+        inner.localBackupFrequency == 1
+        inner.hour == 3
+        !inner.keySet().any { it.toLowerCase().contains('password') }
+    }
+
     def "create without confirm throws"() {
         when:
         script.toolCreateHubBackup([:])

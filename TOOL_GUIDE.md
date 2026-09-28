@@ -625,6 +625,10 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 
 Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-23, minute 0-59, localBackupFrequency, cloudBackupFrequency (days; enum 0,1,2,3,5,7,14,21,28; 0=off)}. `scheduleOnly=true` (with a schedule) sets the schedule only and creates no backup. Omitted schedule fields are read-merged (keep their current value). If cloud backup is or stays enabled you MUST pass `cloudBackupPassword` (the hub does not expose it for read-back), or pass `cloudBackupFrequency=0` to disable cloud backup -- otherwise the call is refused (a wholesale write would blank the password).
 
+### hub_get_backup_schedule
+
+Read the current automatic-backup schedule without a write (the read-only counterpart to hub_create_backup's `schedule`). Returns `localBackupFrequency` and `cloudBackupFrequency` (both in DAYS, 0=off), the daily `hour`/`minute`, `localBackupEnabled`/`cloudBackupEnabled` convenience flags, and the `hasCloudBackupEntitlements`/`hasCloudRestoreEntitlements` cloud flags. The cloud-backup password is **never** returned (it is a secret, and the hub reads it back masked). Present in both hub_read_diagnostics (pure-read) and hub_manage_backup. To change any of these fields, call hub_create_backup with a `schedule` object.
+
 ### hub_list_backups
 
 `scope=source` (default) lists auto-created code backups, each with a `backupKey`. `scope=hub_local` / `hub_cloud` / `hub` / `all` return whole-hub DB backups under `hubLocalBackups` / `hubCloudBackups`. A local backup's `name` and a cloud backup's `path` feed hub_restore_backup and hub_delete_backup.
