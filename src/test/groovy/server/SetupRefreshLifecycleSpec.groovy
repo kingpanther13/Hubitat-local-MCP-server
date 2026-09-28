@@ -7,14 +7,22 @@ import support.ToolSpecBase
 
 class SetupRefreshLifecycleSpec extends ToolSpecBase {
     @Shared private TestLocation sharedLocation = new TestLocation()
+    @Shared private boolean failSubscribe
+    @Shared private List subscriptionAttempts = []
     private long clock
     private int inventoryReads
 
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
+        appExecutor.subscribe(_, _ as String, _ as String) >> { args ->
+            subscriptionAttempts << args[1]
+            if (failSubscribe) throw new RuntimeException('subscribe unavailable')
+        }
     }
 
     def setup() {
+        failSubscribe = false
+        subscriptionAttempts.clear()
         clock = 1234567890000L
         NOW_OVERRIDE.set({ -> clock })
         setFresh(false)
@@ -22,7 +30,7 @@ class SetupRefreshLifecycleSpec extends ToolSpecBase {
         try {
             def field = script.getClass().getDeclaredField('SETUP_RETRY_AT')
             field.accessible = true
-            field.setLong(null, 0L)
+            field.set(null, 0L)
         } catch (NoSuchFieldException ignored) { }
         UNSUBSCRIBE_CALL_COUNT.set(0)
         stateMap.accessToken = 'fixture'
@@ -35,13 +43,13 @@ class SetupRefreshLifecycleSpec extends ToolSpecBase {
     private void setFresh(boolean value) {
         def field = script.getClass().getDeclaredField('SETUP_CURRENT')
         field.accessible = true
-        field.setBoolean(null, value)
+        field.set(null, value)
     }
 
     private boolean fresh() {
         def field = script.getClass().getDeclaredField('SETUP_CURRENT')
         field.accessible = true
-        field.getBoolean(null)
+        field.get(null)
     }
 
     def "real initialization records completion on the first request and does not repeat"() {
@@ -95,6 +103,29 @@ class SetupRefreshLifecycleSpec extends ToolSpecBase {
         fresh()
         stateMap.setupVersion == script.currentVersion()
         UNSUBSCRIBE_CALL_COUNT.get() == 2
+    }
+
+    def "failed subscriptions do not complete setup and are retried after backoff"() {
+        given:
+        failSubscribe = true
+        script.metaClass.getAllGlobalVars = { -> [sample: [name: 'sample']] }
+
+        when:
+        script._refreshSetupAfterUpdate()
+
+        then:
+        !fresh()
+        stateMap.setupVersion != script.currentVersion()
+
+        when:
+        failSubscribe = false
+        clock += 60001L
+        script._refreshSetupAfterUpdate()
+
+        then:
+        fresh()
+        stateMap.setupVersion == script.currentVersion()
+        subscriptionAttempts == ['variable:sample', 'variable:sample']
     }
 
     def "a lifecycle initialization failure invalidates an already-current marker"() {

@@ -32,6 +32,25 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
 
     // -------- toolGetHubInfo --------
 
+    def "getHubInfo exposes whether setup completed for the running version"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        stateMap.setupVersion = completed ? script.currentVersion() : null
+        def field = script.getClass().getDeclaredField('SETUP_CURRENT')
+        field.accessible = true
+        field.set(null, completed)
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.setupCurrent == completed
+        result.setupVersion == (completed ? script.currentVersion() : null)
+
+        where:
+        completed << [true, false]
+    }
+
     def "getHubInfo includes customRuleEngineEnabled=true when enableCustomRuleEngine is true"() {
         given:
         settingsMap.enableCustomRuleEngine = true
