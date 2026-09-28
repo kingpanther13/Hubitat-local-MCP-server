@@ -57,7 +57,16 @@ def served_sections(server_src: str, lib_src: str) -> list:
         raise ValueError("getToolGuideSections() return literal not found")
     body = block.group(1)
     sections = []
+    consumed = 0
+
+    def require_separator(gap):
+        remainder = re.sub(r"//[^\n]*|/\*.*?\*/", "", gap, flags=re.DOTALL).strip(" \t\r\n,")
+        if remainder:
+            raise ValueError(f"unsupported or unparsed guide section near: {remainder[:100]!r}")
+
     for m in re.finditer(r"^ {8}([a-z_][a-z0-9_]*):\s*(?:'''(.*?)'''|(_\w+)\(\))", body, re.MULTILINE | re.DOTALL):
+        require_separator(body[consumed:m.start()])
+        consumed = m.end()
         key, literal, method = m.group(1), m.group(2), m.group(3)
         if method:
             mb = re.search(r"(?:String|def)\s+" + re.escape(method)
@@ -66,6 +75,9 @@ def served_sections(server_src: str, lib_src: str) -> list:
                 raise ValueError(f"section '{key}' delegates to {method}(), whose ''' literal was not found")
             literal = mb.group(1)
         sections.append((key, groovy_unescape(literal)))
+    require_separator(body[consumed:])
+    if not sections:
+        raise ValueError("no supported guide sections found")
     return sections
 
 

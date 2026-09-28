@@ -1894,7 +1894,7 @@ def _load_tool_guide_builder():
 
 def check_tool_guide_generated() -> list[dict]:
     """TOOL_GUIDE.md must be exactly what tools/build-tool-guide.py renders from
-    getToolGuideSections(), so the served guide and the repo copy cannot drift."""
+    getToolGuideSections(); required API guidance must also remain in the served source."""
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
     if not server.exists():
         return []
@@ -1905,18 +1905,40 @@ def check_tool_guide_generated() -> list[dict]:
     finding = {"file": "TOOL_GUIDE.md", "line": 1, "severity": "error",
                "rule": "tool-guide-not-generated", "source": ""}
     try:
-        expected = builder.render(*builder.read_sources())
+        sources = builder.read_sources()
+        expected = builder.render(*sources)
+        sections = dict(builder.served_sections(*sources))
     except ValueError as exc:
         return [dict(finding, file="hubitat-mcp-server.groovy",
                      message=f"tools/build-tool-guide.py cannot render getToolGuideSections(): {exc}")]
+    # Parity alone cannot catch guidance removed from both source and regenerated output.
+    anchors = {
+        "best_practice_reference": ["Acknowledgment key", "native Rule Machine"],
+        "set_rule_reference": [
+            "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
+            "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
+            "expressionNotLive", "subscriptionsNotLive",
+        ],
+    }
+    findings = []
+    for section, required in anchors.items():
+        if section not in sections:
+            continue
+        for anchor in required:
+            if anchor not in sections[section]:
+                findings.append(dict(finding, file="hubitat-mcp-server.groovy",
+                    rule="tool-guide-anchor-missing-source",
+                    message=f"Required API guidance '{anchor}' is missing from served section '{section}'. "
+                            "Restore it in the served source before regenerating TOOL_GUIDE.md."))
     tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
     actual = tool_guide.read_text(encoding="utf-8", errors="replace") if tool_guide.exists() else ""
     if actual.replace("\r\n", "\n") == expected.replace("\r\n", "\n"):
-        return []
-    return [dict(finding, message=(
+        return findings
+    findings.append(dict(finding, message=(
         "TOOL_GUIDE.md does not match what tools/build-tool-guide.py renders. Do not edit it by "
         "hand: edit getToolGuideSections() in hubitat-mcp-server.groovy (or the library method a "
-        "section delegates to), then run `python tools/build-tool-guide.py`."))]
+        "section delegates to), then run `python tools/build-tool-guide.py`.")))
+    return findings
 
 
 def check_discrete_event_caps_doc_parity(
