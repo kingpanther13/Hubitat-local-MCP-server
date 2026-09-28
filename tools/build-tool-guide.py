@@ -24,6 +24,8 @@ HEADER = (
 
 _ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "s": " ",
             "\\": "\\", "'": "'", '"': '"', "$": "$"}
+# Consume escape pairs before looking for a closing delimiter (including escaped backslashes).
+_TRIPLE_SINGLE_LITERAL = r"'''((?:\\.|(?!''')[^\\])*)'''"
 
 
 def groovy_unescape(raw: str) -> str:
@@ -64,13 +66,15 @@ def served_sections(server_src: str, lib_src: str) -> list:
         if remainder:
             raise ValueError(f"unsupported or unparsed guide section near: {remainder[:100]!r}")
 
-    for m in re.finditer(r"^ {8}([a-z_][a-z0-9_]*):\s*(?:'''(.*?)'''|(_\w+)\(\))", body, re.MULTILINE | re.DOTALL):
+    for m in re.finditer(r"^ {8}([a-z_][a-z0-9_]*):\s*(?:" + _TRIPLE_SINGLE_LITERAL + r"|(_\w+)\(\))",
+                         body, re.MULTILINE | re.DOTALL):
         require_separator(body[consumed:m.start()])
         consumed = m.end()
         key, literal, method = m.group(1), m.group(2), m.group(3)
         if method:
             mb = re.search(r"(?:String|def)\s+" + re.escape(method)
-                           + r"\(\)\s*\{(?:\s|//[^\n]*\n|/\*.*?\*/)*return\s+'''(.*?)'''", lib_src, re.DOTALL)
+                           + r"\(\)\s*\{(?:\s|//[^\n]*\n|/\*.*?\*/)*return\s+" + _TRIPLE_SINGLE_LITERAL,
+                           lib_src, re.DOTALL)
             if not mb:
                 raise ValueError(f"section '{key}' delegates to {method}(), whose ''' literal was not found")
             literal = mb.group(1)
