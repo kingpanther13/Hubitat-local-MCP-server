@@ -59,9 +59,11 @@ class SetupRefreshSpec extends ToolSpecBase {
         marker << ['0.0.1', null]
     }
 
-    def "a failed refresh is not recorded, so the next request retries it"() {
+    def "a failed refresh is not recorded and retries after backoff"() {
         given:
         stateMap.setupVersion = '0.0.1'
+        long clock = 1234567890000L
+        NOW_OVERRIDE.set({ -> clock })
         def attempts = 0
         script.metaClass.initialize = { ->
             attempts++
@@ -78,6 +80,13 @@ class SetupRefreshSpec extends ToolSpecBase {
         stateMap.setupVersion == '0.0.1'
 
         when:
+        script._refreshSetupAfterUpdate()
+
+        then:
+        attempts == 1
+
+        when:
+        clock += 60001L
         script._refreshSetupAfterUpdate()
 
         then:

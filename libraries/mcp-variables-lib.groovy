@@ -1,96 +1,85 @@
 library(name: "McpVariablesLib", namespace: "mcp", author: "kingpanther13", description: "Hub variable + connector tool implementations (list/get/set/create/delete variables, connectors, change history) plus the variable event-subscription handlers for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
-private void _refreshHubVarInUseRegistrations() {
+private boolean _refreshHubVarInUseRegistrations() {
     Set<String> currentVars = [] as Set
     Set<String> hubVarNames
     try {
         hubVarNames = (getAllGlobalVars()?.keySet() ?: []) as Set<String>
     } catch (Exception e) {
-        // Surface as ERROR — when this fails the in-use safety net is stale,
-        // and hub_delete_variable's pre-deletion warning won't fire. Users need
-        // to know the safety registrations weren't refreshed.
-        mcpLog("error", "hub-vars",
-            "_refreshHubVarInUseRegistrations: getAllGlobalVars failed (${e.class.simpleName}: ${e.message}) -- " +
-            "in-use safety registrations are STALE. hub_delete_variable's hub-side warning may not fire until " +
-            "this transient failure resolves and updated() re-runs the refresh.")
-        return
+        mcpLogError("hub-vars", "Hub variable inventory failed -- in-use safety registrations remain stale until setup retries", e)
+        return false
     }
-    if (!hubVarNames) {
-        // No hub vars at all — clear any stale registrations and bail.
-        def previous = (atomicState.inUseHubVars ?: []) as List<String>
-        previous.each { name ->
-            try { removeInUseGlobalVar(name) } catch (Exception e) { /* idempotent */ }
-        }
-        atomicState.inUseHubVars = []
-        return
-    }
-    try {
-        getChildApps()?.each { child ->
-            def ruleData = null
-            try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
-            if (ruleData) {
-                def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                hubVarNames.each { varName ->
-                    // Check for the JSON-quoted form so `temp` doesn't match
-                    // `temperature` / `attempt`. Names live as JSON values
-                    // (and sometimes keys) in the serialized blob, so the
-                    // `"<name>"` form is a reliable word-boundary proxy.
-                    def needle = "\"${varName}\""
-                    if (serialized?.contains(needle)) {
-                        currentVars << varName
+    if (hubVarNames) {
+        try {
+            getChildApps()?.each { child ->
+                def ruleData = null
+                try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
+                if (ruleData) {
+                    def serialized = groovy.json.JsonOutput.toJson(ruleData)
+                    hubVarNames.each { varName ->
+                        // Match a whole JSON value so temp cannot match temperature.
+                        def needle = "\"${varName}\""
+                        if (serialized?.contains(needle)) currentVars << varName
                     }
                 }
             }
+        } catch (Exception e) {
+            mcpLogError("hub-vars", "Child rule scan failed -- in-use safety registrations remain stale until setup retries", e)
+            return false
         }
-    } catch (Exception e) {
-        logDebug("_refreshHubVarInUseRegistrations: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
-        return
     }
 
     def previous = ((atomicState.inUseHubVars ?: []) as List<String>) as Set<String>
+    def registered = previous + ([] as Set)
     def toAdd = currentVars - previous
     def toRemove = previous - currentVars
-
+    boolean complete = true
     toAdd.each { name ->
-        // ERROR level: failure here means Hubitat won't warn the user before
-        // they delete a variable a rule depends on. Warn-level would be
-        // dropped at the default mcpLogLevel="error" config.
-        try { addInUseGlobalVar(name) }
-        catch (Exception e) { mcpLogError("hub-vars", "addInUseGlobalVar('${name}') failed -- in-use safety warning will not surface for this var", e) }
+        try {
+            addInUseGlobalVar(name)
+            registered << name
+        } catch (Exception e) {
+            complete = false
+            mcpLogError("hub-vars", "addInUseGlobalVar('${name}') failed -- in-use safety warning will not surface for this var", e)
+        }
     }
     toRemove.each { name ->
-        try { removeInUseGlobalVar(name) }
-        catch (Exception e) { mcpLogError("hub-vars", "removeInUseGlobalVar('${name}') failed -- stale in-use registration will linger", e) }
+        try {
+            removeInUseGlobalVar(name)
+            registered.remove(name)
+        } catch (Exception e) {
+            complete = false
+            mcpLogError("hub-vars", "removeInUseGlobalVar('${name}') failed -- stale in-use registration will linger", e)
+        }
     }
-
-    atomicState.inUseHubVars = (currentVars as List).sort()
+    // Remember completed operations; failed additions/removals must remain eligible on retry.
+    atomicState.inUseHubVars = (registered as List).sort()
     if (toAdd || toRemove) {
-        mcpLog("info", "hub-vars", "in-use registrations refreshed: added=${toAdd.sort()}, removed=${toRemove.sort()}, total=${currentVars.size()}")
+        mcpLog("info", "hub-vars", "in-use registrations refreshed: complete=${complete}, total=${registered.size()}")
     }
+    return complete
 }
 
-private void _subscribeToAllHubVariables() {
+private boolean _subscribeToAllHubVariables() {
     def vars
     try { vars = getAllGlobalVars() }
     catch (Exception e) {
-        logDebug("_subscribeToAllHubVariables: getAllGlobalVars threw ${e.class.simpleName}: ${e.message}")
-        return
+        mcpLogError("hub-vars", "Hub variable inventory failed -- subscriptions remain incomplete until setup retries", e)
+        return false
     }
-    if (location == null) return  // unit-test environment safety
+    if (location == null) return false
+    boolean complete = true
     vars?.keySet()?.each { varName ->
         try {
             subscribe(location, "variable:${varName}", "handleHubVariableEvent")
         } catch (Throwable e) {
-            // Don't let one bad subscribe break the whole loop. The hub
-            // sometimes rejects names with characters that getAllGlobalVars
-            // returned but subscribe() refuses; log and continue. Catch
-            // Throwable because hubitat_ci's validator throws AssertionError.
-            // ERROR level: a persistent failure here means hub_list_variable_changes
-            // silently misses changes for this variable; warn-level would be
-            // dropped at default mcpLogLevel="error".
+            // Continue other subscriptions. The retry backoff also bounds persistent bad-name failures.
+            // Catch Throwable because hubitat_ci's subscription validator throws AssertionError.
+            complete = false
             mcpLog("error", "hub-vars", "subscribe to variable:${varName} failed: ${e.message} -- hub_list_variable_changes will not capture changes for this var")
         }
     }
+    return complete
 }
 
 def renameVariable(String oldName, String newName) {
@@ -776,7 +765,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
 
     // Verify the variable landed. The wizard commits on the varValue write (DateTime: on the
     // date/time POST or its Done click); the var becomes visible to getGlobalVar
-    // shortly after. Retry with backoff up to ~2s before giving up.
+    // shortly after. Check immediately, then retry with bounded backoff.
     def created = null
     // A Done click commits asynchronously, so a DateTime create gets a longer window (live: ~3s).
     int verifyAttempts = (dtValue != null) ? 16 : 8
@@ -785,9 +774,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
             logDebug("hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
         if (created != null) break
-        // Check-FIRST: the wizard commit is usually visible immediately, so the old
-        // sleep-then-check paid 500ms on every call; the backoff only runs when needed
-        // (slightly larger worst-case window, 7x300ms vs 4x500ms; zero happy-path sleep).
+        // Only wait after a missing read; DateTime commits receive a longer window.
         if (attempt < verifyAttempts - 1) {
             try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         }
@@ -1357,7 +1344,7 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     name: [type: "string", description: "New variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    value: [description: "Initial value, must match the type; for DateTime e.g. 2026-02-04T14:00.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
+                    value: [description: "Initial value, must match the type. DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
                     mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"],
                     mesh_source_name: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
                     variables: [type: "array", description: "Bulk form: several variables in one call.", items: [

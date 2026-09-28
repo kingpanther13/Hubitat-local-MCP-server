@@ -58,7 +58,7 @@ The parent app `#include`s Groovy **libraries**, which are all shipped together 
 
 In the Hubitat web UI go to **Bundles** > **Import**, and import the bundle from this repo:
    ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/bundles/mcp-libraries.zip
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/mcp-libraries.zip
    ```
    If your hub's Bundle Manager only accepts a file upload, download that `.zip` first and upload it. Importing the bundle installs **every** library the app needs in one step (they appear under **Libraries Code**) — there's no need to add libraries individually. (HPM / Option A does this automatically.)
 

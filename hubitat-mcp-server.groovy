@@ -25,6 +25,7 @@
 // Saving new code recompiles the class and resets this, so only the first request after a
 // load reads the setup marker; initialize() records it, and a mismatch re-runs initialize().
 @groovy.transform.Field static volatile boolean SETUP_CURRENT = false
+@groovy.transform.Field static volatile long SETUP_RETRY_AT = 0L
 @groovy.transform.Field static final Object SETUP_REFRESH_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
 // Ordinary-write leases, keyed by leaseId. The global write cap is overload
@@ -842,6 +843,11 @@ private boolean _requireUnprotectedAppDeletion(Integer appId, boolean allowMissi
 
 
 def initialize() {
+    // Invalidate completion before any lifecycle work, including a settings-triggered refresh.
+    SETUP_CURRENT = false
+    state.remove("setupVersion")
+    SETUP_RETRY_AT = now() + 60000L
+    boolean setupComplete = true
     _protectedAppIds()
     if (!state.accessToken) {
         createAccessToken()
@@ -856,7 +862,7 @@ def initialize() {
     // (mirrors the unsubscribe() symmetry below). Must precede schedule() and
     // checkForUpdate() so the immediate run still fires.
     try { unschedule() }
-    catch (Exception e) { mcpLog("warn", "server", "unschedule() before re-schedule failed: ${e.message} -- duplicate schedules may persist") }
+    catch (Exception e) { setupComplete = false; mcpLog("warn", "server", "unschedule() before re-schedule failed: ${e.message} -- duplicate schedules may persist") }
     _mrtrEnsureCleanupScheduled(true)
     schedule("0 0 3 ? * *", "checkForUpdate")
     // Only egress to GitHub immediately on first install. state.updateCheck is
@@ -872,29 +878,35 @@ def initialize() {
     // stacks another duplicate subscription per variable, firing
     // handleHubVariableEvent N times per change and inflating variableHistory.
     try { unsubscribe() }
-    catch (Exception e) { mcpLog("warn", "hub-vars", "unsubscribe() before re-subscribe failed: ${e.message} -- duplicate subscriptions may persist") }
-    _subscribeToAllHubVariables()
+    catch (Exception e) { setupComplete = false; mcpLog("warn", "hub-vars", "unsubscribe() before re-subscribe failed: ${e.message} -- duplicate subscriptions may persist") }
+    if (!_subscribeToAllHubVariables()) setupComplete = false
 
     // Issue #96 gap 1: register addInUseGlobalVar for every hub variable
     // referenced by any child rule. Hubitat then warns users before they
     // delete/rename a variable that would break a rule. Diff against the
     // previously-tracked set so we removeInUseGlobalVar for vars no
     // longer referenced (rule edited away from the var, rule deleted).
-    _refreshHubVarInUseRegistrations()
+    if (!_refreshHubVarInUseRegistrations()) setupComplete = false
     // Shed persisted legacy payloads even when no rule accesses captures again.
     if (state.containsKey("capturedDeviceStates") || atomicState.containsKey("capturedDeviceStates")) {
         countCapturedStates()
     }
-    state.setupVersion = currentVersion()
-    SETUP_CURRENT = true
+    if (setupComplete) {
+        state.setupVersion = currentVersion()
+        SETUP_RETRY_AT = 0L
+        SETUP_CURRENT = true
+    } else {
+        SETUP_RETRY_AT = now() + 60000L
+        _cleanupError("server", "Setup is incomplete; a request after 60 seconds will retry it.")
+    }
 }
 
 // Saving new code does not call updated(), so the subscriptions, schedules and in-use
 // registrations initialize() owns would otherwise wait for the next Done click.
 private void _refreshSetupAfterUpdate() {
-    if (SETUP_CURRENT) return
+    if (SETUP_CURRENT || now() < SETUP_RETRY_AT) return
     synchronized (SETUP_REFRESH_LOCK) {
-        if (SETUP_CURRENT) return
+        if (SETUP_CURRENT || now() < SETUP_RETRY_AT) return
         try {
             if (state.setupVersion == currentVersion()) {
                 SETUP_CURRENT = true
@@ -903,8 +915,8 @@ private void _refreshSetupAfterUpdate() {
             mcpLog("info", "server", "Refreshing setup for ${currentVersion()} (was ${state.setupVersion ?: 'unrecorded'})")
             initialize()
         } catch (Exception e) {
-            // Not marked current, so the next request retries; this one is still served.
-            _cleanupError("server", "Setup refresh after an update failed; retrying on the next request: ${_cleanupFailureDetail(e)}")
+            SETUP_RETRY_AT = now() + 60000L
+            _cleanupError("server", "Setup refresh after an update failed; a request after 60 seconds will retry it: ${_cleanupFailureDetail(e)}")
         }
     }
 }
@@ -7421,8 +7433,6 @@ private void _rmNoteHubBreadcrumbs(appId, resp) {
     }
 }
 
-// The pageBreadcrumbs value to submit from `page`: the hub's own trail when it last rendered that
-// page for this app, otherwise `fallback` (the tool's long-standing fixed value for that page).
 // Render a value plus a coarse runtime-type label for a validation error message. Uses
 // instanceof rather than getClass() (reflection is blocked in the Hubitat sandbox), so the
 // label is a small fixed vocabulary -- enough to tell a caller "you passed a number/boolean
@@ -7442,6 +7452,8 @@ private String _describeValueForError(v) {
     return "${rendered} (${typeLabel})"
 }
 
+// The pageBreadcrumbs value to submit from `page`: the hub's own trail when it last rendered that
+// page for this app, otherwise `fallback` (the tool's long-standing fixed value for that page).
 private String _rmPageBreadcrumbs(appId, String page, String fallback) {
     def rec = (appId == null) ? null : HUB_PAGE_BREADCRUMBS.get(appId.toString())
     if (rec instanceof Map && rec.page == page && (now() - (rec.at as Long)) < HUB_BREADCRUMB_TTL_MS) {
@@ -10969,7 +10981,7 @@ The report surfaces the compiled-state broken verdict, validationErrors, config-
 - `ruleBuilderJson`: the compiled-state verdict only.
 - `configPage`: the legacy RM HTML render scan only.
 
-`unreadable:true` (with `ok:false`) means neither source could be read. The rule may be missing or the read hit a transient failure, so this is not evidence of breakage. If only one source failed, `ok` reflects the source that was read and `checkErrors` names the failed leg (or a failed statusJson read for the live counts); re-run for a full verdict. `brokenMarkerCounts` counts each broken marker. Apps with no compiled verdict (vrb-classic, button-controller, basic-rule, classic-app) report `broken: null`. `hub_set_rule` attaches this health report as `health` on every response, success or error. `hub_set_visual_rule` attaches it on every response that resolves to a rule id; an early create failure has no id.
+`unreadable:true` (with `ok:false`) means neither source could be read. The rule may be missing or the read hit a transient failure, so this is not evidence of breakage. If only one source failed, `ok` reflects the source that was read and `checkErrors` names the failed leg (or a failed statusJson read for the live counts); re-run for a full verdict. `brokenMarkerCounts` counts each broken marker. Apps with no compiled verdict (vrb-classic, button-controller, basic-rule, classic-app) report `broken: null`. Mutation responses from `hub_set_rule` may include a structural verdict under `health`; schema probes and some refusal/error paths omit it. Embedded health has fewer fields than the standalone diagnostic. Call `hub_get_rule_health(appId)` for a fresh full report. `hub_set_visual_rule` attaches it on every response that resolves to a rule id; an early create failure has no id.
 
 ### hub_list_rule_local_variables
 
@@ -11354,6 +11366,8 @@ The returned `source` field says which one matched (the hub-variable namespace i
 ### hub_create_variable
 
 Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.
+
+For DateTime, pass hub-local `yyyy-MM-ddTHH:mm` or `{date,time}`. Supplied offsets are ignored; seconds and fractions are discarded. The stored value uses the hub timezone for that date.
 
 **Bulk form:**
 - `variables=[{name,type,value}, ...]` — mutually exclusive with the single form (i.e. mutually exclusive with `name`/`type`/`value`).

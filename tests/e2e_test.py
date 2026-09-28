@@ -2908,6 +2908,12 @@ class TestRunner:
         dev_id = self.get_test_switch_id()
         assert dev_id, "Failed to get the shared scaffold switch"
 
+        for supplied_id in (0, "0"):
+            refused = self._refusal_call("hub_list_device_events", {
+                "deviceId": supplied_id, "hoursBack": 1, "limit": 1})
+            assert refused.get("source") != "location" and "Device not found: 0" in str(refused.get("error", "")), \
+                f"supplied zero must be validated as a device ID: {supplied_id!r} -> {refused}"
+
         def _iso_epoch_ms(s: str) -> int:
             # Hub emits ISO-8601 with a numeric offset (e.g. +0000 / -0700), no colon.
             return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp() * 1000)
@@ -5708,6 +5714,36 @@ class TestRunner:
                                      f"isCondTrig.{time_tidx}", "hasAll"}
         assert not open_editor, \
             f"the refused modifyTrigger left trigger {time_tidx}'s editor open ({sorted(open_editor)}): {trig_page}"
+        # Mode reaches the no-state fallback after opening its editor. Verify that a normal
+        # refusal closes it and the next real edit can complete without a phantom trigger.
+        modes = self.client.call_tool("hub_list_modes").get("modes") or []
+        assert modes, "No mode available for trigger cleanup regression"
+        mode_name = modes[0]["name"]
+        self._set_rule(app_id, {"addTrigger": {"capability": "Mode", "state": mode_name}}, strict=True)
+        mode_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+        mode_index = next((str(k)[len("tCapab"):] for k, v in mode_settings.items()
+                           if str(k).startswith("tCapab") and str(k)[len("tCapab"):].isdigit()
+                           and v == "Mode"), None)
+        assert mode_index is not None, f"Mode trigger did not persist: {mode_settings}"
+        mode_refusal = self._refusal_call("hub_set_rule", {
+            "appId": app_id, "modifyTrigger": {"index": int(mode_index), "mods": {"state": mode_name}},
+            "confirm": True})
+        assert "does not expose a plain state field" in str(mode_refusal.get("error", "")), \
+            f"Mode trigger should refuse plain-state edit: {mode_refusal}"
+        assert mode_refusal.get("wizardStuck") is not True, f"Mode editor cleanup failed: {mode_refusal}"
+        mode_page = self.client.call_tool("hub_get_app_config", {
+            "appId": app_id, "pageName": "selectTriggers"})
+        mode_inputs = {str(i.get("name")) for section in ((mode_page.get("page") or {}).get("sections") or [])
+                       for i in (section.get("inputs") or [])}
+        assert not (mode_inputs & {f"tCapab{mode_index}", "hasAll"}), \
+            f"refused Mode edit left its editor open: {mode_page}"
+        self._set_rule(app_id, {"removeTrigger": {"index": int(mode_index)}}, strict=True)
+        after_cleanup = self._get_persisted_rule_config(app_id).get("settings") or {}
+        remaining = {str(k): v for k, v in after_cleanup.items()
+                     if str(k).startswith("tCapab") and str(k)[len("tCapab"):].isdigit() and v}
+        expected = {str(k): v for k, v in lifecycle_settings.items()
+                    if str(k).startswith("tCapab") and str(k)[len("tCapab"):].isdigit() and v}
+        assert remaining == expected, f"cleanup or the following edit altered other triggers: {remaining} != {expected}"
         self._last_write_health = None
         self._assert_rule_healthy(app_id)
 
@@ -12641,6 +12677,12 @@ class TestRunner:
         result = self.client.call_tool("hub_get_info")
         assert result is not None, "hub_get_info returned None"
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
+        assert result.get("setupCurrent") is True, f"server setup is incomplete: {result}"
+        assert result.get("setupVersion") == result.get("mcpServerVersion"), \
+            f"setup did not complete for the running server version: {result}"
+        repeated = self.client.call_tool("hub_get_info")
+        assert repeated.get("setupCurrent") is True and repeated.get("setupVersion") == result["setupVersion"], \
+            f"ordinary requests must retain completed setup: {repeated}"
         # Folded from test_hub_get_info_platform_update_and_safemode (the SAME default hub_get_info call):
         # #12/#13 -- platformUpdate + safeMode resolve from /hub2/hubData; the full alerts block stays out.
         assert "platformUpdate" in result, f"hub_get_info missing platformUpdate: {sorted(result)}"

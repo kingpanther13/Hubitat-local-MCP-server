@@ -3596,7 +3596,7 @@ def toolGetDeviceHistory(args) {
     // hub's own Logs page reads it from /logs/eventsJson (per the hub2 frontend),
     // so we hit the same endpoint and parse it. Each row is
     // {name, value, unit, descriptionText, isStateChange, type, date(ISO+offset)}.
-    if (!args.deviceId) {
+    if (args.deviceId == null) {
         def rawJson
         try {
             rawJson = hubInternalGet("/logs/eventsJson")

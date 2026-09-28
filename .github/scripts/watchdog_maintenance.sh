@@ -4,11 +4,24 @@ set -euo pipefail
 : "${WATCHDOG_URL:?}" "${MCP_URL:?}" "${GITHUB_SHA:?}" "${GITHUB_REPOSITORY:?}" "${RUNNER_TEMP:?}"
 source "$(dirname "$0")/mcp_watchdog_lib.sh"
 
-# An armed restore must finish before its watchdog can be replaced.
+# Disarm requests restore asynchronously, so armed:false alone does not mean idle.
 FLAG=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_read_file","arguments":{"fileName":"e2e-deadman-v2.json"}}}')
 printf '%s' "$FLAG" | jq -e '.success == true and .hasMore == false and (.content | fromjson | .armed == false)' >/dev/null || {
   echo '::error::Cannot verify a disarmed watchdog; no code changed.'; exit 1;
 }
+printf '%s' "$FLAG" | jq -e '.content | fromjson |
+  .intent != "disarm" or (
+    .runId != null and (.runId | tostring | length) > 0 and .restoreFor != null and
+    (.restoreFor | tostring) == (.runId | tostring) and
+    (.restoreResult == "restored" or .restoreResult == "failed")
+  )' >/dev/null || {
+  echo '::error::Cannot verify a terminal disarm restore; wait for recovery before watchdog maintenance. No code changed.'; exit 1;
+}
+if printf '%s' "$FLAG" | jq -e '.content | fromjson |
+    .restoreResult == "failed" and .restoreFor != null and
+    (.restoreFor | tostring) == (.runId | tostring)' >/dev/null; then
+  echo '::warning::Previous restore failed; proceeding with explicitly requested watchdog maintenance. Canonical main restoration remains unverified.'
+fi
 CLASS_ID=$(resolve_class_id mcp 'E2E Dead-Man Watchdog v2')
 SOURCE_URL="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/e2e-deadman-watchdog-v2.groovy"
 

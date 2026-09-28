@@ -2428,7 +2428,7 @@ private Map _httpFetchUrl(String url) {
 
 // ==================== ADMIN TOOL DEFINITIONS (tools/list) ====================
 //
-// Minimal MCP tool list for tools/list. Names IDENTICAL to the main server so CI works by URL swap.
+// Shared deployment tools retain the main server names; watchdog-only maintenance tools are included.
 def getAdminToolDefinitions() {
     return [
         [name: "hub_set_mcp_developer_mode", annotations: [title: "Enable MCP Developer Mode", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false],

@@ -4370,6 +4370,10 @@ private String _rmModifyTriggerNoStateMessage(Integer triggerIdx) {
     return "modifyTrigger: trigger ${triggerIdx} has no 'state' value to change -- this trigger does not expose a plain state field. Use removeTrigger + addTrigger to reconfigure it.".toString()
 }
 
+private String _rmModifyTriggerWizardRecoveryHint(Integer appId) {
+    return "A trigger editor may still be open. Inspect hub_get_app_config(appId=${appId}, pageName='selectTriggers', includeSettings=true) before another edit. Only if the original trigger editor remains open, close it with hub_set_rule(appId=${appId}, button='hasAll', pageName='selectTriggers', confirm=true), then verify it closed with hub_get_app_config. Do not click hasAll again if the editor already closed.".toString()
+}
+
 private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     def unsupported = mods.keySet() - ["state"]
     if (unsupported) {
@@ -4429,6 +4433,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
         // Nothing was written, so Done re-commits the trigger unchanged and closes its editor.
         try { _rmClickAppButton(appId, "hasAll", null, "selectTriggers") } catch (Exception closeExc) {
             mcpLog("warn", "rm-native", "_rmModifyTrigger: closing trigger ${triggerIdx}'s editor on app ${appId} failed (${closeExc.message}) -- it may still be open")
+            throw new IllegalStateException(_rmModifyTriggerNoStateMessage(triggerIdx) + " [wizardStuck -- hasAll cleanup failed: ${closeExc.message ?: closeExc.toString()}]")
         }
         throw new IllegalArgumentException(_rmModifyTriggerNoStateMessage(triggerIdx))
     }
@@ -14071,7 +14076,10 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
     try { stuck = groovy.json.JsonOutput.toJson(stopItem ?: [:]).contains("[wizardStuck") } catch (Exception ignored) { stuck = false }
     if (stuck) {
         out.wizardStuck = true
-        out.repairHints = (["An item left an editor open (wizardStuck). Close it before any retry: hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for an action, or button='cancelCapab' with the wizard's pageName for a condition. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()] + (out.repairHints as List))
+        def recoveryHint = (stopItem instanceof Map && stopItem.op == "modifyTrigger") ?
+            _rmModifyTriggerWizardRecoveryHint(appId) :
+            "An item left an editor open (wizardStuck). Close it before any retry: hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for an action, or button='cancelCapab' with the wizard's pageName for a condition. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()
+        out.repairHints = ([recoveryHint] + (out.repairHints as List))
     }
     out.putAll(extra ?: [:])
     return out
@@ -14925,6 +14933,10 @@ def _applyNativeAppEdit(args) {
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
+            }
+            if (e.message?.contains("[wizardStuck")) {
+                trigResult.wizardStuck = true
+                trigResult.restoreHint = _rmModifyTriggerWizardRecoveryHint(appId) + " " + trigResult.restoreHint
             }
             return trigResult
         }
