@@ -13949,7 +13949,7 @@ class TestRunner:
     #   - enableDeveloperMode: true   (bootstrapped by the independent test watchdog)
     #   - enableWrite: true (default ON; only an explicit false disables writes)
     #   - lastBackupTimestamp within 24h
-    #   - enableRead: true (default ON); the legacy custom engine may stay OFF
+    #   - enableCustomRuleEngine, enableRead: true (enableRead default ON)
     #
     # T219 (toggle-OFF refusal) is omitted — would require briefly disabling
     # Developer Mode via UI, which CI can't do (toggle excluded from
@@ -14118,23 +14118,21 @@ class TestRunner:
     @test("developer_mode")
     def test_t223_update_mcp_settings_reconnect_hint(self) -> None:
         """T223: response message includes a client-reconnect hint."""
-        info = self.client.call_tool("hub_get_info", {})
-        original = info.get("customRuleEngineEnabled")
-        assert isinstance(original, bool), "custom engine pre-state is missing"
         try:
             result = self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"enableCustomRuleEngine": not original}, "confirm": True},
+                "args": {"settings": {"enableCustomRuleEngine": False}, "confirm": True},
             })
             assert result.get("success") is True
             msg = result.get("message") or ""
             assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
             assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
         finally:
-            # Preserve the setting even when the reconnect assertion fails.
+            # Restore in a finally so an assertion failure above cannot leave the custom
+            # engine OFF and cascade "…tools are disabled" through the rest of the suite.
             restore = self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"enableCustomRuleEngine": original}, "confirm": True},
+                "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
             })
             assert restore.get("success") is True
 

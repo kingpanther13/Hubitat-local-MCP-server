@@ -714,7 +714,7 @@ jobs:
       - name: Configure test environment (capture pre-state + enable toggles)
         if: steps.gate.outputs.available == 'true'
         # Enables Developer Mode through the standing watchdog if needed, verifies it,
-        # captures the legacy engine setting for cleanup, then pins gateway mode ON.
+        # captures the legacy engine setting for cleanup, then enables it and gateway mode.
         run: bash .github/scripts/mcp_setup_env.sh
 
       - name: Clear stale watchdog flag

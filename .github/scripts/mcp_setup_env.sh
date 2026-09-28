@@ -14,8 +14,8 @@
 # prerequisite: enable it through the independent watchdog when necessary, then
 # verify it through the main server before configuring the remaining toggles.
 #
-# Gateway mode is pinned ON. The legacy custom engine is not needed by this suite;
-# its value is captured only so cleanup can recover an interrupted settings test.
+# Gateway mode and the legacy custom engine are enabled for the full suite.
+# Capture the custom engine setting so cleanup restores its pre-run value.
 #
 # Not touched here:
 #   - Read / Write access — under the universal Read/Write masters (PR #113) both
@@ -132,13 +132,14 @@ else
 fi
 
 # Enable the toggles the e2e suite needs. Read/Write are masters (default ON in the deployed PR
-# app). useGateways pins GATEWAY MODE ON for the
+# app). enableCustomRuleEngine supports the remaining legacy rule tests;
+# useGateways pins GATEWAY MODE ON for the
 # e2e hub: the suite is meant to exercise the production gateway-routed surface (the catalog real
 # clients see), so we set it explicitly rather than relying on the null->on default in case a prior
-# run left it off. This setting persists through the source swap into the PR app.
+# run left it off. Both settings persist through the source swap into the PR app.
 # (The issue #299 best-practice gate ships ON by default; it is pinned OFF POST-deploy by the e2e
 # runner -- this pre-deploy step runs against main, which does not know that key.)
-mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"useGateways":true},"confirm":true}}}}' hub_manage_mcp \
+mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' hub_manage_mcp \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
-echo "Test environment configured: useGateways=true (gateway mode ON; Read/Write masters default ON)"
+echo "Test environment configured: enableCustomRuleEngine=true, useGateways=true (gateway mode ON; Read/Write masters default ON)"

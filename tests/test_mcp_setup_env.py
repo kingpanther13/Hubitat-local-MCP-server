@@ -53,7 +53,7 @@ elif name == "hub_create_backup":
     emit({"success": True})
 elif name == "hub_manage_mcp":
     assert params["arguments"]["tool"] == "hub_update_mcp_settings"
-    assert params["arguments"]["args"]["settings"] == {"useGateways": True}
+    assert params["arguments"]["args"]["settings"] == {"enableCustomRuleEngine": True, "useGateways": True}
     emit({"success": True})
 else:
     raise AssertionError(name)
