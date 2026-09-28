@@ -82,6 +82,65 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
+@pytest.mark.parametrize("refusal", [
+    "Device not found: 0",
+    "Device metadata fetch failed (/device/fullJson/0)",
+])
+def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
+    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
+    client._gateway_members = {"hub_read_devices": {"hub_list_device_events"}}
+    client._gateway_route = {"hub_list_device_events": "hub_read_devices"}
+    dates = ["2026-09-28T12:00:00.000+0000", "2026-09-28T12:00:01.000+0000"]
+    calls = []
+
+    def send(method, params=None, **_kwargs):
+        assert method == "tools/call"
+        assert params["name"] == "hub_read_devices"
+        args = params["arguments"]["args"]
+        calls.append(args)
+        if args["deviceId"] in (0, "0"):
+            return _raw_tool_body({"success": False, "isError": True, "error": refusal}, is_error=True)
+        assert str(args["deviceId"]) == "42"
+        since = args.get("since")
+        explicit = since is not None
+        rows = [] if since == "2099-01-01T00:00:00.000+0000" else [
+            {"date": date, "name": "switch", "value": "on"} for date in dates[1 if explicit else 0:]]
+        result = {"source": "device", "deviceId": "42", "events": rows, "count": len(rows),
+                  "sinceMode": "explicit" if explicit else "relative", "sinceTimestamp": dates[0]}
+        if explicit:
+            result["since"] = since if isinstance(since, str) else dates[0]
+        else:
+            result["hoursBack"] = args["hoursBack"]
+        return _raw_tool_body(result)
+
+    client._send = send
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    runner.get_test_switch_id = lambda: "42"
+    runner.test_list_device_events_since_bookmark()
+    assert [call["deviceId"] for call in calls[:2]] == [0, "0"]
+    assert any(call.get("since") == dates[0] for call in calls)
+    assert any(isinstance(call.get("since"), int) for call in calls)
+
+
+@pytest.mark.parametrize("result", [
+    {"success": True, "source": "location", "events": []},
+    {"success": False, "isError": True, "error": "Location event history fetch failed", "source": "location"},
+    {"success": False, "isError": True, "error": "Device metadata fetch failed (/device/fullJson/42)"},
+    {"success": False, "isError": True, "error": "Read tools are disabled"},
+])
+def test_event_bookmark_rejects_location_fallback_and_unrelated_failures(result):
+    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
+    client._gateway_members = {"hub_read_devices": {"hub_list_device_events"}}
+    client._gateway_route = {"hub_list_device_events": "hub_read_devices"}
+    client._send = lambda *_args, **_kwargs: _raw_tool_body(result, is_error=result.get("isError", False))
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    runner.get_test_switch_id = lambda: "42"
+    with pytest.raises((AssertionError, et.McpToolError)):
+        runner.test_list_device_events_since_bookmark()
+
+
 @pytest.mark.parametrize("method", ["test_device_health_traceroute", "test_device_health_speedtest"])
 @pytest.mark.parametrize("failure", [None, "relay", "slow_leg"])
 def test_health_probes_require_completed_bounded_transport(method, failure):
