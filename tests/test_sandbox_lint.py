@@ -1782,6 +1782,48 @@ def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypa
     assert "_virtualDevicesGuideSection" in findings[0]["message"]
 
 
+@pytest.mark.parametrize("anchor", [
+    "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
+    "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
+    "expressionNotLive", "subscriptionsNotLive",
+])
+def test_regenerating_guide_cannot_hide_missing_served_api_guidance(monkeypatch, tmp_path, anchor):
+    _write_generated_tree(monkeypatch, tmp_path)
+    guidance = ("setVariable modeName discrete events Variable comparison lowercase "
+                "Extended per-capability spec shapes selectTriggers nested subExpression "
+                "expressionNotLive subscriptionsNotLive")
+    source = _GENERATED_SERVER.replace(
+        "        device_authorization:",
+        "        set_rule_reference: '''" + guidance.replace(anchor, "") + "''',\n        device_authorization:")
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(source)
+    rendered = sl._load_tool_guide_builder().render(source, _GENERATED_LIB)
+    (tmp_path / "TOOL_GUIDE.md").write_text(rendered)
+    findings = sl.check_tool_guide_generated()
+    assert len(findings) == 1, findings
+    assert findings[0]["rule"] == "tool-guide-anchor-missing-source"
+    assert anchor in findings[0]["message"]
+    assert sl.format_finding(findings[0])
+
+
+@pytest.mark.parametrize("declaration", [
+    '        extra: "## Extra guide",',
+    "        extra: '## Extra guide',",
+    "        extra: makeGuide(),",
+    "        extra: '''## Extra guide''' + 'more',",
+    "    extra: '''## Extra guide''',",
+])
+def test_guide_builder_rejects_unparsed_declared_sections(declaration):
+    source = _GENERATED_SERVER.replace("        device_authorization:", declaration + "\n        device_authorization:")
+    with pytest.raises(ValueError, match="unsupported.*section|unparsed.*section"):
+        sl._load_tool_guide_builder().render(source, _GENERATED_LIB)
+
+
+def test_guide_builder_accepts_comments_between_complete_sections():
+    source = _GENERATED_SERVER.replace("        virtual_devices:",
+        "        // A section implemented in a library.\n        /* Still part of the guide. */\n        virtual_devices:")
+    assert sl._load_tool_guide_builder().render(source, _GENERATED_LIB) == _rendered_guide()
+
+
 
 # ---------------------------------------------------------------------------
 # check_include_library_lockstep — #include <-> library file <-> build-bundle
