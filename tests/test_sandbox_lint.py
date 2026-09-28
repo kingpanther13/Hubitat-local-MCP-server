@@ -1550,9 +1550,6 @@ def test_check_tool_guide_pointers_all_valid_no_findings(monkeypatch, tmp_path):
     server_groovy = """\
 def getToolGuideSections() {
     return [
-        best_practice_reference: '''Acknowledgment key: native Rule Machine.''',
-        set_rule_reference: '''setVariable modeName discrete events Variable comparison lowercase
-Extended per-capability spec shapes selectTriggers nested subExpression expressionNotLive subscriptionsNotLive''',
         device_authorization: '''## Device Authorization (CRITICAL)
 Body here.''',
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
@@ -1725,6 +1722,9 @@ def hubBpsGuideKey() { 'selftest-secret-key' }
 
 def getToolGuideSections() {
     return [
+        best_practice_reference: '''Acknowledgment key: native Rule Machine.''',
+        set_rule_reference: '''setVariable modeName discrete events Variable comparison lowercase
+Extended per-capability spec shapes selectTriggers nested subExpression expressionNotLive subscriptionsNotLive''',
         device_authorization: '''## Device Authorization (CRITICAL)
 Key is selftest-secret-key.''',
         virtual_devices: _virtualDevicesGuideSection(),
