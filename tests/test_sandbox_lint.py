@@ -1814,7 +1814,7 @@ def test_regenerating_guide_cannot_hide_missing_served_api_guidance(monkeypatch,
 ])
 def test_guide_builder_rejects_unparsed_declared_sections(declaration):
     source = _GENERATED_SERVER.replace("        device_authorization:", declaration + "\n        device_authorization:")
-    with pytest.raises(ValueError, match="unsupported.*section|unparsed.*section"):
+    with pytest.raises(ValueError, match=r"unsupported.*section|unparsed.*section"):
         sl._load_tool_guide_builder().render(source, _GENERATED_LIB)
 
 
