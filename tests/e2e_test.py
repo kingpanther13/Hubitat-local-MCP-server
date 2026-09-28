@@ -31,6 +31,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
+from zoneinfo import ZoneInfo
 
 import requests
 from device_configuration_helpers import assert_native_preferences
@@ -11892,6 +11893,24 @@ class TestRunner:
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
 
+        # Malformed suffixes must be rejected before the wizard creates anything.
+        bad_dt_name = f"{PREFIX}HubVar_DT_Invalid"
+        self.created_variable_names.append(bad_dt_name)
+        try:
+            try:
+                bad_dt = self.client.call_tool("hub_create_variable", {
+                    "name": bad_dt_name, "type": "DateTime", "value": "2026-01-01T12:30garbage",
+                    "confirm": True,
+                })
+            except (McpToolError, McpError) as exc:
+                assert "requires a valid date and time" in str(exc), f"unexpected DateTime error: {exc}"
+            else:
+                assert bad_dt.get("success") is False and "requires a valid date and time" in str(bad_dt), \
+                    f"malformed DateTime was not refused: {bad_dt}"
+            assert not self._hub_variable_visible_in_bulk(bad_dt_name), "invalid DateTime created a variable"
+        finally:
+            self._delete_variable_safe(bad_dt_name)
+
         # DateTime keeps its time: a date-only commit stores the hub's 99:99 no-time sentinel.
         dt_name = f"{PREFIX}HubVar_DT"
         self.created_variable_names.append(dt_name)
@@ -11913,6 +11932,10 @@ class TestRunner:
             dt_value = str(got_dt.get("value"))
             assert "T12:30" in dt_value and "99:99" not in dt_value, \
                 f"DateTime variable lost its time (expected T12:30): {got_dt}"
+            hub_zone = self.client.call_tool("hub_get_info", {}).get("timeZone")
+            expected_offset = datetime(2026, 1, 1, 12, 30, tzinfo=ZoneInfo(hub_zone)).utcoffset()
+            assert datetime.fromisoformat(dt_value).utcoffset() == expected_offset, \
+                f"DateTime offset does not match hub zone {hub_zone}: {dt_value}"
         finally:
             self._delete_variable_safe(dt_name)
 

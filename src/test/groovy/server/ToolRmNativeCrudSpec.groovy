@@ -25482,20 +25482,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !result.restoreHint?.contains("Backup saved before write")
     }
 
-    def "modifyTrigger returns success: false when trigger has no state field in schema (Time/Periodic trigger)"() {
+    @spock.lang.Unroll
+    def "modifyTrigger closes the editor when #cap has no state field"() {
         given:
         enableWrite()
-        // selectTriggers schema does NOT include tstate1 -- simulating a Time or
-        // Periodic trigger whose wizard page only exposes scheduling fields.
+        // Non-device triggers expose specialized fields instead of tstate1.
         def selectTriggersSchema = [
-            [name: "tCapab1", type: "enum", options: ["Time"]]
+            [name: "tCapab1", type: "enum", options: [cap]]
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             ruleConfigJson(100, "r", selectTriggersSchema)
         }
         hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, [[name: "tCapab1", value: "Time"]])
+            statusJson(100, [[name: "tCapab1", value: cap]])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
@@ -25511,13 +25511,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "returns success: false with explanation that Time triggers have no state field"
+        then: "refuses without implying that every unsupported trigger is a schedule"
         result.success == false
-        result.error?.contains("has no 'state' value to change")
+        result.error?.contains("does not expose a plain state field")
 
         and: "nothing was written, and Done closed the editor that editCond opened"
         !posts.any { it.path == "/installedapp/update/json" }
         posts.findAll { it.path == "/installedapp/btn" }*.body*.name == ["1", "hasAll"]
+
+        where:
+        cap << ["Time", "Mode", "Variable"]
     }
 
     @spock.lang.Unroll

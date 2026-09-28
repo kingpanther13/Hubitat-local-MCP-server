@@ -4367,7 +4367,7 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
 // deviceIds changes require removeTrigger + addTrigger because RM's wizard
 // does not expose a capability-change path in an existing trigger slot.
 private String _rmModifyTriggerNoStateMessage(Integer triggerIdx) {
-    return "modifyTrigger: trigger ${triggerIdx} has no 'state' value to change -- Time and Periodic triggers fire on a schedule, not on a state change. Use removeTrigger + addTrigger to reconfigure it.".toString()
+    return "modifyTrigger: trigger ${triggerIdx} has no 'state' value to change -- this trigger does not expose a plain state field. Use removeTrigger + addTrigger to reconfigure it.".toString()
 }
 
 private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {

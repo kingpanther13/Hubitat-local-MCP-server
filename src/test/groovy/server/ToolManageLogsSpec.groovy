@@ -841,18 +841,25 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.since == new Date(1234562400000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
     }
 
-    def "hub_list_device_events: an integer deviceId reads the device and echoes the string id"() {
+    @spock.lang.Unroll
+    def "hub_list_device_events: schema and handler accept #declaredType deviceId"() {
         given:
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
         nativeDeviceEvents(device) { -> [[name: 'switch', value: 'on', date: new Date(1234562460000L)]] }
         settingsMap.selectedDevices = [device]
 
         when:
-        def result = script.toolGetDeviceHistory([deviceId: 42, since: 1234562400000L])
+        def result = script.toolGetDeviceHistory([deviceId: inputId, since: 1234562400000L])
 
         then:
         result.deviceId == '42'
         result.events*.value == ['on']
+        script.getAllToolDefinitions().find { it.name == 'hub_list_device_events' }.inputSchema.properties.deviceId.type.contains(declaredType)
+
+        where:
+        inputId | declaredType
+        42      | 'integer'
+        '42'    | 'string'
     }
 
     def "hub_list_device_events: a fractional deviceId is refused"() {

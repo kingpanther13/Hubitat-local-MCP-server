@@ -48,6 +48,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     private void enableWrite() {
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
     }
