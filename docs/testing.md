@@ -32,6 +32,24 @@ runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
   [docs/groovy2x-spock-lane.md](groovy2x-spock-lane.md). Run locally with
   `./gradlew -p ci/groovy2x-spock test`.
 
+## Test-hub watchdog maintenance
+
+Updating the watchdog requires an explicit `hub-e2e.yml` dispatch with
+`watchdog_update=true`, a ref with passing non-E2E CI, and the exclusive test-hub
+lease. Normal E2E does not update watchdog source.
+
+Before deployment, maintenance uploads `watchdog-before-maintenance-<attempt>`
+and downloads it again to verify the prior source and its metadata. An upload,
+download, or verification failure stops deployment. The artifact contains the
+complete `watchdog-before.groovy` and `watchdog-before.json`, including the Apps
+Code class ID, source checksum, and workflow identity.
+
+If deployment fails or the runner stops, download that artifact from the
+maintenance run. To recover without the watchdog endpoint, open the recorded
+class ID under **Apps Code** on the test hub, replace its source with
+`watchdog-before.groovy`, and save. Check the hub's current source and deployment
+status first: a relay timeout can leave the original write still running.
+
 ## Running locally
 
 ```bash

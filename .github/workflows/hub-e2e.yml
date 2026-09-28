@@ -348,6 +348,7 @@ jobs:
       WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
       GH_TOKEN: ${{ github.token }}
       LEASE_WAIT_TIMEOUT_S: '0'
+      BACKUP_ARTIFACT: watchdog-before-maintenance-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -371,15 +372,22 @@ jobs:
       - name: Acquire test hub lease
         id: lease
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
-      - name: Update watchdog and verify Developer Mode bootstrap
-        run: bash .github/scripts/watchdog_maintenance.sh
+      - name: Prepare prior watchdog source
+        run: bash .github/scripts/watchdog_maintenance.sh prepare
       - name: Preserve prior watchdog source
-        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: watchdog-before-maintenance
-          path: ${{ runner.temp }}/watchdog-before.groovy
-          if-no-files-found: ignore
+          name: ${{ env.BACKUP_ARTIFACT }}
+          path: |
+            ${{ runner.temp }}/watchdog-before.groovy
+            ${{ runner.temp }}/watchdog-before.json
+          if-no-files-found: error
+      - name: Download preserved source before deployment
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$BACKUP_ARTIFACT" --dir "$RUNNER_TEMP/watchdog-maintenance-verified"
+      - name: Update watchdog and verify Developer Mode bootstrap
+        run: bash .github/scripts/watchdog_maintenance.sh deploy
       - name: Release test hub lease
         if: always() && steps.lease.outcome == 'success'
         run: bash .github/scripts/lease_release.sh "ci-run-${{ github.run_id }}"

@@ -226,3 +226,19 @@ def test_deploy_requires_verified_downloaded_backup(tmp_path, damage):
     assert result.returncode != 0, result.stdout + result.stderr
     assert not (tmp_path / "deployed").exists()
     assert not any(call["params"].get("name") == "hub_update_app" for call in calls)
+
+
+def test_deploy_rechecks_disarm_after_backup_download(tmp_path):
+    def arm_watchdog(directory):
+        fixture_path = directory.parent / "fixture.json"
+        fixture = json.loads(fixture_path.read_text())
+        fixture["flag"]["content"] = '{"armed":true}'
+        fixture_path.write_text(json.dumps(fixture))
+
+    result, calls = run_maintenance(tmp_path, damage=arm_watchdog)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Cannot verify a disarmed watchdog" in result.stdout
+    assert not any(call["params"].get("name") == "hub_update_app" for call in calls)
+    assert (tmp_path / "watchdog-maintenance-verified/watchdog-before.groovy").read_bytes() == (
+        "".join(SOURCE_PARTS).encode()
+    )
