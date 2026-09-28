@@ -476,7 +476,7 @@ def _resolveSelfAppClassId() {
         return match?.id?.toString()
     } catch (Exception e) {
         // Reached from the code-update path too (not just hub_update_package); keep the label neutral.
-        mcpLog("warn", "hub-admin", "_resolveSelfAppClassId: self app-class lookup failed (${e.toString()}) -- self-deploy detection / #237 compile-error capture is skipped for this update")
+        mcpLog("warn", "hub-admin", "_resolveSelfAppClassId: self app-class lookup failed (${e.toString()}) -- caller must handle the unavailable class identity")
         return null
     }
 }

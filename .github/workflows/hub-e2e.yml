@@ -55,7 +55,9 @@ name: Hub E2E (test hub)
 
 on:
   pull_request_target:
-    branches: [main]
+    # The guide PR is stacked on this maintained fixes branch. Keep the trusted
+    # base allowlist explicit; its docs-only diff is skipped by the gate below.
+    branches: [main, pr/fixes-447-449-455-471]
     # `labeled`/`unlabeled` are included so the lane-gate job can re-evaluate on a full-run-label
     # (release:patch|minor|major|e2e:full) or e2e:skip toggle -- but e2e RE-RUNS only when the toggle
     # FLIPS the lane (focused <-> full, skipped <-> live); a redundant toggle is a no-op. See the

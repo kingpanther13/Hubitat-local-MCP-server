@@ -1975,6 +1975,132 @@ def test_patch_rule_rejects_a_refusal_without_the_stop_contract():
                            expected_refusals=1)
 
 
+@pytest.mark.parametrize("outcome", [
+    "continuation", "recovered", "failed", "success_false", "missing_status",
+    "still_running", "incomplete_actions", "partial_result",
+])
+def test_math_create_waits_for_its_terminal_write_before_readback(monkeypatch, outcome):
+    """A visible shell and another write's completion must never end recovery."""
+    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
+    client._gateway_members = {
+        "hub_manage_rule_machine": {"hub_set_rule"},
+        "hub_read_apps_code": {"hub_get_app_config"},
+        "hub_read_rules": {"hub_list_rules"},
+        "hub_manage_variables": {"hub_create_variable"},
+    }
+    client._gateway_route = {leaf: gateway for gateway, leaves in client._gateway_members.items()
+                             for leaf in leaves}
+    runner = _native_rule_runner(client)
+    runner.created_variable_names = []
+    var_name = f"{et.PREFIX}sv_modes"
+    clock = [0.0]
+    monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(et.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(runner, "get_test_temperature_ids", lambda: [88], raising=False)
+    monkeypatch.setattr(runner, "get_test_switch_id", lambda: 89, raising=False)
+    monkeypatch.setattr(runner, "_hub_variable_visible_in_bulk", lambda name: True)
+    monkeypatch.setattr(runner, "_delete_variable_safe", lambda name: None)
+    deleted, healthy, writes, config_reads = [], [], [], []
+    monkeypatch.setattr(runner, "_delete_native", deleted.append)
+    monkeypatch.setattr(runner, "_assert_rule_healthy", healthy.append)
+
+    class ReachedRuleC(Exception):
+        pass
+
+    def other_fixture(suffix, *args, **kwargs):
+        # Stop after the real Rule B scenario; the unrelated device/unary/copy cases
+        # have their own coverage. A call to the old helper for Rule B is a failure.
+        if suffix == "SetVarMathUnaryStr":
+            raise ReachedRuleC
+        assert suffix == "SetVarFromDev"
+        return 41, {"actions": [{"actionIndex": "1", "success": True,
+                                 "settingsApplied": ["customDev.1", "tCustomAttr.1"]}]}
+
+    monkeypatch.setattr(runner, "_create_native_rule", other_fixture)
+    polls = 0
+    label = None
+    terminal_seen = False
+    settings = {
+        "xVar3.1": var_name, "valMathOp.1": "+", "valConst2.1": "10",
+        "xVar3.2": var_name, "valMathOp.2": "-", "xVar4.2": var_name,
+        "xVar3.3": var_name, "valMathOp.3": "+", "valConst2.3": "5.5",
+    }
+    if outcome == "incomplete_actions":
+        del settings["valConst2.3"]
+
+    def send(method, params=None, **kwargs):
+        nonlocal polls, label, terminal_seen
+        assert method == "tools/call"
+        tool = params["arguments"].get("tool", params["name"])
+        args = params["arguments"].get("args", params["arguments"])
+        if tool == "hub_create_variable":
+            return _raw_tool_body({"success": True})
+        if tool == "hub_set_rule":
+            writes.append(dict(params))
+            label = args["name"]
+            assert params["name"] == "hub_manage_rule_machine"
+            assert len(args["addActions"]) == 3
+            if outcome not in ("continuation", "partial_result"):
+                raise et.RelayLostResponseError("504 Gateway Timeout")
+            if len(writes) == 1:
+                return {"resultType": "input_required", "requestState": "opaque-state"}
+            assert params["requestState"] == "opaque-state"
+            terminal_seen = True
+            return _raw_tool_body({
+                "success": True, "partial": outcome == "partial_result", "appId": 42, "ruleId": 42,
+                "actions": [
+                    {"actionIndex": "1", "success": True, "settingsApplied": ["valMathOp.1", "valConst2.1"]},
+                    {"actionIndex": "2", "success": True, "settingsApplied": ["xVar4.2"]},
+                    {"actionIndex": "3", "success": True},
+                ],
+            })
+        if tool == "hub_get_info":
+            assert clock[0] >= 15.0
+            polls += 1
+            # The server omits appId from active records. A different finished create
+            # is present throughout; only this fixture's terminal row is authoritative.
+            status = "running" if polls == 1 else "paused_resuming"
+            row = {"tool": "hub_set_rule", "status": status, "startedAt": 1000,
+                   "updatedAt": 2000 + polls, "slices": polls}
+            if polls >= 3 and outcome not in ("missing_status", "still_running"):
+                row.update(status="finished_with_error" if outcome == "failed" else "finished",
+                           appId=42, ruleId=42, success=outcome not in ("failed", "success_false"))
+                terminal_seen = True
+            rows = [{"tool": "hub_set_rule", "status": "finished", "appId": 99,
+                     "success": True, "startedAt": 900, "updatedAt": 1000, "slices": 1}]
+            if outcome != "missing_status":
+                rows.append(row)
+            return _raw_tool_body({"recentWrites": rows})
+        if tool == "hub_list_rules":
+            return _raw_tool_body({"rules": [] if polls == 1 else [{"id": 42, "label": label}]})
+        if tool == "hub_get_app_config":
+            if args["appId"] == 41:
+                return _raw_tool_body({"settings": {"tCustomAttr.1": "temperature", "customDev.1": "88"}})
+            assert args["appId"] == 42 and terminal_seen, "read a still-running rule"
+            config_reads.append(42)
+            return _raw_tool_body({"settings": settings})
+        raise AssertionError(f"unexpected tool: {tool}")
+
+    monkeypatch.setattr(client, "_send", send)
+    expected = {
+        "failed": "finished with an error", "success_false": "finished with an error",
+        "missing_status": "completion unresolved", "still_running": "completion unresolved",
+        "incomplete_actions": "did not persist one exact", "partial_result": "did not fully commit",
+    }
+    if outcome in expected:
+        with pytest.raises(AssertionError, match=expected[outcome]):
+            runner.test_set_rule_setvariable_from_device_and_math()
+        assert 42 not in healthy
+    else:
+        with pytest.raises(ReachedRuleC):
+            runner.test_set_rule_setvariable_from_device_and_math()
+        assert healthy == [41, 42]
+    assert len(writes) == (2 if outcome in ("continuation", "partial_result") else 1)
+    assert config_reads == ([42] if outcome in ("continuation", "recovered", "incomplete_actions") else [])
+    assert (42 in deleted) == terminal_seen
+    assert "42" in runner.created_native_app_ids
+
+
 def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readback(
     monkeypatch,
 ):

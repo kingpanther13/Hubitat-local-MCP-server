@@ -1,5 +1,7 @@
 package server
 
+import spock.lang.Shared
+import support.TestLocation
 import support.ToolSpecBase
 
 /**
@@ -27,6 +29,16 @@ import support.ToolSpecBase
  * enableWrite() seeds the Write master + a recent backup.
  */
 class ToolHubVariablesSpec extends ToolSpecBase {
+
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
+    def setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
+    }
+
+    def cleanup() {
+        sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
+    }
 
     private void enableWrite() {
         settingsMap.enableWrite = true
@@ -1197,19 +1209,54 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         input << ['2026-01-01T12:30', [date: '2026-01-01', time: '12:30']]
     }
 
-    def "hub_create_variable DateTime refuses an invalid date before the wizard opens"() {
+    @spock.lang.Unroll
+    def "hub_create_variable DateTime refuses invalid date or time #input before the wizard opens"() {
         given:
         enableWrite()
         def rec = stubDateTimeCreate([:])
 
         when:
-        script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: '2026-13-45T12:30', confirm: true])
+        script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: input, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('requires a valid date and time')
         rec.clicks.isEmpty()
         rec.posts.isEmpty()
+        rec.sets.isEmpty()
+
+        where:
+        input << ['2026-13-45T12:30', '2026-01-01T12:30garbage', '2026-01-01T12:30:99',
+                  '2026-01-01T24:30', '2026-01-01T12:60', '2026-01-01T12:30:00+25:00',
+                  '2026-01-01T12:30:00.123Zjunk', [date: '2026-01-01', time: '12:30garbage']]
+    }
+
+    @spock.lang.Unroll
+    def "hub_create_variable DateTime correction uses hub zone #zoneId for #input"() {
+        given:
+        enableWrite()
+        sharedLocation.timeZone = TimeZone.getTimeZone(zoneId)
+        def originalZone = TimeZone.default
+        TimeZone.setDefault(TimeZone.getTimeZone('UTC'))
+        def rec = stubDateTimeCreate(postCommits: '2026-01-01T99:99:99.999-9999')
+
+        when:
+        def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: input, confirm: true])
+
+        then:
+        result.success == true
+        rec.sets == [expected]
+        result.value == expected
+
+        cleanup:
+        TimeZone.setDefault(originalZone)
+
+        where:
+        zoneId             | input                                  | expected
+        'America/New_York' | '2026-01-01T12:30:45.123Z'              | '2026-01-01T12:30:00.000-0500'
+        'America/New_York' | '2026-07-04 18:05:00+02:00'            | '2026-07-04T18:05:00.000-0400'
+        'Asia/Kathmandu'   | [date: '2026-01-01', time: '12:30']     | '2026-01-01T12:30:00.000+0545'
+        'America/New_York' | '2026-01-01T12:30:00-0500'             | '2026-01-01T12:30:00.000-0500'
     }
 
     def "hub_create_variable DateTime reports a created variable whose time could not be set"() {

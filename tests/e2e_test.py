@@ -31,6 +31,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
+from zoneinfo import ZoneInfo
 
 import requests
 from device_configuration_helpers import assert_native_preferences
@@ -8947,9 +8948,64 @@ class TestRunner:
                 {"capability": "setVariable", "variable": var_name,
                  "math": {"left": var_name, "op": "+", "right": 5.5}},
             ]
-            app_b, created_b = self._create_native_rule(
-                "SetVarMathBin", {"addActions": math_specs}, return_result=True)
+            # Use the real client continuation loop, without the fixture helper's early
+            # adopt-by-label fallback. A visible shell is not a completed multi-action write.
+            self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
+            math_label = (f"{PREFIX}SetVarMathBin_{_run_artifact_suffix()}_"
+                          f"{self._native_rule_fixture_seq}")
+            app_b, created_b = None, None
+            math_write_terminal = False
             try:
+                try:
+                    created_b = self.client.call_tool("hub_set_rule", {
+                        "name": math_label, "confirm": True, "addActions": math_specs,
+                    })
+                    app_b = created_b.get("appId")
+                    math_write_terminal = True
+                    if app_b:
+                        self.created_native_app_ids.append(str(app_b))
+                    assert app_b, f"math create returned no appId: {created_b}"
+                    assert created_b.get("ruleId") == app_b, \
+                        f"math create returned a different ruleId: {created_b}"
+                    assert created_b.get("success") is True and not created_b.get("partial"), \
+                        f"math create did not fully commit: {created_b}"
+                except RelayLostResponseError:
+                    # The initial relay response can disappear before requestState arrives.
+                    # Follow the server's client-error instructions: wait about 15 seconds,
+                    # inspect recentWrites, then read the target. Do not resend the create.
+                    print("    math create response lost -- waiting for server write status")
+                    deadline = time.monotonic() + 120.0
+                    time.sleep(15.0)
+                    recent = []
+                    while time.monotonic() < deadline:
+                        info = self.client.call_tool("hub_get_info", {})
+                        recent = [row for row in info.get("recentWrites", [])
+                                  if row.get("tool") == "hub_set_rule"]
+                        if app_b is None:
+                            listed = self.client.call_tool("hub_list_rules", {})
+                            matches = [rule for rule in listed.get("rules", [])
+                                       if rule.get("label") == math_label or rule.get("name") == math_label]
+                            assert len(matches) <= 1, f"ambiguous math rule label: {matches}"
+                            if matches:
+                                app_b = matches[0].get("id")
+                                assert app_b, f"math rule has no id: {matches[0]}"
+                                self.created_native_app_ids.append(str(app_b))
+                        # Active records have no target id. Only a terminal record for THIS
+                        # app proves that configuration readback can begin. Other writes,
+                        # missing/evicted records, and a visible shell cannot prove completion.
+                        terminal = next((row for row in recent
+                                         if app_b is not None and str(row.get("appId")) == str(app_b)
+                                         and row.get("status") in ("finished", "finished_with_error")), None)
+                        if terminal is not None:
+                            math_write_terminal = True
+                            assert terminal.get("status") == "finished" and terminal.get("success") is True, \
+                                f"math create finished with an error: {terminal}"
+                            break
+                        time.sleep(5.0)
+                    else:
+                        raise AssertionError(
+                            f"math create completion unresolved for {math_label!r}, appId={app_b}; "
+                            f"recentWrites={recent}")
                 settings_b = (self.client.call_tool("hub_read_apps_code", {
                     "tool": "hub_get_app_config",
                     "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
@@ -8978,7 +9034,7 @@ class TestRunner:
                                 continue
                             matches.append(idx)
                         assert len(matches) == 1, \
-                            f"relay-adopted math create did not persist one exact {op!r} action: {settings_b}"
+                            f"completed math create did not persist one exact {op!r} action: {settings_b}"
                         return matches[0]
 
                     mb_idx = _math_index("+", constant="10")
@@ -9028,7 +9084,10 @@ class TestRunner:
                     f"math decimal constant persisted with the wrong value (expected 5.5); settings={settings_b}"
                 self._assert_rule_healthy(app_b)
             finally:
-                self._delete_native(app_b)
+                # Do not race an unresolved server write with deletion; suite teardown
+                # retains the tracked id and run prefix for later cleanup.
+                if app_b is not None and math_write_terminal:
+                    self._delete_native(app_b)
 
             # Rule C: math unary (no second operand) plus the three pre-write type-filter
             # refusals. Refusals do not add action rows, so this stays a one-action rule.
@@ -11834,6 +11893,24 @@ class TestRunner:
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
 
+        # Malformed suffixes must be rejected before the wizard creates anything.
+        bad_dt_name = f"{PREFIX}HubVar_DT_Invalid"
+        self.created_variable_names.append(bad_dt_name)
+        try:
+            try:
+                bad_dt = self.client.call_tool("hub_create_variable", {
+                    "name": bad_dt_name, "type": "DateTime", "value": "2026-01-01T12:30garbage",
+                    "confirm": True,
+                })
+            except (McpToolError, McpError) as exc:
+                assert "requires a valid date and time" in str(exc), f"unexpected DateTime error: {exc}"
+            else:
+                assert bad_dt.get("success") is False and "requires a valid date and time" in str(bad_dt), \
+                    f"malformed DateTime was not refused: {bad_dt}"
+            assert not self._hub_variable_visible_in_bulk(bad_dt_name), "invalid DateTime created a variable"
+        finally:
+            self._delete_variable_safe(bad_dt_name)
+
         # DateTime keeps its time: a date-only commit stores the hub's 99:99 no-time sentinel.
         dt_name = f"{PREFIX}HubVar_DT"
         self.created_variable_names.append(dt_name)
@@ -11855,6 +11932,10 @@ class TestRunner:
             dt_value = str(got_dt.get("value"))
             assert "T12:30" in dt_value and "99:99" not in dt_value, \
                 f"DateTime variable lost its time (expected T12:30): {got_dt}"
+            hub_zone = self.client.call_tool("hub_get_info", {}).get("timeZone")
+            expected_offset = datetime(2026, 1, 1, 12, 30, tzinfo=ZoneInfo(hub_zone)).utcoffset()
+            assert datetime.fromisoformat(dt_value).utcoffset() == expected_offset, \
+                f"DateTime offset does not match hub zone {hub_zone}: {dt_value}"
         finally:
             self._delete_variable_safe(dt_name)
 

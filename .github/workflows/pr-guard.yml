@@ -4,7 +4,8 @@ on:
   # books the single shared test hub for an hour of e2e.
   workflow_dispatch:
   pull_request:
-    branches: [main]
+    # The guide PR is stacked on this maintained fixes branch.
+    branches: [main, pr/fixes-447-449-455-471]
     types: [opened, synchronize, reopened]
 
 permissions:

@@ -702,7 +702,7 @@ private boolean _hubVarsClickAndWait(Integer appId, String button, String stateA
 }
 
 // Canonical hub DateTime text for a create value: the format RM stores, in hub-local time. Accepts
-// "yyyy-MM-ddTHH:mm[:ss...]", "yyyy-MM-dd HH:mm[:ss]", or {date:"yyyy-MM-dd", time:"HH:mm"}; any
+// "yyyy-MM-ddTHH:mm[:ss[.fraction]][offset]", a space instead of T, or {date,time}; any
 // offset in the input is ignored, as the UI's date and time pickers are hub-local.
 private String _dateTimeVariableValue(String name, value) {
     def dateStr, timeStr
@@ -713,19 +713,23 @@ private String _dateTimeVariableValue(String name, value) {
         def s = value.toString().trim()
         def parts = s.contains("T") ? s.split("T", 2) : (s.contains(" ") ? s.split(" ", 2) : [s, null])
         dateStr = parts[0]
-        timeStr = parts.size() > 1 ? parts[1]?.take(5) : null
+        timeStr = parts.size() > 1 ? parts[1] : null
     }
+    // Validate the entire input before reducing it to the form's minute precision.
+    boolean validTime = timeStr != null && (timeStr ==~ /(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?/)
+    def zone = location.timeZone
     def when = null
-    if (dateStr && timeStr) {
-        try { when = Date.parse("yyyy-MM-dd HH:mm", "${dateStr} ${timeStr}") } catch (Exception ignored) { }
+    if (dateStr && validTime) {
+        timeStr = timeStr.take(5)
+        try { when = Date.parse("yyyy-MM-dd HH:mm", "${dateStr} ${timeStr}", zone) } catch (Exception ignored) { }
     }
-    // Round-trip check: a lenient parse would accept 2026-13-45.
-    if (when == null || when.format("yyyy-MM-dd HH:mm") != "${dateStr} ${timeStr}".toString()) {
+    // Round-trip check: a lenient parse would accept 2026-13-45 or a DST gap.
+    if (when == null || when.format("yyyy-MM-dd HH:mm", zone) != "${dateStr} ${timeStr}".toString()) {
         throw new IllegalArgumentException(
             "DateTime variable '${name}' requires a valid date and time. " +
             "Pass an ISO string like '2026-05-06T12:00:00' or a {date,time} map. Got: ${value}")
     }
-    return when.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+    return when.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ", zone)
 }
 
 // Shared per-variable create core: drives the Hub Variables system app wizard
