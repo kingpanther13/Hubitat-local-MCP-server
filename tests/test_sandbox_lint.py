@@ -1550,6 +1550,9 @@ def test_check_tool_guide_pointers_all_valid_no_findings(monkeypatch, tmp_path):
     server_groovy = """\
 def getToolGuideSections() {
     return [
+        best_practice_reference: '''Acknowledgment key: native Rule Machine.''',
+        set_rule_reference: '''setVariable modeName discrete events Variable comparison lowercase
+Extended per-capability spec shapes selectTriggers nested subExpression expressionNotLive subscriptionsNotLive''',
         device_authorization: '''## Device Authorization (CRITICAL)
 Body here.''',
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
@@ -1783,18 +1786,14 @@ def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypa
 
 
 @pytest.mark.parametrize("anchor", [
+    "Acknowledgment key", "native Rule Machine",
     "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
     "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
     "expressionNotLive", "subscriptionsNotLive",
 ])
 def test_regenerating_guide_cannot_hide_missing_served_api_guidance(monkeypatch, tmp_path, anchor):
     _write_generated_tree(monkeypatch, tmp_path)
-    guidance = ("setVariable modeName discrete events Variable comparison lowercase "
-                "Extended per-capability spec shapes selectTriggers nested subExpression "
-                "expressionNotLive subscriptionsNotLive")
-    source = _GENERATED_SERVER.replace(
-        "        device_authorization:",
-        "        set_rule_reference: '''" + guidance.replace(anchor, "") + "''',\n        device_authorization:")
+    source = _GENERATED_SERVER.replace(anchor, "", 1)
     (tmp_path / "hubitat-mcp-server.groovy").write_text(source)
     rendered = sl._load_tool_guide_builder().render(source, _GENERATED_LIB)
     (tmp_path / "TOOL_GUIDE.md").write_text(rendered)
@@ -1802,6 +1801,21 @@ def test_regenerating_guide_cannot_hide_missing_served_api_guidance(monkeypatch,
     assert len(findings) == 1, findings
     assert findings[0]["rule"] == "tool-guide-anchor-missing-source"
     assert anchor in findings[0]["message"]
+    assert sl.format_finding(findings[0])
+
+
+@pytest.mark.parametrize("section", ["best_practice_reference", "set_rule_reference"])
+def test_regenerating_guide_cannot_hide_a_missing_required_section(monkeypatch, tmp_path, section):
+    _write_generated_tree(monkeypatch, tmp_path)
+    builder = sl._load_tool_guide_builder()
+    text = dict(builder.served_sections(_GENERATED_SERVER, _GENERATED_LIB))[section]
+    source = _GENERATED_SERVER.replace("        " + section + ": '''" + text + "''',\n", "")
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(source)
+    (tmp_path / "TOOL_GUIDE.md").write_text(builder.render(source, _GENERATED_LIB))
+    findings = sl.check_tool_guide_generated()
+    assert len(findings) == 1, findings
+    assert findings[0]["rule"] == "tool-guide-required-section-missing"
+    assert section in findings[0]["message"]
     assert sl.format_finding(findings[0])
 
 
@@ -1842,7 +1856,8 @@ def test_guide_builder_preserves_escaped_quotes_and_section_boundaries(delegated
     library = _GENERATED_LIB + "\nprivate String _quotedGuideSection() { return '''" + raw + "''' }\n"
     builder = sl._load_tool_guide_builder()
     sections = builder.served_sections(source, library)
-    assert sections == [("quoted", expected), *builder.served_sections(_GENERATED_SERVER, _GENERATED_LIB)]
+    original = builder.served_sections(_GENERATED_SERVER, _GENERATED_LIB)
+    assert sections == [*original[:2], ("quoted", expected), *original[2:]]
     assert builder.render(source, library) == _rendered_guide().replace(
         "## Device Authorization", expected + "\n\n## Device Authorization", 1)
 
