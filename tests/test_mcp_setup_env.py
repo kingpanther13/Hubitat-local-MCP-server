@@ -111,8 +111,16 @@ WORKFLOWS = [
 ]
 
 
-@pytest.mark.parametrize("scenario", ["green", "missing", "wrong_sha", "failed", "newer_pending"])
-def test_watchdog_maintenance_requires_complete_current_ci(tmp_path, scenario):
+@pytest.mark.parametrize("scenario, succeeds", [
+    ("green", True),
+    ("missing", False),
+    ("wrong_sha", False),
+    ("failed", False),
+    ("newer_pending", False),
+    ("later_page", True),
+    ("later_attempt_failed", False),
+])
+def test_watchdog_maintenance_requires_complete_current_ci(tmp_path, scenario, succeeds):
     runs = [
         {"path": f".github/workflows/{name}", "head_sha": "expected",
          "status": "completed", "conclusion": "success", "run_number": 1, "run_attempt": 1}
@@ -126,18 +134,41 @@ def test_watchdog_maintenance_requires_complete_current_ci(tmp_path, scenario):
         runs[-1]["conclusion"] = "failure"
     elif scenario == "newer_pending":
         runs.append({**runs[-1], "run_number": 2, "status": "in_progress", "conclusion": None})
+    pages = [{"workflow_runs": runs}]
+    if scenario in {"later_page", "later_attempt_failed"}:
+        later = runs.pop() if scenario == "later_page" else {
+            **runs[-1], "run_attempt": 2, "conclusion": "failure",
+        }
+        runs.extend({**runs[0], "path": ".github/workflows/unrelated.yml"}
+                    for _ in range(100 - len(runs)))
+        pages.append({"workflow_runs": [later]})
     payload = tmp_path / "runs.json"
-    payload.write_text(json.dumps({"workflow_runs": runs}))
+    payload.write_text(json.dumps(pages))
     gh = tmp_path / "gh"
-    gh.write_text(f'#!/bin/sh\ncat "{payload}"\n')
+    gh.write_text(f"#!{sys.executable}\n" + r'''
+import json
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+assert args[0] == "api"
+assert "repos/fixture/repo/actions/runs?head_sha=expected&per_page=100" in args
+pages = json.loads(Path(__file__).with_name("runs.json").read_text())
+selected = pages if "--paginate" in args else pages[:1]
+if "--slurp" in args:
+    print(json.dumps(selected))
+else:
+    for page in selected:
+        print(json.dumps(page))
+''')
     gh.chmod(0o755)
     result = subprocess.run(
         ["bash", str(ROOT / ".github/scripts/watchdog_maintenance_ci_gate.sh")],
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}",
              "GITHUB_SHA": "expected", "GITHUB_REPOSITORY": "fixture/repo"},
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, timeout=30,
     )
-    assert (result.returncode == 0) == (scenario == "green"), result.stdout + result.stderr
+    assert (result.returncode == 0) == succeeds, result.stdout + result.stderr
 
 
 def test_watchdog_maintenance_is_exclusive_and_never_called_by_e2e():

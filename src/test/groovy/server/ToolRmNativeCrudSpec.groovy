@@ -25524,6 +25524,67 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "modifyTrigger no-state cleanup reports recovery only when Done fails (patches=#inPatches, closeFails=#closeFails)"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Mode"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", value: "Mode"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: closeFails && body.name == "hasAll" ? 500 : 200, location: null, data: '']
+        }
+        def edit = [modifyTrigger: [index: 1, mods: [state: "Night"]]]
+        def args = [appId: 100, confirm: true] + (inPatches ?
+            [patches: [edit, [removeTrigger: [index: 1]]]] : edit)
+
+        when:
+        def result = script.toolSetRule(args)
+
+        then: "the unsupported edit is refused without any state write or finalization"
+        result.success == false
+        result.error?.contains("does not expose a plain state field")
+        !posts.any { it.path == "/installedapp/update/json" }
+        posts.findAll { it.path == "/installedapp/btn" }*.body*.name == ["1", "hasAll"]
+        posts.find { it.body.name == "hasAll" }.body.currentPage == "selectTriggers"
+
+        and: "failed cleanup remains visible and directs recovery to the trigger editor"
+        (result.wizardStuck == true) == closeFails
+        if (closeFails) {
+            assert result.error.contains("hasAll")
+            assert result.error.contains("status=500")
+            def hint = inPatches ? result.repairHints[0] : result.restoreHint
+            assert hint.contains("button='hasAll'")
+            assert hint.contains("pageName='selectTriggers'")
+            assert hint.contains("appId=100")
+            assert hint.contains("hub_get_app_config")
+            assert !hint.contains("cancelCapab")
+            assert !hint.contains("actionCancel")
+        }
+
+        and: "the batch stops before another edit can encounter the stale editor"
+        if (inPatches) {
+            assert result.patches[0].op == "modifyTrigger"
+            assert result.patches[1].notAttempted == true
+            assert result.bulkStoppedAfter == "patches[0]"
+            assert result.finalisationNotAttempted == true
+        }
+
+        where:
+        inPatches | closeFails
+        false     | true
+        true      | true
+        false     | false
+        true      | false
+    }
+
+    @spock.lang.Unroll
     def "modifyTrigger refuses a #cap trigger before opening its editor"() {
         given:
         enableWrite()
