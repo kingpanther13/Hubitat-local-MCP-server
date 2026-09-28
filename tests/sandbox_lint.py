@@ -1923,6 +1923,10 @@ def check_tool_guide_generated() -> list[dict]:
     findings = []
     for section, required in anchors.items():
         if section not in sections:
+            findings.append(dict(finding, file="hubitat-mcp-server.groovy",
+                rule="tool-guide-required-section-missing",
+                message=f"Required served section '{section}' is missing. "
+                        "Restore it in getToolGuideSections() before regenerating TOOL_GUIDE.md."))
             continue
         for anchor in required:
             if anchor not in sections[section]:
