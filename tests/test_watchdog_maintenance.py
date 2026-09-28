@@ -121,6 +121,42 @@ def test_maintenance_refuses_unverified_disarm_before_any_deploy(tmp_path, flag)
     assert not (tmp_path / "deployed").exists()
 
 
+@pytest.mark.parametrize("restore", [
+    {"runId": "123"},
+    {"runId": "123", "restoreFor": "122", "restoreResult": "restored"},
+    {"runId": "123", "restoreFor": "123", "restoreResult": "running"},
+    {"runId": "123", "restoreFor": "123"},
+    {"restoreResult": "restored"},
+    {"runId": "", "restoreFor": "", "restoreResult": "restored"},
+], ids=["pending", "different-run", "unknown-result", "missing-result",
+        "missing-run", "empty-run"])
+def test_maintenance_refuses_unfinished_disarm_restore(tmp_path, restore):
+    flag = {"success": True, "hasMore": False,
+            "content": json.dumps({"armed": False, "intent": "disarm", **restore})}
+    result, calls = run_maintenance(tmp_path, flag=flag)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert [call["params"]["name"] for call in calls] == ["hub_read_file"]
+    assert not (tmp_path / "deployed").exists()
+
+
+@pytest.mark.parametrize("restore_result", ["restored", "failed"])
+@pytest.mark.parametrize("restore_for", ["123", 123], ids=["string-id", "numeric-id"])
+def test_maintenance_accepts_terminal_restore_and_warns_on_failure(tmp_path, restore_result, restore_for):
+    flag = {"success": True, "hasMore": False, "content": json.dumps({
+        "armed": False, "intent": "disarm", "runId": "123", "restoreFor": restore_for,
+        "restoreResult": restore_result,
+    })}
+    result, _ = run_maintenance(tmp_path, flag=flag)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "deployed").exists()
+    warnings = [line.lower() for line in result.stdout.splitlines() if "::warning::" in line]
+    if restore_result == "failed":
+        assert any("restore" in line and "failed" in line and "maintenance" in line
+                   for line in warnings), result.stdout
+    else:
+        assert not warnings, result.stdout
+
+
 @pytest.mark.parametrize("page", [
     {"success": False, "offset": 0, "source": "old", "hasMore": False},
     {"success": True, "offset": 1, "source": "old", "hasMore": False},
