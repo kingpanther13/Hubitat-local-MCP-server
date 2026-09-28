@@ -1842,7 +1842,7 @@ def test_guide_builder_preserves_escaped_quotes_and_section_boundaries(delegated
     library = _GENERATED_LIB + "\nprivate String _quotedGuideSection() { return '''" + raw + "''' }\n"
     builder = sl._load_tool_guide_builder()
     sections = builder.served_sections(source, library)
-    assert sections == [("quoted", expected)] + builder.served_sections(_GENERATED_SERVER, _GENERATED_LIB)
+    assert sections == [("quoted", expected), *builder.served_sections(_GENERATED_SERVER, _GENERATED_LIB)]
     assert builder.render(source, library) == _rendered_guide().replace(
         "## Device Authorization", expected + "\n\n## Device Authorization", 1)
 
