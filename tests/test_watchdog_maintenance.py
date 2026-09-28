@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -71,7 +72,7 @@ else:
 '''
 
 
-def run_maintenance(tmp_path, *, flag=None, pages=None):
+def run_maintenance(tmp_path, *, flag=None, pages=None, prepare_only=False, damage=None):
     if flag is None:
         flag = {"success": True, "hasMore": False, "content": '{"armed":false}'}
     if pages is None:
@@ -93,15 +94,31 @@ def run_maintenance(tmp_path, *, flag=None, pages=None):
     sleep = bindir / "sleep"
     sleep.write_text("#!/bin/sh\nexit 0\n")
     sleep.chmod(0o755)
-    result = subprocess.run(
-        ["bash", str(ROOT / ".github/scripts/watchdog_maintenance.sh")],
-        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-             "RUNNER_TEMP": str(tmp_path), "GITHUB_SHA": "expected",
-             "GITHUB_REPOSITORY": "fixture/repo", "WD_RPC_ATTEMPTS": "1",
-             "MCP_URL": "https://main.invalid/apps/194/mcp?access_token=fixture",
-             "WATCHDOG_URL": "https://watchdog.invalid/mcp"},
-        capture_output=True, text=True, check=False, timeout=30,
-    )
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "RUNNER_TEMP": str(tmp_path), "GITHUB_SHA": "expected",
+           "GITHUB_REPOSITORY": "fixture/repo", "WD_RPC_ATTEMPTS": "1",
+           "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+           "MCP_URL": "https://main.invalid/apps/194/mcp?access_token=fixture",
+           "WATCHDOG_URL": "https://watchdog.invalid/mcp"}
+
+    def invoke(phase):
+        return subprocess.run(
+            ["bash", str(ROOT / ".github/scripts/watchdog_maintenance.sh"), phase],
+            env=env, capture_output=True, text=True, check=False, timeout=30,
+        )
+
+    result = invoke("prepare")
+    if result.returncode == 0 and not prepare_only:
+        # Model the artifact download into a separate directory.
+        verified = tmp_path / "watchdog-maintenance-verified"
+        verified.mkdir()
+        for name in ("watchdog-before.groovy", "watchdog-before.json"):
+            source = tmp_path / name
+            if source.exists():
+                shutil.copyfile(source, verified / name)
+        if damage:
+            damage(verified)
+        result = invoke("deploy")
     calls = [json.loads(line) for line in (tmp_path / "calls").read_text().splitlines()]
     return result, calls
 
@@ -187,3 +204,25 @@ def test_maintenance_preserves_every_source_page_before_deployment(tmp_path):
     assert [read["offset"] for read in source_reads] == [0, 18, 40]
     assert sum(call["params"].get("name") == "hub_update_app" for call in calls) == 1
     assert (tmp_path / "enabled").exists()
+
+
+def test_prepare_preserves_source_without_deploying(tmp_path):
+    result, calls = run_maintenance(tmp_path, prepare_only=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (tmp_path / "deployed").exists()
+    assert not any(call["params"].get("name") == "hub_update_app" for call in calls)
+    metadata = json.loads((tmp_path / "watchdog-before.json").read_text())
+    assert metadata["classId"] == "42"
+
+
+@pytest.mark.parametrize("damage", [
+    lambda directory: (directory / "watchdog-before.groovy").unlink(missing_ok=True),
+    lambda directory: (directory / "watchdog-before.json").unlink(missing_ok=True),
+    lambda directory: (directory / "watchdog-before.groovy").write_text("truncated"),
+    lambda directory: (directory / "watchdog-before.json").write_text('{}'),
+], ids=["missing-source", "missing-metadata", "corrupt-source", "wrong-identity"])
+def test_deploy_requires_verified_downloaded_backup(tmp_path, damage):
+    result, calls = run_maintenance(tmp_path, damage=damage)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert not (tmp_path / "deployed").exists()
+    assert not any(call["params"].get("name") == "hub_update_app" for call in calls)

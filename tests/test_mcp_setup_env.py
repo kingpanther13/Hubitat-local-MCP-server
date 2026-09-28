@@ -186,3 +186,15 @@ def test_watchdog_maintenance_is_exclusive_and_never_called_by_e2e():
     assert 'lease_acquire.sh' in maintenance and 'lease_release.sh' in maintenance
     assert maintenance.index("watchdog_maintenance_ci_gate.sh") < maintenance.index("lease_acquire.sh")
     assert "tests/e2e_test.py" not in maintenance
+
+
+def test_watchdog_backup_is_durable_before_deploy():
+    source = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
+    maintenance = source.split("\n  watchdog-maintenance:\n", 1)[1].split("\n  probe:\n", 1)[0]
+    prepare = maintenance.index("watchdog_maintenance.sh prepare")
+    upload = maintenance.index("uses: actions/upload-artifact@")
+    download = maintenance.index('gh run download "$GITHUB_RUN_ID"')
+    deploy = maintenance.index("watchdog_maintenance.sh deploy")
+    assert prepare < upload < download < deploy
+    assert "if-no-files-found: error" in maintenance
+    assert "if: always()" not in maintenance[prepare:deploy]
