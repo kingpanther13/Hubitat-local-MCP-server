@@ -10277,7 +10277,8 @@ private Map _rmReadLocalVarsMap(Integer appId) {
     def live = [:]
     (appState ?: []).each { e ->
         def n = e?.name?.toString()
-        if (n?.startsWith("lv_") && e.value instanceof Map) live[n.substring(3)] = e.value
+        // Local names can be sandbox property names such as fields; use Map.put for arbitrary keys.
+        if (n?.startsWith("lv_") && e.value instanceof Map) live.put(n.substring(3), e.value)
     }
     return [ok: true, vars: (raw instanceof Map) ? raw : [:], live: live]
 }

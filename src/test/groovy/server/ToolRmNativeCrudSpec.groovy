@@ -31761,23 +31761,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     // Live-captured: after an action sets a local, only lv_<name> moves; allLocalVars keeps the
-    // old value until the rule's page renders.
-    def "hub_list_rule_local_variables reports the live lv_ value, not the stale allLocalVars copy"() {
+    // old value until the rule's page renders. The live E2E fields fixture also guards Hubitat's
+    // subscript sandbox, which the stock Groovy test runtime does not enforce.
+    @Unroll
+    def "hub_list_rule_local_variables reads live #localName and preserves fallback values"() {
         given:
         enableReadOnly()
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
                 appState: [
-                    [name: "lv_zzN", value: [name: "zzN", type: "integer", value: 99], type: "HashMap"],
-                    [name: "allLocalVars", value: [zzN: [type: "integer", value: 1], zzS: [type: "string", value: "a"]], type: "HashMap"]
+                    [name: "lv_${localName}", value: [name: localName, type: "integer", value: 99], type: "HashMap"],
+                    [name: "allLocalVars", value: [(localName): [type: "integer", value: 1], zzS: [type: "string", value: "a"]], type: "HashMap"]
                 ], state: [:]])
         }
 
         when:
         def result = script.toolListRuleLocalVariables([appId: 100])
 
-        then: "zzN reads the live 99; zzS has no lv_ entry and falls back to allLocalVars"
-        result.localVariables == [[name: "zzN", type: "integer", value: 99], [name: "zzS", type: "string", value: "a"]]
+        then: "the named local reads live 99; zzS falls back to allLocalVars"
+        result.localVariables == [[name: localName, type: "integer", value: 99], [name: "zzS", type: "string", value: "a"]]
+
+        where:
+        localName << ["zzN", "fields", "class", "metaClass"]
     }
 
     def "hub_list_rule_local_variables returns empty list when the rule has no locals"() {
