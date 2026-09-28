@@ -22,6 +22,10 @@
 // execution of this single-instance app and gives the compound reservations below
 // one short JVM critical section without serializing tool work.
 @groovy.transform.Field static final Object WRITE_RESERVATION_LOCK = new Object()
+// Saving new code recompiles the class and resets this, so only the first request after a
+// load reads the setup marker; initialize() records it, and a mismatch re-runs initialize().
+@groovy.transform.Field static volatile boolean SETUP_CURRENT = false
+@groovy.transform.Field static final Object SETUP_REFRESH_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
 // Ordinary-write leases, keyed by leaseId. The global write cap is overload
 // protection, not crash safety: nothing here has to survive a recompile, and a
@@ -80,8 +84,8 @@
 // warm. The tool surface is code, so within one class lifetime the value cannot change --
 // concurrent computers race to the same answer -- and a code deploy recompiles the class,
 // clearing it, which is exactly the event the fingerprint exists to catch. updated() clears
-// it too. It is assigned, not mutated in place.
-@groovy.transform.Field static String TOOL_SEARCH_CORPUS_FP = null
+// it too. It is assigned, not mutated in place; volatile so one handler's result is visible to the next.
+@groovy.transform.Field static volatile String TOOL_SEARCH_CORPUS_FP = null
 // The BM25 search index (corpus + per-doc tokens, keyed by the corpus fingerprint). A class static,
 // NOT atomicState: persisted, the two lists were ~244 KB of app state that Hubitat re-serialised
 // on every execution, so every tool call paid for the search index. Cleared, never reassigned,
@@ -881,6 +885,28 @@ def initialize() {
     if (state.containsKey("capturedDeviceStates") || atomicState.containsKey("capturedDeviceStates")) {
         countCapturedStates()
     }
+    state.setupVersion = currentVersion()
+    SETUP_CURRENT = true
+}
+
+// Saving new code does not call updated(), so the subscriptions, schedules and in-use
+// registrations initialize() owns would otherwise wait for the next Done click.
+private void _refreshSetupAfterUpdate() {
+    if (SETUP_CURRENT) return
+    synchronized (SETUP_REFRESH_LOCK) {
+        if (SETUP_CURRENT) return
+        try {
+            if (state.setupVersion == currentVersion()) {
+                SETUP_CURRENT = true
+                return
+            }
+            mcpLog("info", "server", "Refreshing setup for ${currentVersion()} (was ${state.setupVersion ?: 'unrecorded'})")
+            initialize()
+        } catch (Exception e) {
+            // Not marked current, so the next request retries; this one is still served.
+            _cleanupError("server", "Setup refresh after an update failed; retrying on the next request: ${_cleanupFailureDetail(e)}")
+        }
+    }
 }
 
 
@@ -963,6 +989,7 @@ def handleMcpRequest() {
 
     _cleanupRetiredToolState()
     _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
+    _refreshSetupAfterUpdate()
     _protectedAppIds()
     _mrtrEnsureCleanupScheduled()
     def requestBody
@@ -4799,7 +4826,7 @@ def getGatewayConfig() {
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
                 hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
                 hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, plus BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source",
-                hub_list_rule_local_variables: "List a Rule Machine rule's local variables (name/type/value) from state.allLocalVars. Distinct from hub_list_variables (hub globals). Args: appId",
+                hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
             searchHints: [
@@ -4949,7 +4976,7 @@ def getGatewayConfig() {
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call. Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules. Args: ruleId (id or array of ids), value (bool)",
                 hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source",
-                hub_list_rule_local_variables: "List a Rule Machine rule's local variables (name/type/value) from state.allLocalVars. Distinct from hub_list_variables (hub globals). Args: appId",
+                hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
                 hub_set_visual_rule: "Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use hub_set_rule only for complex automations (nested logic/loops/variables). Args: appId (omit=create), name, definition, paused (opt), confirm.",
@@ -5892,13 +5919,16 @@ def executeTool(toolName, args) {
             }
             // One-shot read. deviceId is not in the schema's required array (deviceIds is the
             // poll-only alternative), so guard the bare {attribute} call here for an actionable
-            // message instead of letting toolGetAttribute hit "Device not found: <blank>". Reject
-            // a null OR empty/blank deviceId -- an empty string would otherwise slip through to a
-            // "Device not found: " miss.
-            if (!(args.deviceId instanceof String) || !args.deviceId.trim()) {
-                throw new IllegalArgumentException("deviceId is required (or use deviceIds for multi-device polling)")
+            // message instead of letting toolGetAttribute hit "Device not found: <blank>". Coerce
+            // a whole-number id as the poll path does; a blank string or a fraction is refused.
+            def oneShotId = _canonicalDeviceIdArg(args.deviceId)
+            if (oneShotId == null) {
+                boolean missing = args.deviceId == null || (args.deviceId instanceof CharSequence && !args.deviceId.toString().trim())
+                throw new IllegalArgumentException(missing
+                    ? "deviceId is required (or use deviceIds for multi-device polling)"
+                    : "deviceId must be a non-empty string or integral number (got: ${_describeValueForError(args.deviceId)})".toString())
             }
-            return toolGetAttribute(args.deviceId, args.attribute)
+            return toolGetAttribute(oneShotId, args.attribute)
 
         // Rule Management - now using child apps
         case "hub_get_custom_rule":
@@ -7393,6 +7423,25 @@ private void _rmNoteHubBreadcrumbs(appId, resp) {
 
 // The pageBreadcrumbs value to submit from `page`: the hub's own trail when it last rendered that
 // page for this app, otherwise `fallback` (the tool's long-standing fixed value for that page).
+// Render a value plus a coarse runtime-type label for a validation error message. Uses
+// instanceof rather than getClass() (reflection is blocked in the Hubitat sandbox), so the
+// label is a small fixed vocabulary -- enough to tell a caller "you passed a number/boolean
+// where a string was required" without naming the exact JVM class.
+private String _describeValueForError(v) {
+    def typeLabel = (v == null) ? "null"
+        : (v instanceof String)  ? "string"
+        : (v instanceof Boolean) ? "boolean"
+        : (v instanceof Number)  ? "number"
+        : (v instanceof List)    ? "list"
+        : (v instanceof Map)     ? "object"
+        : "value"
+    if (v == null) return "null"
+    // Quote strings so an empty or whitespace-only value renders as "" / "   " rather than a
+    // bare gap in the message; non-string values render unquoted (e.g. 42 (number)).
+    def rendered = (v instanceof String) ? "\"${v}\"" : "${v}"
+    return "${rendered} (${typeLabel})"
+}
+
 private String _rmPageBreadcrumbs(appId, String page, String fallback) {
     def rec = (appId == null) ? null : HUB_PAGE_BREADCRUMBS.get(appId.toString())
     if (rec instanceof Map && rec.page == page && (now() - (rec.at as Long)) < HUB_BREADCRUMB_TTL_MS) {
@@ -9902,6 +9951,10 @@ def getToolGuideSections() {
 - Do NOT silently fall back to using existing devices as a workaround
 - Example: If creating a virtual device fails, don't just grab an existing device to use instead
 
+**Device access scope:**
+- Device tools resolve a `deviceId` only against the devices selected in the MCP app plus MCP-managed virtual devices; any other id returns `Device not found`. `hub_list_devices(scope='all')` lists every hub device with its `mcpAuthorized` flag.
+- With `bypassDeviceAllowlist` on, any existing device is reachable, so the exact-match and confirm-before-use rules above matter even more.
+
 **Why this matters:**
 - Wrong device could control critical systems (HVAC, locks, security)
 - User trust depends on AI only controlling what they explicitly authorized''',
@@ -9930,6 +9983,14 @@ pointer to THAT tool's own guide section -- follow it for the failing tool's ref
 - Destructive writes: create a backup with hub_create_backup within 24h and pass confirm=true;
   destructive tools refuse otherwise.''',
 
+        tool_access: '''## Gateways, Permissions & Catalog Shape
+
+**Gateways.** With the default "Consolidate tools behind category gateways" setting ON, most tools sit behind domain gateways. Call a gateway with no arguments to get the schemas of its visible sub-tools, then call it with `tool='<name>'` and `args={...}` to run one. `hub_read_*` gateways contain only read-only tools; `hub_manage_*` gateways contain at least one write, and a read tool may appear in both kinds. `hub_manage_virtual_device` and `hub_manage_mode` are direct tools, not gateways. `hub_search_tools` finds any tool by natural-language query. A gateway call is permission-checked per sub-tool, exactly like a direct call.
+
+**Flat mode.** With that setting OFF, `tools/list` lists every tool individually and `hub_search_tools` is hidden. A cached call to a gateway name then returns an error naming the sub-tools to call directly. The Read/Write masters, the legacy Custom Rule Engine toggle, Developer Mode and the Advanced per-tool overrides also add or remove `tools/list` entries, so the visible catalog differs per install. After any of these change, the client may need to reconnect.
+
+**Permissions.** Two masters, Read and Write, gate every tool. Both are ON by default, and only an explicit OFF blocks. A tool under an OFF master disappears from `tools/list` and `hub_search_tools`, and a cached call fails with "Read tools are disabled..." or "Write tools are disabled...". Direct the user to the Read/Write toggles in the MCP app settings. On the Advanced: Per-tool Overrides page, individual tools or whole gateways can be switched OFF. These overrides are deny-only (they never re-enable what a master hides), and a cached call fails with "...is disabled in Advanced settings (Per-tool Overrides)...". Destructive writes also need `confirm=true` plus a backup <24h, regardless of the masters. Self-administration tools also need Developer Mode (see hub_update_mcp_settings).
+''',
         hub_admin_write: '''## Admin, System & Destructive Write Tools
 
 This section covers the hub-admin and system tools (hub info, location modes, HSM status, system settings) AND the destructive write tools. The read-only / non-destructive entries below (e.g. hub_get_info, hub_list_modes, hub_get_hsm_status, the create/rename/activate mode actions) need no confirm; only the destructive writes require the pre-flight checklist.
@@ -9951,6 +10012,7 @@ The destructive/confirm-tier write tools require these steps (ordinary writes ne
 **hub_shutdown** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
 
 **hub_call_zwave (action=repair_start)** - 5-30 min duration, Z-Wave devices may be unresponsive. Best during off-peak hours. exclusion_start and node_remove unpair/disrupt devices (confirm=true).
+Only run Z-Wave radio operations when the user explicitly asks for them.
 
 **hub_call_destructive_ops** - IRREVERSIBLE / DISRUPTIVE, by `target`. target=zwave|zigbee|matter: reset unpairs EVERY device on that radio; a firmware flash can brick hardware if interrupted. target=network: disconnect_wifi/disconnect_ethernet drop that link (the hub may go unreachable). target=cloud: disable severs Alexa/Google, cloud dashboards, cloud firmware updates, and subscription features until enable restores them. Backup <24h, explicit target+action+confirm=true, never power-cycle during a flash.
 
@@ -9961,6 +10023,7 @@ The destructive/confirm-tier write tools require these steps (ordinary writes ne
 - All details logged to MCP debug logs for audit
 
 **hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
+Dashboards or automations that reference the room may need updating.
 
 **hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.
 
@@ -10013,6 +10076,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - **Self-update guard rationale:** the tool refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on because a bad self-update bricks the MCP loop — the server app's own OAuth backs the live `/mcp` token.
 - **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions/schedules re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only.
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
+- **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.
 
 ### hub_create_app (install new app code, then instantiate a running instance)
 
@@ -10021,10 +10085,26 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - Works for apps whose first page installs with defaults.
 - A required first-page input with no default blocks the auto-Done (same behavior as the Hubitat UI) -- in that case the install cannot be auto-committed.
 
+**Code-install mode (hub_create_app and hub_create_driver):**
+- Supply exactly one of `source`, `sourceFile` or `importUrl`. For large source, write it once with hub_write_file and pass the filename as `sourceFile`, so a retry does not re-send the whole source.
+- `success:false` with a null id: the hub rejected the source on create (for example a compile error). Fix it and retry.
+- `success:false` with the id set: the hub created an item, but it is in an error state or the verification read was empty or unparseable. Inspect it with hub_get_source before retrying, because a retry can create a duplicate.
+- `success:true, verified:false` plus `verifyError`: the verification fetch failed. Confirm the item with hub_get_source.
+- hub_create_driver bulk mode: `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
+
 
 ### hub_update_app / hub_update_driver — expectedVersion (optimistic-lock guard)
 
 `expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
+
+Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict.
+
+hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|resave, expectedVersion?}, ...]`. It cannot be combined with the single-driver fields, including a top-level `expectedVersion`. Items run in order and continue past failures. A lock mismatch on one item gives `conflict:true` with both versions, and a thrown error gives `error` plus `errorClass`. The top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `updatesRemaining`; send only those again, in the same order.
+
+### hub_update_app / hub_update_driver / hub_update_library — source modes and large sources
+
+- Exactly one source mode per call: `importUrl` (the hub fetches the file itself; cheapest on context), `sourceFile` (a File Manager file), inline `source` (stubs only), or `resave` (recompile the current source unchanged, entirely on-hub).
+- `hub_get_source` returns at most 64000 characters per call; follow `nextOffset` while `hasMore`. A longer source is also saved whole to File Manager as `mcp-source-<app|driver|library>-<id>.groovy` and returned as `sourceFile`, ready for the update tools' `sourceFile` mode.
 
 
 ### hub_call_device_command
@@ -10036,6 +10116,8 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 **`parameters` arg.** Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. `["{\"hue\":0,\"saturation\":100,\"level\":50}"]`) and coerced hub-side.
 
 **`waitFor` arg.** comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.
+
+A malformed `waitFor` spec is rejected before the command fires, so the device is not actuated. The attribute name is the exception: a mistyped name still fires the command, then times out with `neverReported`.
 
 **`commands` arg (several devices in one call).** Up to 20 entries of `{deviceId, command, parameters?}`, sent in the order given. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"): the per-call round trip -- not the hub actuating the device -- is nearly the whole cost. Measured on a live hub over LAN: one command ~1.0s end to end; six sent separately ~4.4s (~0.73s each); the same six Z-Wave switches as one batch ~1.5s; a batch of 1, 2 or 4 flat at ~0.95s. Firing separate calls in parallel does NOT help; the hub serialises them anyway. Devices behind a bridge carry real per-device time that batching cannot remove -- six Bond-bridged shades batched came back at ~2.75s, against ~5.0s sent separately.
 
@@ -10175,12 +10257,16 @@ Poll install progress with `statusOnly=true` (`status` is IDLE when none is runn
 
 For replace/add every id is validated against the full hub device list (discover ids via `hub_list_devices(scope='all')`, each carries an `mcpAuthorized` flag) -- one unknown id rejects the whole batch and nothing is written; `remove` does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless `allowEmpty:true`.
 
+If the hub's device inventory is incomplete (its device tree could not be read, or it disagrees with the picker feed), an id it lacks is reported as "could not validate" instead of unknown. Nothing is written, so retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
+
 **Deliberately NOT allowlisted:**
 - `enableWrite` -- would disable this tool's own write path mid-session.
 - `enableDeveloperMode` -- lockout protection; must stay UI-only to disable.
 - `disabled_tools` / `disabled_gateways` -- could self-disable this tool.
 
 **Schema refresh / reconnect.** Changing an `enable*` toggle or `useGateways` reshapes `tools/list`; changing `selectedDevices` changes which devices are visible. So MCP clients may need to reconnect to refresh cached schemas / device visibility.
+
+**Gating.** Requires Developer Mode, which is the "Enable Developer Mode Tools" toggle (default OFF, can only be turned off in the Hubitat UI). It also requires the Write master, `confirm=true` and a backup <24h. Each successful write is logged at WARN for audit. On "Developer Mode tools are disabled", direct the user to that toggle in the MCP app settings. The accepted keys are listed in the `settings` parameter description; any other key is rejected.
 
 ### hub_get_hub_mesh
 
@@ -10221,15 +10307,17 @@ The `createLinked` GET returns 200 with an empty body even when nothing links, s
 
 ### hub_update_package
 
-Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response, #237). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
+Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
 
-**Brick-safe:** if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id self-update guard does not fire here).
+**Brick-safe:** if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it saves the Apps Code class itself rather than calling hub_update_app, so that tool's self-update guard does not apply here).
 
 **Why an unmerged PR installs:** plain Hubitat Package Manager Repair reads only the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts. This tool instead anchors to `packageManifest.json` AT `ref`.
 
 **Developer Mode visibility:** when Developer Mode is off the tool is hidden from `tools/list` entirely (catalog-hidden, not merely runtime-refused).
 
 **`baseUrl`:** per-call source URLs are built as `<baseUrl>/<ref>/<path>` (`baseUrl` carries no trailing slash, no ref/path). It exists to point at forks / CI branches on a different remote.
+
+**Gating and dry run.** A top-level tool, not inside any gateway. It requires Developer Mode, the Write master, `confirm=true` and a backup <24h. `dryRun=true` fetches and parses the manifest and returns the plan (`plannedBundles`, then `plannedApps` with the self app last) with zero writes, and it needs no `confirm` or backup.
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
@@ -10290,15 +10378,21 @@ MCP-managed virtual devices:
 
 **action="delete" response shape:**
 `{success, deviceId, deviceNetworkId, deviceLabel, message}`
+
+**Virtual inventory (`hub_list_devices(filter='virtual')`):** returns `{devices, count, total, message}` plus pagination fields. Each device is `{id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates}`. `currentStates` is an attribute-to-value map, while create returns `attributes` as a list of `{name, value}`. `driverNamespace` is the namespace saved at create time, or the native driver namespace when none was saved. A `warnings` entry appears when native driver identity is unavailable.
+
 ''',
 
         update_device: '''## Device inspection and updates
 
 Call `hub_get_device(deviceId=..., mode="configuration")` before an update. It reports the fields that are applicable and writable for this device, declared preference types/options/ranges/defaults and current saved values, driver identity, and source/read status. A saved false, zero, empty string or null is distinct from an unset value; a driver default does not prove the setting was saved. Use `mode="details"` with optional `sections` for wider inspection.
 
-For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then select exact names. Configuration selection applies to preference names, editable property names and device-info keys. Details selection applies to section keys; attributes also accepts an individual attribute name. Commands and jobs use the row indices returned by `availableFields`, so duplicate or unnamed rows remain selectable. Omitting `fields` retains the full selected sections.
+Details mode does not inline event or log history; it points to the read tools for them. Password values are redacted. Missing or unrecognized native data is reported as partial or unavailable. It never proves the device has no settings. `driverSource` gives a ready hub_get_source call when a user driver resolves to exactly one driver. Otherwise it gives the hub_list_drivers lookup and the reason. Built-in driver source is not available. Driver source can show more declarations, but it never shows the device's saved preference values. Every mode is read-only (it is also in hub_read_devices), and device authorization still applies.
 
-If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 4 MiB of content are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
+For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then select exact names. Configuration selection applies to preference names, editable property names and device-info keys. Details selection applies to section keys; attributes also accepts an individual attribute name. Commands and jobs use the row indices returned by `availableFields`, so duplicate or unnamed rows remain selectable. Omitting `fields` retains the full selected sections.
+Examples: `fields=["txtEnable"]` in configuration mode, or `sections=["state"], fields=["lastRefresh"]` in details mode.
+
+If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 2,097,152 characters of serialized JSON are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
 
 Every update requires the Write master and applicable tool permissions. When mandatory best-practice acknowledgment is enabled, put `bestPracticeKey` inside the gateway's `args` alongside the patch.
 
@@ -10320,6 +10414,7 @@ Omitted properties are preserved. The complete patch is validated before writes 
 `{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}`
 
 Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
+An empty `room` string removes the room assignment. A preference save re-sends the device's current Home visibility, Status-column attribute and command-retry values, so those stay unchanged unless the patch sets them.
 
 If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
 
@@ -10400,6 +10495,8 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 
 Read-only inspect of an existing custom rule. It stays usable when the Custom Rule Engine toggle is OFF (read-only mode): you can still list and inspect existing custom rules, while create/modify/delete are hidden.
 
+If a custom-rule tool that takes a rule id (get, export, clone, update, delete, test) is given the id of a Hubitat built-in rule app (Rule Machine, Room Lighting, Basic Rules, Visual Rules Builder), its "Rule not found" error names the app type and points at the native tool: hub_get_app_config to read it, hub_set_rule to modify it, hub_delete_native_app to delete it, and, for Rule Machine only, hub_call_rule to run it. The hint is best-effort: if the hub's app list can't be read, you get a plain "Rule not found".
+
 ### hub_create_custom_rule
 
 Creates a new automation rule in the LEGACY custom MCP rule engine (the `custom_*` tools described by the Rule Structure Reference above). The custom MCP rule engine is now considered legacy: existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing `custom_*` rules.
@@ -10477,6 +10574,8 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - `scope=source` (default) -- restore an app/driver/rule by `backupKey` (for deleted code use hub_create_*; deleted rules DO recreate).
 - App/driver source restores report `undoAvailable=true` only after verifying the pre-restore file. Use the returned `preRestoreBackup` handle to undo. A failed required pre-restore capture aborts before saving the source. Only a retry whose live source already matches the target backup may succeed without verified undo, with `undoAvailable=false` and a warning; do not rely on an older undo record for that restore.
 - Native rule restore requires confirmed absence from the app inventory before recreating an unreadable rule. If the config read fails and absence cannot be confirmed, inspect the rule/inventory and retry when readable.
+- A native rule snapshot (type `rm-rule`) replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id.
+
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub.
 - `scope=hub_uploaded` -- upload an external `.lzf` fetched from `backupUrl`, then restore (open-world).''',
 
@@ -10511,6 +10610,8 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Firing the separate calls in parallel does NOT help -- the hub serialises them anyway (see "Make tool calls sequentially" below).
 - It does not make the devices move simultaneously; the hub still actuates one at a time. For a directly-attached device that costs almost nothing, but a device behind a bridge carries real per-device time that batching cannot remove: six Bond-bridged shades batched came back at ~2.75s, against ~5.0s sent separately (six Z-Wave switches batch at ~1.5s).
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. A partly-failed batch reports failedDeviceIds plus partial:true -- re-send only those ids; the rest already actuated.
+- The batch result always carries `count` (entries attempted), `sentCount`, `failedCount` and a per-entry `results[]`. Any failure adds `failedDeviceIds`, `error` and `note`. `isError: true` is set only when every attempted entry failed. An entry's `deviceId` may be a string or an integer.
+
 - Batch entries return NO state snapshot, and waitFor is not accepted with `commands`. To confirm, follow with hub_get_device_attribute using deviceIds (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
 - A very large batch of slow bridged devices can stop early at the relay time budget: the result carries stoppedEarly:true with remainingCommands, the untried tail verbatim, to re-send in a new call.
 - For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance.
@@ -10530,7 +10631,17 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset in either spelling (-0600 or -06:00), e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
 - Change-watching loop: record a returned event date, run your action, then pass that date back as since to get exactly the new events. The response echoes sinceMode ("explicit" when since drove it, "relative" for hoursBack) and the bounding field (since or hoursBack)
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
+- With neither deviceId nor appId, the tool reads the hub's location event log: mode, hsmStatus/hsmAlert, hub-variable changes, sunrise/sunset and system events. The result carries `source: 'location'` and no device fields.
+
 - Use the attribute filter to reduce data volume
+
+**Response-size guard.** Every tool result is measured before sending. A result over 120,000 bytes (the hub caps responses at 128 KiB) has its content replaced with `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}`. The call itself still succeeds. On gateway calls, `tool` names the actual sub-tool. `suggestion` names the knob to narrow with (filters, limit, fields, `saveAs`, or `cursor`). Re-issue a narrower call; do not repeat the same one.
+
+**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
+- 25: `hub_list_hpm_packages`.
+- 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
+- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, `hub_get_device_health` (staleDevices), and `hub_get_jobs` (scheduledJobs).
+- `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
 
 ### hub_get_logs (history, logging status, and filters)
 
@@ -10547,6 +10658,7 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. '0m' / '0d' is a degenerate `since` that filters out everything older than now (useful for test harnesses, rarely otherwise).
 - `until` defaults to now (no upper bound); pair it with `since` for a window, e.g. since='2h', until='1h' means '1 to 2 hours ago'.
 - `cursor`: filters + limit apply first, then the cursor pages within the filtered result (page size 100).
+- Hub mode returns the newest entries first, so `limit` keeps the most recent. MCP-mode entries keep up to 500 characters of message and 1,000 of exception/stack text. The native log line keeps the full message.
 
 ### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
 
@@ -10665,6 +10777,8 @@ Only query devices the user has mentioned or that are relevant to their request.
 - **comparator** (default eq, value in the expected set): ne = NOT in the set. gt/gte/lt/lte = numeric compare against expectedValue. between = numeric inclusive low<=value<=high from expectedValues (exactly 2). Numeric comparators never match a null/non-numeric value (keep polling).
 - **stableForMs** (debounce, default 0 = first match): Must be < timeoutMs. A value that flaps out of the condition restarts the window.
 - **pollIntervalMs** (poll mode re-check interval, default 200): the TARGET cadence. Every tick costs one native read per device, and that latency is subtracted from the sleep so fast reads keep the requested spacing; the sleep never drops below half the interval, so slow reads (or many devices) space ticks by the reads plus that floor rather than saturating the hub. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)
+- **Poll result:** on convergence, `success: true, finalValue, elapsedMs, polledCount, timedOut: false`. On timeout, `success: false, timedOut: true` with the last `finalValue` and `transitioning` (value still changing), plus `neverReported: true` (no non-null value all window) or `nonNumericAttribute: true` with a `note` (numeric comparator on a non-numeric value). `readError: true` (success or timeout) means a read threw on some tick, e.g. the device was removed, and that tick counted as unread. A hub reload mid-poll returns `interrupted: true`. Multi-device results carry these per device, with `transitioning`/`note` at the top level on timeout.
+- `ne` never matches a null or never-reported value. Any poll argument (comparator, stableForMs, timeoutMs, pollIntervalMs, deviceIds, mode) switches to poll mode, which then requires expectedValue or expectedValues.
 
 ### hub_list_device_events
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
@@ -10690,7 +10804,9 @@ Protected apps selected in the MCP server Hubitat app UI refuse generic app/nati
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 
-### hub_read_apps_code (4 tools)
+A single tool can also be switched off under **Advanced: Per-tool Overrides**. A call to it then fails with "…is disabled in Advanced settings (Per-tool Overrides)…". Re-enable it on the same MCP Rule Server settings page.
+
+### hub_read_apps_code — installed-app reads
 
 - **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
@@ -10716,7 +10832,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
   - Returns the live primary page plus every sub-page it links to (read from the page itself, any app type), with a curated directory added for HPM
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
-### hub_read_apps_code (2 tools) — HPM package state introspection (Read master required)
+### hub_list_hpm_packages — HPM package state introspection (in hub_read_apps_code; Read master required)
 
 - **hub_list_hpm_packages** — return all packages tracked by Hubitat Package Manager with full component inventory
   - If hpmAppId is omitted, HPM is auto-discovered by scanning installed apps for type="Hubitat Package Manager"
@@ -10734,6 +10850,8 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
 ### hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
+(These four tools and hub_get_rule_health are also in hub_manage_rule_machine. The reads, hub_list_rules and hub_get_rule_health, are also in hub_read_rules.)
+
 - **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "stopped" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
   - **disabled** is the app's red-X enable/disable flag, read straight from /hub2/appsList (data.disabled).
   - **paused** is decoration-detected. Rule Machine surfaces a paused rule ONLY as a "(Paused)" suffix appended to the app's /hub2/appsList name; the RMUtils label for the same rule stays clean (live-verified). So the appsList name and the RMUtils label are BOTH HTML-stripped (tags removed, entities decoded, trimmed — the appsList name comes decoded, the RMUtils label comes entity-escaped like "Heat On &lt;67" and can carry trailing spaces) and diffed: equal → no decoration; appsList == label + remainder → the remainder is the decoration ("(Paused)" ⇒ paused, "(Required Expression false)" ⇒ requiredExpressionFalse). A rule the user literally NAMED "... (Paused)" is NOT false-flagged: the RMUtils label carries the same suffix, so the remainder is empty.
@@ -10750,7 +10868,7 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
 - **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires the Write master):
-- **hub_set_native_app** — create or edit any classic SmartApp (Button Controller, Notifier, Groups+Scenes, Basic Rules; edits Visual Rules by appId too). Omit appId to create (appType enum: rule_machine / button_controller / groups_scenes / notifier / basic_rule; name); provide appId to edit via settings/button. Visual Rules are created with hub_set_visual_rule, not this appType enum. Create a Button Rule under its controller via buttonRule={controllerId, buttonNumber, event} (returns buttonRuleId; author its actions via hub_set_rule). walkStep (generic classic-page walker) works here too. Returns appId on create. (In the hub_manage_native_rules_and_apps gateway.)
+- **hub_set_native_app** — create or edit any classic SmartApp (Button Controller, Notifier, Groups+Scenes, Basic Rules, Room Lighting; edits Visual Rules by appId too). Omit appId to create (appType enum: rule_machine / button_controller / groups_scenes / notifier / basic_rule / room_lighting; name); provide appId to edit via settings/button. Visual Rules are created with hub_set_visual_rule, not this appType enum. Create a Button Rule under its controller via buttonRule={controllerId, buttonNumber, event} (returns buttonRuleId; author its actions via hub_set_rule). walkStep (generic classic-page walker) works here too. Returns appId on create. (In the hub_manage_native_rules_and_apps gateway.)
 - **hub_set_rule** — create or edit a Rule Machine rule. Omit appId to create (name; optionally bundle addTriggers=[...] / addActions=[...] to populate in one call); provide appId to edit via the structured shortcuts (addTrigger / addAction / addRequiredExpression / walkStep / ...). (In the hub_manage_rule_machine gateway.)
 - **hub_set_rule** (edit detail) — edit an existing Rule Machine rule (appId required). Two raw modes (settings (Map) OR button (String)) plus 17 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger). modifyAction={index:N, mods:{ruleIds:[...]}} retargets a rule-targeting action (runRule/cancelTimers/pauseRule/privateBoolean; pauseRule also mods.action, privateBoolean also mods.value) via position-preserving rebuild -- the action's settings index changes, its position doesn't; other action shapes need removeAction + addAction. CAVEATS (verified live, fw 2.5.1.135): RM silently no-ops delete-class wizard clicks on a DISABLED app, so editing a staged-disabled clone means enable -> modifyAction -> re-disable; and a '(Not Installed)' Button Rule child (no actions yet) rejects those clicks even when enabled -- author its first action before retargeting.
 - **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: appId, disabled (bool). Read-back verified.
@@ -10828,12 +10946,15 @@ This is the generic upsert tool for ANY classic SmartApp. It is separate from th
 **`name`** — the label for the new app; it is shown in the hub's app list.
 
 **Button Rules.** A Button Rule cannot be created standalone and is NOT an `appType` value — create it via the `buttonRule` parameter (`buttonRule={controllerId, buttonNumber, event}`). It routes through the controller's add-button flow and returns `buttonRuleId` with the Button trigger auto-seeded; author its actions via `hub_set_rule(appId=buttonRuleId, addAction=...)`. The controller must already have a button device assigned.
+`hub_set_rule` accepts the same `buttonRule={controllerId, buttonNumber, event}` parameter.
 
 **RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference_walkstep')`. For Rule Machine RULES use `hub_set_rule`.
 
 **Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and destructive Required Expression replacement always take a fresh snapshot.
 
 **CREATE by `appType`** covers the enum types (`rule_machine` / `button_controller` / `groups_scenes` / `notifier` / `basic_rule` / `room_lighting`). Other classic apps can usually still be created through their PARENT app's own page, driven like any other app: e.g. the Room Lighting parent's "Create Room Lights from Group, Scene or Scene Transition" input (`newScene`) creates a Room Lights instance from an existing group or scene when written with `hub_set_native_app(appId=<parent id>, settings={newScene:[<group/scene app id>]})`. Inspect the parent with `hub_get_app_config` or `walkStep` introspect first.
+
+If a registered type's built-in parent app is not installed yet (for example, no Button Controllers on a fresh hub), create installs it through the hub's "Add Built-In App" route and retries. No manual install is needed. The call fails only if that bootstrap fails.
 
 ### hub_get_rule_health
 
@@ -10848,13 +10969,17 @@ The report surfaces the compiled-state broken verdict, validationErrors, config-
 - `ruleBuilderJson`: the compiled-state verdict only.
 - `configPage`: the legacy RM HTML render scan only.
 
+`unreadable:true` (with `ok:false`) means neither source could be read. The rule may be missing or the read hit a transient failure, so this is not evidence of breakage. If only one source failed, `ok` reflects the source that was read and `checkErrors` names the failed leg (or a failed statusJson read for the live counts); re-run for a full verdict. `brokenMarkerCounts` counts each broken marker. Apps with no compiled verdict (vrb-classic, button-controller, basic-rule, classic-app) report `broken: null`. `hub_set_rule` attaches this health report as `health` on every response, success or error. `hub_set_visual_rule` attaches it on every response that resolves to a rule id; an early create failure has no id.
+
 ### hub_list_rule_local_variables
 
 List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
 
 - Hub globals are covered by `hub_list_variables`; locals are created via `hub_set_rule` `addLocalVariable` / `removeLocalVariable`.
-- Reads `state.allLocalVars` from the rule's `statusJson` appState; returns each local's name, type, and current value.
+- Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
+- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the `addLocalVariable` enum. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
+
 - Use to confirm a local exists (and its type) before targeting it with the `setLocalVariable` action or `removeLocalVariable` shortcut.
 
 ### hub_delete_native_app
@@ -10886,6 +11011,9 @@ The `force` flag selects which hub admin-layer endpoint performs the delete:
 - `hpmAppId` pointing at a non-HPM app -> `IllegalArgumentException` disclosing the actual app type.
 
 **Drift mode (`includeDrift=true`):** off by default; enabling it adds 1-2 hub calls.
+- Each `signals[]` entry has `type`, `componentType`, `componentName`, `componentId` and `note`. `orphan-app`/`orphan-driver` entries also carry the orphaned `heID`. Files are never drift-checked because HPM tracks them by name only.
+- `orphanDetection.enabled=false` (or `orphanDriverDetection.enabled=false`) means that registry read failed, so no orphan signals of that kind could fire. `reason` says why, and `summary` gets a "(partial: … disabled this call …)" suffix. A required component whose heID was dropped as non-scalar (`heid-non-scalar-dropped`) is also left out of the count. Check both before you read `packagesWithActionableDrift == 0` as clean.
+- If `packageFilter` matches nothing, the result has `filterMatchedZero:true` plus `availablePackages[]` (the tracked package names), so you can tell a misspelled filter from a clean hub.
 
 **Cursor pagination:** page size 25. Each package entry carries its full app/driver/file inventory, so individual entries can be large.
 
@@ -10916,7 +11044,7 @@ Exports to the same JSON format Hubitat's UI Export button produces. Three use c
 
         set_rule_reference: '''## `hub_set_rule` capability reference
 
-Reference for the `hub_set_rule` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`), the lower-level `walkStep` walker, and the raw `settings`/`button` wizard flow. The tool's schema descriptions point here so BOTH the flat and gateway `tools/list` catalogs stay lean (issue #181) without losing this reference. Get this whole section back inline at call time with `hub_set_rule(guide: true)` (no separate tool call), or pass `{discover: true}` on `addTrigger`/`addAction` for the live machine-readable schema.
+Reference for the `hub_set_rule` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`), the lower-level `walkStep` walker, and the raw `settings`/`button` wizard flow. The tool's schema descriptions point here so BOTH the flat and gateway `tools/list` catalogs stay lean without losing this reference. Get this whole section back inline at call time with `hub_set_rule(guide: true)` (no separate tool call), or pass `{discover: true}` on `addTrigger`/`addAction` for the live machine-readable schema.
 
 To READ a rule's current configuration -- before an edit to discover the right input names, or to verify after a write -- use `hub_read_apps_code -> hub_get_app_config(appId)`. It is NOT in the `hub_manage_rule_machine` / `hub_manage_native_rules_and_apps` rule gateways; the rule-read tool lives in `hub_read_apps_code`.
 
@@ -10930,6 +11058,8 @@ Each edit response includes the File Manager baseline under `backup.backupKey`. 
 - **Button** (`capability='Button'`): `deviceIds`, `buttonNumber`, `state` (`pushed` | `held` | `doubleTapped` | `released`)
 - **Custom Attribute** (`capability='Custom Attribute'`): `deviceIds`, `attribute` (the attribute name), `comparator`, `value`
 - **And-stays sticky modifier** (any device-state or numeric trigger): add `andStays={hours, minutes, seconds}` to the spec
+- **Conditional trigger**: add `condition={capability, deviceIds?, state?, comparator?, value?, attribute?, variable?, compareToVariable?, not?, rawSettings?}` to a trigger spec. The trigger then fires only while that condition holds. A singular `deviceId` is accepted. The supported shapes are narrower than for Required Expressions (see "Extended per-capability spec shapes" below).
+
 - **Time / Sunrise / Sunset** (`capability='Certain Time (and optional date)'`): `time` (`'A specific time'` | `'Sunrise'` | `'Sunset'`), `atTime`, `offset` (minutes, for sunrise/sunset)
   - `atTime` semantic: `'HH:mm'` form (e.g. `'17:00'`) = **DAILY-recurring** trigger that fires every day at that wall-clock time. Full ISO datetime (e.g. `'2026-04-29T17:00:00'` or `'2026-04-29T17:00:00.000-0500'`) = **ONE-SHOT dated** trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
 - **Mode** (`capability='Mode'`): `state='Night'` OR `state=['Away','Night']` (mode names, case-insensitive) OR `modeIds=['3']` OR `modeIds=['3','5']` (IDs directly, from `hub_list_modes`).
@@ -11016,6 +11146,8 @@ For the live machine-readable per-field schema (action enums, required and optio
   - **NOTE:** fan `setSpeed` takes a fixed enum speed only (low / medium-low / medium / medium-high / high / on / off / auto); RM has no variable-sourced fan speed (unlike dimmer `setLevel`'s `levelVariable`) because the classic wizard exposes a variable toggle only for numeric/text value fields, not enum pickers. For a variable-driven speed, use `capability='runCommand'` with `command='setSpeed'` + `parameters=[{type:'string', variable:'<varName>'}]` (per-parameter variable sourcing).
 - **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `hub_list_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
 - **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. With `value`, an optional `numOp` picks the operation: `number` (default, sets the variable to value) or `add number` (adds value to it); any other `numOp`, or `numOp` without `value`, is refused before any write. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. `sourceVariable` works for Number, Decimal and String targets (a String target is written through RM's `valStringOp.<N>="Copy variable"` picker); a Boolean or DateTime target is refused before any write. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
+  - `value`, `fromDevice` and `math` need a Number or Decimal target variable. Any other target type is rejected before the write.
+
 - **Rule-local Variable** (`capability='setLocalVariable'`): identical shape and source modes to `setVariable` (`variable` target + exactly one of `value`/`sourceVariable`/`fromDevice`/`math`), EXCEPT the `variable` target is validated against the rule's LOCAL variables (`state.allLocalVars`) instead of hub globals. Use this -- not `setVariable` -- when a local and a hub variable share a name and you mean the local; it cannot silently target the global. `sourceVariable`/`math` operands may be either local or hub (RM's source picker spans both; validated against the live revealed enum). Create a local first via `addLocalVariable`; list current locals via `hub_list_rule_local_variables` (in `hub_read_rules`). The picker section headers ` --LOCAL VARIABLES--` / ` --HUB VARIABLES--` are rejected as targets.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
@@ -11059,6 +11191,8 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 
 - **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema.
 - **Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`. Precondition: hub `location.timeZone` must be configured.
+  - `time` (hub-local `HH:mm`) is required when `type:'clock'`, and `offset` (minutes) when `type:'sunrise'|'sunset'`. A missing value is rejected before any write. If the hub timezone is unset, a clock condition throws before the wizard is touched.
+
 - **Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}` for a constant RHS, OR `{capability:'Variable', variable:'<hubVarName>', comparator:'=', compareToVariable:'<otherHubVarName>'}` for a variable-vs-variable RHS. A free-valued (String) variable (and a free-valued Custom Attribute) also accepts the STRING comparator `*contains*` (substring match, written verbatim -- keep the asterisks; the substring is the `value`); there is no "does not contain" -- negate with `not:true` + `*contains*`. For value-comparison comparators supply exactly one of `value`/`compareToVariable` -- they are mutually exclusive (passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`). For the variable RHS the walker toggles `isVar_<N>=true` and discovers the firmware-assigned right-hand picker from the live schema -- it does NOT hardcode `xVarR_<N>` because `selectTriggers` consistently exposes `xVarR` but the walker pages (STPage/doActPage) can expose a differently-suffixed field, so the walker resolves whatever the live schema reveals. Fail-loud when a variable name is not in the schema enum AND the option list is non-empty; degrades with an `api_unavailable` sentinel (`variable-validation` for the LHS picker, `compareToVariable-validation` for the RHS picker) when the enum is empty, flipping `partial`. A Boolean variable has no comparator field: pass `value:true|false` (optionally `comparator:'='`, negate with `not:true`); any other comparator, a `compareToVariable`, or a value other than true/false is rejected before the Boolean value is written. The capability and variable pickers are already written by then, so the rejection cancels the in-flight condition. A page that also shows a comparator field is treated as a comparison, not a Boolean.
 - **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute?:'temperature', offset?:-2}}`. The RHS is another device's reading on the SAME capability, optionally offset. The walker writes the comparator `RelrDev_<N>`, toggles `isDev_<N>=true` to reveal the SINGLE reference-device picker `relDevice_<N>`, writes the reference id, then writes the optional decimal offset to `state_<N>` (omit -> offset 0). `relDevice_<N>` is a capability.* device picker locked to the LHS capability; on normal firmware RM populates its dropdown client-side, so the schema exposes no options and the empty option list is normal. The reference `deviceId` is existence-validated hub-wide before any write; a nonexistent id is rejected up front. On the rare firmware variant that DOES surface device-picker options, the walker additionally defensively rejects a reference id not in that list. Mutually exclusive with a literal RHS (`state`/`value`) and with `compareToVariable` -- supply exactly one RHS shape. There is NO separate reference-attribute picker: the compared attribute is implied by the shared capability, so `compareToDevice.attribute` is OPTIONAL and informational (no wire consumer; neither validated nor written). Passing compareToDevice on a non-numeric capability (Mode / Between two times / Variable / Custom Attribute) is rejected up front with a fail-loud error naming the capability -- it is NOT silently dropped. **Intentional isDev/isVar asymmetry (do not "fix"):** an EMPTY option list is NORMAL for `compareToDevice`'s `relDevice_<N>` because it is a capability.* DEVICE picker (RM fills it client-side), so no options, no sentinel, no partial. This deliberately differs from `compareToVariable`, whose right-hand picker is an ENUM picker where an empty option list IS an anomaly and emits an `api_unavailable` sentinel with `partial:true`. The divergence reflects picker type (device vs enum), not an oversight.
 - **Sub-expression (parens) -- addRequiredExpression-only**: `{subExpression:{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}}`. The STPage walker recursively handles nesting of arbitrary depth. **`addAction` (ifThen/elseIf/repeatWhile/waitExpression) REJECTS nested subExpression** with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list, or move the nested expression to a Required Expression.
@@ -11088,7 +11222,7 @@ Mechanism: clicks `cancelST` ("Delete Required Expression") to remove the whole 
 - Precondition: a committed Required Expression MUST already exist. If none does, returns `success:false, requiredExpressionMissing:true` steering you to `addRequiredExpression` -- a replace never silently becomes an add.
 - Destructive-window contract: the `cancelST` delete is immediately destructive (the committed gate is gone the instant it is clicked). Protections: (1) the ENTIRE spec is validated BEFORE the click (conditions/operator/operators rules, deviceId existence), so a malformed spec fails with the OLD expression intact; (2) after the delete succeeds, ANY failure auto-restores the pre-op backup -- INCLUDING a post-commit health flip (the rebuild baked but left the rule unhealthy, e.g. a ghost-`ifThen` clear wrapped it in `IF(**Broken Condition**)`) OR a rejected trailing `updateRule` click, because the trailing finalize runs inside the same restore window as the delete. The result then carries `requiredExpressionReplaced:false` + `requiredExpressionRestored:true` (original restored from backup) OR `requiredExpressionRestored:false` (DELETED and auto-restore also failed -- the error names the `hub_restore_backup(backupKey=...)` recovery) OR `requiredExpressionRestored:false` + `requiredExpressionRestoredAs:<newId>` (auto-restore could not reuse the original appId and recreated the rule under a NEW id -- the original appId is dead; use the new id and delete the husk). A post-delete failure is NEVER a benign no-op.
 - Fail-loud: if the `cancelST` delete is silently rejected (STPage still shows the committed-expression controls), the helper restores the pre-op backup and returns `success:false` naming the step; the existing expression is preserved. Inspect via `hub_get_app_config(appId)`.
-- Success envelope: `requiredExpressionReplaced:true` (a NEW expression was COMMITTED, not merely the old one deleted; may not be live yet if `updateRuleFailed` -- check `expressionNotLive`) plus the same `conditionIndices`/`settingsApplied`/`settingsSkipped`/`partial`/`repairHints` envelope and trailing-updateRule slots (`updateRuleFailed`/`expressionNotLive`/`updateRuleError`) as `addRequiredExpression`.
+- Success envelope: `requiredExpressionReplaced:true` means a NEW expression was committed and its trailing `updateRule` fired, not merely that the old one was deleted. It carries the same `conditionIndices`/`settingsApplied`/`settingsSkipped`/`partial`/`repairHints` envelope as `addRequiredExpression`. A rejected trailing `updateRule` never gives a committed-but-not-live result here. It falls inside the destructive window and auto-restores, returning `success:false` + `requiredExpressionReplaced:false` + `requiredExpressionRestored:*`, and `updateRuleFailed`/`expressionNotLive`/`updateRuleError` stay set to show why.
 - Deleted-condition residue: on a SUCCESSFUL replace the deleted condition's underlying settings linger in the pool but are NOT part of the active formula -- harmless, renders cleanly, no cleanup write issued. New slot indices continue past the deleted slot.
 - Committed-RE detection: a committed expression is detected by the `cancelST` + `editST` control pair (a two-field tell, intentionally narrower than `addRequiredExpression`'s three-field check because that pair is firmware-stable on 5.1.8 while `stopOnST` varies across revisions).
 
@@ -11165,7 +11299,8 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 - `state_change_route_unverified_fetch_failed` -- the post-device-write `selectTriggers` re-fetch (needed to inspect which field the wizard renders before placing a state-change comparator) failed transiently, so the change token could not be verifiably placed. Rather than aborting or force-writing a possibly-wrong value, the add degrades to `partial:true` with a `hint` to verify via `hub_get_app_config` and, if needed, write `tstate<N>` (device-state) or `ReltDev<N>` (numeric) via `walkStep`.
 
 Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLocalVariable`, `removeLocalVariable`, bulk `addTriggers`/`addActions`, `patches`, and the action/trigger mutation dispatchers):
-- `addRequiredExpression` / `replaceRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. `repairHints` adds a recovery line pointing at `hub_set_rule(button='updateRule', confirm=true)`. `replaceRequiredExpression` additionally returns `requiredExpressionReplaced:true` on success and `requiredExpressionMissing:true` (success:false) when there is no committed expression to replace.
+- `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. The expression IS committed but not live, and `repairHints` points at `hub_set_rule(button='updateRule', confirm=true)`.
+- `replaceRequiredExpression`: the old expression was already deleted, so a rejected trailing `updateRule` auto-restores the pre-op backup. The result is `success:false` + `requiredExpressionReplaced:false` + `requiredExpressionRestored:*`, and the three updateRule slots stay set. In a `patches[]` batch, a batch-end `updateRule` failure rolls the replace op back the same way. A clean replace returns `requiredExpressionReplaced:true`. With no committed expression to replace, it returns `requiredExpressionMissing:true` (success:false).
 - `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to its device events -- retry `updateRule` to populate subscriptions.
 - `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
 - `removeLocalVariable`: removes a local variable via RM's `deleteGV`/`delConfirm` wizard, then verifies it left `state.allLocalVars`. A verify miss returns `success: false` + `partial: true` + `repairHints` (the `delConfirm` commit is the fragile step; or the variable is still referenced by an action/expression -- remove those refs first). On a rejected trailing `updateRule`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` -- retry as above. List current locals via `hub_list_rule_local_variables` (in `hub_read_rules`).
@@ -11173,12 +11308,15 @@ Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLo
 - Bulk early stop (`addTriggers` / `addActions`, create, `replaceActions`, and `patches` including each op's inner list): the first item or op that returns `success:false` or `partial:true` stops the request. Items after the stopping item return `notAttempted:true`, the remaining `updateRule` and Done are not fired, and the result carries `bulkStoppedAfter`, `finalisationNotAttempted:true` and an `error` naming the stopping item. On create, a Required Expression whose re-init `updateRule` was rejected also stops the request, so `bulkStoppedAfter:'requiredExpression'` can arrive together with `updateRuleFailed` + `updateRuleError`. Skipping finalisation is not a rollback: items before the stop remain written, actions self-bake, `replaceActions` has already cleared the old list, and create may already have finalised its trigger and Required Expression sections, so earlier writes can already affect an active rule. On an edit, repair the failed item and add the not-attempted items, or restore `backup.backupKey`; a newly created rule has no pre-operation backup, so repair it or delete and re-create it. Fire `updateRule` once the rule is complete.
 - `patches`: `updateRuleFailed: true` + `patchesNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The patch ops landed but the rule will not re-evaluate / re-subscribe until updateRule fires -- retry as above. This applies only when finalisation was attempted and rejected.
 - `removeTrigger` / `modifyTrigger` / `modifyAction` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.
+- `modifyAction` (delete, re-add, then reposition): `success` needs the readback to confirm both the new target list and the rebuilt fields. `moveSoftFail` means the reposition could not be verified. `budgetPaused` + `movesRemaining` means the rebuild committed but repositioning is unfinished, and the error names the `moveAction` calls that finish it. When the re-add fails or the budget pauses, the trailing `updateRule` is skipped and `subscriptionsNotLive` is true.
 
 ### deviceId vs deviceIds normalization (all condition writes)
 
 Conditions accept either `deviceIds: [N]` (array) or singular `deviceId: N`; the dispatcher normalizes the singular form to the array RM 5.1 expects in `rDev_<N>`. A bare integer passed where the array is expected bypasses pre-validation and silently stores `{N: null}` (the rule renders but never fires), so prefer `deviceIds`. If both are supplied, `deviceIds` (array) wins. Applies recursively inside nested `subExpression.conditions[]`.
 
 ### Action-mutation defensive recovery (clearActions / replaceActions)
+
+Arg shapes: `clearActions: true` removes every action. `replaceActions: [<addAction spec>, ...]` replaces the list, and `replaceActions: []` behaves exactly like `clearActions: true`. In the partial envelope below, a `null` `actionsRequestedForRemoval` or `actionsStillPresent` means that fetch failed, not that the field is absent.
 
 The action-clear path commits synchronously, but a thin verify-retry guards against a stuck `state.editAct` or a rare firmware commit lag. If the verify still sees the actions present, the response carries `asyncCommitLikely: true, partial: true` plus a `safeRecovery` block. clearActions adds `stage: 'clearActions.verify_absent', httpWriteStatus: 200, wizardStuck: false` and `actionsRequestedForRemoval` / `actionsStillPresent` / `possibleStateEditAct`. replaceActions, on a late inner-clear, sets `stage: 'replaceActions.clear_committed_late_no_add'`, does NOT attempt the add half (prevents a double-write if the clear did commit), echoes the original specs as `pendingActionsToAdd`, and exposes the inner clear fingerprint via `clearActionsResult`. Recovery for both: call `hub_get_app_config(appId)` to check whether the clear committed -- if the actions are absent it committed (for replaceActions, then call `addAction`/`addActions` with the echoed specs to finish). Do NOT call `cancelTrash`: in trash-confirmation mode it may commit pending deletes rather than abort.''',
 
@@ -11191,6 +11329,8 @@ The action-clear path commits synchronously, but a thin verify-retry guards agai
 - `rule_machine` — Rule Machine 5.1 (verified live; the only FULLY-supported type — the others have partial label/config handling).
 - `button_controller`, `groups_scenes`, `notifier`, `basic_rule`, `room_lighting` — registered classic types using the same endpoint family. `room_lighting` creates a Room Lights instance; its edits commit with the page's own Update button. Other classic SmartApps are edited and deleted by `appId`, and can often be created through their parent app's own page (see hub_get_tool_guide(section='builtin_app_tools_crud')).
 - Visual Rules are NOT created here — they are Vue-JSON apps; use `hub_set_visual_rule` (see `hub_get_tool_guide(section='visual_rule_reference')`).
+
+On create (no `appId`), `hub_set_rule` can bundle `addTrigger`/`addTriggers`/`addAction`/`addActions`/`addRequiredExpression` to populate the new rule in one call. The bundled Required Expression's outcome is returned under `result.requiredExpression`. Edit-only operations (`replaceRequiredExpression`, `addLocalVariable`, `removeLocalVariable`, `patches`, `replaceActions`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, `modifyAction`, `walkStep`, raw `settings`/`button`) are rejected on create, never silently dropped. Create first, then call again with the returned `appId`.
 
 ### Partial-success protocol
 
@@ -11233,6 +11373,8 @@ Create a new hub variable (global variable visible to apps and Rule Machine), on
 ### hub_delete_variable
 
 Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale lease variables, or general cleanup.
+
+DESTRUCTIVE, no undo; requires `confirm=true` plus a backup <24h. Detects whether the name is a hub variable or a rule_engine variable. Deleting a hub variable also deletes its connector device when one exists (`connectorDeleted` in the response).
 
 **Why the reference-safety refusal matters:** deleting a variable something still uses silently breaks it — null lookups → false conditions, and a literal `%varname%` left in substitutions. Without `force=true` the tool refuses when:
 - the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there);
@@ -11413,6 +11555,7 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
+A legacy client that receives `status: "in_progress"` from a log read or from `hub_delete_debug_logs` repeats the identical call.
 
 `hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous. Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
 

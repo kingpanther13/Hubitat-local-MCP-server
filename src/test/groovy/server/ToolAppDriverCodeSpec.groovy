@@ -4540,6 +4540,24 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         warnLogs.any { it.contains('BLOCKED') && it.contains('id=1') }
     }
 
+    // appId is an Apps Code class id, which differs from the running instance id (1 here).
+    def "hub_update_app refuses a self-update addressed by the MCP server's Apps Code class id when Developer Mode is OFF"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = false
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200] }
+
+        when:
+        script.toolUpdateAppCode([appId: '178', source: 'self-overwrite', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("refuses to overwrite the MCP server's own app source (appId=178)")
+        posts.isEmpty()
+    }
+
     @spock.lang.Unroll
     def "hub_update_app via dispatch returns isError validation result envelope on self-update with Developer Mode off (useGateways=#useGateways)"() {
         given:

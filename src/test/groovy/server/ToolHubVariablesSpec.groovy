@@ -1110,6 +1110,137 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.value == 'hi'
     }
 
+    // Live: Hub Variables clicks land asynchronously, and the date/time POST sometimes commits by
+    // itself and sometimes waits for the form's Done button.
+    private Map stubDateTimeCreate(Map opts) {
+        def rec = [clicks: [], posts: [], sets: [], stored: opts.committedValue, getCalls: 0]
+        script.metaClass.getGlobalVar = { String n ->
+            rec.getCalls++
+            if (rec.getCalls == 1) return null   // pre-flight: the name is free
+            return rec.stored == null ? null : [name: n, type: 'DateTime', value: rec.stored]
+        }
+        script.metaClass.setGlobalVar = { String n, v -> rec.sets << v; if (opts.setterWorks != false) rec.stored = v; true }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            rec.clicks << btnName
+            if (btnName == 'dateTimeDone' && opts.doneCommits) rec.stored = opts.doneCommits
+            return [status: 200]
+        }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
+            if (applied != null) applied << key
+        }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarsFormFields = { Integer appId ->
+            if (opts.formNeverOpens) return ['filter'] as Set
+            if (rec.clicks == ['moreVar'] && !rec.posts) return ['hbVar', 'cancelGV'] as Set
+            if (rec.posts && opts.waitsForDone && !rec.clicks.contains('dateTimeDone')) return ['hbVar', 'varDate', 'varTime', 'dateTimeDone'] as Set
+            return ['filter'] as Set
+        }
+        script.metaClass.hubInternalGet = { String path, Map query = null, Integer timeout = 30 ->
+            groovy.json.JsonOutput.toJson([app: [id: 1424, version: 7], configPage: [sections: [[input: [
+                [name: 'varDate', type: 'date'], [name: 'varTime', type: 'time']]]]]])
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            rec.posts << body
+            if (opts.postCommits) rec.stored = opts.postCommits
+            return [status: 200]
+        }
+        return rec
+    }
+
+    def "hub_create_variable DateTime sends date and time in one POST and needs no Done when that commits"() {
+        given:
+        enableWrite()
+        def rec = stubDateTimeCreate(postCommits: '2026-01-01T12:30:00.000-0500')
+
+        when:
+        def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: '2026-01-01T12:30:00.000-0500', confirm: true])
+
+        then:
+        rec.clicks == ['moreVar']
+        rec.posts.size() == 1
+        rec.posts[0]['settings[varDate]'] == '2026-01-01'
+        rec.posts[0]['settings[varTime]'] == '12:30'
+        rec.sets.isEmpty()
+        result.success == true
+        result.value == '2026-01-01T12:30:00.000-0500'
+    }
+
+    def "hub_create_variable DateTime clicks Done when the form waits for it"() {
+        given:
+        enableWrite()
+        def rec = stubDateTimeCreate(waitsForDone: true, doneCommits: '2026-01-01T12:30:00.000-0500')
+
+        when:
+        def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: '2026-01-01 12:30', confirm: true])
+
+        then:
+        rec.clicks == ['moreVar', 'dateTimeDone']
+        rec.sets.isEmpty()
+        result.success == true
+    }
+
+    @spock.lang.Unroll
+    def "hub_create_variable DateTime sets the full hub-local value when the commit dropped the time (#input)"() {
+        given:
+        enableWrite()
+        def rec = stubDateTimeCreate(postCommits: '2026-01-01T99:99:99.999-9999')
+
+        when:
+        def result = script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: input, confirm: true])
+
+        then:
+        rec.sets.size() == 1
+        rec.sets[0] ==~ /2026-01-01T12:30:00\.000[+-]\d{4}/
+        result.value == rec.sets[0]
+
+        where:
+        input << ['2026-01-01T12:30', [date: '2026-01-01', time: '12:30']]
+    }
+
+    def "hub_create_variable DateTime refuses an invalid date before the wizard opens"() {
+        given:
+        enableWrite()
+        def rec = stubDateTimeCreate([:])
+
+        when:
+        script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: '2026-13-45T12:30', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('requires a valid date and time')
+        rec.clicks.isEmpty()
+        rec.posts.isEmpty()
+    }
+
+    def "hub_create_variable DateTime reports a created variable whose time could not be set"() {
+        given:
+        enableWrite()
+        stubDateTimeCreate(postCommits: '2026-01-01T99:99:99.999-9999', setterWorks: false)
+
+        when:
+        script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: '2026-01-01T12:30', confirm: true])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("'dtVar' was created, but its time could not be set")
+    }
+
+    def "hub_create_variable stops when the create form never opens"() {
+        given:
+        enableWrite()
+        def rec = stubDateTimeCreate(formNeverOpens: true)
+        script.metaClass._primeHubVarsWizard = { Integer appId, String context -> }
+
+        when:
+        script.toolCreateVariable([name: 'dtVar', type: 'DateTime', value: '2026-01-01T12:30', confirm: true])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains('create form did not open')
+        rec.clicks == ['moreVar', 'moreVar']
+        rec.posts.isEmpty()
+    }
+
     def "hub_create_variable post-wizard verification fails when getGlobalVar still returns null"() {
         given:
         enableWrite()

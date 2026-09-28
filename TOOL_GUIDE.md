@@ -144,6 +144,14 @@ This is the consolidation target: best-practice content can move here from indiv
 
 ---
 
+## Gateways, Permissions & Catalog Shape
+
+**Gateways.** With the default "Consolidate tools behind category gateways" setting ON, most tools sit behind domain gateways. Call a gateway with no arguments to get the schemas of its visible sub-tools, then call it with `tool='<name>'` and `args={...}` to run one. `hub_read_*` gateways contain only read-only tools; `hub_manage_*` gateways contain at least one write, and a read tool may appear in both kinds. `hub_manage_virtual_device` and `hub_manage_mode` are direct tools, not gateways. `hub_search_tools` finds any tool by natural-language query. A gateway call is permission-checked per sub-tool, exactly like a direct call.
+
+**Flat mode.** With that setting OFF, `tools/list` lists every tool individually and `hub_search_tools` is hidden. A cached call to a gateway name then returns an error naming the sub-tools to call directly. The Read/Write masters, the legacy Custom Rule Engine toggle, Developer Mode and the Advanced per-tool overrides also add or remove `tools/list` entries, so the visible catalog differs per install. After any of these change, the client may need to reconnect.
+
+**Permissions.** Two masters, Read and Write, gate every tool. Both are ON by default, and only an explicit OFF blocks. A tool under an OFF master disappears from `tools/list` and `hub_search_tools`, and a cached call fails with "Read tools are disabled..." or "Write tools are disabled...". Direct the user to the Read/Write toggles in the MCP app settings. On the Advanced: Per-tool Overrides page, individual tools or whole gateways can be switched OFF. These overrides are deny-only (they never re-enable what a master hides), and a cached call fails with "...is disabled in Advanced settings (Per-tool Overrides)...". Destructive writes also need `confirm=true` plus a backup <24h, regardless of the masters. Self-administration tools also need Developer Mode (see hub_update_mcp_settings).
+
 ## Destructive Write Tools - Pre-Flight Checklist
 
 All destructive write tools (the `confirm`+backup tier) require these steps:

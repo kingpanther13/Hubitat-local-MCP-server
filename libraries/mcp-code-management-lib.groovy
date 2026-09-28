@@ -255,7 +255,7 @@ def toolGetItemSource(String type, String idParam, args) {
         }
         if (savedToFile) {
             result.sourceFile = savedToFile
-            result.sourceFileHint = "Full source saved to File Manager. Use update_${type}_code with sourceFile: '${savedToFile}' to update without cloud size limits."
+            result.sourceFileHint = "Full source saved to File Manager. Use hub_update_${type} with sourceFile: '${savedToFile}' to update without cloud size limits."
         }
         return result
     } catch (Exception e) {
@@ -1265,7 +1265,7 @@ private Map toolInstallItemSingle(String type, args) {
                     success: false,
                     error: "${type.capitalize()} install unverified: hub returned unparseable verify body for ID ${newItemId}",
                     (idField): newItemId,
-                    note: "Hub created an item slot but the verify response was not valid JSON (possibly an HTML error/login page). Use get_${type}_source with ID ${newItemId} to confirm whether the item persisted. Do NOT retry the install without checking first -- a duplicate item with a different ID may result.",
+                    note: "Hub created an item slot but the verify response was not valid JSON (possibly an HTML error/login page). Use hub_get_source(type='${type}', id=${newItemId}) to confirm whether the item persisted. Do NOT retry the install without checking first -- a duplicate item with a different ID may result.",
                     lastBackup: formatTimestamp(state.lastBackupTimestamp)
                 ]
             }
@@ -1289,7 +1289,7 @@ private Map toolInstallItemSingle(String type, args) {
                 success: false,
                 error: "${type.capitalize()} install unverified: hub returned empty verify body for ID ${newItemId}",
                 (idField): newItemId,
-                note: "Hub created an item slot but the verify fetch returned no content. Use get_${type}_source with ID ${newItemId} to confirm whether the item persisted. Do NOT retry the install without checking first -- a duplicate item with a different ID may result.",
+                note: "Hub created an item slot but the verify fetch returned no content. Use hub_get_source(type='${type}', id=${newItemId}) to confirm whether the item persisted. Do NOT retry the install without checking first -- a duplicate item with a different ID may result.",
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
         }
@@ -1304,7 +1304,7 @@ private Map toolInstallItemSingle(String type, args) {
             verified: (verifyError == null),
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
-        if (verifyError != null) installResult.verifyError = "${verifyError} -- use get_${type}_source with ID ${newItemId} to confirm."
+        if (verifyError != null) installResult.verifyError = "${verifyError} -- use hub_get_source(type='${type}', id=${newItemId}) to confirm."
         if (sourceMode == "sourceFile") installResult.note = "Source was read from File Manager file '${args.sourceFile}'."
         if (sourceMode == "importUrl") installResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
         return installResult
@@ -1365,7 +1365,10 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
             mcpLog("error", "hub-admin", "hub_update_app: self-update guard cannot verify -- app context unavailable (app=${app}); refusing appId=${itemId} to fail closed")
             throw new IllegalArgumentException("hub_update_app cannot verify the self-update guard: app context is unavailable (app=${app}). Refusing to proceed to avoid a silent self-update brick. Retry the call; this is typically a transient lifecycle window.")
         }
-        if (itemId.toString() == selfAppId) {
+        // appId is an Apps Code CLASS id, so match it as well as the running instance id (as the
+        // OAuth guard does); an instance-only check never matched a real self-update.
+        def selfClassId = (itemId.toString() == selfAppId) ? null : _resolveSelfAppClassId()
+        if (itemId.toString() == selfAppId || (selfClassId != null && itemId.toString() == selfClassId.toString())) {
             if (!settings.enableDeveloperMode) {
                 mcpLog("warn", "hub-admin", "hub_update_app: self-update of MCP server app (id=${itemId}) BLOCKED -- Developer Mode is off")
                 throw new IllegalArgumentException("hub_update_app refuses to overwrite the MCP server's own app source (appId=${itemId}) while Developer Mode is off. A bad self-update can brick the MCP loop -- enable 'Developer Mode Tools' in the MCP Rule Server app settings to permit self-updates.")

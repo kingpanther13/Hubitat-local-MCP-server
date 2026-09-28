@@ -555,7 +555,7 @@ PERSISTED_STATE_INVENTORY = {
     "state": {
         "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
         "headersReadable", "originLocalIpReadable", "updateCheck",
-        "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable",
+        "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable", "setupVersion",
     },
     "atomicState": {
         "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy", "reportErrors",
@@ -1966,6 +1966,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     key_to_heading_hint = {
         "device_authorization": "Device Authorization",
         "best_practice_reference": "Best-Practice Reference",
+        "tool_access": "Gateways, Permissions & Catalog Shape",
         "hub_admin_write": "Destructive Write",
         "virtual_devices": "Virtual Device",
         "update_device": "update_device",

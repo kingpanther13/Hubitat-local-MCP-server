@@ -2352,7 +2352,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
         // coerce to the string form every downstream comparison uses instead of rejecting it.
         def id = _canonicalDeviceIdArg(entry.deviceId)
         if (!(id instanceof String) || !id.trim()) {
-            throw new IllegalArgumentException("commands[${i}].deviceId is required and must be a non-empty string (got: ${_describeValueForError(entry.deviceId)})")
+            throw new IllegalArgumentException("commands[${i}].deviceId is required and must be a non-empty string or integral number (got: ${_describeValueForError(entry.deviceId)})")
         }
         if (!(entry.command instanceof String) || !entry.command.trim()) {
             throw new IllegalArgumentException("commands[${i}].command is required and must be a non-empty string (got: ${_describeValueForError(entry.command)})")
@@ -2570,25 +2570,6 @@ private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
     pollArgs.timeoutMs      = waitFor.containsKey("timeoutMs")      ? waitFor.timeoutMs      : 5000
     pollArgs.pollIntervalMs = waitFor.containsKey("pollIntervalMs") ? waitFor.pollIntervalMs : 250
     return pollArgs
-}
-
-// Render a value plus a coarse runtime-type label for a validation error message. Uses
-// instanceof rather than getClass() (reflection is blocked in the Hubitat sandbox), so the
-// label is a small fixed vocabulary -- enough to tell a caller "you passed a number/boolean
-// where a string was required" without naming the exact JVM class.
-private String _describeValueForError(v) {
-    def typeLabel = (v == null) ? "null"
-        : (v instanceof String)  ? "string"
-        : (v instanceof Boolean) ? "boolean"
-        : (v instanceof Number)  ? "number"
-        : (v instanceof List)    ? "list"
-        : (v instanceof Map)     ? "object"
-        : "value"
-    if (v == null) return "null"
-    // Quote strings so an empty or whitespace-only value renders as "" / "   " rather than a
-    // bare gap in the message; non-string values render unquoted (e.g. 42 (number)).
-    def rendered = (v instanceof String) ? "\"${v}\"" : "${v}"
-    return "${rendered} (${typeLabel})"
 }
 
 // Parse a value as BigDecimal for numeric comparator math, or null if it is not numeric.
@@ -2918,7 +2899,7 @@ def toolPollUntilAttribute(args) {
         args.deviceIds.eachWithIndex { v, i ->
             def id = _canonicalDeviceIdArg(v)
             if (!(id instanceof String) || !id) {
-                throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string, got: ${_describeValueForError(v)}")
+                throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string or integral number, got: ${_describeValueForError(v)}")
             }
             coercedIds << id
         }
@@ -2936,7 +2917,7 @@ def toolPollUntilAttribute(args) {
         // Same Number coercion as the deviceIds branch: a numeric id is not wrong, just unstrung.
         def singleId = _canonicalDeviceIdArg(args.deviceId)
         if (!(singleId instanceof String) || !singleId) {
-            throw new IllegalArgumentException("deviceId is required and must be a non-empty string (got: ${_describeValueForError(args.deviceId)})")
+            throw new IllegalArgumentException("deviceId is required and must be a non-empty string or integral number (got: ${_describeValueForError(args.deviceId)})")
         }
         deviceIdList = [singleId]
     }
@@ -3677,9 +3658,14 @@ def toolGetDeviceHistory(args) {
         return locResult
     }
 
-    _requireDeviceToolAccess(args.deviceId)
-    def full = _fetchDeviceFullJson(args.deviceId)
-    if (!(full?.device instanceof Map)) return [success: false, isError: true, error: "Device metadata fetch failed (/device/fullJson/${args.deviceId})", note: 'Check native device details and retry.']
+    def deviceId = _canonicalDeviceIdArg(args.deviceId)
+    if (deviceId == null) {
+        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(args.deviceId)})")
+    }
+    args = args + [deviceId: deviceId]
+    _requireDeviceToolAccess(deviceId)
+    def full = _fetchDeviceFullJson(deviceId)
+    if (!(full?.device instanceof Map)) return [success: false, isError: true, error: "Device metadata fetch failed (/device/fullJson/${deviceId})", note: 'Check native device details and retry.']
     return _deviceHistoryBypass(args, full, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit)
 
 }

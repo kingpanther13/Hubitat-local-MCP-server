@@ -2946,6 +2946,10 @@ class TestRunner:
         assert hist.get("sinceMode") == "relative", f"hoursBack call should report sinceMode=relative: {hist}"
         assert "hoursBack" in hist and "since" not in hist, \
             f"relative mode should echo hoursBack, not since: {hist}"
+        # An integer deviceId is coerced, and echoed back as the canonical string id.
+        by_int = self.client.call_tool("hub_list_device_events", {"deviceId": int(dev_id), "hoursBack": 168})
+        assert by_int.get("deviceId") == str(dev_id) and by_int.get("source") == "device", \
+            f"integer deviceId should echo as the string id {str(dev_id)!r}: {by_int}"
         bm = _bookmark_from(hist.get("events", []))
 
         # Seed only if the scaffold lacks >=2 distinct timestamps (rare -- it is the
@@ -3906,6 +3910,17 @@ class TestRunner:
         })
         # Result should contain the value (on/off or similar)
         assert result is not None, "hub_get_device_attribute returned None"
+        # The one-shot read coerces a whole-number id as the poll path does; a fraction is refused.
+        by_int = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": int(switch_id), "attribute": "switch"})
+        assert by_int.get("value") == result.get("value") and by_int.get("device") == result.get("device"), \
+            f"integer deviceId read differs from the string-id read: int={by_int} str={result}"
+        try:
+            frac = self.client.call_tool("hub_get_device_attribute", {"deviceId": 1.5, "attribute": "switch"})
+            raise AssertionError(f"a fractional deviceId should be refused, got: {frac}")
+        except (McpToolError, McpError) as exc:
+            assert "deviceId must be a non-empty string or integral number" in str(exc), \
+                f"fractional deviceId refused with the wrong message: {exc}"
 
     @test("devices")
     def test_send_command_error(self) -> None:
@@ -5425,9 +5440,10 @@ class TestRunner:
         # The bundled create is the suite's heaviest single create; route it through
         # _create_native_rule so a dropped relay response gets verified by label lookup
         # instead of hard-failing the whole lifecycle.
+        certain_time_cap = "Certain Time (and optional date)"
         app_id = self._create_native_rule("NativeRule", {
             "addTrigger": {
-                "capability": "Certain Time (and optional date)",
+                "capability": certain_time_cap,
                 "time": "A specific time", "atTime": "17:00",
             },
             "addActions": [{"capability": "log", "message": "E2E native rule fired"}],
@@ -5667,6 +5683,33 @@ class TestRunner:
         edited = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "second action"}})
         assert edited.get("success") is not False, f"hub_set_rule edit reported failure: {edited}"
 
+        # modifyTrigger on the Certain Time trigger has no state to change: refused before the
+        # editor opens. The old path opened it, found no tstate, and left it open on selectTriggers.
+        lifecycle_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+        time_tidx = next((str(k)[len("tCapab"):] for k, v in lifecycle_settings.items()
+                          if str(k).startswith("tCapab") and str(k)[len("tCapab"):].isdigit()
+                          and v == certain_time_cap), None)
+        assert time_tidx is not None, f"no tCapab<N> holds the Certain Time trigger: {lifecycle_settings}"
+        no_state = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+            "appId": app_id, "modifyTrigger": {"index": int(time_tidx), "mods": {"state": "on"}},
+            "confirm": True}})
+        assert no_state.get("success") is False \
+            and "has no 'state' value to change" in str(no_state.get("error", "")) \
+            and "RM is not touched" in str(no_state.get("error", "")), \
+            f"modifyTrigger on a Certain Time trigger should be refused up front: {no_state}"
+        trig_page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+            "args": {"appId": app_id, "pageName": "selectTriggers"}})
+        assert trig_page.get("success") is True, f"selectTriggers read failed: {trig_page}"
+        trig_inputs = {str(i.get("name")) for s in ((trig_page.get("page") or {}).get("sections") or [])
+                       for i in (s.get("inputs") or [])}
+        # tCapab<N>/tstate<N>/isCondTrig.<N> are the open-editor scaffold; hasAll is its Done button.
+        open_editor = trig_inputs & {f"tCapab{time_tidx}", f"tstate{time_tidx}",
+                                     f"isCondTrig.{time_tidx}", "hasAll"}
+        assert not open_editor, \
+            f"the refused modifyTrigger left trigger {time_tidx}'s editor open ({sorted(open_editor)}): {trig_page}"
+        self._last_write_health = None
+        self._assert_rule_healthy(app_id)
+
         # DELETE via the cross-listed hub_delete_native_app -- this IS the lifecycle
         # assertion, so it stays binding: on a relay 504 the response is lost but the
         # delete may still have committed, so verify by listing rules (absent => the
@@ -5727,6 +5770,7 @@ class TestRunner:
             # The remaining handler-level validators run as ordered patches in one logical
             # continuation-aware call. Each is pre-write, so the batch may continue after a
             # refusal without accumulating mutations; the final config read below is binding.
+            missing_file = f"{PREFIX}no_such_file.txt"
             refusal_specs = [
                 ({"addTrigger": {"capability": "Temperature", "state": "changed"}}, ("comparator",)),
                 ({"addTrigger": {"capability": "Temperature", "value": "increased"}}, ("comparator",)),
@@ -5754,6 +5798,12 @@ class TestRunner:
                  ("armaway", "armrules")),
                 ({"addAction": {"capability": "colorTemp", "action": "setColorTemp"}},
                  ("kelvin",)),
+                # Not pre-write: the row opens, the picker check refuses, and the row is rolled back
+                # (asserted below). RM would otherwise store the name and mark the rule broken.
+                ({"addAction": {"capability": "fileAppend", "fileName": missing_file, "content": "x"}},
+                 ("is not a file on the hub",)),
+                ({"addAction": {"capability": "fileDelete", "fileName": missing_file}},
+                 ("is not a file on the hub",)),
                 ({"addAction": {"capability": "ifThen", "expression": {
                     "conditions": [{"capability": "Last Event Device"}]}}},
                  ("not usable as a condition",)),
@@ -5790,6 +5840,14 @@ class TestRunner:
                 and "not usable as a condition" in str(last_event_cond.get("error", "")).lower() \
                 and "in actions" in str(last_event_cond.get("error", "")).lower(), \
                 f"Last Event Device condition should fail loud as a non-condition, got: {last_event_cond}"
+            # The refused fileAppend/fileDelete rows were rolled back: the rule still renders, no row
+            # names the file, and none is orphaned. Checked before the runRule accept below adds a row.
+            assert missing_file not in self._rule_page_text(app_id), \
+                f"a refused file action left a row naming {missing_file}"
+            file_health = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert file_health.get("ok") is not False and not file_health.get("orphanedActionRows"), \
+                f"refused file actions left the rule unhealthy or with orphaned rows: {file_health}"
             # Mixed EDIT shortcuts used to apply only the first branch while reporting success.
             # The guard must reject the full call before the backup snapshot or any wizard write.
             try:
@@ -8553,6 +8611,29 @@ class TestRunner:
             assert len(setup) == 2 and all(entry.get("success") is not False for entry in setup), \
                 f"referenced-local setup patches did not commit: {setup}"
 
+            # hub_list_rule_local_variables reports the value the running rule set (0 -> 9). No page
+            # render in between on purpose: rendering syncs allLocalVars, which hid the stale read.
+            run, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_id, "action": "actions"},
+                "hub_call_rule(action=actions)")
+            local_value = None
+            deadline = time.time() + 10.0
+            while time.time() < deadline:
+                listed = self.client.call_tool("hub_read_rules", {
+                    "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+                local_value = next((lv.get("value") for lv in (listed.get("localVariables") or [])
+                                    if lv.get("name") == "refLocal"), None)
+                if str(local_value) in ("9", "9.0"):
+                    break
+                time.sleep(1.0)
+            if str(local_value) not in ("9", "9.0"):
+                assert not limited, \
+                    f"hub_call_rule(action=actions) stayed limiter-blocked and refLocal is {local_value!r}: {limited}"
+                assert not (isinstance(run, dict) and run.get("success") is False), \
+                    f"hub_call_rule(action=actions) failed and refLocal is {local_value!r}: {run}"
+            assert str(local_value) in ("9", "9.0"), \
+                f"hub_list_rule_local_variables did not report the run's value 9 for refLocal (got {local_value!r})"
+
             # Delete the still-referenced local. The delete succeeds; the rule goes broken.
             rm = self._rm_call_soft({"appId": app_id, "removeLocalVariable": {"name": "refLocal"}, "confirm": True}, strict=True)
             if rm.get("relayDropped"):
@@ -9612,6 +9693,17 @@ class TestRunner:
                 {"addAction": {"capability": "log", "message": "p2"}},
             ]}, strict=True)
             self._assert_rule_healthy(app_id)
+
+            # An object value for a non-device input is refused, as top-level settings are;
+            # it used to be saved as its text ("{a=b}") and reported success.
+            label_before = (self._get_persisted_rule_config(app_id).get("app") or {}).get("label")
+            obj_refused = self._patch_rule(app_id, [{"settings": {"origLabel": {"a": "b"}}}],
+                                           expected_refusals=1)[0]
+            assert "only device inputs accept" in str(obj_refused.get("error", "")), \
+                f"patches settings object should be refused naming device inputs: {obj_refused}"
+            label_after = (self._get_persisted_rule_config(app_id).get("app") or {}).get("label")
+            assert label_before and label_after == label_before, \
+                f"refused origLabel object changed the rule label: {label_before!r} -> {label_after!r}"
 
             sw = int(self.get_test_switch_id())
             # A success:true + partial:true op stops the batch too. The enum Custom Attribute
@@ -11742,6 +11834,30 @@ class TestRunner:
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
 
+        # DateTime keeps its time: a date-only commit stores the hub's 99:99 no-time sentinel.
+        dt_name = f"{PREFIX}HubVar_DT"
+        self.created_variable_names.append(dt_name)
+        try:
+            dw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"name": dt_name, "type": "DateTime", "value": "2026-01-01T12:30:00",
+                             "confirm": True}}),
+                lambda: self._hub_variable_visible_in_bulk(dt_name),
+                "hub_create_variable (DateTime)",
+            )
+            if dw["relayDropped"]:
+                assert dw["committed"], f"DateTime create lost to relay 504 and never committed: {dt_name}"
+            else:
+                assert dw["response"].get("success") is True, f"DateTime create failed: {dw['response']}"
+            got_dt = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": dt_name}})
+            dt_value = str(got_dt.get("value"))
+            assert "T12:30" in dt_value and "99:99" not in dt_value, \
+                f"DateTime variable lost its time (expected T12:30): {got_dt}"
+        finally:
+            self._delete_variable_safe(dt_name)
+
     @test("hub_variables")
     def test_hub_variable_bulk_create_round_trip(self) -> None:
         # The bulk form (variables=[...]) creates several vars sequentially in one call
@@ -13860,6 +13976,30 @@ class TestRunner:
             assert "not allowed" in msg, f"error didn't say 'not allowed': {msg}"
             # Should list allowed keys for caller to correct
             assert "Allowed:" in msg or "mcpLogLevel" in msg, f"error didn't list allowed keys: {msg}"
+
+        # A malformed value for an allowlisted key names the expected type (the old message read
+        # value.class.simpleName, which a Map value resolves as a missing key) and changes nothing.
+        app_id = str(self.client.app_id)
+
+        def read_settings() -> dict:
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            assert cfg.get("success") is True and isinstance(cfg.get("settings"), dict), \
+                f"could not read the MCP app's settings: {cfg}"
+            return cfg["settings"]
+
+        before = read_settings()
+        try:
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"maxCapturedStates": {}}, "confirm": True},
+            })
+            raise AssertionError("an object value for maxCapturedStates should be refused")
+        except McpError as e:
+            msg = str(e)
+            assert "Setting 'maxCapturedStates' expects a number" in msg and "(object)" in msg \
+                and "simpleName" not in msg, f"malformed-value refusal has the wrong message: {msg}"
+        assert read_settings() == before, "a refused malformed setting changed the MCP app's settings"
 
     @test("developer_mode")
     def test_t222_atomic_batch_one_bad_key_blocks_all(self) -> None:

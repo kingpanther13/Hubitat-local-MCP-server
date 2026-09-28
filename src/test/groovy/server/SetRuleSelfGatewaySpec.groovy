@@ -76,6 +76,9 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         // boolean op (clearActions) -> legacy.clearActions = true, presence == intent, takes no payload
         script._setRuleFromEnvelope([operation: 'clearActions', appId: 5, confirm: true]).args ==
             [appId: 5, confirm: true, clearActions: true]
+        // args is declared object|array|boolean; the boolean form is what the description tells callers to send
+        script._setRuleFromEnvelope([operation: 'clearActions', appId: 5, args: true, confirm: true]).args ==
+            [appId: 5, confirm: true, clearActions: true]
 
         // string op (button) -> bare string passes straight through
         script._setRuleFromEnvelope([operation: 'button', appId: 5, args: 'updateRule', confirm: true]).args ==

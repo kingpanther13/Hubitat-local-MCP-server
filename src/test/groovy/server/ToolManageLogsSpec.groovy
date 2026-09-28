@@ -841,6 +841,29 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.since == new Date(1234562400000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
     }
 
+    def "hub_list_device_events: an integer deviceId reads the device and echoes the string id"() {
+        given:
+        def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
+        nativeDeviceEvents(device) { -> [[name: 'switch', value: 'on', date: new Date(1234562460000L)]] }
+        settingsMap.selectedDevices = [device]
+
+        when:
+        def result = script.toolGetDeviceHistory([deviceId: 42, since: 1234562400000L])
+
+        then:
+        result.deviceId == '42'
+        result.events*.value == ['on']
+    }
+
+    def "hub_list_device_events: a fractional deviceId is refused"() {
+        when:
+        script.toolGetDeviceHistory([deviceId: 42.5])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceId must be a non-empty string or integral number')
+    }
+
     def "hub_list_device_events: a returned date round-trips as since"() {
         given: 'capture an emitted date, then feed it straight back as since'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')

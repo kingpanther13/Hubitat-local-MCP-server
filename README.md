@@ -398,7 +398,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers (with per-marker counts in `brokenMarkerCounts`), multiple-flag poison, configPage errors. |
-| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables (name/type/value) from `state.allLocalVars`. Distinct from `hub_list_variables` (hub globals). `type` is RM's internal token (see TOOL_GUIDE for the `addLocalVariable` translation). |
+| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables with their current values. Distinct from `hub_list_variables` (hub globals). `type` is RM's internal token (see TOOL_GUIDE for the `addLocalVariable` translation). |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (`classic` whenNodes/thenNodes/elseNodes or `graph` nodes/edges). |
 
 </details>

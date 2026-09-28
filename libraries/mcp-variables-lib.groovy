@@ -674,6 +674,60 @@ private void _validateInitialValue(String name, String type, value) {
     }
 }
 
+// Names of the inputs the Hub Variables form shows now, or null when the page cannot be read.
+// Non-private so specs can stub it.
+def _hubVarsFormFields(Integer appId) {
+    try {
+        return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "hubVar")?.configPage) ?: [:]).keySet() as Set
+    } catch (Exception e) {
+        logDebug("_hubVarsFormFields(${appId}) could not read the form: ${e.message}")
+        return null
+    }
+}
+
+// Hub Variables button clicks land asynchronously (live: a read right after the click can still show
+// the old form, and the change appears a moment later). Wait for the form to show the click's effect,
+// clicking once more if it never does. A form that cannot be read counts as landed.
+private boolean _hubVarsClickAndWait(Integer appId, String button, String stateAttribute, Closure landed) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+        _rmClickAppButton(appId, button, stateAttribute, "hubVar")
+        for (int poll = 0; poll < 12; poll++) {
+            def fields = _hubVarsFormFields(appId)
+            if (fields == null || landed(fields)) return true
+            try { pauseExecution(250) } catch (Exception ignored) { }
+        }
+        _primeHubVarsWizard(appId, "hub vars ${button} retry")
+    }
+    return false
+}
+
+// Canonical hub DateTime text for a create value: the format RM stores, in hub-local time. Accepts
+// "yyyy-MM-ddTHH:mm[:ss...]", "yyyy-MM-dd HH:mm[:ss]", or {date:"yyyy-MM-dd", time:"HH:mm"}; any
+// offset in the input is ignored, as the UI's date and time pickers are hub-local.
+private String _dateTimeVariableValue(String name, value) {
+    def dateStr, timeStr
+    if (value instanceof Map) {
+        dateStr = value.date?.toString()
+        timeStr = value.time?.toString()
+    } else {
+        def s = value.toString().trim()
+        def parts = s.contains("T") ? s.split("T", 2) : (s.contains(" ") ? s.split(" ", 2) : [s, null])
+        dateStr = parts[0]
+        timeStr = parts.size() > 1 ? parts[1]?.take(5) : null
+    }
+    def when = null
+    if (dateStr && timeStr) {
+        try { when = Date.parse("yyyy-MM-dd HH:mm", "${dateStr} ${timeStr}") } catch (Exception ignored) { }
+    }
+    // Round-trip check: a lenient parse would accept 2026-13-45.
+    if (when == null || when.format("yyyy-MM-dd HH:mm") != "${dateStr} ${timeStr}".toString()) {
+        throw new IllegalArgumentException(
+            "DateTime variable '${name}' requires a valid date and time. " +
+            "Pass an ISO string like '2026-05-06T12:00:00' or a {date,time} map. Got: ${value}")
+    }
+    return when.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+}
+
 // Shared per-variable create core: drives the Hub Variables system app wizard
 // (prime -> moreVar -> write name/type/value or DateTime date/time + Done),
 // verifies the variable landed with a verify-backoff, and subscribes to its
@@ -684,45 +738,45 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     def applied = []
     def skipped = []
 
+    // Validate a DateTime value before the wizard opens, so a bad value writes nothing.
+    String dtValue = (type == "DateTime") ? _dateTimeVariableValue(name, value) : null
     _primeHubVarsWizard(appId, "hub_create_variable pre-moreVar")
-    _rmClickAppButton(appId, "moreVar", "moreVar", "hubVar")
+    if (!_hubVarsClickAndWait(appId, "moreVar", "moreVar") { it.contains("hbVar") }) {
+        throw new IllegalStateException("hub_create_variable: the Hub Variables create form did not open, so '${name}' was not created. Retry the call.")
+    }
     _rmWriteSettingOnPage(appId, "hubVar", "hbVar",   name, applied, "text", skipped)
     _rmWriteSettingOnPage(appId, "hubVar", "varType", type, applied, "enum", skipped)
-    if (type == "DateTime") {
-        // DateTime renders varDate + varTime instead of varValue. Accept ISO
-        // "yyyy-MM-ddTHH:mm[:ss]", "yyyy-MM-dd HH:mm[:ss]", or a Map
-        // {date:"yyyy-MM-dd", time:"HH:mm"}.
-        def dateStr, timeStr
-        if (value instanceof Map) {
-            dateStr = value.date?.toString()
-            timeStr = value.time?.toString()
-        } else {
-            def s = value.toString().trim()
-            def parts = s.contains("T") ? s.split("T", 2) : (s.contains(" ") ? s.split(" ", 2) : [s, null])
-            dateStr = parts[0]
-            timeStr = parts.size() > 1 ? parts[1]?.take(5) : null  // "HH:mm" only
+    if (dtValue != null) {
+        // Date and time go in one POST, as the UI sends them. The form then either commits or waits
+        // for its Done button (both seen live); the value is checked, and set if needed, below.
+        def dtCfg = _rmFetchConfigJson(appId, "hubVar")
+        def dtSchema = _rmCollectInputSchema(dtCfg?.configPage)
+        def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
+        if (missing) {
+            throw new IllegalStateException("hub_create_variable: the Hub Variables form did not offer ${missing.join(' and ')} for DateTime variable '${name}', so it was not created.")
         }
-        if (!dateStr || !timeStr) {
-            throw new IllegalArgumentException(
-                "DateTime variable '${name}' requires both date and time. " +
-                "Pass an ISO string like '2026-05-06T12:00:00' or a {date,time} map. Got: ${value}")
+        def dtBody = _rmBuildSettingsBody(appId, [varDate: dtValue.substring(0, 10), varTime: dtValue.substring(11, 16)], dtSchema)
+        dtBody.formAction = "update"
+        dtBody.currentPage = "hubVar"
+        dtBody.pageBreadcrumbs = _rmPageBreadcrumbs(appId, "hubVar", '["mainPage"]')
+        if (dtCfg?.app?.version != null) dtBody.version = dtCfg.app.version.toString()
+        _rmPostSettings(appId, dtBody)
+        applied.addAll(["varDate", "varTime"])
+        if (_hubVarsFormFields(appId)?.contains("dateTimeDone")) {
+            _primeHubVarsWizard(appId, "hub_create_variable DateTime pre-Done")
+            _hubVarsClickAndWait(appId, "dateTimeDone", null) { !it.contains("dateTimeDone") }
         }
-        _rmWriteSettingOnPage(appId, "hubVar", "varDate", dateStr, applied, "date", skipped)
-        _rmWriteSettingOnPage(appId, "hubVar", "varTime", timeStr, applied, "time", skipped)
-        // DateTime requires an explicit Done click to commit (the other
-        // types auto-commit when varValue is written). Prime first — same
-        // wizard quirk as delete/hub_create_connector clicks.
-        _primeHubVarsWizard(appId, "hub_create_variable DateTime pre-Done")
-        _rmClickAppButton(appId, "dateTimeDone", null, "hubVar")
     } else {
         _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
     }
 
-    // Verify the variable landed. The wizard auto-commits on varValue write
-    // (or dateTimeDone for DateTime); the var becomes visible to getGlobalVar
+    // Verify the variable landed. The wizard commits on the varValue write (DateTime: on the
+    // date/time POST or its Done click); the var becomes visible to getGlobalVar
     // shortly after. Retry with backoff up to ~2s before giving up.
     def created = null
-    for (int attempt = 0; attempt < 8; attempt++) {
+    // A Done click commits asynchronously, so a DateTime create gets a longer window (live: ~3s).
+    int verifyAttempts = (dtValue != null) ? 16 : 8
+    for (int attempt = 0; attempt < verifyAttempts; attempt++) {
         try { created = getGlobalVar(name) } catch (Exception e) {
             logDebug("hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
@@ -730,7 +784,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
         // Check-FIRST: the wizard commit is usually visible immediately, so the old
         // sleep-then-check paid 500ms on every call; the backoff only runs when needed
         // (slightly larger worst-case window, 7x300ms vs 4x500ms; zero happy-path sleep).
-        if (attempt < 7) {
+        if (attempt < verifyAttempts - 1) {
             try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         }
     }
@@ -738,6 +792,16 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
         throw new IllegalStateException(
             "hub_create_variable: wizard completed but '${name}' is not visible via getGlobalVar. " +
             "Settings applied: ${applied.join(', ')}. Skipped: ${skipped}")
+    }
+    // Compare date and hour:minute only: RM stores local time, and its offset text is not ours to match.
+    if (dtValue != null && created.value?.toString()?.take(16) != dtValue.take(16)) {
+        try { setGlobalVar(name, dtValue) } catch (Exception e) {
+            logDebug("hub_create_variable: setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        }
+        created = getGlobalVar(name)
+        if (created?.value?.toString()?.take(16) != dtValue.take(16)) {
+            throw new IllegalStateException("hub_create_variable: '${name}' was created, but its time could not be set (it reads ${created?.value}). Set it with hub_set_variable(name='${name}', value='${dtValue}').")
+        }
     }
 
     // Subscribe to the new variable's location event so changes show up in

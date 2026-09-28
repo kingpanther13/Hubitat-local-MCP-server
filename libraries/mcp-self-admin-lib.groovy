@@ -367,7 +367,7 @@ private coerceSettingValue(String key, value, String type) {
             def s = value.toString().toLowerCase()
             if (s == "true") return true
             if (s == "false") return false
-            throw new IllegalArgumentException("Setting '${key}' expects a boolean (true/false), got: ${value} (${value.class.simpleName})")
+            throw new IllegalArgumentException("Setting '${key}' expects a boolean (true/false), got: ${_describeValueForError(value)}")
 
         case "number":
             if (value instanceof Number) return value
@@ -375,7 +375,7 @@ private coerceSettingValue(String key, value, String type) {
             if (s.isInteger()) return s.toInteger()
             if (s.isLong()) return s.toLong()
             if (s.isBigDecimal()) return s.toBigDecimal()
-            throw new IllegalArgumentException("Setting '${key}' expects a number, got: ${value} (${value.class.simpleName})")
+            throw new IllegalArgumentException("Setting '${key}' expects a number, got: ${_describeValueForError(value)}")
 
         case "enum":
             // Pass through as String — downstream validates against tool-specific enum set.

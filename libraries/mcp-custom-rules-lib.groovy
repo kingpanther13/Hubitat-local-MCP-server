@@ -388,7 +388,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
                     "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                     "`hub_test_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
                     "Use `hub_manage_native_rules_and_apps -> hub_call_rule(ruleId=${idStr})` to trigger it " +
-                    "(requires the Read master)."
+                    "(requires the Write master)."
             } else {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                     "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
