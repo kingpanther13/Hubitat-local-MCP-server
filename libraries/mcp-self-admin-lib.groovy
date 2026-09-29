@@ -367,7 +367,7 @@ private coerceSettingValue(String key, value, String type) {
             def s = value.toString().toLowerCase()
             if (s == "true") return true
             if (s == "false") return false
-            throw new IllegalArgumentException("Setting '${key}' expects a boolean (true/false), got: ${value} (${value.class.simpleName})")
+            throw new IllegalArgumentException("Setting '${key}' expects a boolean (true/false), got: ${_describeValueForError(value)}")
 
         case "number":
             if (value instanceof Number) return value
@@ -375,7 +375,7 @@ private coerceSettingValue(String key, value, String type) {
             if (s.isInteger()) return s.toInteger()
             if (s.isLong()) return s.toLong()
             if (s.isBigDecimal()) return s.toBigDecimal()
-            throw new IllegalArgumentException("Setting '${key}' expects a number, got: ${value} (${value.class.simpleName})")
+            throw new IllegalArgumentException("Setting '${key}' expects a number, got: ${_describeValueForError(value)}")
 
         case "enum":
             // Pass through as String — downstream validates against tool-specific enum set.
@@ -476,7 +476,7 @@ def _resolveSelfAppClassId() {
         return match?.id?.toString()
     } catch (Exception e) {
         // Reached from the code-update path too (not just hub_update_package); keep the label neutral.
-        mcpLog("warn", "hub-admin", "_resolveSelfAppClassId: self app-class lookup failed (${e.toString()}) -- self-deploy detection / #237 compile-error capture is skipped for this update")
+        mcpLog("warn", "hub-admin", "_resolveSelfAppClassId: self app-class lookup failed (${e.toString()}) -- caller must handle the unavailable class identity")
         return null
     }
 }

@@ -11,6 +11,7 @@ Outputs GitHub Actions annotations when running in CI.
 """
 
 import hashlib
+import importlib.util
 import os
 import re
 import sys
@@ -555,7 +556,7 @@ PERSISTED_STATE_INVENTORY = {
     "state": {
         "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
         "headersReadable", "originLocalIpReadable", "updateCheck",
-        "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable",
+        "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable", "setupVersion",
     },
     "atomicState": {
         "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy", "reportErrors",
@@ -1780,59 +1781,24 @@ IS_CI = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "t
 
 
 def check_tool_guide_pointers(src_override: str | None = None,
-                              tg_override: str | None = None,
-                              anchors_override: dict | None = None,
                               lib_pointer_override: list | None = None) -> list[dict]:
-    """Verify every get_tool_guide(section='X') pointer in the .groovy schemas
-    references a section key that actually exists in getToolGuideSections().
+    """Verify every get_tool_guide(section='X') pointer in the .groovy (app and libraries)
+    names a key in getToolGuideSections() or a sub-key in getToolGuideSubSections().
+    A pointer that misses gets a 'section not found' from hub_get_tool_guide, so it is
+    emitted as `tool-guide-broken-pointer`.
 
-    src_override / tg_override let the self-test drive this function with
-    synthetic corpora -- routes the must-catch / must-not-catch fixtures
-    through the production dispatch + finding-dict construction so a missing
-    key in any appended dict surfaces in the self-test rather than at first
-    real-failure time.
-
-    Failure modes this catches:
-
-    1. **Broken pointer.** Schema description says "Call
-       `get_tool_guide(section='X')` for the foo reference" but X is not a
-       key in the getToolGuideSections() map. Flat-mode callers following
-       the pointer get a 'section not found' response. Emitted as
-       `tool-guide-broken-pointer`.
-
-    2. **Drifted heading.** Every getToolGuideSections key should have a
-       corresponding heading in TOOL_GUIDE.md (mapped through the
-       `key_to_heading_hint` table below). Presence (not exact content
-       match) so prose tweaks don't trip the lint; renames or deletes do.
-       Emitted as `tool-guide-heading-missing`.
-
-    3. **Unmapped new key.** A section added to the dispatcher without an
-       entry in `key_to_heading_hint` fails loud rather than silently
-       skipping the drift check for that key. Forces the contributor adding
-       the section to also add the hint. Emitted as
-       `tool-guide-no-heading-hint`.
-
-    4. **Content-anchor drift.** Per-section anchor strings (declared in
-       `key_to_content_anchors` below) must appear in BOTH the source
-       doc-block AND TOOL_GUIDE.md. Catches in-body prose drift that the
-       heading-presence check at step 2/3 cannot see. Emitted as one of
-       `tool-guide-anchor-missing-{both,source,doc}`.
+    src_override / lib_pointer_override let the self-test drive this function with
+    synthetic corpora through the production finding-dict construction.
+    TOOL_GUIDE.md parity is check_tool_guide_generated's job.
     """
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
-    tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
     if src_override is not None:
         src = src_override
     else:
         if not server.exists():
             return findings
         src = server.read_text(encoding="utf-8", errors="replace")
-    if tg_override is not None:
-        tg = tg_override
-    else:
-        if not tool_guide.exists():
-            return findings
-        tg = tool_guide.read_text(encoding="utf-8", errors="replace")
 
     # 1. Extract every section key from getToolGuideSections().
     #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
@@ -1857,60 +1823,14 @@ def check_tool_guide_pointers(src_override: str | None = None,
     # `something: '''` inside one of the baked markdown bodies (deeper indentation, or
     # mid-paragraph) can't be mistaken for a real section key.
     section_keys = set(re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*'''", sections_block, re.MULTILINE))
-    # Extract each section's full body too so the content-anchor check below can verify
-    # specific anchor strings exist in BOTH the source doc-block AND TOOL_GUIDE.md. The
-    # heading-presence check (step 2/3 above) only protects against renames/deletions; without a
-    # content check, in-body prose can drift silently between the two files (live failure
-    # mode: content-body drift -- heading-presence check passes but a specific entry is
-    # absent from the source doc-block, so agents calling get_tool_guide see stale text).
-    # Non-greedy match to next 8-space key, or end-of-block.
-    section_bodies = {}
-    body_re = re.compile(
-        r"^ {8}([a-z_][a-z0-9_]*):\s*'''(.*?)'''(?=\s*(?:,|$|\n\s{0,8}[a-z_]+:))",
-        re.MULTILINE | re.DOTALL,
-    )
-    for m in body_re.finditer(sections_block):
-        section_bodies[m.group(1)] = m.group(2)
+    # 1b. A section whose text lives in its domain library reads `key: _fooGuideSection(),`.
+    #     Resolving that method's body is check_tool_guide_generated's job.
+    section_keys.update(re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*_\w+\(\)",
+                                   sections_block, re.MULTILINE))
 
-    # 1b. A section whose text lives in its domain library reads `key: _fooGuideSection(),`
-    #     here -- a domain's guide body
-    #     travels with its domain. Resolve the method's returned literal out of libraries/*.groovy
-    #     so the key still counts as a section and the anchor check below still sees its text.
-    lib_src = ""
-    lib_dir = REPO_ROOT / "libraries"
-    if lib_dir.is_dir():
-        for lib in sorted(lib_dir.glob("*.groovy")):
-            lib_src += "\n" + lib.read_text(encoding="utf-8", errors="replace")
-    for key, method in re.findall(r"^ {8}([a-z_][a-z0-9_]*):\s*(_\w+)\(\)",
-                                  sections_block, re.MULTILINE):
-        section_keys.add(key)
-        method_body = re.search(
-            r"(?:String|def)\s+" + re.escape(method)
-            + r"\(\)\s*\{(?:\s|//[^\n]*\n|/\*.*?\*/)*return\s+'''(.*?)'''",
-            lib_src,
-            re.DOTALL,
-        )
-        if method_body is None:
-            findings.append({
-                "file": str(server.relative_to(REPO_ROOT)),
-                "line": 1,
-                "severity": "error",
-                "rule": "tool-guide-section-method-unresolved",
-                "message": (
-                    f"getToolGuideSections key '{key}' delegates to {method}(), but no "
-                    f"String/def method returning a ''' literal was found in "
-                    f"libraries/*.groovy. The content-anchor check cannot resolve this "
-                    f"body; check the method exists and uses a supported literal return."
-                ),
-                "source": "",
-            })
-            continue
-        section_bodies[key] = method_body.group(1)
-
-    # 1c. Sub-section keys (issue #392): getToolGuideSubSections() splits the four oversized
+    # 1c. Sub-section keys (issue #392): getToolGuideSubSections() splits the oversized
     #     sections into narrower keys hub_get_tool_guide also accepts, so a pointer at one is
-    #     valid. They stay OUT of section_keys -- step 3 and step 4 are per parent section, and a
-    #     sub-key has no TOOL_GUIDE.md heading of its own.
+    #     valid.
     sub_section_keys = set()
     sub_block_match = re.search(
         r"def getToolGuideSubSections\(\)\s*\{\s*return\s*\[(.*?)\n\s*\]\s*\}",
@@ -1929,6 +1849,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     #    Tolerate both single and double quotes; whitespace around the `=`.
     pointer_re = re.compile(r"get_tool_guide\(section\s*=\s*['\"]([a-z_][a-z0-9_]*)['\"]\)")
     pointer_sources = [(str(server.relative_to(REPO_ROOT)), src)]
+    lib_dir = REPO_ROOT / "libraries"
     if lib_pointer_override is not None:
         pointer_sources.extend(lib_pointer_override)
     elif src_override is not None:
@@ -1959,156 +1880,68 @@ def check_tool_guide_pointers(src_override: str | None = None,
                         "source": line.strip()[:200],
                     })
 
-    # 3. Drift check: every section key should have a matching heading anchor in TOOL_GUIDE.md.
-    #    Translate snake_case key -> the heading text the engineer wrote it from.
-    #    Use a substring check (presence in TOOL_GUIDE.md) rather than exact slugify — keeps
-    #    the lint tolerant of prose edits while catching renames.
-    key_to_heading_hint = {
-        "device_authorization": "Device Authorization",
-        "best_practice_reference": "Best-Practice Reference",
-        "hub_admin_write": "Destructive Write",
-        "virtual_devices": "Virtual Device",
-        "update_device": "update_device",
-        "rules": "Rule Structure Reference",
-        "backup": "Backup System",
-        "file_manager": "File Manager",
-        "performance": "Performance Tips",
-        "builtin_app_tools": "Installed-App & Native-Rule",
-        "set_rule_reference": "`hub_set_rule` capability reference",
-        "set_rule_create_reference": "`hub_set_rule` create reference",
-        "visual_rule_reference": "Visual Rules Builder reference",
-        "variables": "Hub Variables",
-        "dashboards": "Dashboards",
-        "bundles": "Bundles",
-        "rooms": "Rooms",
-        "slow_ops": "Slow writes over Streamable HTTP",
-    }
-    for key in section_keys:
-        hint = key_to_heading_hint.get(key)
-        if hint is None:
-            # New section added to the .groovy without a hint mapping above.
-            # Fail loud rather than silently skip -- keeps this lint honest.
-            findings.append({
-                "file": str(server.relative_to(REPO_ROOT)),
-                "line": 1,
-                "severity": "error",
-                "rule": "tool-guide-no-heading-hint",
-                "message": (
-                    f"getToolGuideSections key '{key}' has no entry in key_to_heading_hint "
-                    f"(in tests/sandbox_lint.py). Add a mapping so the TOOL_GUIDE.md drift "
-                    f"check can verify the heading still exists."
-                ),
-                "source": "",
-            })
-            continue
-        if hint not in tg:
-            findings.append({
-                "file": str(tool_guide.relative_to(REPO_ROOT)),
-                "line": 1,
-                "severity": "error",
-                "rule": "tool-guide-heading-missing",
-                "message": (
-                    f"getToolGuideSections key '{key}' baked into the .groovy, but the matching "
-                    f"heading '{hint}' is not present in TOOL_GUIDE.md. Either restore the heading "
-                    f"or update key_to_heading_hint in tests/sandbox_lint.py."
-                ),
-                "source": "",
-            })
+    return findings
 
-    # 4. Content anchors: per-section list of substrings that MUST appear in both the
-    #    source doc-block and TOOL_GUIDE.md. Catches in-body prose drift that the
-    #    heading-presence check at step 3 cannot see -- e.g. a new addAction capability
-    #    family added to TOOL_GUIDE.md but never ported back into the source doc-block.
-    #    Add one anchor per facts-section worth pinning; do NOT pin prose unless it
-    #    represents a load-bearing API surface fact (capability name, error keyword,
-    #    API endpoint slug, etc.).
-    default_anchors = {
-        "best_practice_reference": [
-            # The acknowledgment-key line the enableMandatoryBPS gate publishes (the phrase, not
-            # the secret value -- the key literal must NEVER reach TOOL_GUIDE.md).
-            "Acknowledgment key",
-            # The flagship anti-pattern nudge mirrored by the reactive detector + the gate guide.
-            "native Rule Machine",
-        ],
+
+def _load_tool_guide_builder():
+    """Import tools/build-tool-guide.py (the dashes in its name rule out a plain import)."""
+    path = Path(__file__).resolve().parent.parent / "tools" / "build-tool-guide.py"
+    spec = importlib.util.spec_from_file_location("build_tool_guide", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def check_tool_guide_generated() -> list[dict]:
+    """TOOL_GUIDE.md must be exactly what tools/build-tool-guide.py renders from
+    getToolGuideSections(); required API guidance must also remain in the served source."""
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if not server.exists():
+        return []
+    builder = _load_tool_guide_builder()
+    # Aim the builder at REPO_ROOT (not its own location) so tests can run it on a tmp tree.
+    builder.SERVER = server
+    builder.LIB_DIR = REPO_ROOT / "libraries"
+    finding = {"file": "TOOL_GUIDE.md", "line": 1, "severity": "error",
+               "rule": "tool-guide-not-generated", "source": ""}
+    try:
+        sources = builder.read_sources()
+        expected = builder.render(*sources)
+        sections = dict(builder.served_sections(*sources))
+    except ValueError as exc:
+        return [dict(finding, file="hubitat-mcp-server.groovy",
+                     message=f"tools/build-tool-guide.py cannot render getToolGuideSections(): {exc}")]
+    # Parity alone cannot catch guidance removed from both source and regenerated output.
+    anchors = {
+        "best_practice_reference": ["Acknowledgment key", "native Rule Machine"],
         "set_rule_reference": [
-            # setVariable / Hub Variable addAction family
-            "setVariable",
-            # Mode action's modeName-resolution behavior
-            "modeName",
-            # Discrete-event sensor note for STPage capability list
-            "discrete events",
-            # Variable comparison capability for STPage
-            "Variable comparison",
-            # Lowercase parameter type validator only accepts these
-            "lowercase",
-            # Extended per-capability shapes heading (was a dangling cross-reference
-            # before -- pin both surfaces now so future drift fires the anchor lint).
-            "Extended per-capability spec shapes",
-            # addTrigger.condition narrowness vs the wider expression conditions.
-            # The selectTriggers narrowness phrasing was overclaimed before; pin both
-            # surfaces so a future "all extended shapes apply here" regression fires.
-            "selectTriggers",
-            # Nested subExpression rejection on addAction (F7 scope-document).
-            # The reject is in production today; both surfaces must keep advertising it.
-            "nested subExpression",
-            # Trailing-updateRule failure response slots (F2 addRequiredExpression
-            # + B5 addTrigger parity). Pin one slot name per side.
-            "expressionNotLive",
-            "subscriptionsNotLive",
+            "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
+            "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
+            "expressionNotLive", "subscriptionsNotLive",
         ],
     }
-    key_to_content_anchors = anchors_override if anchors_override is not None else default_anchors
-    for key, anchors in key_to_content_anchors.items():
-        if key not in section_bodies:
-            # Either the body extractor regex shape changed, or the key is unmapped.
-            # The unmapped-key path is already covered by step 3's tool-guide-no-heading-hint.
+    findings = []
+    for section, required in anchors.items():
+        if section not in sections:
+            findings.append(dict(finding, file="hubitat-mcp-server.groovy",
+                rule="tool-guide-required-section-missing",
+                message=f"Required served section '{section}' is missing. "
+                        "Restore it in getToolGuideSections() before regenerating TOOL_GUIDE.md."))
             continue
-        body = section_bodies[key]
-        for anchor in anchors:
-            in_body = anchor in body
-            in_tg = anchor in tg
-            if not in_body and not in_tg:
-                findings.append({
-                    "file": "tests/sandbox_lint.py",
-                    "line": 1,
-                    "severity": "error",
-                    "rule": "tool-guide-anchor-missing-both",
-                    "message": (
-                        f"Content anchor '{anchor}' (key='{key}') is missing from BOTH the source "
-                        f"doc-block in hubitat-mcp-server.groovy AND TOOL_GUIDE.md. Either remove "
-                        f"the anchor from key_to_content_anchors (no longer load-bearing) or "
-                        f"restore the content in both files."
-                    ),
-                    "source": "",
-                })
-            elif not in_body:
-                findings.append({
-                    "file": str(server.relative_to(REPO_ROOT)),
-                    "line": 1,
-                    "severity": "error",
-                    "rule": "tool-guide-anchor-missing-source",
-                    "message": (
-                        f"Content anchor '{anchor}' (key='{key}') is present in TOOL_GUIDE.md but "
-                        f"NOT in the source doc-block in hubitat-mcp-server.groovy. Agents calling "
-                        f"get_tool_guide(section='{key}') will not see this fact. Port the text "
-                        f"into the doc-block or drop the anchor from key_to_content_anchors."
-                    ),
-                    "source": "",
-                })
-            elif not in_tg:
-                findings.append({
-                    "file": str(tool_guide.relative_to(REPO_ROOT)),
-                    "line": 1,
-                    "severity": "error",
-                    "rule": "tool-guide-anchor-missing-doc",
-                    "message": (
-                        f"Content anchor '{anchor}' (key='{key}') is present in the source "
-                        f"doc-block but NOT in TOOL_GUIDE.md. Add it to keep the human-readable "
-                        f"reference in sync, or drop the anchor from key_to_content_anchors."
-                    ),
-                    "source": "",
-                })
-
+        for anchor in required:
+            if anchor not in sections[section]:
+                findings.append(dict(finding, file="hubitat-mcp-server.groovy",
+                    rule="tool-guide-anchor-missing-source",
+                    message=f"Required API guidance '{anchor}' is missing from served section '{section}'. "
+                            "Restore it in the served source before regenerating TOOL_GUIDE.md."))
+    tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
+    actual = tool_guide.read_text(encoding="utf-8", errors="replace") if tool_guide.exists() else ""
+    if actual.replace("\r\n", "\n") == expected.replace("\r\n", "\n"):
+        return findings
+    findings.append(dict(finding, message=(
+        "TOOL_GUIDE.md does not match what tools/build-tool-guide.py renders. Do not edit it by "
+        "hand: edit getToolGuideSections() in hubitat-mcp-server.groovy (or the library method a "
+        "section delegates to), then run `python tools/build-tool-guide.py`.")))
     return findings
 
 
@@ -2361,7 +2194,7 @@ def _run_discrete_event_caps_self_test() -> int:
             src_override=src,
             doc_surfaces_override=surfaces,
         )
-        # Shape check first (same pattern as _run_tool_guide_anchor_self_test).
+        # Shape check first: every finding must render through format_finding.
         shape_ok = True
         for f in findings:
             try:
@@ -4316,50 +4149,6 @@ def _run_count_self_test() -> int:
     return failures
 
 
-# (anchor, body_text, tg_text, expected_rule_codes) -- must-catch / must-not-catch
-# fixtures for the content-anchor drift check inside check_tool_guide_pointers (step 4).
-# Each fixture exercises one of the four outcome paths:
-#   - missing in BOTH -> tool-guide-anchor-missing-both
-#   - missing in source only -> tool-guide-anchor-missing-source
-#   - missing in doc only -> tool-guide-anchor-missing-doc
-#   - present in both -> no finding (must-not-catch case)
-#
-# Fixtures route through the REAL check_tool_guide_pointers via synthetic corpus
-# overrides (src_override / tg_override / anchors_override). This catches not just
-# the anchor-dispatch correctness but also the finding-dict shape (rule/source keys
-# must be present so format_finding does not KeyError downstream).
-TOOL_GUIDE_ANCHOR_SELF_TEST_CASES = [
-    (
-        "anchor present in both source body and TOOL_GUIDE.md -- no finding",
-        "modeName",
-        "Mode action takes modeName for resolution",
-        "Mode capability uses modeName lookup",
-        set(),
-    ),
-    (
-        "anchor missing from BOTH source and doc -- flags missing-both",
-        "ghostAnchor",
-        "Body has no reference to it",
-        "Doc has no reference to it",
-        {"tool-guide-anchor-missing-both"},
-    ),
-    (
-        "anchor present in doc but missing from source body -- flags missing-source",
-        "setVariable",
-        "Mode and modeName references",
-        "Hub Variable (capability='setVariable') is documented",
-        {"tool-guide-anchor-missing-source"},
-    ),
-    (
-        "anchor present in source body but missing from doc -- flags missing-doc",
-        "discrete events",
-        "Sensors report discrete events here",
-        "STPage list contains no such note",
-        {"tool-guide-anchor-missing-doc"},
-    ),
-]
-
-
 def _build_synthetic_groovy_corpus(section_key: str, body: str) -> str:
     """Construct a minimal Groovy corpus that satisfies check_tool_guide_pointers'
     parser: a getToolGuideSections() return literal with exactly ONE section whose
@@ -4385,16 +4174,11 @@ def _run_tool_guide_library_pointer_self_test() -> int:
     """
     failures = 0
     src = _build_synthetic_groovy_corpus("selftest_lib_ptr", "body text")
-    tg = "selftest_lib_ptr\nbody text\n"
-    anchors = {"selftest_lib_ptr": ["body text"]}
-    irrelevant = {"tool-guide-no-heading-hint"}
 
     bad = [("libraries/mcp-selftest-lib.groovy",
             "// see get_tool_guide(section='no_such_section_here')\n")]
-    findings = [f for f in check_tool_guide_pointers(
-        src_override=src, tg_override=tg, anchors_override=anchors,
-        lib_pointer_override=bad) if f.get("rule") not in irrelevant]
-    broken = [f for f in findings if f.get("rule") == "tool-guide-broken-pointer"]
+    broken = [f for f in check_tool_guide_pointers(src_override=src, lib_pointer_override=bad)
+              if f.get("rule") == "tool-guide-broken-pointer"]
     if not broken:
         failures += 1
         print("SELF-TEST FAIL [tool-guide-library-pointer]: a broken pointer in a library was not flagged")
@@ -4404,77 +4188,13 @@ def _run_tool_guide_library_pointer_self_test() -> int:
 
     good = [("libraries/mcp-selftest-lib.groovy",
              "// see get_tool_guide(section='selftest_lib_ptr')\n")]
-    fp = [f for f in check_tool_guide_pointers(
-        src_override=src, tg_override=tg, anchors_override=anchors,
-        lib_pointer_override=good) if f.get("rule") == "tool-guide-broken-pointer"]
+    fp = [f for f in check_tool_guide_pointers(src_override=src, lib_pointer_override=good)
+          if f.get("rule") == "tool-guide-broken-pointer"]
     if fp:
         failures += 1
         print(f"SELF-TEST FAIL [tool-guide-library-pointer]: false positive on a valid library pointer ({fp})")
     if not failures:
         print(f"tool-guide library-pointer self-test: PASS ({LIBRARY_POINTER_FIXTURES} fixtures)")
-    return failures
-
-
-def _run_tool_guide_anchor_self_test() -> int:
-    """Drive check_tool_guide_pointers with synthetic corpora and verify both:
-    (a) the right rule codes fire (dispatch correctness), AND
-    (b) every finding can be rendered by format_finding without KeyError
-        (finding-dict shape correctness -- catches missing 'rule'/'source' keys).
-    """
-    failures = 0
-    # Use a synthetic section key + heading hint pair so the real heading-presence
-    # check at step 3 does not fire for these fixtures. The hint must appear in the
-    # synthetic TG corpus to pass step 3; we prepend it to every fixture's tg_text.
-    synthetic_key = "selftest_anchor_section"
-    synthetic_hint = "selftest_anchor_section"  # any unique substring works
-    # Step 3 (heading-hint mapping) checks via the hardcoded `key_to_heading_hint`
-    # in production code. A synthetic key not in that map would fire
-    # tool-guide-no-heading-hint; we filter that code out of the actual-set so the
-    # self-test only asserts on step 4's anchor codes. (Alternatives: make
-    # key_to_heading_hint injectable too. Filter is simpler and the noise is local.)
-    irrelevant_rules = {"tool-guide-no-heading-hint"}
-    for i, (desc, anchor, body, tg, expected_codes) in enumerate(
-        TOOL_GUIDE_ANCHOR_SELF_TEST_CASES, start=1
-    ):
-        synthetic_src = _build_synthetic_groovy_corpus(synthetic_key, body)
-        synthetic_tg = f"{synthetic_hint}\n{tg}\n"
-        synthetic_anchors = {synthetic_key: [anchor]}
-        findings = check_tool_guide_pointers(
-            src_override=synthetic_src,
-            tg_override=synthetic_tg,
-            anchors_override=synthetic_anchors,
-        )
-        # Shape check FIRST: every finding the production path appended must be
-        # format_finding-renderable. Catches the missing-'rule'/'source' bug class
-        # that crashes the CLI output path. Done before the rule-code comparison
-        # so a shape failure prints a clean structured message instead of letting
-        # the rule-code accessor below crash with a bare KeyError.
-        shape_ok = True
-        for f in findings:
-            try:
-                _ = format_finding(f)
-            except KeyError as ke:
-                failures += 1
-                shape_ok = False
-                print(
-                    f"TOOL-GUIDE-ANCHOR-SELF-TEST FAIL [{i}] {desc}\n"
-                    f"  finding dict missing required key for format_finding: {ke}\n"
-                    f"  finding keys present: {sorted(f.keys())}\n"
-                    f"  finding: {f!r}"
-                )
-        if not shape_ok:
-            # Shape failures already reported; skip the dispatch-correctness check
-            # for this fixture to avoid noisy compound failures from key accesses.
-            continue
-        actual_codes = {f["rule"] for f in findings if f["rule"] not in irrelevant_rules}
-        if actual_codes != expected_codes:
-            failures += 1
-            print(
-                f"TOOL-GUIDE-ANCHOR-SELF-TEST FAIL [{i}] {desc}\n"
-                f"  expected codes: {sorted(expected_codes)}\n"
-                f"  actual codes:   {sorted(actual_codes)}\n"
-                f"  all-finding-rules: {sorted({f['rule'] for f in findings})}"
-            )
     return failures
 
 
@@ -4611,13 +4331,6 @@ def run_self_test() -> int:
     # Gateway-attribution must-catch / must-not-catch fixtures.
     failures += _run_gateway_attribution_self_test()
 
-    # Tool-guide-anchor must-catch / must-not-catch fixtures (PIPELINE.md Rule 13:
-    # the anchor-drift check inside check_tool_guide_pointers is a class-wide
-    # mechanism; it ships with positive + negative fixtures so a future regression
-    # in the dispatch logic surfaces here rather than silently weakening the lint).
-    anchor_failures = _run_tool_guide_anchor_self_test()
-    failures += anchor_failures
-
     # Discrete-event-caps must-catch / must-not-catch fixtures (PIPELINE.md Rule 13).
     discrete_event_failures = _run_discrete_event_caps_self_test()
     failures += discrete_event_failures
@@ -4655,7 +4368,6 @@ def run_self_test() -> int:
         len(SELF_TEST_CASES)
         + len(COUNT_SELF_TEST_CASES)
         + len(GATEWAY_ATTRIBUTION_SELF_TEST_CASES)
-        + len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)
         + len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)
         + len(ENVELOPE_PARITY_SELF_TEST_CASES)
         + len(READ_WRITE_SPLIT_SELF_TEST_CASES)
@@ -4670,7 +4382,6 @@ def run_self_test() -> int:
         f"Self-test: {total_cases} case(s) passed "
         f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count, "
         f"{len(GATEWAY_ATTRIBUTION_SELF_TEST_CASES)} gateway-attribution, "
-        f"{len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)} tool-guide-anchor, "
         f"{len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)} discrete-event-caps, "
         f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity, "
         f"{len(READ_WRITE_SPLIT_SELF_TEST_CASES)} read-write-split, "
@@ -5847,6 +5558,8 @@ def main() -> int:
     # Catches the silent-truncation regression class of "trim points caller
     # at get_tool_guide(section=Y), but Y was never added to the dispatcher".
     all_findings.extend(check_tool_guide_pointers())
+    # TOOL_GUIDE.md must be the generated rendering of getToolGuideSections().
+    all_findings.extend(check_tool_guide_generated())
 
     # Check that every doc surface that lists discrete-event sensor capabilities
     # only names capabilities that are in production's DISCRETE_EVENT_CAPS map.

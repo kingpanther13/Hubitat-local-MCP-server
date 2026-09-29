@@ -5,25 +5,23 @@
 #
 # Usage:  mcp_setup_env.sh
 # Env:    MCP_URL — full cloud OAuth URL with access_token
+#         WATCHDOG_URL / HUBITAT_APP_ID — watchdog endpoint and MCP instance ID (bootstrap)
 #         RUNNER_TEMP — GHA-provided temp dir; falls back to /tmp
 #
 # IMPORTANT: this script runs BEFORE the PR source is deployed (see hub-e2e.yml:
 # setup -> deploy -> tests -> restore), so it talks to the PRE-DEPLOY baseline app.
-# It therefore only touches `enableCustomRuleEngine`, the one toggle key that is
-# stable across server versions AND is needed by the custom_* e2e tests. The setting
-# persists through the source swap, so the deployed PR app inherits it.
+# It uses baseline-compatible settings. Developer Mode is a standing test-hub
+# prerequisite: enable it through the independent watchdog when necessary, then
+# verify it through the main server before configuring the remaining toggles.
 #
-# Toggles enabled:
-#   - enableCustomRuleEngine (custom_create_rule / custom_update_rule / custom_delete_rule paths)
+# Gateway mode and the legacy custom engine are enabled for the full suite.
+# Capture the custom engine setting so cleanup restores its pre-run value.
 #
 # Not touched here:
 #   - Read / Write access — under the universal Read/Write masters (PR #113) both
 #     default ON in the deployed app, so read- and write-bearing tests pass without
 #     any setup. (Under older server versions the equivalent Hub Admin / Built-in App
 #     toggles are likewise irrelevant to this pre-deploy step.)
-#   - enableDeveloperMode — lockout protection. Must be on in the UI before this
-#     script can call update_mcp_settings at all (script aborts with a focused
-#     error if it isn't).
 #   - maxConcurrentWrites — the run pins the global write cap OFF (0), but POST-deploy, in
 #     tests/e2e_test.py main(). Not here: this step talks to the PRE-deploy baseline app,
 #     whose update_mcp_settings allowlist need not carry the key at all, and mcp_restore_env.sh
@@ -48,13 +46,38 @@ mcp_call() {
 # Pull the toggle state from hub_get_info. The settings-visibility block on
 # lines 3026+ of hubitat-mcp-server.groovy exposes these fields without
 # requiring Hub Admin Read.
-PRE_INFO_JSON="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' hub_get_info \
-  | jq -r '.result.content[0].text')"
+read_info() {
+  mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' hub_get_info \
+    | jq -er 'if .error != null or .result.isError == true then error("hub_get_info failed") else
+        .result.content[0].text | fromjson |
+        if type == "object" and (.developerModeEnabled | type) == "boolean" then .
+        else error("hub_get_info did not return a boolean developerModeEnabled") end end'
+}
+PRE_INFO_JSON="$(read_info)"
 
 DEV_MODE="$(echo "$PRE_INFO_JSON" | jq -r '.developerModeEnabled // false')"
 if [ "$DEV_MODE" != "true" ]; then
-  echo "::error::Developer Mode is OFF on the test hub. Enable 'Enable Developer Mode Tools' in the MCP rule app settings (default OFF) so update_mcp_settings can configure the test environment."
-  exit 1
+  : "${WATCHDOG_URL:?WATCHDOG_URL is required to enable Developer Mode on the test hub}"
+  : "${HUBITAT_APP_ID:?HUBITAT_APP_ID is required to identify the MCP server instance}"
+  echo "Developer Mode is OFF; enabling it through the test hub watchdog..."
+  BOOTSTRAP_RPC="$(jq -nc --arg id "$HUBITAT_APP_ID" \
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_set_mcp_developer_mode",arguments:{appId:$id,enabled:true,confirm:true}}}')"
+  # Submit once, then check the main server even if the relay loses the response.
+  curl -sS --fail --max-time 30 -X POST "$WATCHDOG_URL" \
+    -H "Content-Type: application/json" --data-binary "$BOOTSTRAP_RPC" >/dev/null || true
+  for attempt in 1 2 3 4 5; do
+    VERIFIED_INFO="$(read_info 2>/dev/null || true)"
+    if printf '%s' "$VERIFIED_INFO" | jq -e '.developerModeEnabled == true' >/dev/null 2>&1; then
+      DEV_MODE=true
+      break
+    fi
+    [ "$attempt" -eq 5 ] || sleep 2
+  done
+  if [ "$DEV_MODE" != "true" ]; then
+    echo "::error::Could not verify Developer Mode enabled. Ensure the standing watchdog supports hub_set_mcp_developer_mode; update the watchdog out-of-band before retrying."
+    exit 1
+  fi
+  echo "Developer Mode verified ON (retained as a standing E2E prerequisite)."
 fi
 
 PRE_RULE_ENGINE="$(echo "$PRE_INFO_JSON"  | jq -r '.customRuleEngineEnabled // false')"
@@ -109,10 +132,11 @@ else
 fi
 
 # Enable the toggles the e2e suite needs. Read/Write are masters (default ON in the deployed PR
-# app). enableCustomRuleEngine is the custom_* engine key. useGateways pins GATEWAY MODE ON for the
+# app). enableCustomRuleEngine supports the remaining legacy rule tests;
+# useGateways pins GATEWAY MODE ON for the
 # e2e hub: the suite is meant to exercise the production gateway-routed surface (the catalog real
 # clients see), so we set it explicitly rather than relying on the null->on default in case a prior
-# run left it off. Both keys are long-standing and persist through the source swap into the PR app.
+# run left it off. Both settings persist through the source swap into the PR app.
 # (The issue #299 best-practice gate ships ON by default; it is pinned OFF POST-deploy by the e2e
 # runner -- this pre-deploy step runs against main, which does not know that key.)
 mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' hub_manage_mcp \

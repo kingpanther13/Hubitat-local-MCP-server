@@ -255,7 +255,7 @@ def toolGetItemSource(String type, String idParam, args) {
         }
         if (savedToFile) {
             result.sourceFile = savedToFile
-            result.sourceFileHint = "Full source saved to File Manager. Use update_${type}_code with sourceFile: '${savedToFile}' to update without cloud size limits."
+            result.sourceFileHint = "Full source saved to File Manager. Use hub_update_${type} with sourceFile: '${savedToFile}' to update without cloud size limits."
         }
         return result
     } catch (Exception e) {
@@ -593,6 +593,10 @@ def toolGetAppConfig(args) {
         childApps: children,
         endpoint: path
     ]
+    // Sub-pages this page links to. Their inputs are not in `sections`; read one with
+    // pageName=<page>, or drive it with hub_set_native_app walkStep (navigate, write, done).
+    def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
+    if (pageHrefs) result.page.hrefs = pageHrefs
 
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
@@ -682,12 +686,14 @@ def toolListAppPages(args) {
         appTypeName: appTypeName
     ]
 
-    // Curated directory dispatch -- case-insensitive substring matching for robustness.
+    // HPM keeps a curated directory (case-insensitive substring match); every other app type gets
+    // its live primary page plus whatever that page links to.
     def appTypeNameLower = appTypeName.toLowerCase()
     def pages
     def note = null
+    boolean curatedHpm = appTypeNameLower.contains("hubitat package manager")
 
-    if (appTypeNameLower.contains("hubitat package manager")) {
+    if (curatedHpm) {
         pages = [
             [name: "prefOptions",    title: "Main Menu",                role: "navigation"],
             [name: "prefPkgUninstall", title: "Uninstall / Full Package List", role: "full_package_list"],
@@ -695,24 +701,19 @@ def toolListAppPages(args) {
             [name: "prefPkgInstall", title: "Install New Package",       role: "install_flow"],
             [name: "prefPkgMatchUp", title: "Match Up Packages",         role: "matching_flow"]
         ]
-    } else if (appTypeNameLower.contains("rule-5") || appTypeNameLower.contains("rule machine")) {
-        pages = [
-            [name: "mainPage", title: appLabel ?: "Rule Settings", role: "primary"]
-        ]
-        note = "Rule Machine rules are single-page. No sub-pages available."
-    } else if (appTypeNameLower.contains("room lights") || appTypeNameLower.contains("room lighting")) {
-        pages = [
-            [name: "mainPage", title: appLabel ?: "Room Lighting Settings", role: "primary"]
-        ]
-        note = "Room Lighting instances use a single mainPage. No named sub-pages."
-    } else if (appTypeNameLower.contains("mode manager")) {
-        pages = [
-            [name: "mainPage", title: "Manage Setting of Modes", role: "primary"]
-        ]
-        note = "Mode Manager uses a single mainPage. No named sub-pages."
     } else {
         pages = [primaryPage]
-        note = "App-type-specific page directory not curated; only primary page known. For multi-page apps, consult the app's Groovy source or the Web UI navigation for sub-page names."
+    }
+    // Every sub-page the live primary page links to, read from the page itself rather than a
+    // hard-coded directory: RM rules link selectTriggers/selectActions and Room Lighting links
+    // onDevicesPage/onMeansPage/offMeansPage, where a static "single page" note used to be.
+    def knownNames = pages.collect { it.name } as Set
+    def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
+    linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
+    if (linked) {
+        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Drive them with hub_set_native_app walkStep (navigate, write, done); for Rule Machine rules use hub_set_rule's structured shortcuts."
+    } else if (!curatedHpm) {
+        note = "The primary page links no sub-pages."
     }
 
     return [
@@ -804,6 +805,16 @@ private Map _createUserAppInstance(Integer codeAppId) {
         return [
             success: false,
             error: "Instance ${newId} was created from codeAppId ${codeAppId} but the install-commit (Done) failed: ${ce.toString()}. The instance is an uninstalled shell -- delete it via hub_delete_native_app(appId:${newId}, confirm:true) and retry.",
+            codeAppId: codeAppId,
+            instanceAppId: newId,
+            committed: false
+        ]
+    }
+    if (commit?.uiBlocked) {
+        // Deleting and retrying would meet the same refusal: keep the shell and fill it in.
+        return [
+            success: false,
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(appId:${newId}, settings:{...}); that call's closing Done installs the app.".toString(),
             codeAppId: codeAppId,
             instanceAppId: newId,
             committed: false
@@ -915,11 +926,20 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
             settingsMap.put(name, pageValues.containsKey(name) ? pageValues.get(name) : "")
         }
     }
+    // The UI will not submit this Done while the page fails its own checks (required fields,
+    // number bounds, patterns); refuse the same way. No POST is issued, so nothing is committed.
+    def uiProblems = _uiNavigationViolations(schema, settingsMap)
+    if (uiProblems) {
+        def detail = uiProblems.collect { "${it.name} (${it.title}): ${it.problem}" }.join("; ")
+        return [status: null, page: page, submitted: false, uiBlocked: true,
+                uiReason: "Hubitat's app page would refuse Done on page '${page}': ${detail}. Set these values first (required fields are the ones marked *), then retry.".toString(),
+                liveSettingsUnavailable: liveSettingsUnavailable, shapeRejections: shapeRejections]
+    }
     def body = _rmBuildSettingsBody(instanceId, settingsMap, schema)
     body.formAction = "update"
     body.currentPage = page
     body._action_update = "Done"
-    body.pageBreadcrumbs = "[]"
+    body.pageBreadcrumbs = _rmPageBreadcrumbs(instanceId, page, "[]")
     // Per-type sidecars the form-encoded UI emits (matches _rmSubmitMainPageDone).
     schema.each { name, meta ->
         def t = meta?.type?.toString()
@@ -935,11 +955,9 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
         }
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-    // Fields the classic "Done" form also submits. _rmSubmitMainPageDone (RM)
-    // omits them and gets away with it because RM commits via updateRule first
-    // and tolerates a failing Done; here Done is the whole operation, and the
-    // hub's update handler 500s without these (verified live). The UI's
-    // referrer/url fields are navigation hints only and are NOT required.
+    // Fields the classic "Done" form also submits (_rmSubmitMainPageDone sends them too); the
+    // hub's update handler 500s without these (verified live). The UI's referrer/url fields are
+    // navigation hints only and are NOT required.
     body.appTypeId = ""
     body.appTypeName = ""
     body._cancellable = "false"
@@ -977,6 +995,16 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     // defaults ARE correct and refusing over an unreadable statusJson would block the install for
     // nothing. The degradation still has to be VISIBLE, so it rides out as a note below.
     def submit = _submitAppDoneForm(instanceId, pageName, false)
+    if (submit.uiBlocked) {
+        return [
+            success: false,
+            uiBlocked: true,
+            error: submit.uiReason,
+            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(appId:${instanceId}, settings:{...}); that call's closing Done installs it.".toString(),
+            scheduledJobCount: 0,
+            eventSubscriptionCount: 0
+        ]
+    }
     def st = submit.status
     def page = submit.page
     if (st != null && st >= 400) {
@@ -1237,7 +1265,7 @@ private Map toolInstallItemSingle(String type, args) {
                     success: false,
                     error: "${type.capitalize()} install unverified: hub returned unparseable verify body for ID ${newItemId}",
                     (idField): newItemId,
-                    note: "Hub created an item slot but the verify response was not valid JSON (possibly an HTML error/login page). Use get_${type}_source with ID ${newItemId} to confirm whether the item persisted. Do NOT retry the install without checking first -- a duplicate item with a different ID may result.",
+                    note: "Hub created an item slot but the verify response was not valid JSON (possibly an HTML error/login page). Use hub_get_source(type='${type}', id=${newItemId}) to confirm whether the item persisted. Do NOT retry the install without checking first -- a duplicate item with a different ID may result.",
                     lastBackup: formatTimestamp(state.lastBackupTimestamp)
                 ]
             }
@@ -1261,7 +1289,7 @@ private Map toolInstallItemSingle(String type, args) {
                 success: false,
                 error: "${type.capitalize()} install unverified: hub returned empty verify body for ID ${newItemId}",
                 (idField): newItemId,
-                note: "Hub created an item slot but the verify fetch returned no content. Use get_${type}_source with ID ${newItemId} to confirm whether the item persisted. Do NOT retry the install without checking first -- a duplicate item with a different ID may result.",
+                note: "Hub created an item slot but the verify fetch returned no content. Use hub_get_source(type='${type}', id=${newItemId}) to confirm whether the item persisted. Do NOT retry the install without checking first -- a duplicate item with a different ID may result.",
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
         }
@@ -1276,7 +1304,7 @@ private Map toolInstallItemSingle(String type, args) {
             verified: (verifyError == null),
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
-        if (verifyError != null) installResult.verifyError = "${verifyError} -- use get_${type}_source with ID ${newItemId} to confirm."
+        if (verifyError != null) installResult.verifyError = "${verifyError} -- use hub_get_source(type='${type}', id=${newItemId}) to confirm."
         if (sourceMode == "sourceFile") installResult.note = "Source was read from File Manager file '${args.sourceFile}'."
         if (sourceMode == "importUrl") installResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
         return installResult
@@ -1329,15 +1357,27 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     }
 
     // Self-update guard: blocks overwriting our own app source unless Developer Mode is on.
-    // Runs before any I/O so blocked self-updates don't pull source. Fails closed when `app` is
-    // unavailable -- can't verify it's not a self-update, so refuse rather than risk a silent brick.
+    // Resolve identity before fetching source. Use the same integer identity as the save POST.
+    boolean isSelfUpdate = false
+    boolean selfClassIdUnavailable = false
     if (type == "app") {
         def selfAppId = app?.id?.toString()
         if (selfAppId == null) {
             mcpLog("error", "hub-admin", "hub_update_app: self-update guard cannot verify -- app context unavailable (app=${app}); refusing appId=${itemId} to fail closed")
             throw new IllegalArgumentException("hub_update_app cannot verify the self-update guard: app context is unavailable (app=${app}). Refusing to proceed to avoid a silent self-update brick. Retry the call; this is typically a transient lifecycle window.")
         }
-        if (itemId.toString() == selfAppId) {
+        // appId is an Apps Code CLASS id, so match it as well as the running instance id (as the
+        // OAuth guard does); an instance-only check never matched a real self-update.
+        isSelfUpdate = itemIdInt == (selfAppId as Integer)
+        if (!isSelfUpdate) {
+            def selfClassId = _resolveSelfAppClassId()
+            selfClassIdUnavailable = selfClassId == null
+            if (selfClassIdUnavailable && !settings.enableDeveloperMode) {
+                throw new IllegalArgumentException("hub_update_app cannot verify the self-update guard: the MCP server's Apps Code class id could not be resolved. No code was changed. Retry when the app-code list is available.")
+            }
+            isSelfUpdate = selfClassId != null && itemIdInt == (selfClassId as Integer)
+        }
+        if (isSelfUpdate) {
             if (!settings.enableDeveloperMode) {
                 mcpLog("warn", "hub-admin", "hub_update_app: self-update of MCP server app (id=${itemId}) BLOCKED -- Developer Mode is off")
                 throw new IllegalArgumentException("hub_update_app refuses to overwrite the MCP server's own app source (appId=${itemId}) while Developer Mode is off. A bad self-update can brick the MCP loop -- enable 'Developer Mode Tools' in the MCP Rule Server app settings to permit self-updates.")
@@ -1448,26 +1488,10 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     // either way the result can't ride back on this call. Record it to atomicState so a later
     // hub_get_info read recovers the hub's verbatim outcome (incl. compile errors). See issue #237.
     //
-    // Match BOTH ids: app.id is the installed-INSTANCE id, but a code deploy targets the Apps Code
-    // CLASS id (from /hub2/userAppTypes), which differs -- matching only app.id would miss the real
-    // self-deploy. Resolve the class id only when the cheap instance check misses (app-code updates
-    // are rare); _resolveSelfAppClassId returns null on any failure (incl. unstubbed in tests), so a
-    // miss simply leaves isSelfUpdate=false.
-    boolean isSelfUpdate = false
-    if (type == "app") {
-        def selfInstanceId = app?.id?.toString()
-        if (selfInstanceId != null && itemId?.toString() == selfInstanceId) {
-            isSelfUpdate = true
-        } else {
-            def selfClassId = _resolveSelfAppClassId()
-            if (selfClassId != null && itemId?.toString() == selfClassId.toString()) isSelfUpdate = true
-            else if (selfClassId == null && sourceCode.length() > 500000) {
-                // A self-deploy-shaped update (large source) whose class-id lookup flaked: #237 compile-
-                // error capture won't arm, so a failed self-deploy would lose the hub's verbatim error.
-                // Surface it instead of silently downgrading to a non-self update.
-                mcpLog("warn", "hub-admin", "hub_update_app: large app-source update to id ${itemId} but the self app-class lookup returned null -- if this IS the MCP server, #237 self-deploy error capture is disabled for this deploy.")
-            }
-        }
+    // Reuse the identity resolved by the guard so another lookup cannot disagree with it.
+    // Developer Mode explicitly allows self-updates even when class lookup is unavailable.
+    if (type == "app" && selfClassIdUnavailable && sourceCode.length() > 500000) {
+        mcpLog("warn", "hub-admin", "hub_update_app: large app-source update to id ${itemId} but the self app-class lookup returned null -- if this IS the MCP server, #237 self-deploy error capture is disabled for this deploy.")
     }
     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     try {
@@ -1588,6 +1612,9 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     def submit = _submitAppDoneForm(triggerId, null, true)
                     if (submit?.liveSettingsUnavailable) {
                         throw new IllegalStateException("the instance's live settings (statusJson) could not be read, so the Done was NOT submitted -- submitting it would have re-sent this page's defaults and cleared the instance's configured settings, device selections included")
+                    }
+                    if (submit?.uiBlocked) {
+                        throw new IllegalStateException("the Done was NOT submitted: ${submit.uiReason}".toString())
                     }
                     def submitStatus = submit?.status
                     if (submitStatus != null && submitStatus >= 400) {
@@ -2946,7 +2973,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
         // Hub Admin App Pages Directory
         [
             name: "hub_list_app_pages",
-            description: """List page names for a multi-page installed app: the live-introspected primary page plus a curated directory of sub-pages for well-known app types (HPM, Rule Machine, Room Lighting, Mode Manager).[[FLAT_TRIM]] Unknown app types return the primary page only, with a note to consult the app's source or Web UI for other page names.[[/FLAT_TRIM]]
+            description: """List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]
 
 Use before hub_get_app_config on multi-page apps to avoid guessing page names. Requires Read master.""",
             inputSchema: [

@@ -3013,7 +3013,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 **Expected**: AI uses the HPM app ID discovered in setup, then calls `hub_read_apps_code(tool='hub_list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list including at least `prefOptions`, `prefPkgUninstall`, `prefPkgModify`, `prefPkgInstall`, `prefPkgMatchUp`. AI lists the available page names and explains their roles (e.g. prefPkgUninstall = full installed-package list). Tool is accessed via the `hub_read_apps_code` gateway.
 
-### T218 — hub_list_app_pages for Rule Machine rule (single-page confirmation)
+### T218 — hub_list_app_pages for Rule Machine rule (linked sub-pages)
 
 ```json
 {
@@ -3022,7 +3022,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI uses the Rule Machine app ID discovered in setup, then calls `hub_read_apps_code(tool='hub_list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list with a single entry `{name: 'mainPage', role: 'primary'}` plus a `note` confirming rules are single-page. AI explains there is only one page (mainPage) and no sub-pages are available.
+**Expected**: AI uses the Rule Machine app ID discovered in setup, then calls `hub_read_apps_code(tool='hub_list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list with `{name: 'mainPage', role: 'primary'}` plus the sub-pages the rule's page links (`selectTriggers` and `selectActions`, `role: 'sub-page'`), and a `note` pointing at `hub_set_rule`'s shortcuts for RM rules. AI lists the pages and says rules are authored through `hub_set_rule` rather than by driving those pages.
 
 ### T219 — hub_get_custom_rule on a Rule Machine rule ID (redirect hint)
 

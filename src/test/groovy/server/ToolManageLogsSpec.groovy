@@ -345,6 +345,104 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ex.message.contains('Device not found')
     }
 
+    @Unroll
+    def "hub_list_device_events validates supplied #idCase instead of reading location history"() {
+        given:
+        hubGet.register('/logs/eventsJson') { '[]' }
+
+        when:
+        script.toolGetDeviceHistory([deviceId: inputId, hoursBack: 1])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(expectedError)
+        hubGet.calls.empty
+
+        where:
+        idCase          | inputId | expectedError
+        'integer zero'  | 0       | 'Device not found: 0'
+        'string zero'   | '0'     | 'Device not found: 0'
+        'empty string'  | ''      | 'deviceId must be a non-empty string or integral number'
+        'blank string'  | ' '     | 'deviceId must be a non-empty string or integral number'
+        'boolean false' | false   | 'deviceId must be a non-empty string or integral number'
+    }
+
+    @Unroll
+    def "hub_list_device_events via dispatch rejects #idCase in history mode (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/logs/eventsJson') { '[]' }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: inputId, hoursBack: 1])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Device not found: 0')
+        hubGet.calls.empty
+
+        where:
+        useGateways | idCase         | inputId
+        false       | 'integer zero' | 0
+        false       | 'string zero'  | '0'
+        true        | 'integer zero' | 0
+        true        | 'string zero'  | '0'
+    }
+
+    @Unroll
+    def "hub_list_device_events with bypass refuses #inputId at native metadata (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/fullJson/0') { '{"device":null}' }
+        hubGet.register('/logs/eventsJson') { '[]' }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: inputId, hoursBack: 1])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error == 'Device metadata fetch failed (/device/fullJson/0)'
+        inner.source != 'location'
+        hubGet.calls*.path == ['/device/fullJson/0']
+
+        where:
+        useGateways | inputId
+        false       | 0
+        false       | '0'
+        true        | 0
+        true        | '0'
+    }
+
+    @Unroll
+    def "hub_list_device_events via dispatch preserves location history for #idCase deviceId (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/logs/eventsJson') { '[]' }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', args)
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.source == 'location'
+        inner.events == []
+        hubGet.calls*.path == ['/logs/eventsJson']
+
+        where:
+        useGateways | idCase    | args
+        false       | 'omitted' | [hoursBack: 1]
+        false       | 'null'    | [deviceId: null, hoursBack: 1]
+        true        | 'omitted' | [hoursBack: 1]
+        true        | 'null'    | [deviceId: null, hoursBack: 1]
+    }
+
     // -------- toolGetDeviceHistory: per-app events (appId) --------
     // Pinned now() is 1234567890000L = 2009-02-13T23:31:30Z; in-window event
     // dates below are chosen relative to that.
@@ -839,6 +937,36 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.events*.value == ['on']
         result.sinceMode == 'explicit'
         result.since == new Date(1234562400000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_device_events: schema and handler accept #declaredType deviceId"() {
+        given:
+        def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
+        nativeDeviceEvents(device) { -> [[name: 'switch', value: 'on', date: new Date(1234562460000L)]] }
+        settingsMap.selectedDevices = [device]
+
+        when:
+        def result = script.toolGetDeviceHistory([deviceId: inputId, since: 1234562400000L])
+
+        then:
+        result.deviceId == '42'
+        result.events*.value == ['on']
+        script.getAllToolDefinitions().find { it.name == 'hub_list_device_events' }.inputSchema.properties.deviceId.type.contains(declaredType)
+
+        where:
+        inputId | declaredType
+        42      | 'integer'
+        '42'    | 'string'
+    }
+
+    def "hub_list_device_events: a fractional deviceId is refused"() {
+        when:
+        script.toolGetDeviceHistory([deviceId: 42.5])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceId must be a non-empty string or integral number')
     }
 
     def "hub_list_device_events: a returned date round-trips as since"() {

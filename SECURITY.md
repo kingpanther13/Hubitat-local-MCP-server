@@ -2,14 +2,9 @@
 
 ## Supported Versions
 
-Security fixes are provided for the latest released Hubitat Package Manager version of MCP Rule Server.
+Security fixes are provided for the current release of MCP Rule Server, installed and updated through Hubitat Package Manager. Older releases are not supported; update to the current release to receive fixes. The package requires Hubitat firmware `2.3.0+`.
 
-The current release is `1.4.2`, released on `2026-05-27`. The package currently requires Hubitat firmware `2.3.0+`.
-
-| Version | Supported |
-| ------- | --------- |
-| 1.4.2   | Yes       |
-| < 1.4.2 | No        |
+Security policy last updated: 2026-09-27.
 
 ## Permission Model
 

@@ -58,7 +58,7 @@ The parent app `#include`s Groovy **libraries**, which are all shipped together 
 
 In the Hubitat web UI go to **Bundles** > **Import**, and import the bundle from this repo:
    ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/bundles/mcp-libraries.zip
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/mcp-libraries.zip
    ```
    If your hub's Bundle Manager only accepts a file upload, download that `.zip` first and upload it. Importing the bundle installs **every** library the app needs in one step (they appear under **Libraries Code**) — there's no need to add libraries individually. (HPM / Option A does this automatically.)
 
@@ -330,7 +330,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_get_backup` | Get source from a backup |
 | `hub_list_device_dependents` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
 | `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Read master. |
-| `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `hub_get_app_config` on multi-page apps to avoid guessing page names. Read master. |
+| `hub_list_app_pages` | List an app's page names: the live primary page plus every sub-page it links to (Rule Machine, Room Lighting, any classic app), with a curated directory added for HPM. Use before `hub_get_app_config` on multi-page apps to avoid guessing page names. Read master. |
 | `hub_list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Pass `includeDrift=true` to also cross-reference HPM-tracked packages against installed apps and drivers (surfacing missing-required components, orphan apps, and orphan drivers under a `drift` key; optional `packageFilter` substring; surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail; data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `hub_get_tool_guide` for full details). Read master. |
 
 `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, and `hub_list_hpm_packages` are gated by the Read master (ON by default). HPM itself must be installed on the hub.
@@ -398,7 +398,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers (with per-marker counts in `brokenMarkerCounts`), multiple-flag poison, configPage errors. |
-| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables (name/type/value) from `state.allLocalVars`. Distinct from `hub_list_variables` (hub globals). `type` is RM's internal token (see TOOL_GUIDE for the `addLocalVariable` translation). |
+| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables with their current values. Distinct from `hub_list_variables` (hub globals). `type` is RM's internal token (see TOOL_GUIDE for the `addLocalVariable` translation). |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (`classic` whenNodes/thenNodes/elseNodes or `graph` nodes/edges). |
 
 </details>
@@ -628,7 +628,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
-| `hub_set_native_app` | Create or edit any classic native app (omit `appId` to create; `appType` enum covers Button Controllers / Notifier / Groups+Scenes / Basic Rules; default `rule_machine`). Visual Rules are edit/delete-only by `appId` — create them with `hub_set_visual_rule`. Create a Button Rule under its controller via `buttonRule`. Returns `appId`. Generic upsert; `walkStep` (generic classic-page walker) also works here. |
+| `hub_set_native_app` | Create or edit any classic native app (omit `appId` to create; `appType` enum covers Button Controllers / Notifier / Groups+Scenes / Basic Rules / Room Lighting; default `rule_machine`). Visual Rules are edit/delete-only by `appId` — create them with `hub_set_visual_rule`. Create a Button Rule under its controller via `buttonRule`. Returns `appId`. Generic upsert; `walkStep` (generic classic-page walker) also works here. |
 | `hub_set_rule` | Author a Rule Machine rule by appId (omit `appId` to create) — triggers, actions, required expressions, settings, structured shortcuts. Existing-rule edits ensure a rollback baseline; by default the same rule reuses that baseline for one hour, so restoring it undoes the whole later edit chain. Enable strict per-write backups in Advanced settings when each call needs its own rollback point. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `hub_get_app_config` rather than rolling back. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
@@ -1668,6 +1668,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.4.6** - fix: native-app device pickers, sub-pages and UI page checks; Room Lighting create. PRs: [#477](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/477)
 - **v4.4.5** - feat: per-device and per-variable Hub Mesh link/share (#448). PRs: [#462](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/462)
 - **v4.4.4** - fix: refused addAction editor cleanup, modern-era check, setVariable numOp, patches trigger/action ops. PRs: [#471](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/471)
 - **v4.4.3** - fix: hub_report_issue reports the real hub model; make bug-report error retention opt-in. PRs: [#468](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/468)

@@ -351,6 +351,14 @@ abstract class HarnessSpec extends Specification {
         def corpusFpField = script.getClass().getDeclaredField('TOOL_SEARCH_CORPUS_FP')
         corpusFpField.accessible = true
         corpusFpField.set(null, null)
+        // Specs start with setup current, so dispatch does not run initialize(); the setup-refresh
+        // specs clear it themselves.
+        def setupField = script.getClass().getDeclaredField('SETUP_CURRENT')
+        setupField.accessible = true
+        setupField.set(null, true)
+        def setupRetryField = script.getClass().getDeclaredField('SETUP_RETRY_AT')
+        setupRetryField.accessible = true
+        setupRetryField.set(null, 0L)
         // The write-reservation machinery serves mrtrRequests / packageDeployInFlight
         // from a class-static snapshot of atomicState. Clearing atomicStateMap above
         // without this would leave the previous feature's snapshot as the read path --

@@ -1,96 +1,85 @@
 library(name: "McpVariablesLib", namespace: "mcp", author: "kingpanther13", description: "Hub variable + connector tool implementations (list/get/set/create/delete variables, connectors, change history) plus the variable event-subscription handlers for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
-private void _refreshHubVarInUseRegistrations() {
+private boolean _refreshHubVarInUseRegistrations() {
     Set<String> currentVars = [] as Set
     Set<String> hubVarNames
     try {
         hubVarNames = (getAllGlobalVars()?.keySet() ?: []) as Set<String>
     } catch (Exception e) {
-        // Surface as ERROR — when this fails the in-use safety net is stale,
-        // and hub_delete_variable's pre-deletion warning won't fire. Users need
-        // to know the safety registrations weren't refreshed.
-        mcpLog("error", "hub-vars",
-            "_refreshHubVarInUseRegistrations: getAllGlobalVars failed (${e.class.simpleName}: ${e.message}) -- " +
-            "in-use safety registrations are STALE. hub_delete_variable's hub-side warning may not fire until " +
-            "this transient failure resolves and updated() re-runs the refresh.")
-        return
+        mcpLogError("hub-vars", "Hub variable inventory failed -- in-use safety registrations remain stale until setup retries", e)
+        return false
     }
-    if (!hubVarNames) {
-        // No hub vars at all — clear any stale registrations and bail.
-        def previous = (atomicState.inUseHubVars ?: []) as List<String>
-        previous.each { name ->
-            try { removeInUseGlobalVar(name) } catch (Exception e) { /* idempotent */ }
-        }
-        atomicState.inUseHubVars = []
-        return
-    }
-    try {
-        getChildApps()?.each { child ->
-            def ruleData = null
-            try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
-            if (ruleData) {
-                def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                hubVarNames.each { varName ->
-                    // Check for the JSON-quoted form so `temp` doesn't match
-                    // `temperature` / `attempt`. Names live as JSON values
-                    // (and sometimes keys) in the serialized blob, so the
-                    // `"<name>"` form is a reliable word-boundary proxy.
-                    def needle = "\"${varName}\""
-                    if (serialized?.contains(needle)) {
-                        currentVars << varName
+    if (hubVarNames) {
+        try {
+            getChildApps()?.each { child ->
+                def ruleData = null
+                try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
+                if (ruleData) {
+                    def serialized = groovy.json.JsonOutput.toJson(ruleData)
+                    hubVarNames.each { varName ->
+                        // Match a whole JSON value so temp cannot match temperature.
+                        def needle = "\"${varName}\""
+                        if (serialized?.contains(needle)) currentVars << varName
                     }
                 }
             }
+        } catch (Exception e) {
+            mcpLogError("hub-vars", "Child rule scan failed -- in-use safety registrations remain stale until setup retries", e)
+            return false
         }
-    } catch (Exception e) {
-        logDebug("_refreshHubVarInUseRegistrations: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
-        return
     }
 
     def previous = ((atomicState.inUseHubVars ?: []) as List<String>) as Set<String>
+    def registered = previous + ([] as Set)
     def toAdd = currentVars - previous
     def toRemove = previous - currentVars
-
+    boolean complete = true
     toAdd.each { name ->
-        // ERROR level: failure here means Hubitat won't warn the user before
-        // they delete a variable a rule depends on. Warn-level would be
-        // dropped at the default mcpLogLevel="error" config.
-        try { addInUseGlobalVar(name) }
-        catch (Exception e) { mcpLogError("hub-vars", "addInUseGlobalVar('${name}') failed -- in-use safety warning will not surface for this var", e) }
+        try {
+            addInUseGlobalVar(name)
+            registered << name
+        } catch (Exception e) {
+            complete = false
+            mcpLogError("hub-vars", "addInUseGlobalVar('${name}') failed -- in-use safety warning will not surface for this var", e)
+        }
     }
     toRemove.each { name ->
-        try { removeInUseGlobalVar(name) }
-        catch (Exception e) { mcpLogError("hub-vars", "removeInUseGlobalVar('${name}') failed -- stale in-use registration will linger", e) }
+        try {
+            removeInUseGlobalVar(name)
+            registered.remove(name)
+        } catch (Exception e) {
+            complete = false
+            mcpLogError("hub-vars", "removeInUseGlobalVar('${name}') failed -- stale in-use registration will linger", e)
+        }
     }
-
-    atomicState.inUseHubVars = (currentVars as List).sort()
+    // Remember completed operations; failed additions/removals must remain eligible on retry.
+    atomicState.inUseHubVars = (registered as List).sort()
     if (toAdd || toRemove) {
-        mcpLog("info", "hub-vars", "in-use registrations refreshed: added=${toAdd.sort()}, removed=${toRemove.sort()}, total=${currentVars.size()}")
+        mcpLog("info", "hub-vars", "in-use registrations refreshed: complete=${complete}, total=${registered.size()}")
     }
+    return complete
 }
 
-private void _subscribeToAllHubVariables() {
+private boolean _subscribeToAllHubVariables() {
     def vars
     try { vars = getAllGlobalVars() }
     catch (Exception e) {
-        logDebug("_subscribeToAllHubVariables: getAllGlobalVars threw ${e.class.simpleName}: ${e.message}")
-        return
+        mcpLogError("hub-vars", "Hub variable inventory failed -- subscriptions remain incomplete until setup retries", e)
+        return false
     }
-    if (location == null) return  // unit-test environment safety
+    if (location == null) return false
+    boolean complete = true
     vars?.keySet()?.each { varName ->
         try {
             subscribe(location, "variable:${varName}", "handleHubVariableEvent")
         } catch (Throwable e) {
-            // Don't let one bad subscribe break the whole loop. The hub
-            // sometimes rejects names with characters that getAllGlobalVars
-            // returned but subscribe() refuses; log and continue. Catch
-            // Throwable because hubitat_ci's validator throws AssertionError.
-            // ERROR level: a persistent failure here means hub_list_variable_changes
-            // silently misses changes for this variable; warn-level would be
-            // dropped at default mcpLogLevel="error".
+            // Continue other subscriptions. The retry backoff also bounds persistent bad-name failures.
+            // Catch Throwable because hubitat_ci's subscription validator throws AssertionError.
+            complete = false
             mcpLog("error", "hub-vars", "subscribe to variable:${varName} failed: ${e.message} -- hub_list_variable_changes will not capture changes for this var")
         }
     }
+    return complete
 }
 
 def renameVariable(String oldName, String newName) {
@@ -674,6 +663,64 @@ private void _validateInitialValue(String name, String type, value) {
     }
 }
 
+// Names of the inputs the Hub Variables form shows now, or null when the page cannot be read.
+// Non-private so specs can stub it.
+def _hubVarsFormFields(Integer appId) {
+    try {
+        return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "hubVar")?.configPage) ?: [:]).keySet() as Set
+    } catch (Exception e) {
+        logDebug("_hubVarsFormFields(${appId}) could not read the form: ${e.message}")
+        return null
+    }
+}
+
+// Hub Variables button clicks land asynchronously (live: a read right after the click can still show
+// the old form, and the change appears a moment later). Wait for the form to show the click's effect,
+// clicking once more if it never does. A form that cannot be read counts as landed.
+private boolean _hubVarsClickAndWait(Integer appId, String button, String stateAttribute, Closure landed) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+        _rmClickAppButton(appId, button, stateAttribute, "hubVar")
+        for (int poll = 0; poll < 12; poll++) {
+            def fields = _hubVarsFormFields(appId)
+            if (fields == null || landed(fields)) return true
+            try { pauseExecution(250) } catch (Exception ignored) { }
+        }
+        _primeHubVarsWizard(appId, "hub vars ${button} retry")
+    }
+    return false
+}
+
+// Canonical hub DateTime text for a create value: the format RM stores, in hub-local time. Accepts
+// "yyyy-MM-ddTHH:mm[:ss[.fraction]][offset]", a space instead of T, or {date,time}; any
+// offset in the input is ignored, as the UI's date and time pickers are hub-local.
+private String _dateTimeVariableValue(String name, value) {
+    def dateStr, timeStr
+    if (value instanceof Map) {
+        dateStr = value.date?.toString()
+        timeStr = value.time?.toString()
+    } else {
+        def s = value.toString().trim()
+        def parts = s.contains("T") ? s.split("T", 2) : (s.contains(" ") ? s.split(" ", 2) : [s, null])
+        dateStr = parts[0]
+        timeStr = parts.size() > 1 ? parts[1] : null
+    }
+    // Validate the entire input before reducing it to the form's minute precision.
+    boolean validTime = timeStr != null && (timeStr ==~ /(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?/)
+    def zone = location.timeZone
+    def when = null
+    if (dateStr && validTime) {
+        timeStr = timeStr.take(5)
+        try { when = Date.parse("yyyy-MM-dd HH:mm", "${dateStr} ${timeStr}", zone) } catch (Exception ignored) { }
+    }
+    // Round-trip check: a lenient parse would accept 2026-13-45 or a DST gap.
+    if (when == null || when.format("yyyy-MM-dd HH:mm", zone) != "${dateStr} ${timeStr}".toString()) {
+        throw new IllegalArgumentException(
+            "DateTime variable '${name}' requires a valid date and time. " +
+            "Pass an ISO string like '2026-05-06T12:00:00' or a {date,time} map. Got: ${value}")
+    }
+    return when.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ", zone)
+}
+
 // Shared per-variable create core: drives the Hub Variables system app wizard
 // (prime -> moreVar -> write name/type/value or DateTime date/time + Done),
 // verifies the variable landed with a verify-backoff, and subscribes to its
@@ -684,53 +731,51 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     def applied = []
     def skipped = []
 
+    // Validate a DateTime value before the wizard opens, so a bad value writes nothing.
+    String dtValue = (type == "DateTime") ? _dateTimeVariableValue(name, value) : null
     _primeHubVarsWizard(appId, "hub_create_variable pre-moreVar")
-    _rmClickAppButton(appId, "moreVar", "moreVar", "hubVar")
+    if (!_hubVarsClickAndWait(appId, "moreVar", "moreVar") { it.contains("hbVar") }) {
+        throw new IllegalStateException("hub_create_variable: the Hub Variables create form did not open, so '${name}' was not created. Retry the call.")
+    }
     _rmWriteSettingOnPage(appId, "hubVar", "hbVar",   name, applied, "text", skipped)
     _rmWriteSettingOnPage(appId, "hubVar", "varType", type, applied, "enum", skipped)
-    if (type == "DateTime") {
-        // DateTime renders varDate + varTime instead of varValue. Accept ISO
-        // "yyyy-MM-ddTHH:mm[:ss]", "yyyy-MM-dd HH:mm[:ss]", or a Map
-        // {date:"yyyy-MM-dd", time:"HH:mm"}.
-        def dateStr, timeStr
-        if (value instanceof Map) {
-            dateStr = value.date?.toString()
-            timeStr = value.time?.toString()
-        } else {
-            def s = value.toString().trim()
-            def parts = s.contains("T") ? s.split("T", 2) : (s.contains(" ") ? s.split(" ", 2) : [s, null])
-            dateStr = parts[0]
-            timeStr = parts.size() > 1 ? parts[1]?.take(5) : null  // "HH:mm" only
+    if (dtValue != null) {
+        // Date and time go in one POST, as the UI sends them. The form then either commits or waits
+        // for its Done button (both seen live); the value is checked, and set if needed, below.
+        def dtCfg = _rmFetchConfigJson(appId, "hubVar")
+        def dtSchema = _rmCollectInputSchema(dtCfg?.configPage)
+        def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
+        if (missing) {
+            throw new IllegalStateException("hub_create_variable: the Hub Variables form did not offer ${missing.join(' and ')} for DateTime variable '${name}', so it was not created.")
         }
-        if (!dateStr || !timeStr) {
-            throw new IllegalArgumentException(
-                "DateTime variable '${name}' requires both date and time. " +
-                "Pass an ISO string like '2026-05-06T12:00:00' or a {date,time} map. Got: ${value}")
+        def dtBody = _rmBuildSettingsBody(appId, [varDate: dtValue.substring(0, 10), varTime: dtValue.substring(11, 16)], dtSchema)
+        dtBody.formAction = "update"
+        dtBody.currentPage = "hubVar"
+        dtBody.pageBreadcrumbs = _rmPageBreadcrumbs(appId, "hubVar", '["mainPage"]')
+        if (dtCfg?.app?.version != null) dtBody.version = dtCfg.app.version.toString()
+        _rmPostSettings(appId, dtBody)
+        applied.addAll(["varDate", "varTime"])
+        if (_hubVarsFormFields(appId)?.contains("dateTimeDone")) {
+            _primeHubVarsWizard(appId, "hub_create_variable DateTime pre-Done")
+            _hubVarsClickAndWait(appId, "dateTimeDone", null) { !it.contains("dateTimeDone") }
         }
-        _rmWriteSettingOnPage(appId, "hubVar", "varDate", dateStr, applied, "date", skipped)
-        _rmWriteSettingOnPage(appId, "hubVar", "varTime", timeStr, applied, "time", skipped)
-        // DateTime requires an explicit Done click to commit (the other
-        // types auto-commit when varValue is written). Prime first — same
-        // wizard quirk as delete/hub_create_connector clicks.
-        _primeHubVarsWizard(appId, "hub_create_variable DateTime pre-Done")
-        _rmClickAppButton(appId, "dateTimeDone", null, "hubVar")
     } else {
         _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
     }
 
-    // Verify the variable landed. The wizard auto-commits on varValue write
-    // (or dateTimeDone for DateTime); the var becomes visible to getGlobalVar
-    // shortly after. Retry with backoff up to ~2s before giving up.
+    // Verify the variable landed. The wizard commits on the varValue write (DateTime: on the
+    // date/time POST or its Done click); the var becomes visible to getGlobalVar
+    // shortly after. Check immediately, then retry with bounded backoff.
     def created = null
-    for (int attempt = 0; attempt < 8; attempt++) {
+    // A Done click commits asynchronously, so a DateTime create gets a longer window (live: ~3s).
+    int verifyAttempts = (dtValue != null) ? 16 : 8
+    for (int attempt = 0; attempt < verifyAttempts; attempt++) {
         try { created = getGlobalVar(name) } catch (Exception e) {
             logDebug("hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
         if (created != null) break
-        // Check-FIRST: the wizard commit is usually visible immediately, so the old
-        // sleep-then-check paid 500ms on every call; the backoff only runs when needed
-        // (slightly larger worst-case window, 7x300ms vs 4x500ms; zero happy-path sleep).
-        if (attempt < 7) {
+        // Only wait after a missing read; DateTime commits receive a longer window.
+        if (attempt < verifyAttempts - 1) {
             try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         }
     }
@@ -738,6 +783,16 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
         throw new IllegalStateException(
             "hub_create_variable: wizard completed but '${name}' is not visible via getGlobalVar. " +
             "Settings applied: ${applied.join(', ')}. Skipped: ${skipped}")
+    }
+    // Compare date and hour:minute only: RM stores local time, and its offset text is not ours to match.
+    if (dtValue != null && created.value?.toString()?.take(16) != dtValue.take(16)) {
+        try { setGlobalVar(name, dtValue) } catch (Exception e) {
+            logDebug("hub_create_variable: setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        }
+        created = getGlobalVar(name)
+        if (created?.value?.toString()?.take(16) != dtValue.take(16)) {
+            throw new IllegalStateException("hub_create_variable: '${name}' was created, but its time could not be set (it reads ${created?.value}). Set it with hub_set_variable(name='${name}', value='${dtValue}').")
+        }
     }
 
     // Subscribe to the new variable's location event so changes show up in
@@ -1289,7 +1344,7 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     name: [type: "string", description: "New variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    value: [description: "Initial value, must match the type; for DateTime e.g. 2026-02-04T14:00.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
+                    value: [description: "Initial value, must match the type. DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
                     mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"],
                     mesh_source_name: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
                     variables: [type: "array", description: "Bulk form: several variables in one call.", items: [

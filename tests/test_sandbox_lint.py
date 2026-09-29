@@ -1539,18 +1539,14 @@ def test_check_versions_mismatch_across_files_flagged(monkeypatch, tmp_path):
 # check_tool_guide_pointers — schema-pointer-to-dispatcher-section coverage
 # ---------------------------------------------------------------------------
 
-def _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md):
-    """Lay down hubitat-mcp-server.groovy and TOOL_GUIDE.md in tmp_path and
-    point sl.REPO_ROOT at it. check_tool_guide_pointers reads both files via
-    REPO_ROOT, so this is all the patching needed."""
+def _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy):
+    """Lay down hubitat-mcp-server.groovy in tmp_path and point sl.REPO_ROOT at it."""
     (tmp_path / "hubitat-mcp-server.groovy").write_text(server_groovy)
-    (tmp_path / "TOOL_GUIDE.md").write_text(tool_guide_md)
     monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
 
 
 def test_check_tool_guide_pointers_all_valid_no_findings(monkeypatch, tmp_path):
-    """Schema points at a valid section, dispatcher has it, TOOL_GUIDE.md has
-    a matching heading -> empty findings."""
+    """Schema points at a valid section the dispatcher has -> empty findings."""
     server_groovy = """\
 def getToolGuideSections() {
     return [
@@ -1565,16 +1561,7 @@ def someTool() {
     return [description: "Call `get_tool_guide(section='device_authorization')` for details."]
 }
 """
-    tool_guide_md = """\
-# MCP Tool Guide
-
-## Device Authorization (CRITICAL)
-Stuff.
-
-## Installed-App & Native-Rule Tools
-Stuff.
-"""
-    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy)
     findings = sl.check_tool_guide_pointers()
     assert findings == [], f"expected no findings, got: {findings}"
 
@@ -1605,14 +1592,7 @@ def someTool() {
     return [description: "Call `get_tool_guide(section='builtin_app_tools_apps')` for details."]
 }
 """
-    tool_guide_md = """\
-## Device Authorization (CRITICAL)
-Stuff.
-
-## Installed-App & Native-Rule Tools
-Stuff.
-"""
-    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy)
     findings = sl.check_tool_guide_pointers()
     assert findings == [], f"sub-key pointer should resolve, got: {findings}"
 
@@ -1640,8 +1620,7 @@ def someTool() {
     return [description: "Call `get_tool_guide(section='builtin_app_tools_typo')` for details."]
 }
 """
-    tool_guide_md = "## Installed-App & Native-Rule Tools\nStuff.\n"
-    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy)
     findings = sl.check_tool_guide_pointers()
     broken = [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
     assert broken, f"expected tool-guide-broken-pointer finding, got: {findings}"
@@ -1663,55 +1642,11 @@ def someTool() {
     return [description: "Call `get_tool_guide(section='nonexistent_section')` for details."]
 }
 """
-    tool_guide_md = "## Device Authorization (CRITICAL)\nStuff.\n"
-    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy)
     findings = sl.check_tool_guide_pointers()
     broken = [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
     assert broken, f"expected tool-guide-broken-pointer finding, got: {findings}"
     assert "nonexistent_section" in broken[0]["message"]
-
-
-def test_check_tool_guide_pointers_missing_hint_for_new_key_flagged(monkeypatch, tmp_path):
-    """A section key added to the dispatcher without an entry in
-    key_to_heading_hint (inside the lint) -> tool-guide-no-heading-hint.
-    This is the fail-loud-on-new-key behaviour that keeps the drift check
-    honest as the section set grows."""
-    server_groovy = """\
-def getToolGuideSections() {
-    return [
-        device_authorization: '''## Device Authorization (CRITICAL)
-Body.''',
-        brand_new_section_added_by_a_future_pr: '''## Some New Heading
-Body.'''
-    ]
-}
-"""
-    tool_guide_md = "## Device Authorization (CRITICAL)\nStuff.\n\n## Some New Heading\nStuff.\n"
-    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
-    findings = sl.check_tool_guide_pointers()
-    missing_hint = [f for f in findings if f["rule"] == "tool-guide-no-heading-hint"]
-    assert missing_hint, f"expected tool-guide-no-heading-hint finding, got: {findings}"
-    assert "brand_new_section_added_by_a_future_pr" in missing_hint[0]["message"]
-
-
-def test_check_tool_guide_pointers_drifted_heading_flagged(monkeypatch, tmp_path):
-    """Dispatcher has a key whose mapped heading is renamed or removed in
-    TOOL_GUIDE.md -> tool-guide-heading-missing."""
-    server_groovy = """\
-def getToolGuideSections() {
-    return [
-        device_authorization: '''## Device Authorization (CRITICAL)
-Body.'''
-    ]
-}
-"""
-    # Heading renamed -- "Device Authorization" no longer present in TOOL_GUIDE.md.
-    tool_guide_md = "## Some Unrelated Section\nStuff.\n"
-    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
-    findings = sl.check_tool_guide_pointers()
-    missing_heading = [f for f in findings if f["rule"] == "tool-guide-heading-missing"]
-    assert missing_heading, f"expected tool-guide-heading-missing finding, got: {findings}"
-    assert "device_authorization" in missing_heading[0]["message"]
 
 
 def test_check_tool_guide_pointers_no_dispatcher_function_flagged(monkeypatch, tmp_path):
@@ -1719,8 +1654,7 @@ def test_check_tool_guide_pointers_no_dispatcher_function_flagged(monkeypatch, t
     silently passing (the worst possible failure mode: a refactor renames
     the function and the lint goes silent)."""
     server_groovy = "def someOtherFunction() { return [] }\n"
-    tool_guide_md = "## Whatever\n"
-    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy)
     findings = sl.check_tool_guide_pointers()
     no_sections = [f for f in findings if f["rule"] == "tool-guide-no-sections"]
     assert no_sections, f"expected tool-guide-no-sections finding, got: {findings}"
@@ -1749,8 +1683,7 @@ def test_check_tool_guide_pointers_8space_indent_required(monkeypatch, tmp_path)
         "    return [description: \"Call `get_tool_guide(section='nested_fake_key')` for foo.\"]\n"
         "}\n"
     )
-    tool_guide_md = "## Device Authorization\nStuff.\n"
-    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
+    _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy)
     findings = sl.check_tool_guide_pointers()
     broken = [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
     assert broken, f"expected the nested_fake_key pointer to flag as broken, got: {findings}"
@@ -1771,65 +1704,162 @@ def someTool() {
 }
 """
 
-_METHOD_SECTION_TOOL_GUIDE = (
-    "## Device Authorization (CRITICAL)\nStuff.\n\n"
-    "## Virtual Device Tools\nA load-bearing anchor phrase.\n"
-)
 
-
-@pytest.mark.parametrize("return_type, comment", [
-    ("String", ""), ("def", ""),
-    ("String", "    // Explanation before the body.\n"),
-    ("def", "    /* Explanation before the body. */\n"),
-])
-def test_check_tool_guide_pointers_section_body_resolved_from_library(monkeypatch, tmp_path, return_type, comment):
-    """A section whose text lives in its domain library still counts as a section, and its body
-    is resolved for the content-anchor check -- the shape the app-file size budget forces."""
-    _patch_tool_guide_sources(monkeypatch, tmp_path, _METHOD_SECTION_SERVER, _METHOD_SECTION_TOOL_GUIDE)
-    (tmp_path / "libraries").mkdir()
-    (tmp_path / "libraries" / "mcp-virtual-devices-lib.groovy").write_text(
-        f"private {return_type} _virtualDevicesGuideSection() {{\n{comment}"
-        "    return '''## Virtual Device Tools\n"
-        "A load-bearing anchor phrase.\n"
-        "'''\n"
-        "}\n"
-    )
-    findings = sl.check_tool_guide_pointers(
-        anchors_override={"virtual_devices": ["A load-bearing anchor phrase"]})
+def test_check_tool_guide_pointers_library_delegated_section_counts(monkeypatch, tmp_path):
+    """A section whose text lives in its domain library (`key: _method(),`) is still a key, so a
+    pointer at it is not broken -- even before the method body is resolvable."""
+    _patch_tool_guide_sources(monkeypatch, tmp_path, _METHOD_SECTION_SERVER)
+    findings = sl.check_tool_guide_pointers()
     assert findings == [], f"expected no findings, got: {findings}"
 
 
-def test_check_tool_guide_pointers_unresolvable_section_method_flagged(monkeypatch, tmp_path):
-    """The delegating method renamed or deleted -> the section would serve nothing, so fail loud
-    rather than silently skipping the section's anchors."""
-    _patch_tool_guide_sources(monkeypatch, tmp_path, _METHOD_SECTION_SERVER, _METHOD_SECTION_TOOL_GUIDE)
-    (tmp_path / "libraries").mkdir()
-    (tmp_path / "libraries" / "mcp-virtual-devices-lib.groovy").write_text(
-        "private String _renamedGuideSection() {\n    return '''## Virtual Device Tools\n'''\n}\n")
-    findings = sl.check_tool_guide_pointers()
-    unresolved = [f for f in findings if f["rule"] == "tool-guide-section-method-unresolved"]
-    assert unresolved, f"expected tool-guide-section-method-unresolved, got: {findings}"
-    assert "_virtualDevicesGuideSection" in unresolved[0]["message"]
-    # The key still counts, so the pointer at it must NOT also read as broken.
-    assert not [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
+# ---------------------------------------------------------------------------
+# check_tool_guide_generated -- TOOL_GUIDE.md must equal the builder's rendering
+# ---------------------------------------------------------------------------
+
+_GENERATED_SERVER = """\
+def hubBpsGuideKey() { 'selftest-secret-key' }
+
+def getToolGuideSections() {
+    return [
+        best_practice_reference: '''Acknowledgment key: native Rule Machine.''',
+        set_rule_reference: '''setVariable modeName discrete events Variable comparison lowercase
+Extended per-capability spec shapes selectTriggers nested subExpression expressionNotLive subscriptionsNotLive''',
+        device_authorization: '''## Device Authorization (CRITICAL)
+Key is selftest-secret-key.''',
+        virtual_devices: _virtualDevicesGuideSection(),
+    ]
+}
+"""
+
+_GENERATED_LIB = (
+    "private String _virtualDevicesGuideSection() {\n"
+    "    // Explanation before the body.\n"
+    "    return '''## Virtual Device Tools\nBody.\n'''\n"
+    "}\n"
+)
 
 
-def test_check_tool_guide_pointers_statement_before_literal_return_stays_unresolved(monkeypatch, tmp_path):
-    """Only whitespace and comments may sit between the brace and the literal return: a real
-    statement means the body is computed, and the anchor check cannot vouch for computed text."""
-    _patch_tool_guide_sources(monkeypatch, tmp_path, _METHOD_SECTION_SERVER, _METHOD_SECTION_TOOL_GUIDE)
+def _write_generated_tree(monkeypatch, tmp_path, lib_src=_GENERATED_LIB):
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(_GENERATED_SERVER)
     (tmp_path / "libraries").mkdir()
-    (tmp_path / "libraries" / "mcp-virtual-devices-lib.groovy").write_text(
-        "private String _virtualDevicesGuideSection() {\n"
-        "    def prefix = 'x'\n"
-        "    return '''## Virtual Device Tools\n"
-        "A load-bearing anchor phrase.\n"
-        "'''\n"
-        "}\n"
-    )
-    findings = sl.check_tool_guide_pointers(
-        anchors_override={"virtual_devices": ["A load-bearing anchor phrase"]})
-    assert [f for f in findings if f["rule"] == "tool-guide-section-method-unresolved"], findings
+    (tmp_path / "libraries" / "mcp-virtual-devices-lib.groovy").write_text(lib_src)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+
+
+def _rendered_guide():
+    return sl._load_tool_guide_builder().render(_GENERATED_SERVER, "\n" + _GENERATED_LIB)
+
+
+def test_check_tool_guide_generated_matching_file_no_findings(monkeypatch, tmp_path):
+    _write_generated_tree(monkeypatch, tmp_path)
+    rendered = _rendered_guide()
+    assert "selftest-secret-key" not in rendered
+    # CRLF on disk (a Windows checkout) is not drift.
+    (tmp_path / "TOOL_GUIDE.md").write_bytes(rendered.replace("\n", "\r\n").encode("utf-8"))
+    assert sl.check_tool_guide_generated() == []
+
+
+def test_check_tool_guide_generated_stale_file_flagged(monkeypatch, tmp_path):
+    _write_generated_tree(monkeypatch, tmp_path)
+    (tmp_path / "TOOL_GUIDE.md").write_text(_rendered_guide() + "A hand edit.\n")
+    findings = sl.check_tool_guide_generated()
+    assert [f["rule"] for f in findings] == ["tool-guide-not-generated"], findings
+    assert findings[0]["file"] == "TOOL_GUIDE.md"
+    assert "python tools/build-tool-guide.py" in findings[0]["message"]
+    assert "getToolGuideSections()" in findings[0]["message"]
+    assert sl.format_finding(findings[0])
+
+
+def test_check_tool_guide_generated_missing_file_flagged(monkeypatch, tmp_path):
+    _write_generated_tree(monkeypatch, tmp_path)
+    assert [f["rule"] for f in sl.check_tool_guide_generated()] == ["tool-guide-not-generated"]
+
+
+def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypatch, tmp_path):
+    """The delegating method renamed -> the builder cannot render, reported as a finding, not a crash."""
+    _write_generated_tree(monkeypatch, tmp_path,
+                          lib_src="private String _renamedGuideSection() {\n    return '''x'''\n}\n")
+    findings = sl.check_tool_guide_generated()
+    assert [f["rule"] for f in findings] == ["tool-guide-not-generated"], findings
+    assert "_virtualDevicesGuideSection" in findings[0]["message"]
+
+
+@pytest.mark.parametrize("anchor", [
+    "Acknowledgment key", "native Rule Machine",
+    "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
+    "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
+    "expressionNotLive", "subscriptionsNotLive",
+])
+def test_regenerating_guide_cannot_hide_missing_served_api_guidance(monkeypatch, tmp_path, anchor):
+    _write_generated_tree(monkeypatch, tmp_path)
+    source = _GENERATED_SERVER.replace(anchor, "", 1)
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(source)
+    rendered = sl._load_tool_guide_builder().render(source, _GENERATED_LIB)
+    (tmp_path / "TOOL_GUIDE.md").write_text(rendered)
+    findings = sl.check_tool_guide_generated()
+    assert len(findings) == 1, findings
+    assert findings[0]["rule"] == "tool-guide-anchor-missing-source"
+    assert anchor in findings[0]["message"]
+    assert sl.format_finding(findings[0])
+
+
+@pytest.mark.parametrize("section", ["best_practice_reference", "set_rule_reference"])
+def test_regenerating_guide_cannot_hide_a_missing_required_section(monkeypatch, tmp_path, section):
+    _write_generated_tree(monkeypatch, tmp_path)
+    builder = sl._load_tool_guide_builder()
+    text = dict(builder.served_sections(_GENERATED_SERVER, _GENERATED_LIB))[section]
+    source = _GENERATED_SERVER.replace("        " + section + ": '''" + text + "''',\n", "")
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(source)
+    (tmp_path / "TOOL_GUIDE.md").write_text(builder.render(source, _GENERATED_LIB))
+    findings = sl.check_tool_guide_generated()
+    assert len(findings) == 1, findings
+    assert findings[0]["rule"] == "tool-guide-required-section-missing"
+    assert section in findings[0]["message"]
+    assert sl.format_finding(findings[0])
+
+
+@pytest.mark.parametrize("declaration", [
+    '        extra: "## Extra guide",',
+    "        extra: '## Extra guide',",
+    "        extra: makeGuide(),",
+    "        extra: '''## Extra guide''' + 'more',",
+    "    extra: '''## Extra guide''',",
+])
+def test_guide_builder_rejects_unparsed_declared_sections(declaration):
+    source = _GENERATED_SERVER.replace("        device_authorization:", declaration + "\n        device_authorization:")
+    with pytest.raises(ValueError, match=r"unsupported.*section|unparsed.*section"):
+        sl._load_tool_guide_builder().render(source, _GENERATED_LIB)
+
+
+def test_guide_builder_accepts_comments_between_complete_sections():
+    source = _GENERATED_SERVER.replace("        virtual_devices:",
+        "        // A section implemented in a library.\n        /* Still part of the guide. */\n        virtual_devices:")
+    assert sl._load_tool_guide_builder().render(source, _GENERATED_LIB) == _rendered_guide()
+
+
+@pytest.mark.parametrize("delegated", [False, True], ids=["inline", "delegated"])
+@pytest.mark.parametrize(("raw", "expected"), [
+    (r"before \''' after", "before ''' after"),
+    (r"before '\'' after", "before ''' after"),
+    (r"before ''\' after", "before ''' after"),
+    (r"before \'\'\' after", "before ''' after"),
+    (r"before \\\''' after", "before \\''' after"),
+    (r"ends with \\", "ends with \\"),
+    ("one '\n two ''\nthree", "one '\n two ''\nthree"),
+    ("continued\\\nline", "continuedline"),
+])
+def test_guide_builder_preserves_escaped_quotes_and_section_boundaries(delegated, raw, expected):
+    value = "_quotedGuideSection()" if delegated else "'''" + raw + "'''"
+    source = _GENERATED_SERVER.replace("        device_authorization:",
+        "        quoted: " + value + ",\n        device_authorization:")
+    library = _GENERATED_LIB + "\nprivate String _quotedGuideSection() { return '''" + raw + "''' }\n"
+    builder = sl._load_tool_guide_builder()
+    sections = builder.served_sections(source, library)
+    original = builder.served_sections(_GENERATED_SERVER, _GENERATED_LIB)
+    assert sections == [*original[:2], ("quoted", expected), *original[2:]]
+    assert builder.render(source, library) == _rendered_guide().replace(
+        "## Device Authorization", expected + "\n\n## Device Authorization", 1)
 
 
 

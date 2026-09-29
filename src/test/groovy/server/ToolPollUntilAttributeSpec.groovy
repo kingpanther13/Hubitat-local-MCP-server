@@ -1630,7 +1630,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
         when:
         def response = mcpDriver.callTool('hub_get_device_attribute', [
-            deviceId : '1070',
+            deviceId : deviceId,
             attribute: 'switch'
         ])
 
@@ -1642,7 +1642,22 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         inner.attribute == 'switch'
         inner.value == 'on'
 
+        where: 'the schema declares deviceId string|integer, and hub_list_devices format=ids returns integers'
+        [useGateways, deviceId] << [[true, false], ['1070', 1070]].combinations()
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_device_attribute one-shot refuses a #scenario deviceId with the real reason"() {
+        when:
+        def response = mcpDriver.callTool('hub_get_device_attribute', args)
+
+        then:
+        response.result.isError
+        mcpDriver.parseInner(response).error.contains(expected)
+
         where:
-        useGateways << [true, false]
+        scenario     | args                                  || expected
+        'missing'    | [attribute: 'switch']                 || 'deviceId is required'
+        'fractional' | [deviceId: 1.5, attribute: 'switch']  || 'deviceId must be a non-empty string or integral number (got: 1.5'
     }
 }

@@ -229,6 +229,30 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore.isEmpty()
     }
 
+    // A map value used to make the error formatter itself throw ("Cannot get property 'simpleName'
+    // on null object"): Groovy reads value.class on a Map as the key "class".
+    @Unroll
+    def "a malformed #kind setting names the setting and expected type, and a valid sibling is not applied"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([settings: [debugLogging: true, (key): bad], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Setting '${key}' expects ${expected}")
+        ex.message.contains(rendered)
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        kind      | key                      | bad          || expected               | rendered
+        'number'  | 'maxCapturedStates'      | [:]          || 'a number'             | '(object)'
+        'number'  | 'maxCapturedStates'      | 'lots'       || 'a number'             | '"lots" (string)'
+        'boolean' | 'enableCustomRuleEngine' | [a: 1]       || 'a boolean'            | '(object)'
+        'boolean' | 'enableCustomRuleEngine' | ['x']        || 'a boolean'            | '(list)'
+    }
+
     // -------- Golden path: boolean settings --------
 
     def "writes a single boolean setting via app.updateSetting and returns success"() {

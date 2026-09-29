@@ -864,6 +864,7 @@ def executeAdminTool(String toolName, Map args) {
     }
     switch (toolName) {
         case "hub_update_app":      return adminUpdateApp(args)
+        case "hub_set_mcp_developer_mode": return adminSetMcpDeveloperMode(args)
         case "hub_get_source":      return adminGetSource(args)
         case "hub_create_library":  return adminCreateLibrary(args)
         case "hub_update_library":  return adminUpdateLibrary(args)
@@ -1681,6 +1682,38 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     return result
 }
 
+def adminSetMcpDeveloperMode(args) {
+    requireConfirm(args)
+    def id = args?.appId?.toString()
+    if (!id?.isInteger() || id.toInteger() <= 0 || args?.enabled != true) {
+        throw new IllegalArgumentException("appId must be a positive installed-app ID and enabled must be true")
+    }
+    String path = "/installedapp/configure/json/${id.toInteger()}"
+    def cfg = _parseJsonBody(hubGet(path, [:]))
+    // Only the standing MCP server may be bootstrapped; labels are user-editable.
+    if (!(cfg instanceof Map) || cfg.app?.id?.toString() != id.toInteger().toString() ||
+        cfg.app?.appType?.namespace != "mcp" || cfg.app?.appType?.name != "MCP Rule Server" ||
+        cfg.app?.version == null || cfg.configPage?.name != "mainPage") {
+        return [success: false, error: "Could not verify the MCP server's installed-app identity and settings page."]
+    }
+    if (cfg.settings?.enableDeveloperMode?.toString() == "true") {
+        return [success: true, appId: id.toInteger(), developerModeEnabled: true, changed: false]
+    }
+    mcpAdminLog "Enabling Developer Mode on MCP server instance ${id} for E2E setup"
+    def body = [id: id.toInteger().toString(), version: cfg.app.version.toString(),
+                "settings[enableDeveloperMode]": "true", "enableDeveloperMode.type": "bool",
+                currentPage: "mainPage", pageBreadcrumbs: "[]", formAction: "update"]
+    def response = hubPostForm("/installedapp/update/json", body)
+    // A lost POST response is ambiguous: the fresh setting decides whether it landed.
+    def observed = _parseJsonBody(hubGet(path, [:]))
+    if (observed instanceof Map && observed.app?.id?.toString() == id.toInteger().toString() &&
+        observed.settings?.enableDeveloperMode?.toString() == "true") {
+        return [success: true, appId: id.toInteger(), developerModeEnabled: true, changed: true]
+    }
+    return [success: false, appId: id.toInteger(),
+            error: "Developer Mode was not verified enabled after the settings POST (HTTP ${response?.status ?: 'no response'})."]
+}
+
 // hub_set_app_disabled: toggle an installed app's disabled flag (the admin UI's red-X) via
 // POST /installedapp/disable {id, disable} -- the documented Vue wire format (vue-hub2.min.js:
 // `const e={id:this.appId,disable:!0};postJsonAndCallback(...)`). Remote-management aid for the
@@ -2395,9 +2428,12 @@ private Map _httpFetchUrl(String url) {
 
 // ==================== ADMIN TOOL DEFINITIONS (tools/list) ====================
 //
-// Minimal MCP tool list for tools/list. Names IDENTICAL to the main server so CI works by URL swap.
+// Shared deployment tools retain the main server names; watchdog-only maintenance tools are included.
 def getAdminToolDefinitions() {
     return [
+        [name: "hub_set_mcp_developer_mode", annotations: [title: "Enable MCP Developer Mode", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false],
+         description: "Enable Developer Mode on the test hub's MCP server instance for E2E setup. Verifies the app code identity and reads the setting back. Only enabled:true is accepted; confirm:true required.",
+         inputSchema: [type: "object", properties: [appId: [type: "string"], enabled: [type: "boolean", enum: [true]], confirm: [type: "boolean"]], required: ["appId", "enabled", "confirm"]]],
         [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required.",
          inputSchema: [type: "object", properties: [
             appId: [type: "string", description: "Apps Code CLASS id to update."],

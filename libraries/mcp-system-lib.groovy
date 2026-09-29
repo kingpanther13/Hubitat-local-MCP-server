@@ -148,6 +148,8 @@ def toolGetHubInfo(args = null) {
 
     // Native log history can be temporarily unavailable independently of these stats.
     info.mcpServerVersion = currentVersion()
+    info.setupCurrent = SETUP_CURRENT
+    info.setupVersion = state.setupVersion
     info.mcpClient = mcpClientIdentity()
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0

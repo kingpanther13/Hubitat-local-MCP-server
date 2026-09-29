@@ -52,6 +52,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         asyncHttpCalls.clear()
     }
 
+    def setup() {
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+    }
+
     // --- formatAge singular grammar (v0.7.7) --------------------------------
     //
     // Before the fix, formatAge(now - 1h) returned "1 hours ago" because the

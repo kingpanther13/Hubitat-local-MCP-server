@@ -20,7 +20,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 **Documentation files:**
 - `README.md` — User-facing documentation
 - `SKILL.md` — Developer reference (this file)
-- `TOOL_GUIDE.md` — Human-readable tool reference (same content available to AI via `hub_get_tool_guide` MCP tool)
+- `TOOL_GUIDE.md` — Human-readable tool reference, generated from the guide `hub_get_tool_guide` serves (`python tools/build-tool-guide.py`; edit `getToolGuideSections()`, never the file)
 
 ## Architecture
 

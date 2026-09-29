@@ -1508,8 +1508,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
         where:
         scenario          | entry                                                   || expected
-        'boolean id'      | [deviceId: true, command: 'on']                         || 'deviceId is required and must be a non-empty string (got: true (boolean))'
-        'fractional id'   | [deviceId: 1.5, command: 'on']                          || 'deviceId is required and must be a non-empty string (got: 1.5 (number))'
+        'boolean id'      | [deviceId: true, command: 'on']                         || 'deviceId is required and must be a non-empty string or integral number (got: true (boolean))'
+        'fractional id'   | [deviceId: 1.5, command: 'on']                          || 'deviceId is required and must be a non-empty string or integral number (got: 1.5 (number))'
         'Map parameters'  | [deviceId: '10', command: 'on', parameters: [level: 5]] || 'parameters must be an array when present (got: [level:5] (object))'
         'numeric command' | [deviceId: '10', command: 7]                            || 'command is required and must be a non-empty string (got: 7 (number))'
     }

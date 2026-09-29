@@ -116,6 +116,23 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
             break
     }
     if (extras) body.putAll(extras)
+    // A navigation submit (an _action_* marker) is one the UI validates first: refuse it where the
+    // cloner's own page would, with the values this POST is about to send overlaid on its current ones.
+    if (extras?.keySet()?.any { it.toString().startsWith("_action_") }) {
+        def navCfg = null
+        try { navCfg = _rmFetchConfigJson(clonerAppId, currentPage) } catch (Exception readExc) {
+            // An unreadable page cannot be checked; the cloner's own flow verifies the transition.
+            mcpLog("debug", "rm-native", "appCloner: page read for the navigation check on ${currentPage} failed (${readExc.message}); submitting unchecked")
+        }
+        if (navCfg?.configPage instanceof Map) {
+            def navValues = (navCfg.settings instanceof Map) ? new LinkedHashMap(navCfg.settings as Map) : [:]
+            extras.each { k, v ->
+                def m = (k.toString() =~ /^settings\[(.+)\]$/)
+                if (m.find()) navValues.put(m[0][1], v)
+            }
+            _requireUiNavigationValid(clonerAppId, "leaving cloner page '${currentPage}'".toString(), _rmCollectInputSchema(navCfg.configPage as Map), navValues)
+        }
+    }
     // URL-encode manually — HTTPBuilder's Map auto-encoder mangles backslash
     // sequences inside form-urlencoded bodies, so JSON content with embedded
     // `\"` (e.g. canonical exports' multi-select enum encoding) loses its
@@ -879,11 +896,9 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
     // the button rows. Replay only value-bearing inputs.
     def replaySettings = savedSettings.findAll { k, v -> savedSchema.get(k.toString())?.type != "button" }
     def skippedButtons = (savedSettings.keySet() - replaySettings.keySet()).collect { it.toString() }.sort()
-    // A device picker is snapshotted as configure/json renders it, an {id: label} map, but the
-    // update endpoint takes ids. Left as a map it reaches the body as Groovy's map toString
-    // ("[9:MSHeatMode]") and the hub answers 500 -- every rule with a device picker failed to
-    // restore in place. statusJson's deviceIdsForDeviceList is the live id list; the map's keys
-    // are the fallback for a snapshot that has no statusJson.
+    // A device picker is snapshotted as configure/json renders it, an {id: label} map.
+    // statusJson's deviceIdsForDeviceList (the id list the hub stores for the picker) is used when
+    // the snapshot carries it; otherwise the map's keys are the id list.
     // An EMPTY id list is not authoritative (every sibling reader falls back on empty or absent):
     // trusting it would post an empty picker and report the key applied.
     def liveDeviceIds = [:]

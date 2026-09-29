@@ -39,7 +39,7 @@ import support.ToolSpecBase
 class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     // Stubbed self-app so the self-update guard has an app.id to compare against.
-    // appId=='1' triggers the guard; anything else bypasses it.
+    // The running instance is 1; enableWrite supplies Apps Code class 178.
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
 
     def setupSpec() {
@@ -47,6 +47,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     private void enableWrite() {
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
@@ -4538,6 +4539,58 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'audit log records the blocked attempt'
         warnLogs.any { it.contains('BLOCKED') && it.contains('id=1') }
+    }
+
+    // appId is an Apps Code class id, which differs from the running instance id (1 here).
+    @spock.lang.Unroll
+    def "hub_update_app refuses canonical self id #targetId before fetching source or saving with Developer Mode OFF"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = false
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+        def posts = []
+        def downloads = []
+        script.metaClass.hubInternalPostJson = { String path, String body -> posts << path; [success: true] }
+        script.metaClass.downloadHubFile = { String name -> downloads << name; 'self-overwrite'.getBytes('UTF-8') }
+
+        when:
+        script.toolUpdateAppCode([appId: targetId, sourceFile: 'probe.groovy', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("refuses to overwrite the MCP server's own app source")
+        posts.isEmpty()
+        downloads.isEmpty()
+
+        where:
+        targetId << ['178', '0178', '+178', '1', '01', '+1']
+    }
+
+    @spock.lang.Unroll
+    def "hub_update_app refuses an unresolved self class before source or save (#lookup)"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = false
+        hubGet.register('/hub2/userAppTypes') { params ->
+            if (lookup == 'transport') throw new RuntimeException('hub unavailable')
+            return lookup
+        }
+        def downloads = []
+        def posts = []
+        script.metaClass.downloadHubFile = { String name -> downloads << name; 'source'.getBytes('UTF-8') }
+        script.metaClass.hubInternalPostJson = { String path, String body -> posts << path; [success: true] }
+
+        when:
+        script.toolUpdateAppCode([appId: '178', sourceFile: 'probe.groovy', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('class id could not be resolved')
+        downloads.isEmpty()
+        posts.isEmpty()
+
+        where:
+        lookup << ['transport', '', '[]', '{}', 'not-json']
     }
 
     @spock.lang.Unroll
