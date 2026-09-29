@@ -416,7 +416,7 @@ Native requests use the fixed `http://127.0.0.1:8080` loopback endpoint on the h
 | `ruleVariables` | Map | Global variables shared across rules |
 | `debugLogs` | Map | Small `{config: {logLevel, maxEntries}}` only; entries use a bounded class cache backed by native Past Logs |
 | `lastBackupTimestamp` | Long | Newest known hub backup epoch ms (24-hour write safety gate; stamped by hub_create_backup or refreshed from the hub's local backup list on a gate fallback) |
-| `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
+| `updateCheck` | Map | `{latestVersion, checkedAt, lastError}` |
 
 **Parent app `atomicState.*`:**
 

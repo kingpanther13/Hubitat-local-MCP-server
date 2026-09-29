@@ -12753,24 +12753,25 @@ class TestRunner:
         assert "appUpdate" in res, f"includeAppUpdate did not attach appUpdate: {sorted(res)}"
         au = res["appUpdate"]
         assert "installedVersion" in au, f"appUpdate shape wrong: {au}"
-        if "error" not in au:
-            # The metadata fields are always present on the non-error path: checkInProgress is a bool
-            # (a fresh async check was kicked off, or it failed to start) and lastChecked is a string
-            # (a formatted timestamp, or "never"/"checking now").
-            assert isinstance(au.get("checkInProgress"), bool), f"checkInProgress not a bool: {au}"
-            assert isinstance(au.get("lastChecked"), str), f"lastChecked not a string: {au}"
-            # updateAvailable is derived from the versions shown, so it can never contradict them: if an
-            # update is flagged available, latestVersion must actually differ from installedVersion (the
-            # bug being guarded was a stale updateAvailable:true reading as available when latest==installed).
-            if au.get("latestVersion") not in (None, "unknown (check in progress)"):
-                if au.get("updateAvailable") is True:
-                    assert au["latestVersion"] != au["installedVersion"], (
-                        f"updateAvailable true but latest == installed: {au}"
-                    )
-                elif au["latestVersion"] == au["installedVersion"]:
-                    assert au.get("updateAvailable") is False, (
-                        f"latest == installed but updateAvailable not False: {au}"
-                    )
+        # The live test hub reaches GitHub, so an app-check error is a real failure, not a soft skip.
+        assert "error" not in au, f"appUpdate returned an error: {au}"
+        # The metadata fields are always present on the non-error path: checkInProgress is a bool
+        # (a fresh async check was kicked off, or it failed to start) and lastChecked is a string
+        # (a formatted timestamp, or "never").
+        assert isinstance(au.get("checkInProgress"), bool), f"checkInProgress not a bool: {au}"
+        assert isinstance(au.get("lastChecked"), str), f"lastChecked not a string: {au}"
+        # updateAvailable is derived from the versions shown, so it can never contradict them: if an
+        # update is flagged available, latestVersion must actually differ from installedVersion (the
+        # bug being guarded was a stale updateAvailable:true reading as available when latest==installed).
+        if au.get("latestVersion") not in (None, "unknown (check in progress)"):
+            if au.get("updateAvailable") is True:
+                assert au["latestVersion"] != au["installedVersion"], (
+                    f"updateAvailable true but latest == installed: {au}"
+                )
+            elif au["latestVersion"] == au["installedVersion"]:
+                assert au.get("updateAvailable") is False, (
+                    f"latest == installed but updateAvailable not False: {au}"
+                )
 
     @test("system_tools")
     def test_hub_update_firmware_status_only(self) -> None:

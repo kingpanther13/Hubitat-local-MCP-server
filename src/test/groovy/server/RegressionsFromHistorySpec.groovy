@@ -38,8 +38,18 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // appId='50' (the value used by the v0.4.6 regression specs below) does not match.
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
 
+    // asynchttpGet is an AppExecutor API method: a script.metaClass override never intercepts it (it
+    // no-ops silently), so record calls through the shared mock seam instead -- the additive-stub
+    // pattern. Reset per feature in setup() so a recorded call can't leak between tests.
+    @Shared List asyncHttpCalls = []
+
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
+        appExecutor.asynchttpGet(*_) >> { args -> asyncHttpCalls << [handler: args[0], params: args[1]] }
+    }
+
+    def setup() {
+        asyncHttpCalls.clear()
     }
 
     // --- formatAge singular grammar (v0.7.7) --------------------------------
@@ -99,14 +109,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         given: 'a recent checkedAt timestamp so the skip branch fires'
         stateMap.updateCheck = [checkedAt: 1234567890000L - 2 * 3_600_000L - 1234L]
 
-        and: 'capture mcpLog + asynchttpGet so we can distinguish skip-success from catch-swallow'
+        and: 'capture mcpLog so we can distinguish skip-success from catch-swallow (asynchttpGet is recorded via the shared seam)'
         def mcpLogCalls = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             mcpLogCalls << [level: level, component: component, msg: msg]
-        }
-        def asyncHttpCalls = []
-        script.metaClass.asynchttpGet = { String handler, Map params ->
-            asyncHttpCalls << [handler: handler, params: params]
         }
 
         when:
@@ -482,20 +488,23 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     @Unroll
     def "appUpdateAvailable() derives from the versions, ignoring a stale stored flag (#scenario)"() {
         given:
-        stateMap.updateCheck = (latest == "__NONE__") ? null
-            : (latest == "__INSTALLED__") ? [latestVersion: script.currentVersion(), updateAvailable: true]
-            : [latestVersion: latest, updateAvailable: storedFlag]
+        if (latest == "__NONE__") {
+            stateMap.updateCheck = null
+        } else if (latest == "__INSTALLED__") {
+            stateMap.updateCheck = [latestVersion: script.currentVersion(), updateAvailable: true]
+        } else {
+            stateMap.updateCheck = [latestVersion: latest, updateAvailable: storedFlag]
+        }
 
         expect:
         script.appUpdateAvailable() == expected
 
         where:
-        scenario                          | latest                        | storedFlag || expected
-        "no completed check"              | "__NONE__"                    | false      || false
-        "check in progress"              | "unknown (check in progress)" | false      || false
-        "latest newer (stored flag off)"  | "999.0.0"                     | false      || true
-        "stale true, latest == installed" | "__INSTALLED__"               | true       || false
-        "stale true, latest older"        | "0.0.1"                       | true       || false
+        scenario                          | latest          | storedFlag || expected
+        "no completed check"              | "__NONE__"      | false      || false
+        "latest newer (stored flag off)"  | "999.0.0"       | false      || true
+        "stale true, latest == installed" | "__INSTALLED__" | true       || false
+        "stale true, latest older"        | "0.0.1"         | true       || false
     }
 
     def "serverIdentity() omits updateAvailable when the stored flag is stale (already on latest)"() {

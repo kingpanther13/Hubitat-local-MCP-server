@@ -2198,4 +2198,26 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         !hint.contains('logWindowSeconds')
     }
 
+    // ---------- app-update flag is derived live, never the stored boolean ----------
+
+    def "bug report omits updateAvailable when the stored flag is stale, surfaces it when a newer version is known"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        stateMap.updateCheck = [latestVersion: "0.0.1", updateAvailable: true]   // older than installed, stale true
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        !result.containsKey('updateAvailable')
+
+        when: "a genuinely newer version is known"
+        stateMap.updateCheck = [latestVersion: "999.0.0", updateAvailable: true]
+        def result2 = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result2.updateAvailable == "999.0.0"
+    }
+
 }

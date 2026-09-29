@@ -54,12 +54,20 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         version: '2.5.0.143', safeMode: false, alerts: ['not', 'a', 'map']
     ])
 
+    // asynchttpGet is an AppExecutor API method: metaClass stubbing silently no-ops for it, and the
+    // shared per-spec-class mock only honors interactions declared in setupSpec (the additive-stub
+    // pattern; see HarnessSpec's buildAppExecutorMock note). The toggle lets one test drive the real
+    // doUpdateCheck's throw-before-scheduling arm without touching siblings that stub doUpdateCheck.
+    @Shared boolean appCheckThrows = false
+
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
+        appExecutor.asynchttpGet(*_) >> { if (appCheckThrows) throw new RuntimeException('github down') }
     }
 
     def cleanup() {
         sharedLocation.hub = null
+        appCheckThrows = false
     }
 
     private TestHub hubOnFirmware(String fw) {
@@ -230,6 +238,21 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         result.appUpdate.latestVersion == '9.9.9'           // the prior snapshot still surfaces
     }
 
+    def "hub_get_info appUpdate leaves the stored checkedAt untouched (the read never rewrites it)"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        def seeded = 1700000000000L
+        stateMap.updateCheck = [latestVersion: '9.9.9', checkedAt: seeded]
+        script.metaClass.doUpdateCheck = { -> true }        // async write lands in a LATER execution
+
+        when:
+        def result = script.toolGetHubInfo([includeAppUpdate: true])
+
+        then: "the snapshot reports the seeded timestamp and the read does not null or rewrite it"
+        result.appUpdate.lastChecked == script.formatTimestamp(seeded)
+        stateMap.updateCheck.checkedAt == seeded
+    }
 
     def "hub_get_info appUpdate surfaces lastCheckError when the last check failed"() {
         given:
@@ -247,18 +270,23 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         result.appUpdate.latestVersion == '9.9.9'
     }
 
-    def "hub_get_info appUpdate surfaces an app-check error without losing the firmware read"() {
+    def "hub_get_info appUpdate degrades to the normal snapshot (not an error map) when the async check throws"() {
         given:
         sharedLocation.hub = hubOnFirmware('2.5.0.143')
         hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
-        script.metaClass.doUpdateCheck = { -> throw new RuntimeException('github down') }
+        // Real doUpdateCheck runs: asynchttpGet throws before scheduling -> doUpdateCheck catches it and
+        // returns false, so appUpdate is the ordinary prior-check view rather than an error map.
+        appCheckThrows = true
+        stateMap.updateCheck = [latestVersion: '9.9.9', checkedAt: 1700000000000L]
 
         when:
         def result = script.toolGetHubInfo([includeAppUpdate: true])
 
         then:
-        result.appUpdate.error.contains('App-version check failed')   // failed app check is visible...
-        result.platformUpdate.available == true                       // ...and the firmware read still survives
+        !result.appUpdate.containsKey('error')          // the throw is swallowed, not surfaced as an error map
+        result.appUpdate.checkInProgress == false       // and we don't claim a refresh that never started
+        result.appUpdate.latestVersion == '9.9.9'       // the prior snapshot still surfaces
+        result.platformUpdate.available == true         // the firmware read still survives
     }
 
     def "hub_get_info omits appUpdate unless includeAppUpdate=true"() {
