@@ -12,23 +12,34 @@ import support.PermissiveLog
 
 class WatchdogPackageDeploySpec extends Specification {
     HubitatAppScript script
-    Map persisted = [:]
+    Map persisted = new PublicationMap()
     List scheduled = []
     List writes = []
     Map sources = ['178': 'old parent', '179': 'old child']
+    Map versions = ['178': 7, '179': 7]
     String sha = 'a' * 40
     String parent = 'definition(name: "MCP Rule Server", namespace: "mcp")\n#include mcp.Example\n'
     String child = 'definition(name: "MCP Rule", namespace: "mcp")\n'
     String library = 'library(name: "Example", namespace: "mcp")\ndef example() { true }\n'
-    String liveLibrary = library
+    String liveLibrary = 'old library'
     long clock = 1000000L
     boolean dropSaveResponse = false
     boolean applySave = true
     boolean bundleSuccess = true
+    boolean applyBundle = true
     boolean failCompile = false
     List inventory = [[id: 178, namespace: 'mcp', name: 'MCP Rule Server'],
                       [id: 179, namespace: 'mcp', name: 'MCP Rule'],
                       [id: 254, namespace: 'mcp', name: 'E2E Dead-Man Watchdog v2']]
+
+    private static class PublicationMap extends HashMap {
+        List publications = []
+        @Override Object put(Object key, Object value) {
+            if (key == 'packageDeployment' && value instanceof Map && value.hold == false)
+                publications << ([:] + value)
+            return super.put(key, value)
+        }
+    }
 
     void setup() {
         script = new HubitatAppSandbox(new File('e2e-deadman-watchdog-v2.groovy').text).run(
@@ -53,18 +64,22 @@ class WatchdogPackageDeploySpec extends Specification {
         script.metaClass.hubGet = { String path, Map query ->
             if (path == '/hub2/userAppTypes') return JsonOutput.toJson(inventory)
             if (path == '/hub2/userLibraries') return JsonOutput.toJson([[id: 12, name: 'Example', namespace: 'mcp']])
-            if (path == '/app/ajax/code') return JsonOutput.toJson([source: sources[query.id.toString()], version: 7])
+            if (path == '/app/ajax/code') return JsonOutput.toJson([source: sources[query.id.toString()], version: versions[query.id.toString()]])
             if (path == '/library/list/single/data/12') return JsonOutput.toJson([[source: liveLibrary]])
             throw new IllegalStateException('unexpected read ' + path)
         }
         script.metaClass.hubPostForm = { String path, Map body ->
             writes << [path: path, body: body, phase: persisted.packageDeployment?.phase]
-            if (applySave && !failCompile) sources[body.id.toString()] = body.source
+            if (applySave && !failCompile) {
+                sources[body.id.toString()] = body.source
+                versions[body.id.toString()]++
+            }
             if (failCompile) return [status: 200, data: '{"status":"error","errorMessage":"unexpected token"}']
             dropSaveResponse ? [status: null, data: null] : [status: 200, data: '{"status":"success"}']
         }
         script.metaClass.adminInstallBundle = { Map args ->
             writes << [bundle: args.importUrl, phase: persisted.packageDeployment?.phase]
+            if (applyBundle) liveLibrary = library
             [success: bundleSuccess]
         }
         script.metaClass.readFlag = { -> [armed: false] }
@@ -178,6 +193,7 @@ class WatchdogPackageDeploySpec extends Specification {
     def 'stale library stops before any app save even when bundle claims success'() {
         given:
         liveLibrary = 'wrong revision'
+        applyBundle = false
         script.adminUpdatePackage(request())
         when:
         tick()
@@ -241,6 +257,7 @@ class WatchdogPackageDeploySpec extends Specification {
         refused.success == false
         released.phase == 'complete'
         persisted.packageDeployment.hold == false
+        ((PublicationMap) persisted).publications*.workerActive == [false]
         writes.size() == 3
     }
 
@@ -274,6 +291,7 @@ class WatchdogPackageDeploySpec extends Specification {
             writes << [path: path, body: body]
             tick()
             sources[body.id.toString()] = body.source
+            versions[body.id.toString()]++
             [status: 200, data: '{"status":"success"}']
         }
         when:
@@ -318,5 +336,53 @@ class WatchdogPackageDeploySpec extends Specification {
         abandoned.phase == 'abandoned'
         abandoned.hold == false
         abandoned.success == false
+    }
+
+    def 'same-version response loss cannot advance before the code version changes'() {
+        given:
+        sources['179'] = child
+        sources['178'] = parent
+        applySave = false
+        dropSaveResponse = true
+        script.adminUpdatePackage(request())
+        when:
+        tick()
+        then:
+        persisted.packageDeployment.phase == 'verifying_app'
+        writes.size() == 2
+        when:
+        tick()
+        then:
+        writes.size() == 2
+        persisted.packageDeployment.hold == true
+    }
+
+    def 'already matching libraries are not submitted as an ambiguous redundant bundle import'() {
+        given:
+        liveLibrary = library
+        script.adminUpdatePackage(request())
+        when:
+        tick()
+        then:
+        writes.size() == 2
+        writes.every { it.path == '/app/ajax/update' }
+        persisted.packageDeployment.phase == 'awaiting_verification'
+    }
+
+    def 'a previously dispatched write excludes package acceptance until it returns'() {
+        given:
+        Map attempted = null
+        script.metaClass.adminUpdateApp = { Map args ->
+            attempted = script.adminUpdatePackage(request())
+            [success: true]
+        }
+        when:
+        def result = script.executeAdminTool('hub_update_app', [confirm: true])
+        then:
+        result.success == true
+        attempted.success == false
+        scheduled.empty
+        persisted.adminWriteClaims.isEmpty()
+        persisted.packageDeployment == null
     }
 }

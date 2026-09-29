@@ -140,3 +140,28 @@ def test_plan_hashes_exact_library_bytes(module):
 def test_plan_rejects_mutable_refs_and_app_code_in_bundle(module, ref, kind, extra):
     with pytest.raises(ValueError):
         module.plan_from_bundle(ref, bundle_bytes(kind, extra))
+
+
+def test_lost_acknowledgement_keeps_polling_until_completion_without_replaying(module):
+    transport = Transport()
+    original = transport.call
+    acknowledged = False
+    waiting_reads = 0
+
+    def call(url, name, args):
+        nonlocal acknowledged, waiting_reads
+        result = original(url, name, args)
+        if name == "hub_set_package_deployment":
+            acknowledged = True
+            raise OSError("relay timeout during final verification")
+        if name == "hub_get_package_deployment" and acknowledged:
+            waiting_reads += 1
+            if waiting_reads >= 2:
+                result.update(phase="complete", hold=False)
+        return result
+
+    transport.call = call
+    result = module.deploy(transport, "watchdog", "main", {"ref": "a" * 40, "libraries": []},
+                           "test-operation", attempts=5, interval=0)
+    assert result["phase"] == "complete"
+    assert transport.calls.count(("watchdog", "hub_set_package_deployment")) == 1
