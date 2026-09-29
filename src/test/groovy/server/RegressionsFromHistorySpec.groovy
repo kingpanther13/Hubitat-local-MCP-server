@@ -50,9 +50,6 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def setup() {
         asyncHttpCalls.clear()
-    }
-
-    def setup() {
         hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
     }
 
