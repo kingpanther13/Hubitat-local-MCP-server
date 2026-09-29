@@ -307,7 +307,11 @@ def runWatchdogPackageDeploy(Map data) {
                 packageStage(job, "installing_bundle", "MCP libraries")
                 job.verifyUntil = now() + 600000L
                 atomicState.packageDeployment = job
-                adminInstallBundle([importUrl: job.bundleUrl, confirm: true])
+                def bundle = adminInstallBundle([importUrl: job.bundleUrl, confirm: true])
+                def rejection = _parseJsonBody(bundle?.rawResponse)
+                if (bundle?.success != true &&
+                    (rejection == false || (rejection instanceof Map && rejection.success == false)))
+                    throw new IllegalStateException("Bundle install rejected: ${bundle.rawResponse}")
             }
             job.verifyUntil = now() + 600000L
             packageStage(job, "verifying_libraries", "MCP libraries")
