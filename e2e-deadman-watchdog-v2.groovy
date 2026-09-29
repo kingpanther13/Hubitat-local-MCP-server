@@ -107,6 +107,7 @@ mappings {
 // The scheduled tick and deadmanKick both reach the auto-reboot decision; without a monitor two
 // overlapping runs could each pass the rate-limit check before either recorded its POST.
 @groovy.transform.Field static final Object REBOOT_LOCK = new Object()
+@groovy.transform.Field static final Object PACKAGE_DEPLOY_LOCK = new Object()
 
 def installed() { initialize() }
 def updated()   { unschedule(); initialize() }
@@ -132,6 +133,8 @@ def initialize() {
 
 // ---- the dead-man check (runs every minute) ----
 def checkDeadman() {
+    // A package probe owns recovery until both original endpoints are verified.
+    if (atomicState.packageDeployment?.hold == true) return
     // WEDGE ESCAPE -- runs BEFORE readFlag() on purpose. readFlag() goes through the File Manager
     // API, which on a wedged hub returns null, so every path below exits at "no flag file -- idle":
     // the watchdog would tick quietly forever while the hub is dead, which is exactly what happened
@@ -333,9 +336,12 @@ private void actAndRecord(Map flag, String trigger) {
     // clearing the shared fields unconditionally on the way out would then erase the SUCCESSOR's
     // claim and let a third restore pile on -- the same race the purge claim solves with a token.
     String claim = "restore-${nowMs}-${Math.abs(new Random().nextInt())}".toString()
-    atomicState.restoreInFlightFor = flag.runId
-    atomicState.restoreInFlightAt = nowMs
-    atomicState.restoreInFlightClaim = claim
+    synchronized (PACKAGE_DEPLOY_LOCK) {
+        if (atomicState.packageDeployment?.hold == true) return
+        atomicState.restoreInFlightFor = flag.runId
+        atomicState.restoreInFlightAt = nowMs
+        atomicState.restoreInFlightClaim = claim
+    }
     boolean holdClaim = false
     try {
         holdClaim = actAndRecordLocked(flag, trigger)
@@ -859,10 +865,22 @@ def jsonRpcError(id, code, message, data = null) {
 // Tool names IDENTICAL to hubitat-mcp-server.groovy so CI scripts work by URL swap.
 // Every impl runs over the loopback helpers (hubGet/hubPostForm/hubPostJson).
 def executeAdminTool(String toolName, Map args) {
+    // Status must remain available even while loopback authentication is unavailable.
+    if (toolName == "hub_get_package_deployment") return adminGetPackageDeployment(args)
+    if (atomicState.packageDeployment?.hold == true) {
+        def reads = ["hub_get_info", "hub_list_apps", "hub_list_app_instances", "hub_list_libraries",
+                     "hub_list_bundles", "hub_get_jobs", "hub_get_metrics", "hub_get_hub_logs",
+                     "hub_get_memory_history", "hub_read_file"]
+        boolean allowed = toolName in reads || toolName in ["hub_update_package", "hub_set_package_deployment"] ||
+                          (toolName == "hub_get_source" && args?.noSave == true)
+        if (!allowed) return [success: false, error: "Package deployment safety hold is active. Inspect hub_get_package_deployment; do not modify either controller."]
+    }
     if (settings?.hubSecurityEnabled == true && secCookie() == null) {
         return [success: false, error: "Hub Security is enabled but loopback auth failed (no cookie). Set the Hub Security username/password in the watchdog app settings."]
     }
     switch (toolName) {
+        case "hub_update_package": return adminUpdatePackage(args)
+        case "hub_set_package_deployment": return adminSetPackageDeployment(args)
         case "hub_update_app":      return adminUpdateApp(args)
         case "hub_set_mcp_developer_mode": return adminSetMcpDeveloperMode(args)
         case "hub_get_source":      return adminGetSource(args)
@@ -903,6 +921,257 @@ private void requireConfirm(args) {
 }
 
 // ==================== ADMIN TOOL IMPLEMENTATIONS ====================
+
+def adminUpdatePackage(Map args) {
+    requireConfirm(args)
+    String requestId = args.requestId?.toString()
+    String ref = args.ref?.toString()
+    if (!(requestId ==~ /[A-Za-z0-9_-]{1,100}/) || !(ref ==~ /[0-9a-f]{40}/))
+        throw new IllegalArgumentException("requestId and an immutable 40-character commit SHA in ref are required")
+    if (!(args.libraries instanceof List) || args.libraries.isEmpty() || args.libraries.size() > 100 ||
+        args.libraries.any { !(it instanceof Map) || !(it.name ==~ /[A-Za-z0-9_]+/) || !(it.sha256 ==~ /[0-9a-f]{64}/) })
+        throw new IllegalArgumentException("libraries must contain the expected name and SHA-256 for every package library")
+    def libraries = args.libraries.collect { [name: it.name.toString(), sha256: it.sha256.toString()] }.sort { it.name }
+    if (libraries*.name.unique().size() != libraries.size())
+        throw new IllegalArgumentException("Duplicate library names are not allowed")
+    String binding = packageSourceHash(groovy.json.JsonOutput.toJson([ref: ref, libraries: libraries]))
+    synchronized (REBOOT_LOCK) {
+    synchronized (PACKAGE_DEPLOY_LOCK) {
+        def current = atomicState.packageDeployment
+        if (current?.requestId == requestId) {
+            if (current.binding != binding) return [success: false, error: "requestId is already bound to different inputs"]
+            return adminGetPackageDeployment([requestId: requestId])
+        }
+        if (current?.hold == true || atomicState.restoreInFlightClaim || atomicState.purgeInFlightAt ||
+            ((atomicState.expectedDownUntil ?: 0) as long) > now())
+            return [success: false, error: "A deployment, restore, or purge owns the hub; nothing was scheduled"]
+        atomicState.packageDeployment = [requestId: requestId, ref: ref, binding: binding,
+            libraries: libraries, hold: true, phase: "queued", status: "queued", startedAt: now(),
+            stageStartedAt: now(), updatedAt: now(), history: [], workerActive: false]
+        def back = atomicState.packageDeployment
+        if (back?.requestId != requestId || back.hold != true)
+            return [success: false, error: "Could not persist deployment safety hold; nothing was scheduled"]
+    }
+    }
+    try {
+        runIn(1, "runWatchdogPackageDeploy", [data: [requestId: requestId]])
+    } catch (Exception ignored) {
+        def job = [:] + atomicState.packageDeployment
+        packageStage(job, "stopped", "", "Could not schedule deployment. Safety hold retained.")
+    }
+    return adminGetPackageDeployment([requestId: requestId])
+}
+
+def adminGetPackageDeployment(Map args) {
+    def job = atomicState.packageDeployment
+    if (!job || job.requestId != args.requestId?.toString())
+        return [success: false, error: "No deployment with this requestId"]
+    return [success: !(job.phase in ["stopped", "abandoned"]), requestId: job.requestId, ref: job.ref,
+        phase: job.phase, status: job.phase, component: job.component, hold: job.hold,
+        startedAt: job.startedAt, updatedAt: job.updatedAt, elapsedMs: now() - (job.startedAt as long),
+        stageElapsedMs: now() - (job.stageStartedAt as long), workerActive: job.workerActive == true,
+        error: job.error, history: job.history ?: []]
+}
+
+def adminSetPackageDeployment(Map args) {
+    requireConfirm(args)
+    synchronized (PACKAGE_DEPLOY_LOCK) {
+        def stored = atomicState.packageDeployment
+        if (stored?.requestId != args.requestId?.toString() || stored.workerActive == true || args.endpointVerified != true)
+            return [success: false, error: "Matching idle operation and verification of both original endpoints are required"]
+        if (!(stored.phase == "awaiting_verification" || (stored.phase == "stopped" && args.abandon == true)))
+            return [success: false, error: "The operation is not ready for release"]
+        def job = [:] + stored
+        // Hold the short operation lock only for state ownership, never for HTTP.
+        job.workerActive = true
+        atomicState.packageDeployment = job
+    }
+    def job = [:] + atomicState.packageDeployment
+    try {
+        if (args.abandon != true && (!packageLibrariesMatch(job) || !job.apps.every { packageAppMatches(it) }))
+            return [success: false, error: "Source verification changed; safety hold retained"]
+        job.hold = false
+        packageStage(job, args.abandon == true ? "abandoned" : "complete")
+    } catch (Exception ignored) {
+        return [success: false, error: "Could not recheck installed sources; safety hold retained"]
+    } finally {
+        job.workerActive = false
+        atomicState.packageDeployment = job
+    }
+    return adminGetPackageDeployment(args)
+}
+
+def runWatchdogPackageDeploy(Map data) {
+    Map job
+    synchronized (PACKAGE_DEPLOY_LOCK) {
+        def stored = atomicState.packageDeployment
+        if (stored?.requestId != data.requestId?.toString() || stored.hold != true || stored.workerActive == true ||
+            stored.phase in ["complete", "abandoned", "stopped", "awaiting_verification"]) return
+        job = [:] + stored
+        job.workerActive = true
+        atomicState.packageDeployment = job
+    }
+    try {
+        if (job.phase == "queued") {
+            packageStage(job, "preflight")
+            prepareWatchdogPackage(job)
+            packageStage(job, "installing_bundle", "MCP libraries")
+            // The phase is durable BEFORE the write. A resumed callback only verifies it.
+            job.verifyUntil = now() + 600000L
+            atomicState.packageDeployment = job
+            adminInstallBundle([importUrl: job.bundleUrl, confirm: true])
+            job.verifyUntil = now() + 600000L
+            packageStage(job, "verifying_libraries", "MCP libraries")
+        }
+        if (job.phase in ["installing_bundle", "verifying_libraries"]) {
+            if (!packageLibrariesMatch(job)) {
+                packageWait(job, "verifying_libraries", "MCP libraries")
+                return
+            }
+            job.appIndex = 0
+            packageStage(job, "next_app")
+        }
+        while (job.appIndex < job.apps.size()) {
+            def target = job.apps[job.appIndex as int]
+            if (job.phase == "next_app") {
+                packageStage(job, "downloading_app", target.name)
+                String source = fetchExternal(target.url)
+                if (packageSourceHash(source) != target.sha256) throw new IllegalStateException("Pinned app source changed")
+                def before = _parseJsonBody(hubGet("/app/ajax/code", [id: target.id]))
+                if (!(before instanceof Map) || before.version == null) throw new IllegalStateException("Could not read app code version")
+                packageStage(job, "updating_app", target.name)
+                job.verifyUntil = now() + 600000L
+                atomicState.packageDeployment = job
+                def response = hubPostForm("/app/ajax/update", [id: target.id, version: before.version, source: source])
+                def result = _parseJsonBody(response?.data)
+                if (result instanceof Map && result.status == "error")
+                    throw new IllegalStateException("App compile/save rejected: ${result.errorMessage ?: 'no diagnostic'}")
+                job.verifyUntil = now() + 600000L
+                packageStage(job, "verifying_app", target.name)
+            }
+            if (!(job.phase in ["updating_app", "verifying_app"]))
+                throw new IllegalStateException("Interrupted before save; inspect operation before retrying")
+            if (!packageAppMatches(target)) {
+                packageWait(job, "verifying_app", target.name)
+                return
+            }
+            job.appIndex = (job.appIndex as int) + 1
+            packageStage(job, "next_app")
+        }
+        packageStage(job, "awaiting_verification", "Original MCP and watchdog endpoints")
+    } catch (Exception e) {
+        packageStage(job, "stopped", job.component?.toString() ?: "", e.message?.take(1000) ?: "Deployment failed")
+    } finally {
+        job.workerActive = false
+        atomicState.packageDeployment = job
+    }
+}
+
+def prepareWatchdogPackage(Map job) {
+    def flag = readFlag()
+    if (!(flag instanceof Map) || flag.armed != false ||
+        (flag.intent == "disarm" && (flag.restoreFor?.toString() != flag.runId?.toString() || flag.restoreResult != "restored")))
+        throw new IllegalStateException("Manual package probe requires an idle, disarmed watchdog with completed recovery")
+    String base = "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server"
+    def manifest = _parseJsonBody(fetchExternal("${base}/${job.ref}/packageManifest.json".toString()))
+    def expectedPaths = ["MCP Rule": "hubitat-mcp-rule.groovy", "MCP Rule Server": "hubitat-mcp-server.groovy"]
+    if (!(manifest instanceof Map) || !(manifest.apps instanceof List) || manifest.apps.size() != 2 ||
+        manifest.apps.any { it.namespace != "mcp" || !expectedPaths.containsKey(it.name) } ||
+        manifest.apps*.name.unique().size() != 2 || manifest.drivers || manifest.files ||
+        !(manifest.bundles instanceof List) || manifest.bundles.size() != 1 ||
+        !manifest.bundles[0].location?.toString()?.endsWith("/mcp-libraries.zip"))
+        throw new IllegalStateException("Only the existing MCP parent, child, and libraries bundle are supported")
+    def types = _parseJsonBody(hubGet("/hub2/userAppTypes", [:]))
+    if (!(types instanceof List)) throw new IllegalStateException("Cannot read existing Apps Code identities")
+    job.apps = []
+    expectedPaths.each { name, path ->
+        def entry = manifest.apps.find { it.name == name }
+        if (!entry.location?.toString()?.endsWith("/${path}")) throw new IllegalStateException("Unexpected manifest app location")
+        def matches = types.findAll { it.namespace == "mcp" && it.name == name }
+        if (matches.size() != 1 || !matches[0].id?.toString()?.isInteger())
+            throw new IllegalStateException("Expected exactly one existing ${name} code class")
+        String url = "${base}/${job.ref}/${path}".toString()
+        packageStage(job, "preflight", "Downloading ${name}")
+        String source = fetchExternal(url)
+        job.apps << [id: matches[0].id.toString(), name: name, url: url, sha256: packageSourceHash(source)]
+        if (name == "MCP Rule Server") {
+            def includes = (source =~ /(?m)^\s*#include\s+mcp\.([A-Za-z0-9_]+)/).collect { it[1] }.unique()
+            if (!includes || !job.libraries*.name.containsAll(includes))
+                throw new IllegalStateException("Expected library hashes do not cover every parent include")
+        }
+    }
+    if (job.apps*.id.unique().size() != 2) throw new IllegalStateException("Parent and child code IDs must differ")
+    def installed = _parseJsonBody(hubGet("/hub2/userLibraries", [:]))
+    if (!(installed instanceof List)) throw new IllegalStateException("Cannot read installed libraries")
+    job.libraries = job.libraries.collect { expected ->
+        def matches = installed.findAll { it.namespace == "mcp" && it.name == expected.name }
+        if (matches.size() != 1) throw new IllegalStateException("Library ${expected.name} must already exist uniquely")
+        return expected + [id: matches[0].id.toString()]
+    }
+    job.bundleUrl = "${base}/bundle-artifacts/shas/${job.ref}/mcp-libraries.zip".toString()
+}
+
+def packageLibrariesMatch(Map job) {
+    try {
+        def installed = _parseJsonBody(hubGet("/hub2/userLibraries", [:]))
+        if (!(installed instanceof List)) return false
+        return job.libraries.every { expected ->
+            def matches = installed.findAll { it.namespace == "mcp" && it.name == expected.name }
+            if (matches.size() != 1 || matches[0].id.toString() != expected.id) return false
+            def data = _parseJsonBody(hubGet("/library/list/single/data/${expected.id}".toString(), [:]))
+            return data instanceof List && data.size() == 1 && data[0].source instanceof String &&
+                packageSourceHash(data[0].source) == expected.sha256
+        }
+    } catch (Exception ignored) { return false }
+}
+
+def packageAppMatches(Map target) {
+    try {
+        def types = _parseJsonBody(hubGet("/hub2/userAppTypes", [:]))
+        if (!(types instanceof List)) return false
+        def matches = types.findAll { it.namespace == "mcp" && it.name == target.name }
+        if (matches.size() != 1 || matches[0].id.toString() != target.id) return false
+        def data = _parseJsonBody(hubGet("/app/ajax/code", [id: target.id]))
+        return data instanceof Map && data.source instanceof String && packageSourceHash(data.source) == target.sha256
+    } catch (Exception ignored) { return false }
+}
+
+def packageWait(Map job, String phase, String component) {
+    if (now() >= (job.verifyUntil as long)) {
+        packageStage(job, "stopped", component, "Timed out verifying ${component}; no write was retried. Safety hold retained.")
+    } else {
+        packageStage(job, phase, component)
+        runIn(10, "runWatchdogPackageDeploy", [data: [requestId: job.requestId]])
+    }
+}
+
+def packageStage(Map job, String phase, String component = "", String error = null) {
+    long stamp = now()
+    if (job.phase != phase || job.component != component) {
+        job.stageStartedAt = stamp
+        job.history = ((job.history ?: []) + [[phase: phase, component: component, at: stamp]]).takeRight(40)
+    }
+    job.phase = phase
+    job.component = component
+    job.updatedAt = stamp
+    job.error = error
+    atomicState.packageDeployment = job
+    def back = atomicState.packageDeployment
+    if (back?.requestId != job.requestId || back.phase != phase || back.hold != job.hold)
+        throw new IllegalStateException("Could not persist deployment stage; no further writes are allowed")
+}
+
+String packageSourceHash(String source) {
+    def digest = java.security.MessageDigest.getInstance("SHA-256").digest(source.getBytes("UTF-8"))
+    String digits = "0123456789abcdef"
+    StringBuilder hex = new StringBuilder(digest.length * 2)
+    for (def one : digest) {
+        int value = (one as Integer) & 0xff
+        hex.append(digits.charAt(value >>> 4))
+        hex.append(digits.charAt(value & 0x0f))
+    }
+    return hex.toString()
+}
 
 // hub_update_app: copied from toolUpdateItemCodeInner (hubitat-mcp-server.groovy),
 // KEEPING the issue #237 verbatim compile-error capture: read /app/ajax/update's errorMessage
@@ -1810,6 +2079,8 @@ def adminUpdatePlatform(args) {
         // hub_reboot makes, and the two must be decided under the SAME lock or each slips past
         // the other's check. No prior window is remembered: every exit below HOLDS the window (an
         // update the hub may have accepted must keep the escape suppressed).
+        if (atomicState.packageDeployment?.hold == true)
+            return [success: false, error: "Package deployment safety hold prevents platform updates"]
         try {
             if (atomicState.expectedDownReason?.toString() == "hub_reboot") rebootWindow = atomicState.expectedDownUntil as Long
         } catch (Exception ignore) { rebootWindow = null }
@@ -2431,6 +2702,17 @@ private Map _httpFetchUrl(String url) {
 // Shared deployment tools retain the main server names; watchdog-only maintenance tools are included.
 def getAdminToolDefinitions() {
     return [
+        [name: "hub_update_package", annotations: [title: "Deploy MCP Package", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true],
+         description: "Start one background repair of the existing MCP package at an immutable commit. Manual E2E-hub probe only: reserve the hub, verify both original endpoints, back up, and disarm recovery first. Holds conflicting writes and automatic recovery until explicit endpoint verification. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
+         inputSchema: [type: "object", properties: [requestId: [type: "string"], ref: [type: "string", description: "Full 40-character commit SHA."],
+             libraries: [type: "array", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
+             confirm: [type: "boolean"]], required: ["requestId", "ref", "libraries", "confirm"]]],
+        [name: "hub_get_package_deployment", annotations: [title: "Get Package Deployment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false],
+         description: "Read persisted package stages, elapsed time, errors, and safety hold without contacting hub HTTP. A stopped or missing operation never authorizes replaying the install.",
+         inputSchema: [type: "object", properties: [requestId: [type: "string"]], required: ["requestId"]]],
+        [name: "hub_set_package_deployment", annotations: [title: "Release Package Deployment", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false],
+         description: "Release a package safety hold after verifying BOTH original MCP endpoints/tokens and unchanged app instances. Rechecks code hashes before completing. Explicit abandon:true may release a stopped job after operator recovery; never use while either controller is unavailable. confirm:true and endpointVerified:true required.",
+         inputSchema: [type: "object", properties: [requestId: [type: "string"], endpointVerified: [type: "boolean"], abandon: [type: "boolean"], confirm: [type: "boolean"]], required: ["requestId", "endpointVerified", "confirm"]]],
         [name: "hub_set_mcp_developer_mode", annotations: [title: "Enable MCP Developer Mode", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false],
          description: "Enable Developer Mode on the test hub's MCP server instance for E2E setup. Verifies the app code identity and reads the setting back. Only enabled:true is accepted; confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], enabled: [type: "boolean", enum: [true]], confirm: [type: "boolean"]], required: ["appId", "enabled", "confirm"]]],
@@ -2734,6 +3016,8 @@ def adminRebootHub(args) {
     boolean refuse = false
     boolean windowHeld = false
     synchronized (REBOOT_LOCK) {
+        if (atomicState.packageDeployment?.hold == true)
+            return [success: false, error: "Package deployment safety hold prevents reboot, including force"]
         try { updateWindow = atomicState.expectedDownUntil as Long; windowReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { updateWindow = null }
         if (windowReason == "hub_update_platform" && updateWindow != null && now() < updateWindow && args?.force != true) {
             refuse = true

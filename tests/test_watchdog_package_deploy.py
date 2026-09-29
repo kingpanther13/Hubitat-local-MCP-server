@@ -1,6 +1,9 @@
 """Exercise the manual deployment client with a transport that never reaches a hub."""
 
 import importlib.util
+import hashlib
+import io
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -112,3 +115,28 @@ def test_instance_identity_change_refuses_release(module):
     with pytest.raises(RuntimeError, match="instance"):
         run(module, transport)
     assert ("watchdog", "hub_set_package_deployment") not in transport.calls
+
+
+def bundle_bytes(kind="library", extra=False):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        manifest = f"mcp\nmcp_libraries\n{kind} mcp.Example.groovy\n"
+        bundle.writestr("install.txt", manifest)
+        bundle.writestr("update.txt", manifest)
+        bundle.writestr("mcp.Example.groovy", "library source\n")
+        if extra:
+            bundle.writestr("watchdog.groovy", "unexpected app code")
+    return buffer.getvalue()
+
+
+def test_plan_hashes_exact_library_bytes(module):
+    assert module.plan_from_bundle("a" * 40, bundle_bytes()) == {
+        "ref": "a" * 40,
+        "libraries": [{"name": "Example", "sha256": hashlib.sha256(b"library source\n").hexdigest()}],
+    }
+
+
+@pytest.mark.parametrize("ref,kind,extra", [("main", "library", False), ("a" * 40, "app", False), ("a" * 40, "library", True)])
+def test_plan_rejects_mutable_refs_and_app_code_in_bundle(module, ref, kind, extra):
+    with pytest.raises(ValueError):
+        module.plan_from_bundle(ref, bundle_bytes(kind, extra))
