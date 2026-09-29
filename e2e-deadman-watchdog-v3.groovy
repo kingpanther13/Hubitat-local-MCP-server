@@ -1,5 +1,5 @@
 /**
- * Experimental package deploy controller for the E2E hub, installed alongside v3.
+ * Experimental package deploy controller for the E2E hub, installed alongside v2.
  * V2 remains the recovery controller. V3 never schedules restore or reboot.
  * Requires an exclusive hub lease and a fresh backup before manual deployment.
  */
@@ -260,7 +260,7 @@ def adminSetPackageDeployment(Map args) {
         def stored = atomicState.packageDeployment
         if (stored?.requestId != args.requestId?.toString() || stored.workerActive == true || args.endpointVerified != true)
             return [success: false, error: "Matching idle operation and verification of MCP, v2, and v3 endpoints are required"]
-        if (!(stored.phase == "awaiting_verification" || (stored.phase == "stopped" && args.abandon == true)))
+        if (!(args.abandon == true ? stored.phase == "stopped" : stored.phase == "awaiting_verification"))
             return [success: false, error: "The operation is not ready for release"]
         def job = [:] + stored
         job.workerActive = true
@@ -480,7 +480,7 @@ String packageSourceHash(String source) {
 
 def adminListAppInstances(args) {
     String raw = hubGet("/hub2/appsList", [:])
-    String noList = "Nothing was changed: the hub did not answer /hub2/appsList. Confirm hub_get_info answers, then retry."
+    String noList = "Nothing was changed: the hub did not answer /hub2/appsList. Check hub health through v2 before retrying this read."
     if (!raw) return [success: false, error: "empty response from /hub2/appsList", note: noList]
     def parsed
     try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}", note: noList] }

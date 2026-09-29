@@ -20,7 +20,9 @@ Before a probe, reserve the E2E hub through the existing maintenance queue/lease
 take a fresh backup, verify all three endpoints, and record app/code identities.
 The v2 flag must be disarmed with any previous restore completed. Do not run E2E,
 purge, or other maintenance alongside the probe. V3 reads the v2 flag but never
-writes it. Its interlock does not replace the exclusive lease.
+writes it. Its interlock does not replace the exclusive lease. V2's existing
+auto-reboot-on-wedge setting remains active independently of its disarmed flag;
+inspect that setting before the probe. V3 cannot suppress it.
 
 If MCP becomes unavailable, stop v3 work and use the unchanged v2 to restore the
 known-good MCP package. First establish that the v3 worker and any submitted hub
