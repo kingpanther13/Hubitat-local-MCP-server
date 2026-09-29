@@ -3,6 +3,11 @@ on:
   # Manual run on any ref, no PR needed -- opening a PR just to exercise a lane also
   # books the single shared test hub for an hour of e2e.
   workflow_dispatch:
+    inputs:
+      test_spec:
+        description: 'Optional Spock spec for branch-only diagnosis; PR runs always use the full suite'
+        required: false
+        type: string
   pull_request:
     branches: [main]
   push:
@@ -50,9 +55,14 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v6.3.0
       - name: Run unit tests
-        run: ./gradlew test --info --warning-mode all
-          ${{ matrix.mode == 'strict' && '-PharnessStrictMetaClass=true' || '' }}
-          ${{ matrix.dispatch-mode == 'flat' && '-Pharness.useGateways=false' || '' }}
+        env:
+          TEST_SPEC: ${{ github.event_name == 'workflow_dispatch' && inputs.test_spec || '' }}
+        run: |
+          args=(test --info --warning-mode all)
+          if [ -n "$TEST_SPEC" ]; then args+=(--tests "$TEST_SPEC"); fi
+          ./gradlew "${args[@]}" \
+            ${{ matrix.mode == 'strict' && '-PharnessStrictMetaClass=true' || '' }} \
+            ${{ matrix.dispatch-mode == 'flat' && '-Pharness.useGateways=false' || '' }}
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v7

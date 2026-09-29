@@ -54,7 +54,7 @@ class WatchdogPackageDeploySpec extends Specification {
             if (path == '/hub2/userAppTypes') return JsonOutput.toJson(inventory)
             if (path == '/hub2/userLibraries') return JsonOutput.toJson([[id: 12, name: 'Example', namespace: 'mcp']])
             if (path == '/app/ajax/code') return JsonOutput.toJson([source: sources[query.id.toString()], version: 7])
-            if (path == '/library/ajax/code') return JsonOutput.toJson([source: liveLibrary])
+            if (path == '/library/list/single/data/12') return JsonOutput.toJson([[source: liveLibrary]])
             throw new IllegalStateException('unexpected read ' + path)
         }
         script.metaClass.hubPostForm = { String path, Map body ->
@@ -67,6 +67,7 @@ class WatchdogPackageDeploySpec extends Specification {
             writes << [bundle: args.importUrl, phase: persisted.packageDeployment?.phase]
             [success: bundleSuccess]
         }
+        script.metaClass.readFlag = { -> [armed: false] }
     }
 
     Map request() {
@@ -241,5 +242,55 @@ class WatchdogPackageDeploySpec extends Specification {
         released.phase == 'complete'
         persisted.packageDeployment.hold == false
         writes.size() == 3
+    }
+
+    def 'same operation id cannot be rebound to different source or library expectations'() {
+        given:
+        script.adminUpdatePackage(request())
+        when:
+        def result = script.adminUpdatePackage(request() + [ref: 'b' * 40])
+        then:
+        result.success == false
+        scheduled.size() == 1
+        writes.empty
+    }
+
+    def 'manual probe refuses an armed or unresolved deadman run'() {
+        given:
+        script.metaClass.readFlag = { -> [armed: true, runId: 'busy', deadline: clock + 100000L] }
+        script.adminUpdatePackage(request())
+        when:
+        tick()
+        then:
+        persisted.packageDeployment.phase == 'stopped'
+        writes.empty
+    }
+
+    def 'another callback cannot enter the worker while an update is still executing'() {
+        given:
+        script.adminUpdatePackage(request())
+        script.metaClass.hubPostForm = { String path, Map body ->
+            writes << [path: path, body: body]
+            tick()
+            sources[body.id.toString()] = body.source
+            [status: 200, data: '{"status":"success"}']
+        }
+        when:
+        tick()
+        then:
+        writes.size() == 3
+        persisted.packageDeployment.phase == 'awaiting_verification'
+    }
+
+    def 'readiness release cannot conceal source drift after the save'() {
+        given:
+        script.adminUpdatePackage(request())
+        tick()
+        sources['178'] = 'changed by another actor'
+        when:
+        def result = script.adminSetPackageDeployment([requestId: 'test-operation', confirm: true, endpointVerified: true])
+        then:
+        result.success == false
+        persisted.packageDeployment.hold == true
     }
 }
