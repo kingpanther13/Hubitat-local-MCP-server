@@ -1,7 +1,7 @@
 """Exercise the manual deployment client with a transport that never reaches a hub."""
 
-import importlib.util
 import hashlib
+import importlib.util
 import io
 import zipfile
 from pathlib import Path

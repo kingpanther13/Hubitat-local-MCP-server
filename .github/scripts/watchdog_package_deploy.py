@@ -126,7 +126,7 @@ def plan_from_bundle(ref, bundle_bytes):
         if not entries or any(not re.fullmatch(r"library mcp\.[A-Za-z0-9_]+\.groovy", item) for item in entries):
             raise ValueError("Package probe accepts a libraries-only bundle")
         names = [item.split(" ", 1)[1] for item in entries]
-        if len(set(names)) != len(names) or sorted(bundle.namelist()) != sorted(names + ["install.txt", "update.txt"]):
+        if len(set(names)) != len(names) or sorted(bundle.namelist()) != sorted([*names, "install.txt", "update.txt"]):
             raise ValueError("Unexpected or duplicate bundle contents")
         libraries = [{"name": name[len("mcp."):-len(".groovy")],
                       "sha256": hashlib.sha256(bundle.read(name)).hexdigest()} for name in names]

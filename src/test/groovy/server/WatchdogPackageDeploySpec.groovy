@@ -258,11 +258,12 @@ class WatchdogPackageDeploySpec extends Specification {
     def 'manual probe refuses an armed or unresolved deadman run'() {
         given:
         script.metaClass.readFlag = { -> [armed: true, runId: 'busy', deadline: clock + 100000L] }
-        script.adminUpdatePackage(request())
         when:
-        tick()
+        def result = script.adminUpdatePackage(request())
         then:
-        persisted.packageDeployment.phase == 'stopped'
+        result.success == false
+        persisted.packageDeployment == null
+        scheduled.empty
         writes.empty
     }
 
@@ -292,5 +293,30 @@ class WatchdogPackageDeploySpec extends Specification {
         then:
         result.success == false
         persisted.packageDeployment.hold == true
+    }
+
+    def 'automatic or forced reboot cannot bypass the safety hold through the direct helper'() {
+        given:
+        script.adminUpdatePackage(request())
+        when:
+        def result = script.adminRebootHub([confirm: true, force: true])
+        then:
+        result.success == false
+        writes.empty
+    }
+
+    def 'stopped job needs explicit abandonment after endpoint verification'() {
+        given:
+        failCompile = true
+        script.adminUpdatePackage(request())
+        tick()
+        when:
+        def ordinary = script.adminSetPackageDeployment([requestId: 'test-operation', confirm: true, endpointVerified: true])
+        def abandoned = script.adminSetPackageDeployment([requestId: 'test-operation', confirm: true, endpointVerified: true, abandon: true])
+        then:
+        ordinary.success == false
+        abandoned.phase == 'abandoned'
+        abandoned.hold == false
+        abandoned.success == false
     }
 }

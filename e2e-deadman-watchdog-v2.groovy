@@ -935,6 +935,12 @@ def adminUpdatePackage(Map args) {
     if (libraries*.name.unique().size() != libraries.size())
         throw new IllegalArgumentException("Duplicate library names are not allowed")
     String binding = packageSourceHash(groovy.json.JsonOutput.toJson([ref: ref, libraries: libraries]))
+    def prior = atomicState.packageDeployment
+    if (prior?.requestId == requestId) {
+        if (prior.binding != binding) return [success: false, error: "requestId is already bound to different inputs"]
+        return adminGetPackageDeployment([requestId: requestId])
+    }
+    if (!packageWatchdogIdle()) return [success: false, error: "Manual package probe requires an idle, disarmed watchdog with completed recovery"]
     synchronized (REBOOT_LOCK) {
     synchronized (PACKAGE_DEPLOY_LOCK) {
         def current = atomicState.packageDeployment
@@ -1068,9 +1074,7 @@ def runWatchdogPackageDeploy(Map data) {
 }
 
 def prepareWatchdogPackage(Map job) {
-    def flag = readFlag()
-    if (!(flag instanceof Map) || flag.armed != false ||
-        (flag.intent == "disarm" && (flag.restoreFor?.toString() != flag.runId?.toString() || flag.restoreResult != "restored")))
+    if (!packageWatchdogIdle())
         throw new IllegalStateException("Manual package probe requires an idle, disarmed watchdog with completed recovery")
     String base = "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server"
     def manifest = _parseJsonBody(fetchExternal("${base}/${job.ref}/packageManifest.json".toString()))
@@ -1109,6 +1113,14 @@ def prepareWatchdogPackage(Map job) {
         return expected + [id: matches[0].id.toString()]
     }
     job.bundleUrl = "${base}/bundle-artifacts/shas/${job.ref}/mcp-libraries.zip".toString()
+}
+
+boolean packageWatchdogIdle() {
+    try {
+        def flag = readFlag()
+        return flag instanceof Map && flag.armed == false &&
+            (flag.intent != "disarm" || (flag.runId != null && flag.restoreFor?.toString() == flag.runId.toString() && flag.restoreResult == "restored"))
+    } catch (Exception ignored) { return false }
 }
 
 def packageLibrariesMatch(Map job) {
@@ -2707,7 +2719,7 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [requestId: [type: "string"], ref: [type: "string", description: "Full 40-character commit SHA."],
              libraries: [type: "array", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
              confirm: [type: "boolean"]], required: ["requestId", "ref", "libraries", "confirm"]]],
-        [name: "hub_get_package_deployment", annotations: [title: "Get Package Deployment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false],
+        [name: "hub_get_package_deployment", annotations: [title: "Get Package Deployment", readOnlyHint: true, idempotentHint: true, openWorldHint: false],
          description: "Read persisted package stages, elapsed time, errors, and safety hold without contacting hub HTTP. A stopped or missing operation never authorizes replaying the install.",
          inputSchema: [type: "object", properties: [requestId: [type: "string"]], required: ["requestId"]]],
         [name: "hub_set_package_deployment", annotations: [title: "Release Package Deployment", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false],
