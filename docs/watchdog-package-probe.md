@@ -1,106 +1,60 @@
-# Watchdog package deployment probe
+# Experimental watchdog v3 package deployment
 
-This is an opt-in replacement candidate for the E2E package install. Normal E2E
-continues to use its existing installer until the standing watchdog is updated
-and this path is validated on the E2E hub. Keep `e2e:skip` on the development PR.
+Install `e2e-deadman-watchdog-v3.groovy` as a **new Apps Code class and app instance**
+on the E2E hub. It has its own OAuth endpoint. Keep watchdog v2 installed and its
+source, instance, token, settings, and GitHub secret unchanged.
 
-## Safety model
+V3 offers a background package update with persisted stage messages. It installs
+the pinned libraries bundle, then saves the existing MCP child and parent code
+classes. It preserves their code IDs, running instances, and OAuth settings.
+Status reports the current component, elapsed time, and bounded stage history.
+It cannot report compiler percentages or internal Hubitat progress.
 
-The watchdog remains standalone and updates only the existing MCP parent and
-child Apps Code IDs. It does not create apps, edit OAuth settings, update itself,
-disable either app, or reboot the hub. The library bundle is pinned to the same
-commit as the app sources and the manual client checks that it contains only
-libraries. All required libraries must already exist uniquely on the hub.
+## Isolation and recovery
 
-An accepted deployment holds conflicting watchdog writes, automatic deadman
-restore, and automatic reboot. The hold is persistent, including after a stopped
-job, observer timeout, or watchdog restart. There is no automatic expiry that
-could start another save while a previous one is still running. This deliberately
-parks the existing recovery loop during the experiment; retain the hub lease and
-monitor the job until it has a verified outcome.
+V3 exposes package start/status/release and read-only app inventory. It has no
+reboot, disable, delete, self-update, or autonomous restore path. V2 remains the
+independent recovery controller; v3's hold only prevents further v3 deployments.
 
-The worker records each stage before starting its I/O. A missing save response
-enters read-only verification against the full expected source hash. It never
-replays a save. Library installation is likewise submitted once and verified
-against every expected library's complete source. Verification has a ten-minute
-deadline per component, separate from the original HTTP wait. An error or an
-expired verification deadline stops the job and leaves the hold in place.
+Before a probe, reserve the E2E hub through the existing maintenance queue/lease,
+take a fresh backup, verify all three endpoints, and record app/code identities.
+The v2 flag must be disarmed with any previous restore completed. Do not run E2E,
+purge, or other maintenance alongside the probe. V3 reads the v2 flag but never
+writes it. Its interlock does not replace the exclusive lease.
 
-## Before changing the watchdog
+If MCP becomes unavailable, stop v3 work and use the unchanged v2 to restore the
+known-good MCP package. First establish that the v3 worker and any submitted hub
+save have finished, so recovery cannot overlap compilation. Do not update,
+restart, disable, or reboot the surviving controller. Preserve the lease while
+investigating an uncertain result.
 
-1. Finish the branch's non-E2E GitHub checks and record its exact commit SHA.
-2. Reserve the E2E hub exclusively using its existing lease/maintenance queue.
-   Verify no E2E, purge, restore, or other maintenance is active. The flag must be
-   disarmed with any previous disarm restore successfully completed.
-3. Verify both original MCP URLs with `initialize` and `tools/list`. Record code
-   IDs, instance IDs and parent relationships. Preserve OAuth identity privately;
-   never print tokens into logs or PR comments.
-4. Preserve and verify the previous watchdog source using the existing maintenance
-   prepare/upload/download/checksum procedure. Take a fresh hub backup.
-5. Update only the existing watchdog code class, keeping its instance and OAuth
-   configuration. The main MCP server is the standby controller during this step.
-6. Verify the watchdog's original endpoint and the three deployment tools below,
-   then verify the main endpoint again. If either is unavailable, stop. Do not
-   update, disable, restart, or reboot the remaining controller.
+## Deployment contract
 
-Watchdog installation is a separate maintenance operation. This probe does not
-perform it, and running normal E2E does not install the watchdog from the PR.
-
-## Probe the MCP update
-
-Use the GitHub-built `mcp-libraries.zip` for the validated SHA. The client compares
-it with that SHA's published artifact before contacting the hub. Set `WATCHDOG_URL`
-and `MCP_URL` to the original E2E endpoints in the private environment, then run:
-
-```sh
-python .github/scripts/watchdog_package_deploy.py \
-  --ref <validated-full-sha> \
-  --bundle <github-built-mcp-libraries.zip> \
-  --lease-held
-```
-
-`--lease-held` is an operator assertion, not a lease acquisition implementation.
-Keep the lease alive independently while the probe runs. Do not run the normal
-E2E arm/disarm scripts alongside this probe.
-
-The client prints the operation ID before submitting once. A lost start response
-is followed only by status reads for that ID. Each status includes the component,
-phase, phase duration, and bounded history. Long app compilation stays on
-`updating_app`; no percentage or heartbeat is inferred from unchanged text.
-
-After the worker reaches `awaiting_verification`, the client checks both original
-URLs/tokens with initialization and tool discovery and compares the complete
-installed-app identity snapshot. It acknowledges completion only after those
-checks. The watchdog rechecks source/library hashes before releasing the hold.
-
-## Tool contract
-
-- `hub_update_package`: `requestId`, full commit SHA in `ref`, expected library
-  `name`/`sha256` pairs, and `confirm:true`. Caller-chosen IDs make a lost response
-  recoverable. Reusing an ID with different inputs is refused.
+- `hub_update_package`: caller-chosen `requestId`, immutable 40-character commit
+  `ref`, expected library `name`/`sha256` pairs, and `confirm:true`. Prepare the
+  hashes from that commit's GitHub-built libraries-only bundle and compare it
+  with the published artifact before submitting. Submit once.
 - `hub_get_package_deployment`: `requestId`. Reads persisted status without hub
-  HTTP or state writes; no source, token, or internal plan is returned.
+  HTTP. Reconnect using the same ID after a lost response; never repeat a save.
 - `hub_set_package_deployment`: matching `requestId`, `confirm:true`, and
-  `endpointVerified:true`. This is the caller's attestation that both original
-  endpoints and the instance snapshot passed. It releases a verified completed
-  deployment. An explicit `abandon:true` may release a stopped job only after the
-  operator has independently restored and verified both controllers; the normal
-  probe never sends it.
+  `endpointVerified:true`. Acknowledge only after the original MCP, v2, and v3
+  URLs/tokens work and the app identity snapshot is unchanged. V3 rechecks all
+  installed source hashes before releasing its hold. `abandon:true` can release
+  a stopped operation after independent recovery and endpoint verification.
 
-If observation fails, record the operation ID and keep the lease. Inspect status
-and logs through the surviving controller. Do not rerun the installer, bounce an
-app, self-update the watchdog, or reboot as a response to a timeout. A stopped job
-does not authorize modifying the remaining controller. Recovery requires an
-explicit operator decision after checking which endpoint is healthy.
+A lost save response enters read-only verification, requiring an advanced code
+version and the full expected source hash. Matching libraries are left in place;
+otherwise bundle installation is submitted once and all library sources verified.
+Verification has a ten-minute deadline per component, after the HTTP wait. A
+stopped job retains its hold. A restart during a worker can leave
+`workerActive:true`; v3 deliberately does not resume uncertain writes or expire
+that hold automatically.
 
-## Acceptance evidence still required
+## Validation
 
-On the E2E hub, record stage timings for a same-version repair and a different
-revision, exact source/library verification, unchanged app/code identities and
-OAuth values, and both original endpoints remaining usable. Exercise observer
-disconnection without interrupting the apps and confirm reconnecting status does
-not submit another install. GitHub tests cover simulated timeout/error/duplicate
-paths; they cannot establish Hubitat scheduling, concurrency, or persistence.
-
-No live disruption or deliberate failure of either controller is needed for the
-first probe. Keep normal E2E adoption and recovery changes gated on this evidence.
+New tests, the manual probe, and any workflow adjustments belong on the temporary
+`test/watchdog-v3-validation` branch until live validation proves this approach.
+The development PR changes neither permanent tests nor the normal E2E installer
+and carries `e2e:skip`. GitHub simulation tests cannot prove hub scheduling or
+persistence; record live stage timings, unchanged identities, working original
+tokens, and reconnect-without-replay behavior before adopting v3 in E2E.
