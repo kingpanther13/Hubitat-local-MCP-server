@@ -1,13 +1,13 @@
 /**
- * Experimental package deploy controller for the E2E hub, installed alongside v2.
- * V2 remains the recovery controller. V3 never schedules restore or reboot.
+ * Manual administration and package deployment for the E2E hub.
+ * Preserves v2 tools without autonomous restoration or reboot.
  * Requires an exclusive hub lease and a fresh backup before manual deployment.
  */
 definition(
     name: "E2E Dead-Man Watchdog v3",
     namespace: "mcp",
     author: "kingpanther13",
-    description: "Experimental MCP package deployment with persisted progress. Install alongside watchdog v2 on the E2E test hub only.",
+    description: "Manual hub administration and MCP package deployment with persisted progress. E2E test hub only.",
     category: "Utility",
     iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
     iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
@@ -45,6 +45,11 @@ mappings {
 }
 
 @groovy.transform.Field static final Object PACKAGE_DEPLOY_LOCK = new Object()
+@groovy.transform.Field static final Map MANUAL_WRITE = [:]
+@groovy.transform.Field static final Object PURGE_CLAIM_LOCK = new Object()
+@groovy.transform.Field static final Object LOOPBACK_LOCK = new Object()
+@groovy.transform.Field static final int WEDGE_STREAK_MIN = 8
+@groovy.transform.Field static final Object REBOOT_LOCK = new Object()
 
 def installed() { initialize() }
 def updated() { unschedule(); initialize() }
@@ -142,7 +147,7 @@ def handleInitialize(msg) {
         protocolVersion: negotiated,
         capabilities: [tools: [:]],
         serverInfo: [name: "e2e-deadman-watchdog-v3", version: "3"],
-        instructions: "Experimental package deployment and progress. Reserve the E2E hub; keep watchdog v2 available for recovery."
+        instructions: "Manual administration and package deployment with persisted progress. Reserve the E2E hub before changes. Restoration and reboot require explicit requests."
     ])
 }
 
@@ -181,23 +186,45 @@ def jsonRpcError(id, code, message, data = null) {
 
 def executeAdminTool(String toolName, Map args) {
     if (toolName == "hub_get_package_deployment") return adminGetPackageDeployment(args)
-    if (!(toolName in ["hub_update_package", "hub_set_package_deployment", "hub_list_app_instances"]))
-        throw new IllegalArgumentException("Unknown tool: ${toolName}")
     if (settings?.hubSecurityEnabled == true && secCookie() == null)
         return [success: false, error: "Hub Security authentication failed; check v3 settings"]
-    switch (toolName) {
-        case "hub_update_package": return adminUpdatePackage(args)
-        case "hub_set_package_deployment": return adminSetPackageDeployment(args)
-        case "hub_list_app_instances": return adminListAppInstances(args)
+    if (toolName == "hub_update_package") return adminUpdatePackage(args)
+    if (toolName == "hub_set_package_deployment") return adminSetPackageDeployment(args)
+    if (!manualToolWrites(toolName, args)) return executeManualTool(toolName, args)
+    synchronized (PACKAGE_DEPLOY_LOCK) {
+        def deployment = atomicState.packageDeployment
+        if (deployment?.hold == true || deployment?.workerActive == true)
+            return [success: false, error: "A package deployment is held; manual writes are blocked"]
+        if (!MANUAL_WRITE.isEmpty())
+            return [success: false, error: "Another manual write is running; nothing was submitted"]
+        MANUAL_WRITE.tool = toolName
+    }
+    try {
+        return executeManualTool(toolName, args)
+    } finally {
+        synchronized (PACKAGE_DEPLOY_LOCK) { MANUAL_WRITE.clear() }
     }
 }
 
-private void requireConfirm(args) {
-    if (args?.confirm != true) {
-        throw new IllegalArgumentException("SAFETY CHECK FAILED: set confirm=true to use this write tool.")
-    }
+boolean manualToolWrites(String toolName, Map args) {
+    if (toolName == "hub_get_source") return args.noSave != true
+    if (toolName == "hub_update_platform") return args.statusOnly != true
+    if (toolName == "hub_manage_variables") return args.action in ["set", "hub_set_variable"]
+    return toolName in ["hub_update_app", "hub_set_mcp_developer_mode", "hub_create_library",
+        "hub_update_library", "hub_delete_item", "hub_force_delete_app", "hub_purge_e2e_artifacts",
+        "hub_reboot", "hub_set_app_disabled", "hub_install_bundle", "hub_delete_bundle",
+        "hub_write_file", "hub_create_backup"]
 }
 
+String packageRepository(value) {
+    String base = value == null ? "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server" : value.toString()
+    if (!(base ==~ /https:\/\/raw\.githubusercontent\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+/) ||
+        base.endsWith("/.") || base.endsWith("/.."))
+        throw new IllegalArgumentException("Package repository must be https://raw.githubusercontent.com/<owner>/<repository>")
+    return base
+}
+
+def getAdminToolDefinitions() { getManualToolDefinitions() + getPackageToolDefinitions() }
 
 def adminUpdatePackage(Map args) {
     requireConfirm(args)
@@ -211,14 +238,17 @@ def adminUpdatePackage(Map args) {
     def libraries = args.libraries.collect { [name: it.name.toString(), sha256: it.sha256.toString()] }.sort { it.name }
     if (libraries*.name.unique().size() != libraries.size())
         throw new IllegalArgumentException("Duplicate library names are not allowed")
-    String binding = packageSourceHash(groovy.json.JsonOutput.toJson([ref: ref, libraries: libraries]))
+    String baseUrl = packageRepository(args.baseUrl)
+    String bundleBaseUrl = packageRepository(args.bundleBaseUrl)
+    String binding = packageSourceHash(groovy.json.JsonOutput.toJson([ref: ref, libraries: libraries,
+        baseUrl: baseUrl, bundleBaseUrl: bundleBaseUrl]))
     def prior = atomicState.packageDeployment
     if (prior?.requestId == requestId) {
         if (prior.binding != binding) return [success: false, error: "requestId is already bound to different inputs"]
         return adminGetPackageDeployment([requestId: requestId])
     }
-    if (!packageWatchdogIdle()) return [success: false, error: "Manual package probe requires an idle, disarmed v2 recovery flag with completed recovery"]
     synchronized (PACKAGE_DEPLOY_LOCK) {
+        if (!MANUAL_WRITE.isEmpty()) return [success: false, error: "A manual write is running; no package deployment was scheduled"]
         def current = atomicState.packageDeployment
         if (current?.requestId == requestId) {
             if (current.binding != binding) return [success: false, error: "requestId is already bound to different inputs"]
@@ -227,7 +257,7 @@ def adminUpdatePackage(Map args) {
         if (current?.hold == true || current?.workerActive == true)
             return [success: false, error: "A v3 deployment is still held; nothing was scheduled"]
         atomicState.packageDeployment = [requestId: requestId, ref: ref, binding: binding,
-            libraries: libraries, hold: true, phase: "queued", status: "queued", startedAt: now(),
+            baseUrl: baseUrl, bundleBaseUrl: bundleBaseUrl, libraries: libraries, hold: true, phase: "queued", status: "queued", startedAt: now(),
             stageStartedAt: now(), updatedAt: now(), history: [], workerActive: false]
         def back = atomicState.packageDeployment
         if (back?.requestId != requestId || back.hold != true)
@@ -258,8 +288,10 @@ def adminSetPackageDeployment(Map args) {
     if (!args.requestId) throw new IllegalArgumentException("requestId is required to release a package deployment")
     synchronized (PACKAGE_DEPLOY_LOCK) {
         def stored = atomicState.packageDeployment
-        if (stored?.requestId != args.requestId?.toString() || stored.workerActive == true || args.endpointVerified != true)
-            return [success: false, error: "Matching idle operation and verification of MCP, v2, and v3 endpoints are required"]
+        if (stored?.requestId != args.requestId?.toString() || stored.workerActive == true)
+            return [success: false, error: "A matching operation with no active worker is required"]
+        if (args.abandon == true ? (args.writesSettled != true && args.endpointVerified != true) : args.endpointVerified != true)
+            return [success: false, error: "Verify original endpoints for completion, or explicitly confirm writesSettled before abandoning a stopped deployment for repair"]
         if (!(args.abandon == true ? stored.phase == "stopped" : stored.phase == "awaiting_verification"))
             return [success: false, error: "The operation is not ready for release"]
         def job = [:] + stored
@@ -362,9 +394,7 @@ def runWatchdogPackageDeploy(Map data) {
 }
 
 def prepareWatchdogPackage(Map job) {
-    if (!packageWatchdogIdle())
-        throw new IllegalStateException("Manual package probe requires an idle, disarmed v2 recovery flag with completed recovery")
-    String base = "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server"
+    String base = packageRepository(job.baseUrl)
     def manifest = _parseJsonBody(fetchExternal("${base}/${job.ref}/packageManifest.json".toString()))
     def expectedPaths = ["MCP Rule": "hubitat-mcp-rule.groovy", "MCP Rule Server": "hubitat-mcp-server.groovy"]
     if (!(manifest instanceof Map) || !(manifest.apps instanceof List) || manifest.apps.size() != 2 ||
@@ -400,15 +430,7 @@ def prepareWatchdogPackage(Map job) {
         if (matches.size() != 1) throw new IllegalStateException("Library ${expected.name} must already exist uniquely")
         return expected + [id: matches[0].id.toString()]
     }
-    job.bundleUrl = "${base}/bundle-artifacts/shas/${job.ref}/mcp-libraries.zip".toString()
-}
-
-boolean packageWatchdogIdle() {
-    try {
-        def flag = readFlag()
-        return flag instanceof Map && flag.armed == false &&
-            (flag.intent != "disarm" || (flag.runId != null && flag.restoreFor?.toString() == flag.runId.toString() && flag.restoreResult == "restored"))
-    } catch (Exception ignored) { return false }
+    job.bundleUrl = "${packageRepository(job.bundleBaseUrl)}/bundle-artifacts/shas/${job.ref}/mcp-libraries.zip".toString()
 }
 
 def packageLibrariesMatch(Map job) {
@@ -482,9 +504,1052 @@ String packageSourceHash(String source) {
     return hex.toString()
 }
 
+def getPackageToolDefinitions() {
+    return [
+        [name: "hub_update_package", annotations: [title: "Deploy MCP Package", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true],
+         description: "Start one background repair of the existing MCP package at an immutable commit. Reserve the E2E hub, verify the original MCP and v3 endpoints, and back up first. Holds further deployments and competing manual writes until explicit verification. Deploy a known-good ref to request restoration. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
+         inputSchema: [type: "object", properties: [requestId: [type: "string"], ref: [type: "string", description: "Full 40-character commit SHA."],
+             baseUrl: [type: "string", description: "Raw GitHub source repository URL; defaults to upstream."],
+             bundleBaseUrl: [type: "string", description: "Raw GitHub repository hosting bundle-artifacts/shas/<ref>/mcp-libraries.zip; defaults to upstream."],
+             libraries: [type: "array", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
+             confirm: [type: "boolean"]], required: ["requestId", "ref", "libraries", "confirm"]]],
+        [name: "hub_get_package_deployment", annotations: [title: "Get Package Deployment", readOnlyHint: true, idempotentHint: true, openWorldHint: false],
+         description: "Read persisted package stages, elapsed time, errors, and safety hold without contacting hub HTTP. A stopped or missing operation never authorizes replaying the install.",
+         inputSchema: [type: "object", properties: [requestId: [type: "string"]], required: ["requestId"]]],
+        [name: "hub_set_package_deployment", annotations: [title: "Release Package Deployment", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false],
+         description: "Release a package safety hold after verifying original MCP and v3 endpoints/tokens and unchanged app instances. Rechecks code hashes before completing. Explicit abandon:true may release a stopped, inactive job for repair after the operator confirms writesSettled:true (all submitted hub writes finished). This does not claim MCP is healthy. Normal completion requires endpointVerified:true. confirm:true required.",
+         inputSchema: [type: "object", properties: [requestId: [type: "string"], endpointVerified: [type: "boolean"], abandon: [type: "boolean"],
+             writesSettled: [type: "boolean", description: "For abandonment only: operator verified all submitted hub writes have finished; never assume this after a timeout."],
+             confirm: [type: "boolean"]], required: ["requestId", "confirm"]]],
+    ]
+}
+
+def executeManualTool(String toolName, Map args) {
+    if (settings?.hubSecurityEnabled == true && secCookie() == null) {
+        return [success: false, error: "Hub Security is enabled but loopback auth failed (no cookie). Set the Hub Security username/password in the watchdog app settings."]
+    }
+    switch (toolName) {
+        case "hub_update_app":      return adminUpdateApp(args)
+        case "hub_set_mcp_developer_mode": return adminSetMcpDeveloperMode(args)
+        case "hub_get_source":      return adminGetSource(args)
+        case "hub_create_library":  return adminCreateLibrary(args)
+        case "hub_update_library":  return adminUpdateLibrary(args)
+        case "hub_delete_item":     return adminDeleteItem(args)
+        case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
+        case "hub_purge_e2e_artifacts": return adminPurgeE2eArtifacts(args)
+        case "hub_reboot": return adminRebootHub(args)
+        case "hub_set_app_disabled": return adminSetAppDisabled(args)
+        case "hub_get_metrics":      return adminGetMetrics(args)
+        case "hub_update_platform":  return adminUpdatePlatform(args)
+        case "hub_get_memory_history": return adminGetMemoryHistory(args)
+        case "hub_get_hub_logs":     return adminGetHubLogs(args)
+        case "hub_list_app_instances": return adminListAppInstances(args)
+        case "hub_install_bundle":  return adminInstallBundle(args)
+        case "hub_list_bundles":    return adminListBundles(args)
+        case "hub_delete_bundle":   return adminDeleteBundle(args)
+        case "hub_get_info":        return adminGetInfo(args)
+        case "hub_list_apps":       return adminListApps(args)
+        case "hub_list_libraries":  return adminListLibraries(args)
+        case "hub_get_jobs":        return adminGetJobs(args)
+        case "hub_read_file":       return adminReadFile(args)
+        case "hub_write_file":      return adminWriteFile(args)
+        case "hub_create_backup":   return adminCreateBackup(args)
+        case "hub_manage_variables": return adminManageVariables(args)
+        default:
+            throw new IllegalArgumentException("Unknown tool: ${toolName}. This deploy-controller exposes only the admin/deploy subset.")
+    }
+}
+
+// confirm gate for the WRITE tools (server uses requireDestructiveConfirm; this app's surface is
+// already token-gated by OAuth, so the floor is the explicit confirm flag the CI scripts pass).
+private void requireConfirm(args) {
+    if (args?.confirm != true) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: set confirm=true to use this write tool.")
+    }
+}
+
+// ==================== ADMIN TOOL IMPLEMENTATIONS ====================
+
+// hub_update_app: copied from toolUpdateItemCodeInner (hubitat-mcp-server.groovy),
+// KEEPING the issue #237 verbatim compile-error capture: read /app/ajax/update's errorMessage
+// synchronously AND, for the self-update case, stash a lastSelfDeploy-style record in atomicState.
+// Adapted from hubInternalGet/PostForm to hubGet/hubPostForm.
+def adminUpdateApp(args) {
+    requireConfirm(args)
+    def itemId = args.appId
+    if (!itemId) throw new IllegalArgumentException("appId is required")
+
+    // Source resolution: exactly one of source / sourceFile / importUrl / resave (server 12942-12950).
+    def modesSet = [args.resave, args.sourceFile, args.source, args.importUrl].count { it }
+    if (modesSet == 0) throw new IllegalArgumentException("One of 'source', 'sourceFile', 'importUrl', or 'resave' is required")
+    if (modesSet > 1) throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', 'importUrl', or 'resave'")
+
+    def sourceCode = null
+    def sourceMode = null
+    def freshVersion = null
+
+    if (args.resave) {
+        sourceMode = "resave"
+        def responseText = hubGet("/app/ajax/code", [id: itemId])
+        if (!responseText) throw new IllegalArgumentException("Could not fetch current source for app ID ${itemId}")
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (parsed.status == "error" || !parsed.source) {
+            throw new IllegalArgumentException("Cannot read app ID ${itemId}: ${parsed.errorMessage ?: 'no source returned'}")
+        }
+        sourceCode = parsed.source
+        freshVersion = parsed.version
+    } else if (args.sourceFile) {
+        sourceMode = "sourceFile"
+        def bytes = downloadHubFile(args.sourceFile)
+        if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
+        sourceCode = new String(bytes, "UTF-8")
+    } else if (args.importUrl) {
+        sourceMode = "importUrl"
+        sourceCode = fetchExternal(args.importUrl)
+    } else {
+        sourceMode = "source"
+        sourceCode = args.source
+    }
+
+    // Resolve current version for the optimistic lock (server 13024-13040, simplified).
+    def currentVersion = freshVersion
+    if (currentVersion == null) {
+        try {
+            def vt = hubGet("/app/ajax/code", [id: itemId])
+            if (vt) currentVersion = (new groovy.json.JsonSlurper().parseText(vt)).version
+        } catch (Exception vErr) {
+            logDebug "adminUpdateApp: version fetch failed: ${vErr.message}"
+        }
+    }
+    if (currentVersion == null) throw new IllegalArgumentException("Could not determine current version for app ID ${itemId}. The app may not exist.")
+
+    // Self-update detection (server 13095-13110): the watchdog can be asked to deploy the MAIN
+    // server's OWN app-code class. A self-deploy of the MAIN server can't return its outcome on
+    // the call (success reloads it; a big-file failure 504s), so we stash the hub's verbatim
+    // result -- keyed on a manifest-supplied selfClassId or the args.selfUpdate flag the CI passes.
+    boolean isSelfUpdate = (args.selfUpdate == true) ||
+        (args.selfClassId != null && itemId?.toString() == args.selfClassId?.toString())
+
+    mcpAdminLog "Updating app ID ${itemId} (version ${currentVersion}, mode ${sourceMode}, sourceLength ${sourceCode.length()})"
+    try {
+        // Copied error-capture from toolUpdateItemCodeInner (server 13112-13230): read the
+        // /app/ajax/update response errorMessage synchronously.
+        def result = hubPostForm("/app/ajax/update", [id: itemId, version: currentVersion, source: sourceCode])
+        def responseData = result?.data
+        def success = false
+        def errorMsg = null
+        if (responseData) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseData.toString())
+                success = parsed.status == "success"
+                errorMsg = parsed.errorMessage
+            } catch (Exception parseErr) {
+                errorMsg = "Unexpected response format -- update may have succeeded but could not be confirmed. Check the app in the Hubitat web UI."
+            }
+        } else if (isSelfUpdate) {
+            // Self-update ONLY: /app/ajax/update reloads THIS app mid-request, so an empty/dropped
+            // response is the expected success signal (issue #237). A normal deploy (the watchdog
+            // updating the MAIN server, not itself) does NOT reload the watchdog, so an empty/null
+            // response there means the loopback POST FAILED (hubPostForm returns data:null on a thrown
+            // POST) -- it must never false-green the deploy.
+            success = true
+        } else {
+            success = false
+            errorMsg = "No/empty response from /app/ajax/update (HTTP ${result?.status}) -- the loopback POST failed (not a self-update, so an empty response is a real failure, not a reload)."
+        }
+
+        // Deploy-outcome record (generalized from the issue #237 lastSelfDeploy; persists across reloads).
+        // Stashed for EVERY app update (with appId), not just self-update: the ~1.6MB app deploy exceeds
+        // the cloud relay's response window, so CI recovers success + the verbatim compile error by polling
+        // hub_get_info.lastSelfDeploy. The watchdog is stable (deploying the MAIN server never bricks IT),
+        // so this record is always queryable -- the whole point of routing deploys through the watchdog.
+        try {
+            atomicState.lastSelfDeploy = [
+                appId: itemId?.toString(),
+                success: success,
+                error: success ? null : (errorMsg ?: "Update failed -- the hub returned an error"),
+                sourceMode: sourceMode,
+                importUrl: (args.importUrl ?: null),
+                sourceLength: sourceCode.length(),
+                at: now()
+            ]
+        } catch (Exception ignore) { /* bookkeeping must never break the deploy */ }
+
+        if (success) {
+            mcpAdminLog "App ID ${itemId} updated successfully (mode ${sourceMode})"
+            def successResult = [
+                success: true,
+                message: "App code updated successfully",
+                appId: itemId,
+                previousVersion: currentVersion,
+                sourceMode: sourceMode,
+                sourceLength: sourceCode.length()
+            ]
+            if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch)."
+            return successResult
+        } else {
+            return [
+                success: false,
+                error: errorMsg ?: "Update failed - the hub returned an error",
+                appId: itemId,
+                note: "Check the Groovy source code for syntax errors or compilation issues."
+            ]
+        }
+    } catch (Exception e) {
+        // Failure-case deploy-outcome capture (always, with appId -- see the success branch above).
+        try {
+            atomicState.lastSelfDeploy = [
+                appId: itemId?.toString(),
+                success: false,
+                error: "App update failed: ${e.message}",
+                sourceMode: sourceMode,
+                importUrl: (args.importUrl ?: null),
+                sourceLength: (sourceCode != null ? sourceCode.length() : 0),
+                at: now()
+            ]
+        } catch (Exception ignore) { }
+        log.error "adminUpdateApp: app update failed: ${e.message}"
+        return [success: false, error: "App update failed: ${e.message}"]
+    }
+}
+
+// hub_get_source: copied from toolGetSource / toolGetItemSource / toolGetLibrarySource
+// (hubitat-mcp-server.groovy). The File Manager
+// auto-save side effect (uploadHubFile of the full source) is how the backup caches main.
+def adminGetSource(args) {
+    def type = args.type
+    if (!(type in ["app", "driver", "library"])) {
+        throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
+    }
+    def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
+    if (!id) throw new IllegalArgumentException("id is required")
+    if (!id.toString().isInteger() || id.toString().toInteger() <= 0) throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
+
+    def maxChunkSize = 64000
+    def requestedOffset = args.offset ? args.offset as int : 0
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+
+    def fullSource = ""
+    def version = null
+    if (type == "library") {
+        def responseText = hubGet("/library/list/single/data/${id}", [:])
+        if (!responseText) return [success: false, error: "Empty response from hub for library ${id}"]
+        def parsed
+        try { parsed = new groovy.json.JsonSlurper().parseText(responseText) }
+        catch (Exception e) { return [success: false, error: "Failed to parse library response: ${e.message}"] }
+        if (!(parsed instanceof List) || parsed.isEmpty()) return [success: false, error: "Library ${id} not found"]
+        fullSource = parsed[0]?.source ?: ""
+        version = parsed[0]?.version
+    } else {
+        def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+        def responseText = hubGet(ajaxPath, [id: id])
+        if (!responseText) return [success: false, error: "Empty response from hub"]
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (parsed.status == "error") return [success: false, error: parsed.errorMessage ?: "Failed to get ${type} source"]
+        fullSource = parsed.source ?: ""
+        version = parsed.version
+    }
+
+    def totalLength = fullSource.length()
+    def savedToFile = null
+    if (totalLength > maxChunkSize && args.noSave != true) {
+        def sourceFileName = "mcp-source-${type}-${id}.groovy"
+        try {
+            uploadHubFile(sourceFileName, fullSource.getBytes("UTF-8"))
+            savedToFile = sourceFileName
+            logInfo "adminGetSource: saved full ${type} ID ${id} source to File Manager: ${sourceFileName} (${totalLength} chars)"
+        } catch (Exception saveErr) {
+            logInfo "adminGetSource: could not save ${type} source to File Manager: ${saveErr.message}"
+        }
+    }
+
+    def endIndex = Math.min(requestedOffset + requestedLength, totalLength)
+    def chunk = (requestedOffset < totalLength) ? fullSource.substring(requestedOffset, endIndex) : ""
+    def hasMore = endIndex < totalLength
+    def result = [
+        success: true,
+        id: id,
+        type: type,
+        source: chunk,
+        version: version,
+        totalLength: totalLength,
+        offset: requestedOffset,
+        chunkLength: chunk.length(),
+        hasMore: hasMore
+    ]
+    if (hasMore) {
+        result.nextOffset = endIndex
+        result.remainingChars = totalLength - endIndex
+        result.hint = "Call again with offset: ${endIndex} to get the next chunk."
+    }
+    if (savedToFile) result.sourceFile = savedToFile
+    return result
+}
+
+// hub_create_library: copied from toolInstallLibrary (hubitat-mcp-server.groovy).
+// POST /library/saveOrUpdateJson {id:null, source, version:null}. Adapted to hubPostJson.
+def adminCreateLibrary(args) {
+    requireConfirm(args)
+    def modesSet = [args.sourceFile, args.source, args.importUrl].count { it }
+    if (modesSet > 1) throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', or 'importUrl'")
+    def sourceCode = null
+    def sourceMode = null
+    if (args.sourceFile) {
+        sourceMode = "sourceFile"
+        def bytes = downloadHubFile(args.sourceFile)
+        if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
+        sourceCode = new String(bytes, "UTF-8")
+    } else if (args.importUrl) {
+        sourceMode = "importUrl"
+        sourceCode = fetchExternal(args.importUrl)
+    } else if (args.source) {
+        sourceMode = "source"
+        sourceCode = args.source
+    } else {
+        throw new IllegalArgumentException("One of 'source', 'sourceFile', or 'importUrl' is required")
+    }
+
+    mcpAdminLog "Installing new library (mode ${sourceMode}, sourceLength ${sourceCode.length()})"
+    try {
+        def body = groovy.json.JsonOutput.toJson([id: null, source: sourceCode, version: null])
+        def resp = hubPostJson("/library/saveOrUpdateJson", body)
+        def parsed = _parseJsonBody(resp?.data)
+        def newLibraryId = parsed?.id?.toString()
+        if (parsed?.success == false) {
+            return [success: false, error: "Library installation failed: ${parsed?.message ?: 'Hub returned failure'}",
+                    note: "Check that the source includes a valid library() definition block and has no syntax errors."]
+        }
+        if (parsed == null || !newLibraryId) {
+            def detail = parsed == null ? "empty/null response" : "response missing id field"
+            return [success: false, error: "Library install unverified: hub returned ${detail}",
+                    note: "Check the Libraries code UI to confirm. Do NOT retry without checking -- a duplicate may result."]
+        }
+        mcpAdminLog "Library installed successfully (ID ${newLibraryId}, version ${parsed?.version})"
+        return [success: true, message: "Library installed successfully", libraryId: newLibraryId,
+                version: parsed?.version, sourceMode: sourceMode, sourceLength: sourceCode.length()]
+    } catch (Exception e) {
+        log.error "adminCreateLibrary: ${e.message}"
+        return [success: false, error: "Library installation failed: ${e.message}"]
+    }
+}
+
+// hub_update_library: copied from toolUpdateLibraryCode (hubitat-mcp-server.groovy).
+// POST /library/saveOrUpdateJson {id, source, version}. Adapted to hubPostJson.
+def adminUpdateLibrary(args) {
+    requireConfirm(args)
+    def libraryId = args.libraryId
+    if (!libraryId) throw new IllegalArgumentException("libraryId is required")
+    if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
+    }
+    def modesSet = [args.resave, args.sourceFile, args.source, args.importUrl].count { it }
+    if (modesSet > 1) throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', 'importUrl', or 'resave'")
+
+    def sourceCode = null
+    def sourceMode = null
+    def freshVersion = null
+    if (args.resave) {
+        sourceMode = "resave"
+        def responseText = hubGet("/library/list/single/data/${libraryId}", [:])
+        if (!responseText) throw new IllegalArgumentException("Could not fetch current source for library ID ${libraryId}")
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (!(parsed instanceof List) || parsed.isEmpty()) throw new IllegalArgumentException("Library ID ${libraryId} not found")
+        sourceCode = parsed[0].source
+        freshVersion = parsed[0].version
+        if (!sourceCode) throw new IllegalArgumentException("Library ID ${libraryId} has no source to resave")
+    } else if (args.sourceFile) {
+        sourceMode = "sourceFile"
+        def bytes = downloadHubFile(args.sourceFile)
+        if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
+        sourceCode = new String(bytes, "UTF-8")
+    } else if (args.importUrl) {
+        sourceMode = "importUrl"
+        sourceCode = fetchExternal(args.importUrl)
+    } else if (args.source) {
+        sourceMode = "source"
+        sourceCode = args.source
+    } else {
+        throw new IllegalArgumentException("One of 'source', 'sourceFile', 'importUrl', or 'resave' is required")
+    }
+
+    // Fetch fresh version for the optimistic lock when the source path didn't provide it.
+    if (freshVersion == null) {
+        def vt = hubGet("/library/list/single/data/${libraryId}", [:])
+        if (vt) {
+            try {
+                def vp = new groovy.json.JsonSlurper().parseText(vt)
+                if (vp instanceof List && !vp.isEmpty()) freshVersion = vp[0]?.version
+            } catch (Exception vErr) { logDebug "adminUpdateLibrary: version fetch parse failed: ${vErr.message}" }
+        }
+    }
+    if (freshVersion == null) throw new IllegalArgumentException("Could not determine current version for library ID ${libraryId}. Check that the library exists.")
+
+    mcpAdminLog "Updating library ID ${libraryId} (version ${freshVersion}, mode ${sourceMode}, sourceLength ${sourceCode.length()})"
+    try {
+        def body = groovy.json.JsonOutput.toJson([id: libraryId as Integer, source: sourceCode, version: freshVersion as Integer])
+        def resp = hubPostJson("/library/saveOrUpdateJson", body)
+        def parsed = _parseJsonBody(resp?.data)
+        // Fail CLOSED: a dropped/empty loopback POST yields resp.data null -> parsed null, and a lone
+        // `parsed?.success == false` gate would fall through to success:true (null?.success == false is
+        // false). The hub returns the saved library's id + version on success; require status 200, a
+        // parsed body, no explicit failure, and an id -- mirrors adminCreateLibrary.
+        if (resp?.status != 200 || parsed == null || parsed?.success == false || parsed?.id == null) {
+            return [success: false,
+                    error: "Library update failed: ${parsed?.message ?: (resp?.status != 200 ? "hub HTTP ${resp?.status}" : 'empty/dropped hub response -- the loopback POST may have failed')}",
+                    libraryId: libraryId, note: "Check the Groovy source for syntax/compile errors; a bundle-managed library may need delete+recreate instead of in-place update."]
+        }
+        mcpAdminLog "Library ID ${libraryId} updated successfully (mode ${sourceMode})"
+        return [success: true, message: "Library code updated successfully", libraryId: libraryId,
+                previousVersion: freshVersion, newVersion: parsed?.version, sourceMode: sourceMode, sourceLength: sourceCode.length()]
+    } catch (Exception e) {
+        log.error "adminUpdateLibrary: ${e.message}"
+        return [success: false, error: "Library update failed: ${e.message}"]
+    }
+}
+
+// hub_delete_item: copied from toolDeleteItem / _deleteItemViaEndpoint / toolDeleteLibrary
+// (hubitat-mcp-server.groovy). GET delete endpoints; library uses JSON success.
+def adminDeleteItem(args) {
+    requireConfirm(args)
+    def type = args.type
+    if (!(type in ["app", "driver", "library"])) {
+        throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
+    }
+    def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
+    if (!id) throw new IllegalArgumentException("id is required")
+    if (!id.toString().isInteger() || id.toString().toInteger() <= 0) throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
+
+    if (type == "library") {
+        mcpAdminLog "Deleting library ID ${id}"
+        try {
+            def responseText = hubGet("/library/edit/deleteJson/${id}", [:])
+            def parsed = responseText ? new groovy.json.JsonSlurper().parseText(responseText) : null
+            if (parsed?.success == true) {
+                return [success: true, message: "Library deleted successfully", libraryId: id]
+            }
+            return [success: false, error: parsed?.message ?: parsed?.error ?: "Delete may have failed -- check the Libraries code UI",
+                    libraryId: id, response: responseText?.take(500)]
+        } catch (Exception e) {
+            log.error "adminDeleteItem(library): ${e.message}"
+            return [success: false, error: "Library deletion failed: ${e.message}"]
+        }
+    }
+
+    def deletePath = (type == "app") ? "/app/edit/deleteJsonSafe/" : "/driver/editor/deleteJson/"
+    mcpAdminLog "Deleting ${type} ID ${id}"
+    try {
+        def responseText = hubGet("${deletePath}${id}", [:])
+        def success = false
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                success = parsed.status?.toString() == "true"
+            } catch (Exception parseErr) {
+                success = !responseText.toLowerCase().contains("error")
+            }
+        }
+        if (success) {
+            return [success: true, message: "${type.capitalize()} deleted successfully", id: id]
+        }
+        return [success: false, error: "Delete may have failed -- check the Hubitat web UI to verify",
+                id: id, response: responseText?.take(500)]
+    } catch (Exception e) {
+        log.error "adminDeleteItem(${type}): ${e.message}"
+        return [success: false, error: "${type.capitalize()} deletion failed: ${e.message}"]
+    }
+}
+
+// hub_force_delete_app: force-delete an INSTALLED-APP INSTANCE (e.g. an RM rule) via
+// /installedapp/forcedelete/<id>/quiet -- the same path RM's "Delete Rule" button uses, bypassing
+// child/device checks. Loosely based on the server's _rmForceDeleteApp (same endpoint). Status-aware
+// via hubGetStatus: the forcedelete endpoint answers SUCCESS with a 302 redirect, so a 2xx/3xx status
+// is success while >=400 -- or no status at all, meaning the request never reached the hub (auth/
+// transport) -- is reported as success:false so the disarm sweep can warn + keep its recovery list
+// (any rule that survives is reaped by the separate post-restore --cleanup-only prefix sweep, not a
+// re-list). DISTINCT from hub_delete_item(type:'app'), which hits /app/edit/deleteJsonSafe (an Apps
+// Code CLASS, not a running instance). Used by the disarm-time deferred-native-rule sweep.
+def adminForceDeleteInstalledApp(args) {
+    requireConfirm(args)
+    def id = (args.id != null) ? args.id : args.appId
+    if (!id) throw new IllegalArgumentException("id (the installed-app instance id) is required")
+    if (!id.toString().isInteger() || id.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
+    }
+    mcpAdminLog "Force-deleting installed app instance ${id} (/installedapp/forcedelete/${id}/quiet)"
+    def resp = hubGetStatus("/installedapp/forcedelete/${id}/quiet", [:])
+    Integer st = (resp?.status != null) ? (resp.status as Integer) : null
+    // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list (a plain 2xx is
+    // also fine). >=400 -- or no status at all, meaning the request never reached the hub
+    // (auth/transport) -- is a real failure: report it so the disarm sweep warns + keeps its id list.
+    if (st == null || st >= 400) {
+        return [success: false, error: "Force-delete of installed app ${id} did not confirm (status=${st ?: 'none'}) -- endpoint error, auth failure, or the request never reached the hub.", id: id]
+    }
+    // The 302 alone is NOT proof the delete committed: the disarm sweep fires these while the hub is
+    // recompiling the restored main app, a window where admin-endpoint writes are known to commit
+    // late or strand on this firmware. Verify gone-ness via /installedapp/json/<id> (the same
+    // existence read the server's VRB delete uses: {id,...} while installed, 404/empty once gone).
+    // Only a definite "absent" confirms; "still found" or an unreadable check reports success:false
+    // so the caller keeps the id on its recovery list -- re-deleting a gone app is a harmless no-op.
+    def check = hubGetStatus("/installedapp/json/${id}", [:])
+    Integer cst = (check?.status != null) ? (check.status as Integer) : null
+    if (cst == 404 || (cst != null && cst < 400 && !(check.data?.toString()?.trim()))) {
+        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}; verified gone).", id: id]
+    }
+    if (cst != null && cst < 400) {
+        def parsed = null
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(check.data.toString())
+        } catch (Exception ignore) {
+            // An unparseable 200 (e.g. a login page) is NOT proof of absence -- fall through to keep-the-id.
+            return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check body was unparseable (auth/login page?) -- keep the id and re-delete to be safe.", id: id]
+        }
+        if ((parsed instanceof Map) && parsed.id != null) {
+            return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the app still exists (late/stranded commit) -- keep the id and re-delete.", id: id]
+        }
+        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}; verified gone).", id: id]
+    }
+    return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check could not read /installedapp/json (status=${cst ?: 'none'}) -- keep the id and re-delete to be safe.", id: id]
+}
+
+// Hub variables have NO app-facing delete API -- there is no removeGlobalVar/removeGlobalVariable
+// on the app class (an earlier revision called removeGlobalVariable, every purge failed with "No
+// signature of method", and BAT_E2E_ vars accumulated on the test hub). resources/hub2-source's
+// README records the classic hubVar wizard as the real variable-CRUD contract, so drive that.
+//
+// Resolver ported from _resolveDirectAppId (hubitat-mcp-server.groovy). Two hops max: direct ->
+// create -> configure, each ANCHORED on its path shape, because taking the first digits anywhere
+// in the Location picks up 127 from an absolute http://127.0.0.1:8080/... URL, or the app TYPE id
+// on a create/<typeId> hop -- either of which drives deleteGV/delConfirm at an unrelated app.
+private Integer findHubVariablesAppId() {
+    String path = "/installedapp/direct/hubVariables"
+    for (int hop = 1; hop <= 2; hop++) {
+        Map r = null
+        try { r = hubGetStatus(path, [:]) } catch (Exception e) { mcpAdminLog "findHubVariablesAppId: hop ${hop} GET threw ${e.message}"; return null }
+        Integer st = null
+        try { st = r?.status as Integer } catch (Exception ignore) { st = null }
+        String loc = r?.location?.toString()
+        if (st == null || st < 300 || st >= 400 || !loc) {
+            mcpAdminLog "findHubVariablesAppId: hop ${hop} ${path} status=${st} location=${loc} -- not a redirect"
+            return null
+        }
+        def cfg = (loc =~ /\/installedapp\/configure\/(\d+)/)
+        if (cfg.find()) return cfg.group(1).toInteger()
+        def create = (loc =~ /\/installedapp\/create\/(\d+)/)
+        if (create.find() && hop == 1) {
+            // Rebuild hop 2 from the captured type id rather than following the Location verbatim:
+            // normalises an absolute URL and never follows past the expected chain.
+            path = "/installedapp/create/${create.group(1)}"
+            continue
+        }
+        mcpAdminLog "findHubVariablesAppId: hop ${hop} unexpected Location ${loc}"
+        return null
+    }
+    return null
+}
+
+// One wizard button click on the hubVar page. Mirrors _rmClickAppButton's body shape from
+// hubitat-mcp-server.groovy, minus the RM-only page cache, the `version` concurrent-edit token
+// (the hubVar wizard tolerates its absence) and the >=400 throw -- this caller verifies by
+// read-back through getGlobalVar instead.
+private Map clickHubVarButton(Integer appId, String buttonName, String stateAttribute) {
+    def body = [id: appId.toString(), name: buttonName,
+                ("settings[${buttonName}]".toString()): "clicked",
+                ("${buttonName}.type".toString()): "button",
+                formAction: "update", currentPage: "hubVar",
+                pageBreadcrumbs: '["mainPage"]']
+    if (stateAttribute) body.stateAttribute = stateAttribute
+    return hubPostForm("/installedapp/btn", body)
+}
+
+// deleteGV opens the confirm prompt keyed on the variable name; delConfirm commits. The first click
+// sequence after a fresh create/edit can be dropped by the hub (a state-machine race that priming
+// alone does not reliably defeat), so the whole sequence is retried once -- the same two-attempt
+// shape hub_delete_variable uses, for the same empirically-observed reason.
+// Returns null on success, else a reason. The two click statuses are part of the reason: a 5xx
+// (or a wrong app id) used to be reported as "likely in use by a rule", sending the operator after
+// a referencing rule that did not exist.
+// `claim` is the purge sweep's claim token when this runs inside a sweep: the claim is renewed and
+// re-checked before EVERY wizard click, not only on entry. Each click is a form POST with the
+// 420-second hub timeout, and there are up to four per variable, so a helper that renewed only on
+// entry could outlive the 15-minute staleness escape and keep clicking after a newer sweep had
+// taken the claim. A null claim (a caller outside a sweep) skips the check and never touches the
+// claim stamp.
+private String deleteHubVariable(Integer appId, String varName, String claim = null) {
+    String lastClicks = "unknown"
+    for (int attempt = 0; attempt < 2; attempt++) {
+        try {
+            hubGet("/installedapp/configure/json/${appId}", [:])
+            hubGet("/installedapp/statusJson/${appId}", [:])
+        } catch (Exception ignore) { /* priming is best-effort */ }
+        Integer s1 = null, s2 = null
+        if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost to a newer sweep -- stopped before the deleteGV click (${lastClicks})"
+        try { s1 = clickHubVarButton(appId, varName, "deleteGV")?.status as Integer } catch (Exception ignore) { s1 = null }
+        if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost to a newer sweep -- stopped before the delConfirm click (deleteGV=${s1 ?: 'no response'})"
+        try { s2 = clickHubVarButton(appId, "delConfirm", null)?.status as Integer } catch (Exception ignore) { s2 = null }
+        lastClicks = "deleteGV=${s1 ?: 'no response'}, delConfirm=${s2 ?: 'no response'}"
+        boolean clicksOk = s1 != null && s1 < 400 && s2 != null && s2 < 400
+        for (int v = 0; v < 8; v++) {
+            // A THROW is not evidence of deletion -- only a clean read returning null is. Treating
+            // the exception as "gone" (which the enumerate-then-delete flow would let through
+            // silently) would report a variable purged that is still on the hub.
+            def gone = false
+            try { gone = (getGlobalVar(varName) == null) } catch (Exception ignore) { gone = false }
+            if (gone) return null
+            if (v < 7) {
+                try { pauseExecution(300) } catch (Exception ignore) { }
+            }
+        }
+        if (!clicksOk) return "hubVar wizard click(s) were not accepted (${lastClicks}) and the variable still exists"
+    }
+    return "hubVar wizard clicks were accepted (${lastClicks}) but the variable still exists after two attempts -- likely still referenced by a rule"
+}
+
+// A purge call that yielded to a sweep already running. Carries the same zero-count shape a real
+// sweep returns so a caller reading the count fields is not tripped by a missing key.
+private Map purgeNoOpResult(String prefix, String note) {
+    return [success: true, inFlight: true, prefix: prefix,
+            deletedCount: 0, failedCount: 0, deleted: [], failed: [],
+            variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: [],
+            note: note]
+}
+
+// hub_purge_e2e_artifacts: ONE-call LOCAL sweep of leftover test fixtures. Enumerates every installed-app
+// instance whose name starts with the BAT_E2E_ test prefix (via /hub2/appsList, the same read
+// adminListAppInstances uses) and force-deletes each by reusing adminForceDeleteInstalledApp's
+// forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
+// round-trip instead of N -- replacing the disarm's per-item reap loop and the post-restore
+// --cleanup-only RM sweep. Hard-scoped to the prefix (never a real app); confirm:true required.
+// SINGLE-FLIGHT LATCH + SHORT RESULT CACHE -- the same protection actAndRecord has, for the same
+// reason. This sweep takes minutes (N apps x forcedelete + verify-gone), which is far longer than
+// the ~10s cloud-relay timeout, so CI's retry-on-dropped-response fires while the FIRST sweep is
+// still running. Observed live 2026-09-01: five overlapping invocations, each re-enumerating the
+// same app list and racing on the same ids (three hit forcedelete/30839 in the same millisecond),
+// each running 11+ minutes. That pile-on is what exhausted the hub's web thread pool and wedged
+// it for 3h32m. A duplicate call now returns the in-flight marker instead of starting a sweep,
+// and a call arriving just after one finished gets the real result from the cache -- so a relay
+// drop costs CI nothing and costs the hub nothing.
+def adminPurgeE2eArtifacts(args) {
+    requireConfirm(args)
+    String prefix = (args?.prefix instanceof String && args.prefix.trim()) ? args.prefix.trim() : "BAT_E2E_"
+
+    long nowMs = now()
+    Long purgeAt = null
+    // 15-minute staleness escape: a sweep killed mid-flight (app recompile, hub restart) must not
+    // wedge the latch permanently. Matches the observed worst-case sweep of ~11.5 minutes.
+    // Read the whole claim as ONE snapshot under the claim lock: the owner clears its three keys
+    // together, so reading them separately can pair a fresh timestamp with an already-cleared
+    // owner -- and an unowned timestamp is nobody's sweep, so it covers nothing.
+    String activeClaim = null
+    String activePrefix = null
+    synchronized (PURGE_CLAIM_LOCK) {
+        try {
+            purgeAt = atomicState.purgeInFlightAt as Long
+            activeClaim = atomicState.purgeClaim?.toString()
+            activePrefix = atomicState.purgeClaimPrefix?.toString()
+        } catch (Exception ignore) { purgeAt = null }
+    }
+    if (purgeAt != null && (nowMs - purgeAt) < 900000L && activeClaim != null) {
+        // A sweep for a DIFFERENT prefix is not cover for this one. Say busy, not done.
+        if (activePrefix != null && activePrefix != prefix) {
+            return [success: false, busy: true, prefix: prefix, activePrefix: activePrefix,
+                    error: "A purge for prefix '${activePrefix}' has been running for ${((nowMs - purgeAt) / 1000) as long}s; it does not cover '${prefix}'.",
+                    note: "Retry after the running sweep completes (its results are cached for 5 minutes, so the retry will not re-run it)."]
+        }
+        mcpAdminLog "Purge already in flight (${((nowMs - purgeAt) / 1000) as long}s) -- returning the in-flight marker instead of starting a second sweep."
+        return purgeNoOpResult(prefix, "A purge started ${((nowMs - purgeAt) / 1000) as long}s ago is still running; this call was a no-op. Do NOT retry -- the running sweep covers the same prefix. The post-restore --cleanup-only sweep remains the backstop.")
+    }
+    Long cachedAt = null
+    try { cachedAt = atomicState.purgeResultAt as Long } catch (Exception ignore) { cachedAt = null }
+    if (cachedAt != null && (nowMs - cachedAt) < 300000L && atomicState.purgeResult instanceof Map
+            && atomicState.purgeResult?.prefix?.toString() == prefix) {
+        def cached = [:] + (atomicState.purgeResult as Map)
+        cached.cached = true
+        cached.note = "Result of the sweep that completed ${((nowMs - cachedAt) / 1000) as long}s ago (cached; this call did NOT re-run it). ${cached.note ?: ''}"
+        mcpAdminLog "Purge result served from cache (${((nowMs - cachedAt) / 1000) as long}s old)."
+        return cached
+    }
+    String claim = "purge-${java.util.UUID.randomUUID()}".toString()
+    boolean claimed = false
+    synchronized (PURGE_CLAIM_LOCK) {
+        Long held = null
+        String heldClaim = null
+        try { held = atomicState.purgeInFlightAt as Long; heldClaim = atomicState.purgeClaim?.toString() } catch (Exception ignore) { held = null }
+        // A stamp nobody owns is not a running sweep: the owner clears its three keys together, so
+        // a fresh timestamp with no claim is the trailing edge of a sweep that has finished. Left
+        // as a blocker it would stall every purge for 15 minutes after a normal completion.
+        if (held == null || heldClaim == null || (nowMs - held) >= 900000L) {
+            atomicState.purgeInFlightAt = nowMs
+            atomicState.purgeClaim = claim
+            atomicState.purgeClaimPrefix = prefix
+            claimed = true
+        }
+    }
+    if (!claimed) {
+        // Re-read: this is the WINNER's prefix, not the snapshot taken before the race.
+        activePrefix = atomicState.purgeClaimPrefix?.toString()
+        if (activePrefix != null && activePrefix != prefix) {
+            return [success: false, busy: true, prefix: prefix, activePrefix: activePrefix,
+                    error: "A concurrent purge for prefix '${activePrefix}' won the claim; it does not cover '${prefix}'.",
+                    note: "Retry after the running sweep completes."]
+        }
+        mcpAdminLog "Purge claim lost to a concurrent request -- yielding rather than sweeping twice."
+        return purgeNoOpResult(prefix, "A concurrent purge for the same prefix won the claim; this call was a no-op. Do NOT retry.")
+    }
+    try {
+        return purgeE2eArtifactsLocked(prefix, claim)
+    } finally {
+        // Release ONLY if the claim is still ours. If this sweep ran past the 15-minute staleness
+        // escape and a newer sweep took the claim, clearing purgeInFlightAt here would drop the
+        // NEWER sweep's marker and let a third request pile on -- the exact race the latch exists
+        // to prevent. The successor releases its own markers when it finishes.
+        synchronized (PURGE_CLAIM_LOCK) {
+            if (atomicState.purgeClaim?.toString() == claim) {
+                atomicState.purgeInFlightAt = null
+                atomicState.purgeClaim = null
+                atomicState.purgeClaimPrefix = null
+            }
+        }
+    }
+}
+
+// The 15-minute stale-claim escape must measure a sweep that STOPPED, not one that is long: a sweep
+// is one loopback call per artifact, so its length is unbounded. Renewing the stamp before every
+// destructive step keeps a live sweep's claim exclusive; a sweep that did lose its claim to the
+// escape stops rather than race the successor. Ownership check and renewal are ONE section under the
+// claim lock: split, a successor could take the claim between them and both sweeps would delete.
+private boolean renewPurgeClaim(String claim) {
+    synchronized (PURGE_CLAIM_LOCK) {
+        try {
+            // A caller with no claim (the spec seam) holds no lease, so it has none to renew:
+            // writing the stamp here would extend whatever lease IS held, including another
+            // sweep's, which is precisely what the claim exists to prevent.
+            if (claim == null) return true
+            if (atomicState.purgeClaim?.toString() != claim) return false
+            long stamp = now()
+            atomicState.purgeInFlightAt = stamp
+            // Read back: an unrenewed stamp goes stale, a successor takes the claim, and this sweep
+            // would carry on deleting alongside it believing it still owns the lease.
+            Long back = atomicState.purgeInFlightAt as Long
+            if (back != stamp) {
+                log.error "E2E Dead-Man Watchdog v3: the purge lease renewal did not persist (state holds ${back}) -- stopping this sweep rather than racing a successor."
+                return false
+            }
+            return true
+        } catch (Exception ignore) { return false }
+    }
+}
+
+// NON-PRIVATE deliberately (see probeLoopbackAlive): a private method's internal callers bypass
+// metaClass dispatch, so a spec could not stand in a sweep body -- the successor-claim test needs
+// to install a competing claim mid-sweep to prove the finally leaves it alone.
+Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
+    String raw = hubGet("/hub2/appsList", [:])
+    String noSweep = "Nothing was deleted: the hub did not answer /hub2/appsList. Confirm hub_get_info answers, then re-run hub_purge_e2e_artifacts; a repeat points at the hub's web stack, not the purge."
+    if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge", note: noSweep]
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw) }
+    catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}", note: noSweep] }
+    def targets = []
+    def recurse
+    recurse = { Map node ->
+        def d = node?.data ?: [:]
+        if ((d.name instanceof String) && d.name.startsWith(prefix) && d.id != null) {
+            targets << [id: d.id, name: d.name]
+        }
+        node?.children?.each { c -> recurse(c) }
+    }
+    (parsed?.apps ?: []).each { a -> recurse(a) }
+    mcpAdminLog "Purging ${targets.size()} ${prefix}* installed-app instance(s) locally."
+    def deleted = []
+    def failed = []
+    targets.each { t ->
+        if (!renewPurgeClaim(claim)) {
+            failed << [id: t.id, name: t.name, error: "purge claim lost to a newer sweep -- stopped before this delete"]
+            return
+        }
+        def r
+        try { r = adminForceDeleteInstalledApp([id: t.id, confirm: true]) }
+        catch (Exception e) { r = [success: false, error: e.message] }
+        if (r?.success) { deleted << [id: t.id, name: t.name] }
+        else { failed << [id: t.id, name: t.name, error: r?.error] }
+    }
+    // Variables are hub-GLOBAL, so any app can ENUMERATE them via getAllGlobalVars -- but there is
+    // no app-facing DELETE (the belief that there was is what left this leg silently broken), so
+    // removal drives the classic hubVar wizard through findHubVariablesAppId / deleteHubVariable
+    // above, the same two clicks the main server's hub_delete_variable uses. Loopback-local; no relay.
+    def varsDeleted = []
+    def varsFailed = []
+    try {
+        def allVars = getAllGlobalVars()
+        if (allVars == null) {
+            // null means the enumeration itself failed -- NOT that there are no variables. Folding
+            // it into an empty map reported a clean sweep with nothing deleted.
+            varsFailed << [name: "*", error: "getAllGlobalVars returned null -- could not enumerate hub variables, so none were purged"]
+            allVars = [:]
+        }
+        def targetVars = allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) }
+        if (targetVars) {
+            Integer hvAppId = findHubVariablesAppId()
+            if (hvAppId == null) {
+                varsFailed << [name: "*", error: "could not resolve the Hub Variables app id via /installedapp/direct/hubVariables"]
+            } else {
+                targetVars.each { vn ->
+                    if (!renewPurgeClaim(claim)) {
+                        varsFailed << [name: vn, error: "purge claim lost to a newer sweep -- stopped before this delete"]
+                        return
+                    }
+                    try {
+                        String why = deleteHubVariable(hvAppId, vn, claim)
+                        if (why == null) { varsDeleted << vn }
+                        else { varsFailed << [name: vn, error: why] }
+                    } catch (Exception e) { varsFailed << [name: vn, error: e.message] }
+                }
+            }
+        }
+    } catch (Exception e) {
+        varsFailed << [name: "*", error: "getAllGlobalVars failed: ${e.message}"]
+    }
+    mcpAdminLog "Purge complete: ${deleted.size()} app(s), ${varsDeleted.size()} variable(s) deleted; " +
+                "${failed.size()} app + ${varsFailed.size()} var failure(s)."
+    // Runtime-failure contract: a caller must not have to diff two count fields to notice the
+    // sweep failed. Aggregate what broke into a top-level error + an actionable note.
+    def problems = []
+    if (!failed.isEmpty()) problems << "${failed.size()} app(s)"
+    if (!varsFailed.isEmpty()) problems << "${varsFailed.size()} variable(s)"
+    def deviceNote = "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); the post-restore --cleanup-only sweep still reaps ${prefix} devices."
+    def result = [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
+            deletedCount: deleted.size(), failedCount: failed.size(), deleted: deleted, failed: failed,
+            variablesDeletedCount: varsDeleted.size(), variablesFailedCount: varsFailed.size(),
+            variablesDeleted: varsDeleted, variablesFailed: varsFailed,
+            note: deviceNote]
+    if (problems) {
+        result.error = "Purge of ${prefix}* completed with failures: ${problems.join(' and ')} could not be removed."
+        result.note = "Inspect the failed / variablesFailed entries for the per-item reason. A variable that will not delete is usually still referenced by a rule -- delete the rule first. Do NOT blind-retry the sweep; re-run it only after addressing the listed items. ${deviceNote}"
+    }
+    // Cache BEFORE returning so a CI retry that lost the response to a relay drop reads the real
+    // outcome rather than re-running the sweep.
+    try { atomicState.purgeResult = result; atomicState.purgeResultAt = now() } catch (Exception ignore) { }
+    return result
+}
+
+def adminSetMcpDeveloperMode(args) {
+    requireConfirm(args)
+    def id = args?.appId?.toString()
+    if (!id?.isInteger() || id.toInteger() <= 0 || args?.enabled != true) {
+        throw new IllegalArgumentException("appId must be a positive installed-app ID and enabled must be true")
+    }
+    String path = "/installedapp/configure/json/${id.toInteger()}"
+    def cfg = _parseJsonBody(hubGet(path, [:]))
+    // Only the standing MCP server may be bootstrapped; labels are user-editable.
+    if (!(cfg instanceof Map) || cfg.app?.id?.toString() != id.toInteger().toString() ||
+        cfg.app?.appType?.namespace != "mcp" || cfg.app?.appType?.name != "MCP Rule Server" ||
+        cfg.app?.version == null || cfg.configPage?.name != "mainPage") {
+        return [success: false, error: "Could not verify the MCP server's installed-app identity and settings page."]
+    }
+    if (cfg.settings?.enableDeveloperMode?.toString() == "true") {
+        return [success: true, appId: id.toInteger(), developerModeEnabled: true, changed: false]
+    }
+    mcpAdminLog "Enabling Developer Mode on MCP server instance ${id} for E2E setup"
+    def body = [id: id.toInteger().toString(), version: cfg.app.version.toString(),
+                "settings[enableDeveloperMode]": "true", "enableDeveloperMode.type": "bool",
+                currentPage: "mainPage", pageBreadcrumbs: "[]", formAction: "update"]
+    def response = hubPostForm("/installedapp/update/json", body)
+    // A lost POST response is ambiguous: the fresh setting decides whether it landed.
+    def observed = _parseJsonBody(hubGet(path, [:]))
+    if (observed instanceof Map && observed.app?.id?.toString() == id.toInteger().toString() &&
+        observed.settings?.enableDeveloperMode?.toString() == "true") {
+        return [success: true, appId: id.toInteger(), developerModeEnabled: true, changed: true]
+    }
+    return [success: false, appId: id.toInteger(),
+            error: "Developer Mode was not verified enabled after the settings POST (HTTP ${response?.status ?: 'no response'})."]
+}
+
+// hub_set_app_disabled: toggle an installed app's disabled flag (the admin UI's red-X) via
+// POST /installedapp/disable {id, disable} -- the documented Vue wire format (vue-hub2.min.js:
+// `const e={id:this.appId,disable:!0};postJsonAndCallback(...)`). Remote-management aid for the
+// test hub (e.g. parking the legacy v1 watchdog without deleting it). Verified via the
+// /installedapp/json/<id> read-back: only an observed flag flip reports success.
+def adminSetAppDisabled(args) {
+    requireConfirm(args)
+    def id = (args.appId != null) ? args.appId : args.id
+    if (id == null || !id.toString().isInteger() || id.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("appId must be a positive integer (got: '${id}')")
+    }
+    boolean disable = (args.disable == true || args.disable?.toString() == "true")
+    mcpAdminLog "Setting installed app ${id} disabled=${disable} (/installedapp/disable)"
+    def body = groovy.json.JsonOutput.toJson([id: id.toString().toInteger(), disable: disable])
+    Map resp = hubPostJson("/installedapp/disable", body)
+    Integer st = (resp?.status != null) ? (resp.status as Integer) : null
+    if (st == null || st >= 400) {
+        return [success: false, error: "POST /installedapp/disable returned status=${st ?: 'none'} for app ${id}.", appId: id]
+    }
+    // Read back the flag -- a 200 alone is not proof the flip landed.
+    def check = hubGetStatus("/installedapp/json/${id}", [:])
+    def observed = null
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(check?.data?.toString() ?: "")
+        if (parsed instanceof Map) observed = (parsed.disabled == true)
+    } catch (Exception ignore) { observed = null }
+    if (observed == disable) {
+        return [success: true, appId: id, disabled: disable, message: "App ${id} disabled flag verified ${disable}."]
+    }
+    return [success: false, appId: id, disabled: observed,
+            error: "POST accepted (HTTP ${st}) but the read-back shows disabled=${observed} (wanted ${disable})."]
+}
+
+
+// hub_get_metrics: probe-grade current metrics + the hub's own health alerts. Mirrors the main
+// server's toolGetHubPerformance current block (/hub/advanced/* reads) and _healthAlertsFromHub2
+// (/hub2/hubData), WITHOUT the CSV trend history (that stays main's). Exists so the e2e status probe
+// reads hub health through THIS always-alive endpoint instead of 504ing against a busy main app.
+def adminGetMetrics(args) {
+    def current = [:]
+    try { current.freeMemoryKB = hubGet("/hub/advanced/freeOSMemory", [:])?.trim() } catch (Exception e) { current.freeMemoryKB = "unavailable" }
+    try { current.internalTempC = hubGet("/hub/advanced/internalTempCelsius", [:])?.trim() } catch (Exception e) { current.internalTempC = "unavailable" }
+    try { current.databaseSizeKB = hubGet("/hub/advanced/databaseSize", [:])?.trim() } catch (Exception e) { current.databaseSizeKB = "unavailable" }
+    try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
+    def healthAlerts = null
+    try {
+        def raw = hubGet("/hub2/hubData", [:])
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (parsed instanceof Map) {
+            def alerts = (parsed.alerts instanceof Map) ? ([:] + parsed.alerts) : [:]
+            alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
+            healthAlerts = [safeMode: parsed.safeMode == true,
+                            active: alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort(),
+                            details: alerts]
+        }
+    } catch (Exception e) { logDebug "adminGetMetrics hubData: ${e.message}" }
+    return [current: current, healthAlerts: healthAlerts]
+}
+
+// hub_update_platform: apply the hub's pending platform update via the admin UI's own endpoints
+// (/hub/cloud/updatePlatform fires the download+install; the hub reboots itself when the install
+// completes). Test-hub maintenance tooling: keeps the test hub current without UI access, and the
+// reboot legitimately resets the platform's per-app load counters. statusOnly:true polls
+// /hub/cloud/checkUpdateStatus without confirm (read); the apply leg requires confirm=true.
+def adminUpdatePlatform(args) {
+    if (args?.statusOnly == true) {
+        def st = null
+        try { st = hubGet("/hub/cloud/checkUpdateStatus", [:]) } catch (Exception e) { return [success: false, error: "checkUpdateStatus failed: ${e.message}"] }
+        // hubGet swallows transport errors into null; that is a failed poll, not a status.
+        if (st == null) {
+            return [success: false, error: "No response from /hub/cloud/checkUpdateStatus.",
+                    note: "Loopback HTTP may be down or the hub is mid-reboot. Retry in a minute; if the hub was updating, expect it to go dark for 5-10 min, then confirm firmwareVersion via hub_get_info."]
+        }
+        return [success: true, status: st]
+    }
+    if (args?.confirm != true) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: set confirm=true to apply the platform update (downloads + installs + REBOOTS the hub). Use statusOnly:true to poll progress without confirm.")
+    }
+    def check = null
+    try { check = hubGet("/hub/cloud/checkForUpdate", [:]) } catch (Exception e) { return [success: false, error: "checkForUpdate failed: ${e.message}"] }
+    Long ourStamp = null
+    boolean windowHeld = false
+    boolean rebootInFlight = false
+    Long rebootWindow = null
+    synchronized (REBOOT_LOCK) {
+        // A reboot claimed the window moments ago and its POST may still be in flight: starting a
+        // firmware download into a hub that is going down is the mirror image of the refusal
+        // hub_reboot makes, and the two must be decided under the SAME lock or each slips past
+        // the other's check. No prior window is remembered: every exit below HOLDS the window (an
+        // update the hub may have accepted must keep later manual reboots blocked).
+        try {
+            if (atomicState.expectedDownReason?.toString() == "hub_reboot") rebootWindow = atomicState.expectedDownUntil as Long
+        } catch (Exception ignore) { rebootWindow = null }
+        if (rebootWindow != null && now() < rebootWindow) {
+            rebootInFlight = true
+        } else {
+            windowHeld = markExpectedDowntime(1500000L, "hub_update_platform")
+        }
+        try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
+    }
+    if (rebootInFlight) {
+        return [success: false, refused: true, expectedDownUntil: rebootWindow,
+                error: "a hub reboot was initiated ${((now() - (rebootWindow - 600000L)) / 1000) as long}s ago and the hub may be going down -- starting a platform update into a reboot risks a half-written install. Retry once the hub is back (hub_get_info).",
+                checkForUpdate: check]
+    }
+    if (!windowHeld) {
+        return [success: false, error: "The expected-downtime window could not be persisted, so the update was not requested. This window prevents a later manual reboot during firmware installation.",
+                note: "Retry in a minute; hub state writes fail under load. Nothing was scheduled.",
+                checkForUpdate: check]
+    }
+    def resp = null
+    Exception thrown = null
+    try { resp = hubGet("/hub/cloud/updatePlatform", [:]) } catch (Exception e) { thrown = e }
+    if (resp == null) {
+        return [success: false, updateMayHaveStarted: true, expectedDownUntil: ourStamp,
+                error: thrown != null ? "updatePlatform failed: ${thrown.message}" : "No response from /hub/cloud/updatePlatform -- whether the hub accepted the update is UNKNOWN.",
+                note: "The 25-minute downtime window is held because the update may be installing. Manual reboot requests remain blocked unless explicitly forced. Poll hub_update_platform(statusOnly:true) and hub_get_info.firmwareVersion. If you know the update did not start, hub_reboot(force:true) overrides the window.",
+                checkForUpdate: check]
+    }
+    // 25 minutes: the note below quotes 5-10 for the download+install+reboot, with headroom for a
+    // slow mirror.
+    return [success: true, checkForUpdate: check, updateResponse: resp,
+            note: "The hub downloads, installs, then reboots itself. Poll hub_update_platform(statusOnly:true) for progress; expect the endpoint to go dark during the reboot (~5-10 min total), then verify firmwareVersion via hub_get_info."]
+}
+
+// hub_get_memory_history: /hub/advanced/freeOSMemoryHistory parse, mirroring the main server's
+// toolGetMemoryHistory row shape (timestamp, freeMemoryKB, cpuLoad5min, Java heap columns).
+def adminGetMemoryHistory(args) {
+    int limit = (args?.limit != null) ? (args.limit as int) : 60
+    String raw = hubGet("/hub/advanced/freeOSMemoryHistory", [:])
+    if (!raw) return [entries: [], summary: [message: "No memory history data available"]]
+    def entries = []
+    for (line in raw.trim().split("\n")) {
+        def parts = line?.trim()?.split(",", -1)
+        if (parts == null || parts.size() < 3) continue
+        Integer memKB = null
+        try { memKB = parts[1]?.trim() as Integer } catch (Exception e) { continue }
+        def entry = [timestamp: parts[0]?.trim(), freeMemoryKB: memKB, cpuLoad5min: parts[2]?.trim()]
+        if (parts.size() >= 6) {
+            try { entry.totalJavaKB = parts[3]?.trim() as Integer } catch (Exception ignore) { }
+            try { entry.freeJavaKB = parts[4]?.trim() as Integer } catch (Exception ignore) { }
+            try { entry.directJavaKB = parts[5]?.trim() as Integer } catch (Exception ignore) { }
+        }
+        entries << entry
+    }
+    int total = entries.size()
+    if (limit > 0 && total > limit) entries = entries.subList(total - limit, total)
+    def mems = entries.collect { it.freeMemoryKB }.findAll { it != null }
+    return [entries: entries,
+            summary: [totalEntries: total,
+                      currentMemoryKB: mems ? mems[-1] : null,
+                      minMemoryKB: mems ? mems.min() : null,
+                      maxMemoryKB: mems ? mems.max() : null]]
+}
+
+// hub_get_hub_logs: most-recent hub system log entries with a level filter. Mirrors the main
+// server's /logs/past/json parse (JSON array of tab-delimited strings, oldest-first -> reversed)
+// without the since/TZ machinery -- the probe wants "newest N errors/warnings", nothing more.
+def adminGetHubLogs(args) {
+    String level = args?.level?.toString()?.toLowerCase()
+    int limit = (args?.limit != null) ? (args.limit as int) : 50
+    String raw = hubGet("/logs/past/json", [:], 30)
+    if (!raw) return [logs: [], count: 0, message: "No log data returned from hub"]
+    def arr
+    try { arr = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [logs: [], count: 0, error: "unparseable /logs/past/json: ${e.message}"] }
+    if (!(arr instanceof List)) return [logs: [], count: 0, error: "unexpected log format"]
+    def out = []
+    for (entry in arr.reverse()) {
+        def parts = entry?.toString()?.split("\t", -1)
+        if (parts == null || parts.size() < 3) continue
+        String entLevel = parts[1]?.toString()?.toLowerCase()
+        if (level && entLevel != level) continue
+        out << [name: parts[0], level: parts[1], message: parts.size() > 2 ? parts[2] : "",
+                time: parts.size() > 3 ? parts[3] : "", type: parts.size() > 4 ? parts[4] : ""]
+        if (out.size() >= limit) break
+    }
+    return [logs: out, count: out.size(), totalParsed: arr.size(), appliedFilters: [level: level, limit: limit]]
+}
+
+// hub_list_app_instances: every running app instance, flattened from /hub2/appsList with parentId --
+// mirrors the main server's instances mapping (id/name/type/disabled/user/parentId). The full
+// inventory the probe needs (RM rules, Basic Rules, Button Controllers/Rules, Visual Rules,
+// watchdogs -- every app type), readable while the main app is busy.
 def adminListAppInstances(args) {
     String raw = hubGet("/hub2/appsList", [:])
-    String noList = "Nothing was changed: the hub did not answer /hub2/appsList. Check hub health through v2 before retrying this read."
+    String noList = "Nothing was changed: the hub did not answer /hub2/appsList. Confirm hub_get_info answers, then retry."
     if (!raw) return [success: false, error: "empty response from /hub2/appsList", note: noList]
     def parsed
     try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}", note: noList] }
@@ -501,6 +1566,9 @@ def adminListAppInstances(args) {
     return [apps: flat, count: flat.size()]
 }
 
+// hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
+// (hubitat-mcp-server.groovy), incl. the NUMERIC firmware gate at 2.3.8.108 and the
+// /bundle2 vs /bundle/uploadZipFromUrl split. Adapted to hubGet/hubPostJson.
 def adminInstallBundle(args) {
     requireConfirm(args)
     def importUrl = args.importUrl
@@ -523,6 +1591,7 @@ def adminInstallBundle(args) {
     try {
         def respBody
         if (modern) {
+            // bundle2 is a GET with the url/pwd/private query (server 13577). `private` quoted (keyword).
             respBody = hubGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
         } else {
             def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
@@ -544,6 +1613,8 @@ def adminInstallBundle(args) {
     }
 }
 
+// _firmwareAtLeast: copied VERBATIM from hubitat-mcp-server.groovy (numeric
+// segment compare; missing/blank/unparseable fw -> true / assume modern).
 def _firmwareAtLeast(fw, String target) {
     if (fw == null || !fw.toString().trim()) return true
     def fwParts = fw.toString().trim().split("\\.")
@@ -559,6 +1630,7 @@ def _firmwareAtLeast(fw, String target) {
     return true
 }
 
+// _bundleResponseSucceeded: copied from hubitat-mcp-server.groovy.
 def _bundleResponseSucceeded(resp) {
     if (resp == null) return false
     if (resp instanceof Map) return resp.success == true || resp.success?.toString() == "true"
@@ -571,6 +1643,373 @@ def _bundleResponseSucceeded(resp) {
     return text.equalsIgnoreCase("true")
 }
 
+// hub_list_bundles: mirror of McpBundlesLib.toolListBundles (PR #247), adapted to hubGet. Lists the
+// installed bundle CONTAINERS (id/name/namespace), distinct from Libraries Code. Read-only. No
+// pagination -- the watchdog uses this internally (restorePackage cleanup + the disarm no-stale check)
+// and for the deploy scripts by URL swap; the test hub never has enough bundles to need paging.
+def adminListBundles(args) {
+    def result = [:]
+    try {
+        def responseText = hubGet("/hub2/userBundles", [:])
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                if (parsed instanceof List) {
+                    result.bundles = parsed.findAll { it instanceof Map }.collect { b ->
+                        [id: b.id?.toString(), name: b.name, namespace: b.namespace, "private": (b["private"] == true)]
+                    }
+                    result.count = result.bundles.size()
+                    result.source = "hub_api"
+                } else {
+                    result.bundles = []
+                    result.count = 0
+                    result.rawResponse = responseText?.take(2000)
+                    result.source = "hub_api_raw"
+                    result.note = "Response was not a JSON array."
+                }
+            } catch (Exception parseErr) {
+                result.bundles = []
+                result.count = 0
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON."
+            }
+        } else {
+            result.bundles = []
+            result.count = 0
+            result.source = "unavailable"
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        log.warn "adminListBundles: ${e.message}"
+        result.bundles = []
+        result.count = 0
+        result.source = "unavailable"
+        result.note = "Hub internal API unavailable (${e.message})."
+    }
+    return result
+}
+
+// hub_delete_bundle: mirror of McpBundlesLib.toolDeleteBundle (PR #247), adapted to hubGet. Deletes a
+// bundle CONTAINER by id (GET /bundle/delete/<id>, 302 on success), then re-lists to confirm it is
+// gone (the 302 alone is not proof). confirm:true required. restorePackage uses this to remove a PR's
+// leftover bundle so the restored hub carries only main's bundle(s).
+def adminDeleteBundle(args) {
+    requireConfirm(args)
+    def rawId = args?.bundleId
+    if (rawId == null || !rawId.toString().trim()) {
+        throw new IllegalArgumentException("bundleId is required (the numeric id from hub_list_bundles).")
+    }
+    def bundleId = rawId.toString().trim()
+    if (!(bundleId ==~ /\d+/)) {
+        throw new IllegalArgumentException("bundleId must be a positive integer (got '${bundleId.take(40)}').")
+    }
+    def before = adminListBundles([:])
+    def target = (before.bundles ?: []).find { it.id?.toString() == bundleId }
+    if (before.source == "hub_api" && !target) {
+        return [success: false, error: "No bundle with id ${bundleId} found on the hub.", bundleId: bundleId]
+    }
+    def bundleName = target?.name
+    mcpAdminLog "Deleting bundle ${bundleId} (${bundleName ?: 'name unknown'})"
+    try {
+        hubGet("/bundle/delete/${bundleId}", [:])
+    } catch (Exception e) {
+        return [success: false, error: "Bundle delete request failed: ${e.message ?: e.toString()}", bundleId: bundleId]
+    }
+    def after = adminListBundles([:])
+    if (after.source != "hub_api") {
+        return [success: false, verified: false,
+                error: "Delete request sent for bundle ${bundleId}, but removal could not be verified (list source=${after.source}).",
+                bundleId: bundleId]
+    }
+    def stillThere = (after.bundles ?: []).any { it.id?.toString() == bundleId }
+    if (stillThere) {
+        return [success: false, error: "Bundle ${bundleId} is still present after the delete request.", bundleId: bundleId]
+    }
+    return [success: true, message: "Bundle ${bundleId}${bundleName ? " ('${bundleName}')" : ''} deleted.",
+            bundleId: bundleId, bundleName: bundleName, verified: true]
+}
+
+// hub_get_info: condensed from toolGetHubInfo (hubitat-mcp-server.groovy), surfacing the
+// fields CI needs incl. the issue #237 lastSelfDeploy record with ageMs (server 7086-7090).
+def adminGetInfo(args) {
+    def hub = location?.hub
+    def info = [:]
+    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = "unavailable" }
+    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
+    try { info.name = hub?.name } catch (Exception e) { info.name = "unavailable" }
+    try { info.localIP = hub?.localIP } catch (Exception e) { info.localIP = "unavailable" }
+    try {
+        def freeMemory = hubGet("/hub/advanced/freeOSMemory", [:])
+        if (freeMemory) info.freeMemoryKB = freeMemory.trim()
+    } catch (Exception e) { info.freeMemoryKB = "unavailable" }
+    info.watchdogEndpoint = true
+    info.watchdogVersion = 3
+    info.automaticRecovery = false
+    info.packageDeployment = atomicState.packageDeployment ? adminGetPackageDeployment([requestId: atomicState.packageDeployment.requestId]) : null
+    // issue #237 self-deploy outcome (server 7086-7090): persists across reloads; add ageMs.
+    if (atomicState.lastSelfDeploy != null) {
+        def lsd = [:] + atomicState.lastSelfDeploy
+        if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
+        info.lastSelfDeploy = lsd
+    }
+    def wedge = [:]
+    try {
+        wedge.loopbackFailStreak = (atomicState.loopbackFailStreak ?: 0) as int
+        wedge.loopbackLastOkAt = atomicState.loopbackLastOkAt
+        wedge.loopbackStreakStartedAt = atomicState.loopbackStreakStartedAt
+        wedge.lastAutoRebootAt = atomicState.lastAutoRebootAt
+        if (wedge.lastAutoRebootAt instanceof Number) wedge.lastAutoRebootAgeMs = now() - (wedge.lastAutoRebootAt as long)
+        wedge.expectedDownUntil = atomicState.expectedDownUntil
+        wedge.looksWedged = hubLooksWedged()
+    } catch (Exception e) { wedge.error = e.message }
+    info.wedge = wedge
+    return info
+}
+
+// hub_list_apps: copied from toolListHubApps (hubitat-mcp-server.groovy) for
+// scope='types', else installed-apps fallback. Adapted to hubGet.
+def adminListApps(args) {
+    def endpoint = (args?.scope == "types") ? "/hub2/userAppTypes" : "/hub2/appsList"
+    def result = [:]
+    try {
+        def responseText = hubGet(endpoint, [:])
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                result.apps = parsed
+                result.count = parsed instanceof List ? parsed.size() : 0
+                result.source = "hub_api"
+            } catch (Exception parseErr) {
+                result.apps = []
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+            }
+        } else {
+            result.apps = []
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        log.warn "adminListApps: ${e.message}"
+        result.apps = []
+        result.source = "unavailable"
+        result.note = "Hub internal API unavailable (${e.message})."
+    }
+    return result
+}
+
+// hub_list_libraries: copied from toolListLibraries (hubitat-mcp-server.groovy).
+// Adapted to hubGet; projects to summaries (omits each library's source).
+def adminListLibraries(args) {
+    def result = [:]
+    try {
+        def responseText = hubGet("/hub2/userLibraries", [:])
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                if (parsed instanceof List) {
+                    result.libraries = parsed.findAll { it != null }.collect { lib ->
+                        [id: lib?.id?.toString(), name: lib?.name, namespace: lib?.namespace, version: lib?.version]
+                    }
+                    result.count = result.libraries.size()
+                    result.source = "hub_api"
+                } else {
+                    result.libraries = []
+                    result.count = 0
+                    result.rawResponse = responseText?.take(2000)
+                    result.source = "hub_api_raw"
+                    result.note = "Response was not a JSON array."
+                }
+            } catch (Exception parseErr) {
+                result.libraries = []
+                result.count = 0
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON."
+            }
+        } else {
+            result.libraries = []
+            result.count = 0
+            result.source = "unavailable"
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        log.warn "adminListLibraries: ${e.message}"
+        result.libraries = []
+        result.count = 0
+        result.source = "unavailable"
+        result.note = "Hub internal API unavailable (${e.message})."
+    }
+    return result
+}
+
+// hub_get_jobs: condensed from toolGetHubJobs (hubitat-mcp-server.groovy). Reads jobs over loopback
+// from the verified /logs/json endpoint (jobs / runningJobs / hubCommands, keyed by methodName) --
+// the same shape the main server's toolGetHubJobs consumes via _logsJsonSnapshot().
+def adminGetJobs(args) {
+    def responseText = hubGet("/logs/json", [:])
+    if (!responseText) return [error: "Empty response from hub jobs endpoint"]
+    def data
+    try { data = new groovy.json.JsonSlurper().parseText(responseText) }
+    catch (Exception e) { return [error: "Failed to parse hub jobs: ${e.message}", rawResponse: responseText?.take(500)] }
+
+    def scheduledJobs = (data?.jobs ?: []).findAll { it != null }.collect { job ->
+        [id: job?.id, name: job?.name, recurring: job?.recurring, method: job?.methodName, nextRun: job?.nextRun]
+    }
+    def runningJobs = (data?.runningJobs ?: []).findAll { it != null }.collect { job ->
+        [id: job?.id, name: job?.name, method: job?.methodName]
+    }
+    return [
+        uptime: data?.uptime,
+        scheduledJobs: [count: scheduledJobs.size(), jobs: scheduledJobs],
+        runningJobs: [count: runningJobs.size(), jobs: runningJobs],
+        hubActions: [count: (data?.hubCommands ?: []).size(), actions: data?.hubCommands ?: []]
+    ]
+}
+
+// hub_read_file: copied from toolReadFile (hubitat-mcp-server.groovy). downloadHubFile + chunk.
+def adminReadFile(args) {
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    def maxChunkSize = 60000
+    def requestedOffset = args.offset ? args.offset as int : 0
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def content
+    try {
+        def bytes = downloadHubFile(args.fileName)
+        if (bytes == null) throw new Exception("File not found in File Manager")
+        content = new String(bytes, "UTF-8")
+    } catch (Exception e) {
+        return [success: false, error: "File '${args.fileName}' could not be read: ${e.message}",
+                suggestion: "Check the file name in Hubitat > Settings > File Manager."]
+    }
+    def totalLength = content.length()
+    def endIndex = Math.min(requestedOffset + requestedLength, totalLength)
+    def chunk = (requestedOffset < totalLength) ? content.substring(requestedOffset, endIndex) : ""
+    def hasMore = endIndex < totalLength
+    def result = [success: true, fileName: args.fileName, totalLength: totalLength, offset: requestedOffset,
+                  chunkLength: chunk.length(), hasMore: hasMore, content: chunk]
+    if (hasMore) {
+        result.nextOffset = endIndex
+        result.remainingChars = totalLength - endIndex
+        result.hint = "Call again with offset: ${endIndex} to get the next chunk."
+    }
+    return result
+}
+
+// hub_write_file: copied from toolWriteFile (hubitat-mcp-server.groovy). uploadHubFile + name check.
+def adminWriteFile(args) {
+    requireConfirm(args)
+    if (!args.fileName) throw new IllegalArgumentException("fileName is required")
+    if (args.content == null) throw new IllegalArgumentException("content is required")
+    if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
+        throw new IllegalArgumentException("Invalid file name '${args.fileName}'. Only letters, numbers, hyphens, underscores, and periods; cannot start with a period.")
+    }
+    try {
+        uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
+        return [success: true, message: "File '${args.fileName}' written.", fileName: args.fileName, contentLength: args.content.length()]
+    } catch (Exception e) {
+        log.error "adminWriteFile: ${e.message}"
+        return [success: false, error: "Failed to write file '${args.fileName}': ${e.message}"]
+    }
+}
+
+// hub_create_backup: copied from toolCreateHubBackup (hubitat-mcp-server.groovy).
+// GET /hub/backupDB?fileName=latest. Records state.lastBackupTimestamp.
+// light:true = trigger the backup WITHOUT downloading the multi-MB .lzf body through this app:
+// fire /hub/backupDB asynchronously (the async client truncates the body; the hub still creates
+// the backup) and confirm via /hub/backup/statusJson instead of the binary response. The full
+// synchronous download slurps the whole backup file through the calling app's execution -- a
+// one-off load spike implicated in tripping the platform's per-app limiter ~13 min later.
+def adminCreateBackup(args) {
+    if (!args.confirm) throw new IllegalArgumentException("You must set confirm=true to create a backup.")
+    if (args.light == true) {
+        mcpAdminLog "Triggering hub backup (light mode -- async, body discarded)..."
+        try {
+            asynchttpGet("backupFired", [uri: "http://127.0.0.1:8080", path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300])
+            def backupTime = now()
+            state.lastBackupTimestamp = backupTime
+            def status = null
+            try { status = hubGet("/hub/backup/statusJson", [:]) } catch (Exception ignored) { }
+            return [success: true, mode: "light",
+                    message: "Hub backup triggered asynchronously (body not downloaded). Poll /hub/backup/statusJson via hub_get_metrics or re-read statusJson for completion.",
+                    statusJson: status?.take(300), backupTimestampEpoch: backupTime]
+        } catch (Exception e) {
+            log.error "adminCreateBackup(light): ${e.message}"
+            return [success: false, error: "Light backup trigger failed: ${e.message}"]
+        }
+    }
+    mcpAdminLog "Creating hub backup..."
+    try {
+        // hubGet swallows its own transport exception (returns null), so this try/catch alone can't see
+        // a failed backup; /hub/backupDB also returns no useful body on success, so we can't hard-fail
+        // on null without false-failing. Report it honestly as a best-effort snapshot -- this backup is
+        // a DEFENSIVE snapshot, NOT a restore prerequisite (the real restore floor is the source cache).
+        def resp = hubGet("/hub/backupDB", [fileName: "latest"])
+        def backupTime = now()
+        state.lastBackupTimestamp = backupTime
+        return [success: true, confirmed: (resp != null),
+                message: (resp != null) ? "Hub backup created" : "Hub backup triggered (no confirmation body; best-effort snapshot)",
+                backupTimestampEpoch: backupTime]
+    } catch (Exception e) {
+        log.error "adminCreateBackup: ${e.message}"
+        return [success: false, error: "Backup failed: ${e.message}"]
+    }
+}
+
+// asynchttpGet completion sink for the light-mode backup trigger: the response body (the .lzf)
+// is deliberately ignored -- the point of light mode is that this app never holds it.
+def backupFired(response, data) {
+    try { mcpAdminLog "light backup async response: status=${response?.status}" } catch (Exception ignored) { }
+}
+
+// hub_manage_variables: thin action-dispatch gateway exposing hub_get_variable / hub_set_variable
+// using the sandbox global-var API (getGlobalVar / setGlobalVar). NOTE: this is a convenience
+// read/write with a flat {action,name,value} shape; the e2e LEASE runs over $MCP_URL (the main server)
+// and uses that server's nested {tool,args} shape -- it does NOT go through this watchdog tool. Copied
+// from toolGetVariable / toolSetVariable (hubitat-mcp-server.groovy).
+def adminManageVariables(args) {
+    def action = args?.action
+    if (!action) {
+        return [tools: [
+            [name: "hub_get_variable", annotations: [title: "Get Variable", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [name: [type: "string", description: "Hub variable name."]], required: ["name"]], description: "Read a hub variable by name."],
+            [name: "hub_set_variable", annotations: [title: "Set Variable", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [name: [type: "string", description: "Hub variable name."], value: [description: "New value; must match the variable's declared type."], confirm: [type: "boolean", description: "Must be true."]], required: ["name", "value", "confirm"]], description: "Set a hub variable's value (write)."]
+        ]]
+    }
+    def name = args?.name
+    switch (action) {
+        case "hub_get_variable":
+        case "get":
+            if (!name) throw new IllegalArgumentException("name is required")
+            def hubVar = null
+            try { hubVar = getGlobalVar(name) } catch (Exception e) { logDebug "getGlobalVar('${name}') threw: ${e.message}" }
+            if (hubVar != null) {
+                return [name: name, value: hubVar.value, type: hubVar.type, source: "hub"]
+            }
+            throw new IllegalArgumentException("Variable not found: ${name}")
+        case "hub_set_variable":
+        case "set":
+            requireConfirm(args)
+            if (!name) throw new IllegalArgumentException("name is required")
+            try {
+                if (setGlobalVar(name, args.value)) {
+                    return [success: true, name: name, value: args.value, source: "hub"]
+                }
+            } catch (Exception e) { logDebug "setGlobalVar('${name}') threw: ${e.message}" }
+            return [success: false, name: name,
+                    error: "Variable '${name}' could not be set. Hub variables must exist before setGlobalVar can assign them (create it in the Hub Variables UI)."]
+        default:
+            throw new IllegalArgumentException("Unknown variable action: ${action}. Use hub_get_variable or hub_set_variable.")
+    }
+}
+
+// ==================== EXTERNAL FETCH (importUrl) ====================
+//
+// fetchExternal: copies _fetchSourceFromUrl (hubitat-mcp-server.groovy) +
+// _httpFetchUrl (8981-9003) VERBATIM in behaviour. httpGet [uri, textParser:true, timeout:60],
+// NO ignoreSSLIssues (external cert validation -- this is a hub-side fetch of executable code,
+// so the trusted-CA handshake is the floor; self-signed / MITM-d URLs fail). Validates
+// scheme / status / body.
 def fetchExternal(urlArg) {
     if (urlArg == null) throw new IllegalArgumentException("importUrl is required")
     if (!(urlArg instanceof String)) throw new IllegalArgumentException("importUrl must be a String")
@@ -583,6 +2022,7 @@ def fetchExternal(urlArg) {
     try {
         resp = _httpFetchUrl(url)
     } catch (Exception e) {
+        // e.message can be null on SSL/socket exceptions; toString() always returns something.
         def cause = e.toString()
         log.error "fetchExternal ${url}: ${cause}"
         throw new IllegalArgumentException("importUrl fetch failed: ${cause}")
@@ -596,6 +2036,8 @@ def fetchExternal(urlArg) {
     return body
 }
 
+// _httpFetchUrl: copied VERBATIM from hubitat-mcp-server.groovy.
+// NO ignoreSSLIssues -- external cert validation. Body read failures re-thrown, not swallowed.
 private Map _httpFetchUrl(String url) {
     def status = null
     def body = null
@@ -615,24 +2057,72 @@ private Map _httpFetchUrl(String url) {
     return [status: status, body: body, contentType: contentType]
 }
 
-def getAdminToolDefinitions() {
+// ==================== ADMIN TOOL DEFINITIONS (tools/list) ====================
+//
+// Shared deployment tools retain the main server names; watchdog-only maintenance tools are included.
+def getManualToolDefinitions() {
     return [
-        [name: "hub_update_package", annotations: [title: "Deploy MCP Package", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true],
-         description: "Start one background repair of the existing MCP package at an immutable commit. Manual E2E-hub probe only: reserve the hub, verify MCP, v2, and v3 endpoints, back up, and disarm recovery first. Holds further v3 deployments until explicit endpoint verification. V2 remains independent. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
-         inputSchema: [type: "object", properties: [requestId: [type: "string"], ref: [type: "string", description: "Full 40-character commit SHA."],
-             libraries: [type: "array", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
-             confirm: [type: "boolean"]], required: ["requestId", "ref", "libraries", "confirm"]]],
-        [name: "hub_get_package_deployment", annotations: [title: "Get Package Deployment", readOnlyHint: true, idempotentHint: true, openWorldHint: false],
-         description: "Read persisted package stages, elapsed time, errors, and safety hold without contacting hub HTTP. A stopped or missing operation never authorizes replaying the install.",
-         inputSchema: [type: "object", properties: [requestId: [type: "string"]], required: ["requestId"]]],
-        [name: "hub_set_package_deployment", annotations: [title: "Release Package Deployment", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false],
-         description: "Release a package safety hold after verifying original MCP, v2, and v3 endpoints/tokens and unchanged app instances. Rechecks code hashes before completing. Explicit abandon:true may release a stopped job after operator recovery; use only after every endpoint is healthy. confirm:true and endpointVerified:true required.",
-         inputSchema: [type: "object", properties: [requestId: [type: "string"], endpointVerified: [type: "boolean"], abandon: [type: "boolean"],
-             confirm: [type: "boolean"]], required: ["requestId", "endpointVerified", "confirm"]]],
+        [name: "hub_set_mcp_developer_mode", annotations: [title: "Enable MCP Developer Mode", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false],
+         description: "Enable Developer Mode on the test hub's MCP server instance for E2E setup. Verifies the app code identity and reads the setting back. Only enabled:true is accepted; confirm:true required.",
+         inputSchema: [type: "object", properties: [appId: [type: "string"], enabled: [type: "boolean", enum: [true]], confirm: [type: "boolean"]], required: ["appId", "enabled", "confirm"]]],
+        [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required.",
+         inputSchema: [type: "object", properties: [
+            appId: [type: "string", description: "Apps Code CLASS id to update."],
+            source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"],
+            selfUpdate: [type: "boolean", description: "Set true when deploying the MAIN MCP server's own app-code class so the issue #237 lastSelfDeploy outcome is captured."],
+            selfClassId: [type: "string", description: "The MAIN server's own Apps Code class id; if it matches appId, the #237 self-deploy capture arms."],
+            confirm: [type: "boolean"]], required: ["appId", "confirm"]]],
+        [name: "hub_get_source", annotations: [title: "Get Source", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read app/driver/library source (chunked); auto-saves the full source to File Manager so a restore can read it. The auto-save fires only for sources over 64,000 characters, and noSave:true skips it (the deploy probes pass it so verification does not overwrite a saved recovery source).",
+         inputSchema: [type: "object", properties: [
+            type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"],
+            offset: [type: "integer"], length: [type: "integer"]], required: ["type", "id"]]],
+        [name: "hub_create_library", annotations: [title: "Create Library", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true], description: "Install a new library. One of source/sourceFile/importUrl; confirm:true required.",
+         inputSchema: [type: "object", properties: [
+            source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], confirm: [type: "boolean"]], required: ["confirm"]]],
+        [name: "hub_update_library", annotations: [title: "Update Library", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an existing library. One of source/sourceFile/importUrl/resave; confirm:true required.",
+         inputSchema: [type: "object", properties: [
+            libraryId: [type: "string"], source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"], confirm: [type: "boolean"]],
+            required: ["libraryId", "confirm"]]],
+        [name: "hub_delete_item", annotations: [title: "Delete Item", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete an app/driver/library by id. confirm:true required.",
+         inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
+        [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
+         inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
+        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
+         inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
+        [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
+         inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
+        [name: "hub_get_metrics", annotations: [title: "Get Metrics", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
+        [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. Reboot is manual only; no automatic recovery is scheduled. Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."], force: [type: "boolean", description: "Reboot even while a platform update the hub accepted is still installing (refused otherwise)."]], required: ["confirm"]]],
+        [name: "hub_update_platform", annotations: [title: "Update Platform", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true], description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
+        [name: "hub_get_memory_history", annotations: [title: "Get Memory History", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
+         inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
+        [name: "hub_get_hub_logs", annotations: [title: "Get Hub Logs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
+         inputSchema: [type: "object", properties: [level: [type: "string"], limit: [type: "integer"]]]],
         [name: "hub_list_app_instances", annotations: [title: "List App Instances", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Every running app INSTANCE (flattened /hub2/appsList with parentId) -- the full app inventory. DISTINCT from hub_list_apps (Apps Code CLASSES, which resolve_class_id depends on). Read-only."],
+        [name: "hub_install_bundle", annotations: [title: "Install Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
+         inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
+        [name: "hub_list_bundles", annotations: [title: "List Bundles", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List installed code bundle containers (id/name/namespace). Read-only.",
+         inputSchema: [type: "object", properties: [:]]],
+        [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
+         inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
+        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Hub model/firmware/memory, the lastSelfDeploy record (with ageMs), package deployment, and diagnostic loopback health. No automatic recovery."],
+        [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List Apps Code types (scope='types') or installed apps.",
+         inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],
+        [name: "hub_list_libraries", annotations: [title: "List Libraries", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List libraries (id/name/namespace/version summaries)."],
+        [name: "hub_get_jobs", annotations: [title: "Get Jobs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List scheduled + running hub jobs."],
+        [name: "hub_read_file", annotations: [title: "Read File", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read a File Manager file (chunked).",
+         inputSchema: [type: "object", properties: [fileName: [type: "string"], offset: [type: "integer"], length: [type: "integer"]], required: ["fileName"]]],
+        [name: "hub_write_file", annotations: [title: "Write File", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Write a File Manager file. confirm:true required.",
+         inputSchema: [type: "object", properties: [fileName: [type: "string"], content: [type: "string"], confirm: [type: "boolean"]], required: ["fileName", "content", "confirm"]]],
+        [name: "hub_create_backup", annotations: [title: "Create Backup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false], description: "Trigger a hub DB backup. confirm:true required.",
+         inputSchema: [type: "object", properties: [confirm: [type: "boolean"]], required: ["confirm"]]],
+        [name: "hub_manage_variables", annotations: [title: "Manage Variables", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Read/set hub variables for the lease (hub_get_variable / hub_set_variable). Call with no action to list sub-tools.",
+         inputSchema: [type: "object", properties: [action: [type: "string", enum: ["hub_get_variable", "hub_set_variable"]], name: [type: "string"], value: [type: "string"], confirm: [type: "boolean"]]]]
     ]
 }
 
+// Parse a loopback POST response body (String) into a Map/List. hubPostJson returns [status,data];
+// data is the raw body String. Mirrors hubInternalPostJson's parse step (server 9270-9280).
 def _parseJsonBody(data) {
     if (data == null) return null
     if (data instanceof Map || data instanceof List) return data
@@ -640,17 +2130,7 @@ def _parseJsonBody(data) {
     catch (Exception e) { log.error "_parseJsonBody: response not JSON: ${data.toString()?.take(200)}"; return null }
 }
 
-Map readFlag() {
-    String txt = readHubFileText("e2e-deadman-v2.json")
-    if (txt == null) return null
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(txt)
-        if (!(parsed instanceof Map)) { log.error "readFlag: flag JSON is not a JSON object -- ignoring."; return null }
-        return (Map) parsed
-    }
-    catch (Exception e) { log.error "readFlag: flag is not valid JSON: ${e.message}"; return null }
-}
-
+// ---- flag file IO (File Manager, hub-local) ----
 String readHubFileText(String name) {
     try {
         def bytes = downloadHubFile(name)
@@ -662,19 +2142,28 @@ String readHubFileText(String name) {
     }
 }
 
+// ---- minimal hub-internal loopback (mirrors the main app's _hubRequest, trimmed) ----
 String hubGet(String path, Map query, int timeoutSec = 30) {
+    // timeoutSec defaults to 30 (fast loopback reads); the bundle-install GET passes ~300, since the
+    // hub fetches + unpacks the zip server-side and that can exceed 30s (matches the main server's
+    // 300s bundle timeout).
     def params = [uri: "http://127.0.0.1:8080", path: path, query: query,
                   textParser: true, ignoreSSLIssues: true, timeout: timeoutSec]
     def cookie = secCookie()
     if (cookie) params.headers = [Cookie: cookie]
     String out = null
-    try { httpGet(params) { resp -> out = respText(resp) } }
+    try { httpGet(params) { resp -> out = respText(resp) }; noteLoopback(true) }
     catch (Exception e) {
+        noteLoopback(httpStatusOf(e) != null)
         log.error "hubGet ${path}: ${e.message}"
     }
     return out
 }
 
+// The response status carried on a thrown Hubitat HTTP exception, or null on a real transport
+// failure. Mirrors the e.response.status capture hubGetStatus already does. Non-private so specs
+// can exercise it directly -- the harness supplies httpGet/httpPost, so the surrounding helpers'
+// catch paths are not otherwise reachable from a test.
 Integer httpStatusOf(Exception e) {
     try {
         def resp = e.response
@@ -682,10 +2171,250 @@ Integer httpStatusOf(Exception e) {
     } catch (Exception ignore) { return null }
 }
 
+// ---- wedge detection ------------------------------------------------------
+// Loopback reads to 127.0.0.1:8080 normally answer in milliseconds. When the platform's web
+// thread pool is exhausted -- the failure mode that concurrent purges + restores produce, see the
+// single-flight latch note on actAndRecord -- EVERY loopback read starts returning "Read timed
+// out" and the hub stops serving its own admin UI. Observed live 2026-09-01: wedged 06:01, still
+// dead at 09:33, recovered only by a manual power cycle. Nothing in-process recovers from it, so
+// the watchdog has to be able to SEE it. Track consecutive loopback failures plus the last
+// success so "one flaky read" is distinguishable from "the hub is gone".
+private void noteLoopback(boolean ok) {
+    synchronized (LOOPBACK_LOCK) {
+        try {
+            int prior = (atomicState.loopbackFailStreak ?: 0) as int
+            if (!ok) {
+                // Stamp when THIS streak began so hubLooksWedged has a baseline even if the
+                // watchdog has never seen a successful loopback call.
+                if (prior == 0) atomicState.loopbackStreakStartedAt = now()
+                // Past the threshold the count no longer matters (the start stamp says how long
+                // the hub has been dark), so stop writing it: a purge sweep on a wedged hub makes
+                // 150+ failing calls, and each write here would be a DB write from the app whose
+                // job is to keep the hub unloaded.
+                if (prior < WEDGE_STREAK_MIN) atomicState.loopbackFailStreak = prior + 1
+                return
+            }
+            // Every atomicState write is a DB write, and a purge sweep makes 150+ loopback calls.
+            // The success path is the steady state, so it writes only when something CHANGED: a
+            // streak to clear, or a lastOk older than 30s. That keeps the bookkeeping at ~2 writes
+            // a minute on a healthy hub instead of one per call on the app whose job is to keep
+            // the hub unloaded.
+            if (prior != 0) {
+                atomicState.loopbackFailStreak = 0
+                atomicState.loopbackStreakStartedAt = null
+            }
+            Long lastOk = null
+            try { lastOk = atomicState.loopbackLastOkAt as Long } catch (Exception ignore) { lastOk = null }
+            long nowMs = now()
+            if (lastOk == null || (nowMs - lastOk) > 30000L) atomicState.loopbackLastOkAt = nowMs
+        } catch (Exception ignore) { /* never let bookkeeping break a hub call */ }
+    }
+}
+
+// Both conditions are required on purpose. The streak alone fires on a burst of slow reads from a
+// busy-but-alive hub; the silence window alone fires on an idle watchdog that simply made no
+// calls. Together they describe only the observed wedge: many consecutive failures AND no
+// successful loopback read for minutes.
+private boolean hubLooksWedged() {
+    // Under the lock the success path writes: the streak and its baseline are two atomicState keys
+    // and noteLoopback updates them together, so reading them outside it can pair a stale streak
+    // with a stale baseline and call a hub that just answered wedged.
+    synchronized (LOOPBACK_LOCK) {
+    try {
+        int streak = (atomicState.loopbackFailStreak ?: 0) as int
+        if (streak < WEDGE_STREAK_MIN) return false
+        // Fall back to the FIRST failure of the current streak when there has never been a success.
+        // A hub already wedged when the watchdog started (or restarted into a wedged hub) has no
+        // lastOk at all -- returning false there hid a stalled hub in exactly the case this check exists
+        // for, leaving the app to tick silently forever the way it did on 2026-09-01.
+        Long baseline = (atomicState.loopbackLastOkAt ?: atomicState.loopbackStreakStartedAt) as Long
+        if (baseline == null) return false
+        return (now() - baseline) > 240000L
+    } catch (Exception ignore) { return false }
+    }
+}
+
+// One cheap read for explicit liveness diagnostics. Routed
+// through hubGetStatus so a success updates the wedge counters as a side effect.
+// NON-PRIVATE deliberately: a private method's internal callers bypass metaClass dispatch, so a
+// spec could not override it and the reboot tests would silently pass on the real implementation
+// instead of the stub -- which is exactly how they first passed by accident.
+def probeLoopbackAlive() {
+    // hubGetStatus, NOT hubGet: hubGet returns null on ANY exception, and Hubitat THROWS on a
+    // served 4xx/5xx -- so a hub answering 404 on this endpoint (a firmware that moved it, say)
+    // would read as DEAD and get rebooted. The question here is only "did the web stack serve
+    // us", so any status at all is a live hub; only a null status is a dead one.
+    try { return hubGetStatus("/hub/advanced/freeOSMemory", [:], 10)?.status != null }
+    catch (Exception ignore) { return false }
+}
+
+private boolean markExpectedDowntime(long ms, String reason) {
+    // Returns whether the window is actually READABLE afterwards. Every atomicState write can fail
+    // under hub load, and this one is a safety window: a caller that goes on to reboot or start a
+    // platform update believing it is suppressed, when it is not, is the failure this guards.
+    Long priorUntil = null
+    String priorReason = null
+    try { priorUntil = atomicState.expectedDownUntil as Long; priorReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { priorUntil = null }
+    try {
+        long until = now() + ms
+        atomicState.expectedDownUntil = until
+        atomicState.expectedDownReason = reason
+        // The EXACT values, not merely non-null: a stale window left by an earlier action reads back
+        // non-null, so a null-check would accept a dropped write and report a suppression that does
+        // not exist. The reason matters as much as the deadline -- hub_reboot's refusal keys on it.
+        Long readBack = atomicState.expectedDownUntil as Long
+        String reasonBack = atomicState.expectedDownReason?.toString()
+        if (readBack != until || reasonBack != reason) {
+            // Put the pair back the way it was. The reason is written before the deadline is
+            // verified, so a half-landed claim can leave OUR reason sitting on the PRIOR caller's
+            // still-open window -- and a later hub_reboot would then refuse itself, citing a
+            // platform update that was never requested.
+            try {
+                atomicState.expectedDownUntil = priorUntil
+                atomicState.expectedDownReason = priorReason
+            } catch (Exception ignore) { }
+            log.error "E2E Dead-Man Watchdog v3: the expected-downtime window (${reason}) did not persist -- state holds ${readBack}/${reasonBack}. Later reboot requests cannot rely on this window."
+            return false
+        }
+        mcpAdminLog "Expecting the hub to be unreachable for up to ${(ms / 60000) as long} min (${reason}); manual reboot requests respect this window."
+        return true
+    } catch (Exception e) {
+        try {
+            atomicState.expectedDownUntil = priorUntil
+            atomicState.expectedDownReason = priorReason
+        } catch (Exception ignore) { }
+        log.error "E2E Dead-Man Watchdog v3: could not persist the expected-downtime window (${reason}): ${e.message}"
+        return false
+    }
+}
+
+// Give a claimed downtime window back when the request it covered did not land -- only if the
+// stamp is still ours, so a window a later caller claimed in the meantime is left alone.
+private boolean releaseExpectedDowntime(Long ourStamp, Long priorWindow, String priorReason) {
+    // Compare-and-restore under the SAME lock every claim takes, or a successor that stamped its
+    // own window between the read and the write here has that window silently erased.
+    synchronized (REBOOT_LOCK) {
+    try {
+        Long current = atomicState.expectedDownUntil as Long
+        if (current == ourStamp) {
+            // Restore the REASON with the window: leaving ours behind on someone else's window
+            // would mislabel it -- a platform-update window relabelled "hub_reboot" would stop
+            // refusing the reboots it exists to refuse.
+            atomicState.expectedDownUntil = priorWindow
+            atomicState.expectedDownReason = priorWindow == null ? null : priorReason
+            Long back = atomicState.expectedDownUntil as Long
+            return back == priorWindow
+        }
+        return true      // someone else's window: correctly left alone
+    } catch (Exception e) {
+        log.error "E2E Dead-Man Watchdog v3: could not release the expected-downtime window: ${e.message}"
+        return false
+    }
+    }
+}
+
+def adminRebootHub(args) {
+    requireConfirm(args)
+    // A platform update the hub accepted is downloading and installing for up to 25 minutes; a
+    // reboot in that window can interrupt the install. Refuse unless the caller forces it.
+    // Read the window, decide, and claim it in ONE step under the lock every claimant takes:
+    // checking outside it and stamping after lets a platform update slip in between, and the
+    // reboot then overwrites the window it was supposed to respect and POSTs into the install.
+    // The prior window is remembered for the REJECTED path only -- a POST the hub answered proves
+    // nothing rebooted, so its window goes back. An unanswered POST keeps ours (see below).
+    Long updateWindow = null
+    String windowReason = null
+    Long priorWindow = null
+    String priorReason = null
+    Long ourStamp = null
+    boolean refuse = false
+    boolean windowHeld = false
+    synchronized (REBOOT_LOCK) {
+        try { updateWindow = atomicState.expectedDownUntil as Long; windowReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { updateWindow = null }
+        if (windowReason == "hub_update_platform" && updateWindow != null && now() < updateWindow && args?.force != true) {
+            refuse = true
+        } else {
+            priorWindow = updateWindow
+            priorReason = windowReason
+            // Before the POST: once it lands the hub may go before we get to run again.
+            windowHeld = markExpectedDowntime(600000L, "hub_reboot")
+            try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
+        }
+    }
+    if (refuse) {
+        return [success: false, refused: true, expectedDownUntil: updateWindow,
+                error: "a platform update was accepted ${((now() - (updateWindow - 1500000L)) / 1000) as long}s ago and the hub is downloading/installing it -- a reboot now could interrupt the install. Pass force:true to reboot anyway."]
+    }
+    mcpAdminLog "Rebooting the hub (POST /hub/reboot)."
+    def resp = hubPostForm("/hub/reboot", [:])
+    Integer st = null
+    try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
+    if (st != null && st >= 200 && st < 400) {
+        def ok = [success: true, status: st,
+                  message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
+                  response: resp?.data?.toString()?.take(200)]
+        if (!windowHeld) {
+            ok.windowPersisted = false
+            ok.note = "The reboot landed, but its expected-downtime window could not be recorded."
+        }
+        return ok
+    }
+    if (st == null) {
+        // AMBIGUOUS: a hub that accepted the reboot goes down mid-response, so "no status" is the
+        // signature of a reboot that LANDED as much as of one that never did. Keep the window --
+        // releasing it can encourage a second reboot while the hub is already restarting, and the
+        // caller to retry a reboot that already happened.
+        return [success: false, ambiguous: true, status: null, expectedDownUntil: ourStamp,
+                error: "reboot POST got no response from the hub -- whether it landed is UNKNOWN (a hub that accepted it goes down before answering).",
+                note: "The expected-downtime window remains recorded; do not repeat the reboot. Check hub_get_info in a few minutes: a rising uptime means it rebooted. If loopback HTTP is wedged the POST never landed and the hub needs a physical power cycle."]
+    }
+    boolean released = releaseExpectedDowntime(ourStamp, priorWindow, priorReason)
+    return [success: false, status: st,
+            error: "reboot POST returned status ${st}",
+            windowReleased: released,
+            note: released ? "The hub answered, so it did not reboot; the downtime window was released."
+                           : "The hub answered, so it did not reboot, but the downtime window could NOT be cleared -- it remains recorded until it expires."]
+}
+
+// Status-aware loopback GET. Unlike hubGet (text body, swallows every exception -> null), this
+// returns [status, location, data] and treats a 3xx the way the hub editor does: endpoints like
+// /installedapp/forcedelete answer SUCCESS with a 302 redirect, which Hubitat's httpGet THROWS on
+// when followRedirects:false. Mirrors hubitat-mcp-server.groovy _hubRequest(handle3xx) -- the
+// proven sandbox-safe e.response.status capture. status stays null only on a real transport failure.
+Map hubGetStatus(String path, Map query, int timeoutSec = 30) {
+    def params = [uri: "http://127.0.0.1:8080", path: path, query: query,
+                  textParser: true, ignoreSSLIssues: true, followRedirects: false, timeout: timeoutSec]
+    def cookie = secCookie()
+    if (cookie) params.headers = [Cookie: cookie]
+    Map out = [status: null, location: null, data: null]
+    try {
+        httpGet(params) { resp -> out = [status: resp.status, location: resp.headers?."Location"?.toString(), data: respText(resp)] }
+    } catch (Exception e) {
+        def resp = null
+        try { resp = e.response } catch (Exception ignore) { resp = null }
+        Integer st = null
+        try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
+        if (st != null) {
+            def loc = null
+            try { loc = resp.headers?."Location"?.toString() } catch (Exception ignore) { loc = null }
+            out = [status: st, location: loc, data: null]
+        } else {
+            log.error "hubGetStatus ${path}: ${e.message}"
+        }
+    }
+    // A status of any kind (incl. the 302 the forcedelete endpoints answer with) means the web
+    // stack served us; only a null status is the wedge signature.
+    noteLoopback(out.status != null)
+    return out
+}
+
+private int hubPostTimeoutSec(String path) { path == "/hub/reboot" ? 20 : 420 }
+
 Map hubPostForm(String path, Map body) {
+    // 420s: restoring the ~1.6MB MCP server source is a large form POST that can be slow.
     def params = [uri: "http://127.0.0.1:8080", path: path, body: body,
                   requestContentType: "application/x-www-form-urlencoded",
-                  textParser: true, ignoreSSLIssues: true, timeout: 420]
+                  textParser: true, ignoreSSLIssues: true, timeout: hubPostTimeoutSec(path)]
     def headers = [Connection: "keep-alive"]
     def cookie = secCookie()
     if (cookie) headers.Cookie = cookie
@@ -693,13 +2422,18 @@ Map hubPostForm(String path, Map body) {
     Map out = [status: null, data: null]
     try { httpPost(params) { resp -> out = [status: resp.status, data: respText(resp)] } }
     catch (Exception e) {
+        // Same as hubGet: a thrown 4xx/5xx still means the hub served us. Keep the status so the
+        // caller sees it AND so the wedge streak is not inflated by an answered error.
         Integer st = httpStatusOf(e)
         if (st != null) out = [status: st, data: null]
         log.error "hubPostForm ${path}: ${e.message}"
     }
+    noteLoopback(out.status != null)
     return out
 }
 
+// noteLoopback here too: without it a watchdog doing mostly JSON POSTs could accumulate a false
+// failure streak from the other helpers and trip the wedge detector while the hub is answering.
 Map hubPostJson(String path, String jsonBody) {
     def params = [uri: "http://127.0.0.1:8080", path: path, body: jsonBody,
                   requestContentType: "application/json",
@@ -715,6 +2449,7 @@ Map hubPostJson(String path, String jsonBody) {
         if (st != null) out = [status: st, data: null]
         log.error "hubPostJson ${path}: ${e.message}"
     }
+    noteLoopback(out.status != null)
     return out
 }
 
@@ -727,6 +2462,7 @@ String respText(resp) {
     } catch (Exception e) { log.error "respText: ${e.message}"; return null }
 }
 
+// Hub Security cookie (only when this hub has Hub Security on). Cached in atomicState.
 String secCookie() {
     if (settings?.hubSecurityEnabled != true) return null
     if (!settings?.hubSecurityUser || !settings?.hubSecurityPassword) return null
@@ -738,6 +2474,8 @@ String secCookie() {
         httpPost([uri: "http://127.0.0.1:8080", path: "/login",
                   body: [username: settings?.hubSecurityUser, password: settings?.hubSecurityPassword],
                   textParser: true, ignoreSSLIssues: true]) { resp ->
+            // Set-Cookie may be a String or, when several cookies are set, a List -- normalize first
+            // (calling .split on a List throws MissingMethodException).
             def sc = resp?.headers?.'Set-Cookie'
             if (sc instanceof List) { sc = sc ? sc[0] : null }
             cookie = sc?.toString()?.split(';')?.getAt(0)
@@ -747,6 +2485,7 @@ String secCookie() {
     return cookie
 }
 
-void mcpAdminLog(String m) { logInfo m }
-void logInfo(String m) { log.info "[watchdog-v3] ${m}" }
-void logDebug(String m) { if (settings?.debugLogging == true) log.debug "[watchdog-v3] ${m}" }
+// ---- helpers ----
+void mcpAdminLog(String m) { logInfo "[mcp-admin] ${m}" }
+void logInfo(String m)  { log.info  "[watchdog-v3] ${m}" }
+void logDebug(String m) { if (settings?.debugLogging != false) log.debug "[watchdog-v3] ${m}" }

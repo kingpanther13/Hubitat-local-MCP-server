@@ -1,62 +1,82 @@
-# Experimental watchdog v3 package deployment
+# Watchdog v3 manual administration and package deployment
 
-Install `e2e-deadman-watchdog-v3.groovy` as a **new Apps Code class and app instance**
-on the E2E hub. It has its own OAuth endpoint. Keep watchdog v2 installed and its
-source, instance, token, settings, and GitHub secret unchanged.
+V3 is intended to replace v2's manual administration surface. It exposes all 26
+v2 tools plus package start, persisted status, and explicit hold release. Keep
+v2's source, instance, token, settings, and GitHub secret unchanged while v3 is
+being validated. This PR does not switch the E2E workflows to v3.
 
-V3 offers a background package update with persisted stage messages. It installs
-the pinned libraries bundle, then saves the existing MCP child and parent code
-classes. It preserves their code IDs, running instances, and OAuth settings.
-Status reports the current component, elapsed time, and bounded stage history.
-It cannot report compiler percentages or internal Hubitat progress.
+## Manual capabilities
 
-## Isolation and recovery
+V3 retains app/source and library management, bundle management, file access,
+hub backups, hub variables, Developer Mode setup, fixture cleanup, diagnostics,
+and explicitly requested reboot/platform updates. Existing tool names and input
+schemas are preserved. The source-read tool still autosaves large sources unless
+`noSave:true` is supplied.
 
-V3 exposes package start/status/release and read-only app inventory. It has no
-reboot, disable, delete, self-update, or autonomous restore path. V2 remains the
-independent recovery controller; v3's hold only prevents further v3 deployments.
+V3 has no deadman timer, flag-driven restoration, automatic reboot, or scheduled
+health polling. Writing a file never starts recovery. Initialization preserves
+an existing OAuth token and schedules no work. Recovery happens only when a
+caller explicitly deploys a known-good revision or invokes a manual tool.
 
-Before a probe, reserve the E2E hub through the existing maintenance queue/lease,
-take a fresh backup, verify all three endpoints, and record app/code identities.
-The v2 flag must be disarmed with any previous restore completed. Do not run E2E,
-purge, or other maintenance alongside the probe. V3 reads the v2 flag but never
-writes it. Its interlock does not replace the exclusive lease. V2's existing
-auto-reboot-on-wedge setting remains active independently of its disarmed flag;
-inspect that setting before the probe. V3 cannot suppress it.
+## Package deployment
 
-If MCP becomes unavailable, stop v3 work and use the unchanged v2 to restore the
-known-good MCP package. First establish that the v3 worker and any submitted hub
-save have finished, so recovery cannot overlap compilation. Do not update,
-restart, disable, or reboot the surviving controller. Preserve the lease while
-investigating an uncertain result.
+A background worker installs the pinned libraries bundle, then saves the existing
+MCP child and parent code classes. It preserves their code IDs, running instances,
+and OAuth settings. Status contains the component, elapsed time, error, and stage
+history; Hubitat does not expose compiler percentages through this operation.
 
-## Deployment contract
+- `hub_update_package`: caller-chosen `requestId`, immutable 40-character `ref`,
+  expected library `name`/`sha256` pairs, and `confirm:true`. Optional `baseUrl`
+  selects a raw GitHub source repository; `bundleBaseUrl` selects the repository
+  hosting the SHA-specific bundle. This permits fork source with a bundle
+  published by the upstream workflow. Both default to the upstream repository.
+  Independently build and compare the published bundle before submitting once.
+- `hub_get_package_deployment`: reads persisted status for `requestId` without
+  hub HTTP. Reconnect using the same ID after a lost response.
+- `hub_set_package_deployment`: acknowledge the matching operation with
+  `confirm:true` and `endpointVerified:true` after checking the original MCP and
+  v3 endpoints/tokens and unchanged app instances. V3 rechecks installed hashes
+  before releasing its hold. For repair while MCP is unavailable, `abandon:true`
+  plus `writesSettled:true` can release a stopped, inactive job only after the
+  operator independently confirms every submitted hub write has finished.
+  Abandonment does not mark deployment successful or assert that MCP is healthy.
 
-- `hub_update_package`: caller-chosen `requestId`, immutable 40-character commit
-  `ref`, expected library `name`/`sha256` pairs, and `confirm:true`. Prepare the
-  hashes from that commit's GitHub-built libraries-only bundle and compare it
-  with the published artifact before submitting. Submit once.
-- `hub_get_package_deployment`: `requestId`. Reads persisted status without hub
-  HTTP. Reconnect using the same ID after a lost response; never repeat a save.
-- `hub_set_package_deployment`: matching `requestId`, `confirm:true`, and
-  `endpointVerified:true`. Acknowledge only after the original MCP, v2, and v3
-  URLs/tokens work and the app identity snapshot is unchanged. V3 rechecks all
-  installed source hashes before releasing its hold. `abandon:true` can release
-  a stopped operation after independent recovery and endpoint verification.
+The request ID binds the source repositories, commit, and expected libraries.
+Matching libraries stay in place; otherwise the bundle is submitted once and
+all library sources are verified. Lost app-save responses lead to read-only
+verification of the full source hash and an advanced code version, without
+replaying the save.
 
-A lost save response enters read-only verification, requiring an advanced code
-version and the full expected source hash. Matching libraries are left in place;
-otherwise bundle installation is submitted once and all library sources verified.
-Verification has a ten-minute deadline per component, after the HTTP wait. A
-stopped job retains its hold. A restart during a worker can leave
-`workerActive:true`; v3 deliberately does not resume uncertain writes or expire
-that hold automatically.
+## Concurrency and recovery
 
-## Validation
+Reserve the hub through the existing exclusive lease, take a fresh backup, and
+record app/code identities before deployment. V3 does not read or write v2's
+control flag as part of deployment. During coexistence, the operator must verify
+v2 is idle before starting; its independent recovery behavior still exists.
 
-New tests, the manual probe, and any workflow adjustments belong on the temporary
-`test/watchdog-v3-validation` branch until live validation proves this approach.
-The development PR changes neither permanent tests nor the normal E2E installer
-and carries `e2e:skip`. GitHub simulation tests cannot prove hub scheduling or
-persistence; record live stage timings, unchanged identities, working original
-tokens, and reconnect-without-replay behavior before adopting v3 in E2E.
+An active or held package operation blocks other manual writes through v3,
+including source reads that would autosave. Read-only diagnostics and source
+reads with `noSave:true` remain available. A manual write also prevents package
+admission until that request returns. These guards do not coordinate independent
+controllers: the exclusive hub lease remains necessary.
+
+A stopped operation retains its hold. A restart during a worker can leave
+`workerActive:true`; v3 does not resume uncertain writes or expire that hold.
+Establish that any submitted save has finished before explicit recovery. If MCP
+fails, preserve the working controller. Do not update, disable, restart, or reboot
+that controller while investigating the other app.
+
+## Validation and rollout
+
+New tests remain on the temporary `test/watchdog-v3-validation` branch and run on
+GitHub. V2 and permanent tests/workflows are unchanged. The PR retains `e2e:skip`.
+
+The earlier four-tool prototype was installed separately as code class `1925`,
+instance `48028`. It completed live package updates and explicit main restoration,
+including PR #452 and a one-character variant. Those runs validate the prototype's
+deployment worker, not the expanded manual tool surface in this revision.
+
+The expanded app must be installed and checked on the E2E hub before workflow
+adoption. A later temporary workflow must exercise the full suite, explicit main
+restoration, cleanup, failure handling, and lease release through v3. Keep v2
+available until that validation and v3 configuration are complete.
