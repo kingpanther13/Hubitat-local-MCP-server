@@ -290,7 +290,7 @@ def adminSetPackageDeployment(Map args) {
         def stored = atomicState.packageDeployment
         if (stored?.requestId != args.requestId?.toString() || stored.workerActive == true)
             return [success: false, error: "A matching operation with no active worker is required"]
-        if (args.abandon == true ? (args.writesSettled != true && args.endpointVerified != true) : args.endpointVerified != true)
+        if (args.abandon == true ? args.writesSettled != true : args.endpointVerified != true)
             return [success: false, error: "Verify original endpoints for completion, or explicitly confirm writesSettled before abandoning a stopped deployment for repair"]
         if (!(args.abandon == true ? stored.phase == "stopped" : stored.phase == "awaiting_verification"))
             return [success: false, error: "The operation is not ready for release"]
