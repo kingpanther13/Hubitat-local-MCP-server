@@ -3,7 +3,9 @@
 V3 is intended to replace v2's manual administration surface. It exposes all 26
 v2 tools plus package start, persisted status, and explicit hold release. Keep
 v2's source, instance, token, settings, and GitHub secret unchanged while v3 is
-being validated. This PR does not switch the E2E workflows to v3.
+being validated. The intended merge outcome is full replacement of v2 by v3,
+including E2E workflow adoption. Existing workflows stay on v2 during this
+validation stage.
 
 ## Manual capabilities
 
@@ -76,7 +78,9 @@ instance `48028`. It completed live package updates and explicit main restoratio
 including PR #452 and a one-character variant. Those runs validate the prototype's
 deployment worker, not the expanded manual tool surface in this revision.
 
-The expanded app must be installed and checked on the E2E hub before workflow
-adoption. A later temporary workflow must exercise the full suite, explicit main
-restoration, cleanup, failure handling, and lease release through v3. Keep v2
-available until that validation and v3 configuration are complete.
+Before merging this PR, install and check the expanded app on the E2E hub, then
+use a temporary workflow to exercise the full suite, explicit main restoration,
+cleanup, failure handling, and lease release through v3. Complete the permanent
+workflow and endpoint configuration switch in this PR so v3 fully replaces v2
+at merge. Keep v2 available until v3 is fully configured and that validation
+succeeds; retire v2 only after those gates pass.
