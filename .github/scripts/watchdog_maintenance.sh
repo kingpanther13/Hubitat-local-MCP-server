@@ -10,29 +10,20 @@ case "$PHASE" in
   *) echo '::error::Expected prepare or deploy maintenance phase.'; exit 1 ;;
 esac
 
-# Disarm requests restore asynchronously, so armed:false alone does not mean idle.
-FLAG=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_read_file","arguments":{"fileName":"e2e-deadman-v2.json"}}}')
-printf '%s' "$FLAG" | jq -e '.success == true and .hasMore == false and (.content | fromjson | .armed == false)' >/dev/null || {
-  echo '::error::Cannot verify a disarmed watchdog; no code changed.'; exit 1;
+# The update is a watchdog self-update, so the configured endpoint must be v3 itself, and it must
+# not be holding a package deployment: v3 blocks manual writes during a hold.
+INFO=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')
+printf '%s' "$INFO" | jq -e '.watchdogVersion == 3' >/dev/null || {
+  echo '::error::WATCHDOG_MCP_URL does not answer as watchdog v3; no code changed.'; exit 1;
 }
-printf '%s' "$FLAG" | jq -e '.content | fromjson |
-  .intent != "disarm" or (
-    .runId != null and (.runId | tostring | length) > 0 and .restoreFor != null and
-    (.restoreFor | tostring) == (.runId | tostring) and
-    (.restoreResult == "restored" or .restoreResult == "failed")
-  )' >/dev/null || {
-  echo '::error::Cannot verify a terminal disarm restore; wait for recovery before watchdog maintenance. No code changed.'; exit 1;
+printf '%s' "$INFO" | jq -e '.packageDeployment == null or .packageDeployment.hold == false' >/dev/null || {
+  echo '::error::A package deployment is held; release it before watchdog maintenance. No code changed.'; exit 1;
 }
-if printf '%s' "$FLAG" | jq -e '.content | fromjson |
-    .restoreResult == "failed" and .restoreFor != null and
-    (.restoreFor | tostring) == (.runId | tostring)' >/dev/null; then
-  echo '::warning::Previous restore failed; proceeding with explicitly requested watchdog maintenance. Canonical main restoration remains unverified.'
-fi
-CLASS_ID=$(resolve_class_id mcp 'E2E Dead-Man Watchdog v2')
-SOURCE_URL="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/e2e-deadman-watchdog-v2.groovy"
+CLASS_ID=$(resolve_class_id mcp 'E2E Dead-Man Watchdog v3')
+SOURCE_URL="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/e2e-deadman-watchdog-v3.groovy"
 
 if [ "$PHASE" = prepare ]; then
-  # Keep the full prior source on the runner without overwriting any hub restore cache.
+  # Keep the full prior source on the runner; noSave keeps the read off the hub's File Manager.
   OFFSET=0
   : > "$RUNNER_TEMP/watchdog-before.groovy"
   while :; do
@@ -67,6 +58,8 @@ jq -e --arg classId "$CLASS_ID" --arg repository "$GITHUB_REPOSITORY" \
    .runId == $runId and .attempt == $attempt and .sourceSha256 == $sourceSha256' \
   "$BACKUP_DIR/watchdog-before.json" >/dev/null
 echo "Downloaded prior watchdog source verified for Apps Code $CLASS_ID."
+# V3 refuses this self-update unless the MCP server's endpoint answers: that server is the only
+# path that could repair a bad watchdog update.
 deploy_app_via_watchdog "$CLASS_ID" "$SOURCE_URL" watchdog "$CLASS_ID"
 
 # Prove the new tool exists and that the main endpoint observes the setting.

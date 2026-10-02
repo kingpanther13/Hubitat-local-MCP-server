@@ -38,12 +38,9 @@ if rpc["method"] == "tools/list":
 params = rpc["params"]
 name = params["name"]
 arguments = params["arguments"]
-if name == "hub_read_file":
-    assert arguments == {"fileName": "e2e-deadman-v2.json"}
-    emit(fixture["flag"])
-elif name == "hub_list_apps":
+if name == "hub_list_apps":
     emit({"success": True, "apps": [
-        {"id": "42", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v2"}]})
+        {"id": "42", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3"}]})
 elif name == "hub_get_source":
     offset = arguments["offset"]
     assert arguments == {"type": "app", "id": "42", "offset": offset,
@@ -53,13 +50,16 @@ elif name == "hub_get_info":
     if "https://main.invalid/apps/194/mcp?access_token=fixture" in args:
         emit({"developerModeEnabled": (root / "enabled").exists()})
     else:
-        emit({"lastSelfDeploy": {"appId": "42", "success": True,
-                                 "at": 2 if (root / "deployed").exists() else 1}})
+        emit({**fixture["info"], "lastSelfDeploy": {
+            "appId": "42", "success": True, "at": 2 if (root / "deployed").exists() else 1}})
 elif name == "hub_update_app":
     assert arguments == {
         "appId": "42", "selfUpdate": True, "selfClassId": "42", "confirm": True,
-        "importUrl": "https://raw.githubusercontent.com/fixture/repo/expected/e2e-deadman-watchdog-v2.groovy",
+        "importUrl": "https://raw.githubusercontent.com/fixture/repo/expected/e2e-deadman-watchdog-v3.groovy",
     }
+    if fixture.get("refusal"):
+        emit({"success": False, "error": fixture["refusal"]})
+        sys.exit(0)
     (root / "source-at-deploy").write_bytes((root / "watchdog-before.groovy").read_bytes())
     (root / "deployed").touch()
     emit({"success": True})
@@ -72,9 +72,10 @@ else:
 '''
 
 
-def run_maintenance(tmp_path, *, flag=None, pages=None, prepare_only=False, damage=None):
-    if flag is None:
-        flag = {"success": True, "hasMore": False, "content": '{"armed":false}'}
+IDLE_V3 = {"watchdogVersion": 3, "packageDeployment": None}
+
+
+def run_maintenance(tmp_path, *, info=IDLE_V3, pages=None, prepare_only=False, damage=None):
     if pages is None:
         pages = {}
         offset = 0
@@ -85,7 +86,7 @@ def run_maintenance(tmp_path, *, flag=None, pages=None, prepare_only=False, dama
                 "nextOffset": offset + len(source),
             }
             offset += len(source)
-    (tmp_path / "fixture.json").write_text(json.dumps({"flag": flag, "pages": pages}))
+    (tmp_path / "fixture.json").write_text(json.dumps({"info": info, "pages": pages}))
     bindir = tmp_path / "bin"
     bindir.mkdir()
     curl = bindir / "curl"
@@ -123,55 +124,24 @@ def run_maintenance(tmp_path, *, flag=None, pages=None, prepare_only=False, dama
     return result, calls
 
 
-@pytest.mark.parametrize("flag", [
-    {"success": True, "hasMore": False, "content": '{"armed":true}'},
-    {"success": True, "hasMore": False, "content": '{"armed":'},
-    {"success": True, "hasMore": False, "content": '{}'},
-    {"success": True, "hasMore": True, "content": '{"armed":false}'},
-    {"success": True, "content": '{"armed":false}'},
-    {"success": False, "hasMore": False, "content": '{"armed":false}'},
-], ids=["armed", "malformed", "missing-armed", "incomplete", "missing-has-more", "read-failed"])
-def test_maintenance_refuses_unverified_disarm_before_any_deploy(tmp_path, flag):
-    result, calls = run_maintenance(tmp_path, flag=flag)
+@pytest.mark.parametrize("info", [
+    {"watchdogVersion": 2},
+    {},
+    {"watchdogVersion": 3, "packageDeployment": {"requestId": "held", "phase": "stopped", "hold": True}},
+    {"watchdogVersion": 3, "packageDeployment": {"requestId": "held", "phase": "interrupted"}},
+], ids=["v2-endpoint", "unidentified-endpoint", "held-deployment", "hold-unknown"])
+def test_maintenance_refuses_a_non_v3_or_held_watchdog_before_any_deploy(tmp_path, info):
+    result, calls = run_maintenance(tmp_path, info=info)
     assert result.returncode != 0, result.stdout + result.stderr
-    assert [call["params"]["name"] for call in calls] == ["hub_read_file"]
+    assert [call["params"]["name"] for call in calls] == ["hub_get_info"]
     assert not (tmp_path / "deployed").exists()
 
 
-@pytest.mark.parametrize("restore", [
-    {"runId": "123"},
-    {"runId": "123", "restoreFor": "122", "restoreResult": "restored"},
-    {"runId": "123", "restoreFor": "123", "restoreResult": "running"},
-    {"runId": "123", "restoreFor": "123"},
-    {"restoreResult": "restored"},
-    {"runId": "", "restoreFor": "", "restoreResult": "restored"},
-], ids=["pending", "different-run", "unknown-result", "missing-result",
-        "missing-run", "empty-run"])
-def test_maintenance_refuses_unfinished_disarm_restore(tmp_path, restore):
-    flag = {"success": True, "hasMore": False,
-            "content": json.dumps({"armed": False, "intent": "disarm", **restore})}
-    result, calls = run_maintenance(tmp_path, flag=flag)
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert [call["params"]["name"] for call in calls] == ["hub_read_file"]
-    assert not (tmp_path / "deployed").exists()
-
-
-@pytest.mark.parametrize("restore_result", ["restored", "failed"])
-@pytest.mark.parametrize("restore_for", ["123", 123], ids=["string-id", "numeric-id"])
-def test_maintenance_accepts_terminal_restore_and_warns_on_failure(tmp_path, restore_result, restore_for):
-    flag = {"success": True, "hasMore": False, "content": json.dumps({
-        "armed": False, "intent": "disarm", "runId": "123", "restoreFor": restore_for,
-        "restoreResult": restore_result,
-    })}
-    result, _ = run_maintenance(tmp_path, flag=flag)
+def test_maintenance_proceeds_after_a_released_deployment(tmp_path):
+    info = {"watchdogVersion": 3, "packageDeployment": {"requestId": "done", "phase": "complete", "hold": False}}
+    result, _ = run_maintenance(tmp_path, info=info)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "deployed").exists()
-    warnings = [line.lower() for line in result.stdout.splitlines() if "::warning::" in line]
-    if restore_result == "failed":
-        assert any("restore" in line and "failed" in line and "maintenance" in line
-                   for line in warnings), result.stdout
-    else:
-        assert not warnings, result.stdout
 
 
 @pytest.mark.parametrize("page", [
@@ -188,7 +158,7 @@ def test_maintenance_refuses_invalid_source_pages_before_deploy(tmp_path, page):
     result, calls = run_maintenance(tmp_path, pages={"0": page})
     assert result.returncode != 0, result.stdout + result.stderr
     assert [call["params"]["name"] for call in calls] == [
-        "hub_read_file", "hub_list_apps", "hub_get_source",
+        "hub_get_info", "hub_list_apps", "hub_get_source",
     ]
     assert not (tmp_path / "deployed").exists()
 
@@ -228,17 +198,35 @@ def test_deploy_requires_verified_downloaded_backup(tmp_path, damage):
     assert not any(call["params"].get("name") == "hub_update_app" for call in calls)
 
 
-def test_deploy_rechecks_disarm_after_backup_download(tmp_path):
-    def arm_watchdog(directory):
+def test_deploy_rechecks_the_hold_after_backup_download(tmp_path):
+    def hold_a_deployment(directory):
         fixture_path = directory.parent / "fixture.json"
         fixture = json.loads(fixture_path.read_text())
-        fixture["flag"]["content"] = '{"armed":true}'
+        fixture["info"] = {"watchdogVersion": 3,
+                           "packageDeployment": {"requestId": "late", "phase": "queued", "hold": True}}
         fixture_path.write_text(json.dumps(fixture))
 
-    result, calls = run_maintenance(tmp_path, damage=arm_watchdog)
+    result, calls = run_maintenance(tmp_path, damage=hold_a_deployment)
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "Cannot verify a disarmed watchdog" in result.stdout
+    assert "A package deployment is held" in result.stdout
     assert not any(call["params"].get("name") == "hub_update_app" for call in calls)
     assert (tmp_path / "watchdog-maintenance-verified/watchdog-before.groovy").read_bytes() == (
         "".join(SOURCE_PARTS).encode()
     )
+
+
+def test_maintenance_fails_with_the_refusal_when_v3_declines_its_own_update(tmp_path):
+    """V3 refuses to replace its own code while the MCP server's endpoint does not answer."""
+    refusal = "Refused: the MCP server endpoint does not answer; it is the only repair path"
+
+    def refuse_the_update(directory):
+        fixture_path = directory.parent / "fixture.json"
+        fixture = json.loads(fixture_path.read_text())
+        fixture["refusal"] = refusal
+        fixture_path.write_text(json.dumps(fixture))
+
+    result, calls = run_maintenance(tmp_path, damage=refuse_the_update)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert refusal in result.stderr
+    assert not (tmp_path / "deployed").exists()
+    assert not any(call["params"].get("name") == "hub_set_mcp_developer_mode" for call in calls)

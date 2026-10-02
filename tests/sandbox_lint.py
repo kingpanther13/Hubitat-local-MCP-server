@@ -46,6 +46,7 @@ GROOVY_FILES = [
     # forbidden patterns here rather than discovering a violation only at live install time.
     REPO_ROOT / "e2e-deadman-watchdog.groovy",
     REPO_ROOT / "e2e-deadman-watchdog-v2.groovy",
+    REPO_ROOT / "e2e-deadman-watchdog-v3.groovy",
     *sorted((REPO_ROOT / "libraries").glob("*.groovy")),
 ]
 
