@@ -1273,8 +1273,8 @@ class TestRunner:
         self._fixture_reset_failures: list[str] = []
         self.created_dashboard_ids: list[str] = []
         # When set (the CI 'Run E2E tests' step only), per-test native-rule fixture deletes are SKIPPED
-        # (see _delete_native + cleanup Layer 4) and the rules are reaped by the disarm step's force
-        # sweep over WATCHDOG_URL, overlapping the restore-poll wait instead of adding to the test
+        # (see _delete_native + cleanup Layer 4) and the rules are reaped by the restore step's
+        # fixture purge (one hub-local prefix sweep through the watchdog) instead of adding to the test
         # critical path. Defaults OFF, so local runs + the post-restore --cleanup-only backstop are
         # unchanged. The lifecycle/delete-assertion tests delete inline (not via _delete_native), so
         # they are unaffected.
@@ -7363,7 +7363,7 @@ class TestRunner:
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
         # Fixture-teardown delete. When deferral is on, skip it (rule stays tracked) so it's reaped by
-        # the disarm sweep during the restore window, not inline on the test critical path. Tests whose
+        # the restore step's fixture purge, not inline on the test critical path. Tests whose
         # delete IS the assertion call hub_delete_native_app directly (not this helper), so they keep
         # deleting inline regardless.
         if self.defer_native_deletes:
@@ -10182,8 +10182,8 @@ class TestRunner:
         HARMLESS-STRAND INVARIANT: the action always MATCHES the trigger event
         ('Turns off' -> turnOff, 'Turns on' -> turnOn). These fixtures live on the
         shared hub until their delete commits, and a delete can silently strand
-        (the disarm force-delete trusts an HTTP 302; admin-endpoint writes are
-        known to commit late on this firmware). A stranded copy of a matched rule
+        (admin-endpoint writes are known to commit late on this firmware). A
+        stranded copy of a matched rule
         can only re-assert the state the switch already reached -- it can never
         revert a test command. An OPPOSING action ('Turns on' -> turnOff) stranded
         across runs instantly reverts every 'on' the switch-command test sends."""
@@ -16351,49 +16351,12 @@ class TestRunner:
 
         # Layer 4: native RM rules / classic apps (issue #137). Tracked ids first,
         # then a list-based sweep for anything a failed native_apps test left behind.
-        # When deferral is on, the disarm step's force sweep (over WATCHDOG_URL, overlapping the
-        # restore poll) owns these deletes, so skip them here to keep them off the test critical path.
+        # When deferral is on, the restore step's fixture purge owns these deletes: one hub-local
+        # sweep of every BAT_E2E_-prefixed app instance, tracked or not, off the test critical path.
         # The post-restore --cleanup-only step runs WITHOUT the flag, so it's the idempotent backstop.
         if self.defer_native_deletes:
-            deferred_ids = {str(a) for a in self.created_native_app_ids}
-            # Also fold in any PREFIX-matched native rule a FAILED test created but never tracked (the rule
-            # is hub-created before its id is appended), so the disarm exact-id sweep reaps those too --
-            # otherwise an untracked leftover would survive until the post-restore --cleanup-only prefix
-            # sweep. This is the deferral-branch equivalent of the non-deferral prefix sweep below.
-            try:
-                nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
-                for r in (nrules if isinstance(nrules, list) else nrules.get("rules", [])):
-                    if PREFIX in (r.get("name") or r.get("label") or ""):
-                        rid = str(r.get("id", r.get("appId", "")))
-                        if rid:
-                            deferred_ids.add(rid)
-            except Exception as exc:
-                print(f"  [WARN] could not list native rules for the deferred union (tracked ids still deferred): {exc}")
-            # hub_list_rules lists RM rules only, so fold in PREFIX-matched Visual
-            # Rules Builder children via the VRB list (one call) the same way --
-            # force-delete in the disarm sweep works on VRB children too.
-            try:
-                vlisted = self._get_visual_rule()
-                for r in (vlisted.get("rules", []) if isinstance(vlisted, dict) else []):
-                    if str(r.get("name") or "").startswith(PREFIX):
-                        vid = str(r.get("appId") or "")
-                        if vid:
-                            deferred_ids.add(vid)
-            except Exception as exc:
-                print(f"  [WARN] could not list Visual Rules for the deferred union (tracked ids still deferred): {exc}")
-            deferred_ids = sorted(deferred_ids)
-            print(f"  Layer 4: deferring {len(deferred_ids)} native-rule delete(s) to the disarm sweep")
-            # Hand the EXACT instance ids to the disarm sweep via File Manager so it force-deletes ONLY
-            # these (no guessing the /hub2/appsList shape -> no risk of deleting the wrong app). The
-            # post-restore --cleanup-only prefix sweep (no flag) is the backstop if this list is missed.
-            try:
-                self.client.call_tool("hub_manage_files", {
-                    "tool": "hub_write_file",
-                    "args": {"fileName": "e2e-deferred-native-rules.json",
-                             "content": json.dumps(deferred_ids), "confirm": True},
-                })
-            except Exception as exc:
-                print(f"  [WARN] could not write the deferred-rule id list; the prefix backstop will reap them: {exc}")
+            print(f"  Layer 4: leaving {len(self.created_native_app_ids)} tracked native-rule delete(s) "
+                  "to the restore step's fixture purge")
         else:
             for app_id in list(self.created_native_app_ids):
                 try:
@@ -16605,20 +16568,19 @@ class TestRunner:
         # _backup_ file spawns no backup-of-backup). Paginated listing keeps this sweep
         # working no matter how crufty the hub already is.
         #
-        # The harness's OWN artifact compounds the same way and was not covered: Layer 4
-        # rewrites e2e-deferred-native-rules.json every deferred run, and hub_write_file
-        # backs up the previous copy first, so each run strands one more
-        # e2e-deferred-native-rules_backup_<ts>.json forever. Measured on the test hub
-        # 2026-08-10: 459 of them going back to 2026-06-08, out of 767 files total -- the
-        # single largest population on the hub and the reason a no-cursor hub_list_files
-        # there returns response_too_large. Only the _backup_ siblings are swept; the live
-        # e2e-deferred-native-rules.json carries no "_backup_" and so never matches (the
-        # disarm sweep still needs to read it).
+        # The harness's OWN artifacts compounded the same way: Layer 4 used to rewrite
+        # e2e-deferred-native-rules.json every deferred run, and hub_write_file backs up the
+        # previous copy first, so each run stranded one more
+        # e2e-deferred-native-rules_backup_<ts>.json. Measured on the test hub 2026-08-10: 459
+        # of them going back to 2026-06-08, out of 767 files total -- the single largest
+        # population on the hub and the reason a no-cursor hub_list_files there returns
+        # response_too_large. Only the _backup_ siblings are swept; a file without "_backup_"
+        # never matches.
         # Two harness-generated populations the PREFIX match never covered, both of which
         # grow by design every run and are dead the moment the run ends:
-        #   e2e-*_backup_*         -- the harness rewrites its own control files every run
-        #     (e2e-deferred-native-rules.json from Layer 4, e2e-deadman.json from the
-        #     watchdog) and hub_write_file snapshots the previous copy first. Matching on the
+        #   e2e-*_backup_*         -- the harness used to rewrite its own control files every run
+        #     (e2e-deferred-native-rules.json from Layer 4, e2e-deadman.json from watchdog v2)
+        #     and hub_write_file snapshots the previous copy first. Matching on the
         #     "_backup_" marker rather than on named stems covers every such file including
         #     ones added later, and can never match a LIVE e2e-*.json, which has no marker.
         #   mcp-rm-backup-<ruleId>-*.json  -- hub_set_rule keeps a per-rule edit baseline
@@ -16637,9 +16599,9 @@ class TestRunner:
         litter_seen = 0
 
         def _is_litter(nm: str) -> bool:
-            # The e2e- stem matches ONLY _backup_ siblings: the live control files
-            # (e2e-deferred-native-rules.json, e2e-deadman.json) carry no marker and must
-            # survive -- the disarm sweep and the watchdog read them. The rm-backup stem
+            # The e2e- stem matches ONLY _backup_ siblings: any other e2e-* file (such as
+            # watchdog v2's control files, kept on the hub) carries no marker and is left
+            # alone. The rm-backup stem
             # matches outright: those files ARE the snapshots, and their own
             # backup-of-backup (spawned when pass 1 deletes one, since that name carries no
             # "_backup_" marker) starts with the same stem and so is reaped by pass 2.
@@ -17198,7 +17160,7 @@ def main() -> None:
         # so the hub is normally back on main by now.
         refuse_unless_leased_test_hub(client)
         runner.cleanup()
-        # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
+        # Gating verification: cleanup() and the restore step's fixture purge are otherwise all
         # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
         # apps on the SHARED hub behind a green run. This backstop FAILS CLOSED -- re-list and exit
         # nonzero if any BAT_E2E_ native rule survived, or if the hub can't be listed to prove it.

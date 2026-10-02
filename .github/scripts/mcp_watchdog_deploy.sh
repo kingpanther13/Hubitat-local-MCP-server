@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
-# Install THIS PR's package onto the live test hub through watchdog v3, in Hubitat Package
-# Manager's repair order: the libraries bundle first, then the child and parent apps.
-#
-# The watchdog is a different running app from the MCP server, so installing the MCP package
-# never reloads the app answering the request. V3 does the install as one background operation
-# (hub_update_package) and reports each stage; watchdog_v3.py submits it once, follows the
-# status, verifies both endpoints, and releases the hold. A slow compile or a lost response is
-# not a failure: v3 keeps verifying the installed source hash and code version.
-#
-# Libraries are delivered ONLY by the bundle. The bundle is built here from the checkout and
-# must equal the bundle-artifacts entry for this SHA, which is the URL v3 installs from.
+# Install THIS PR's package on the test hub through watchdog v3 (`watchdog_v3.py deploy-pr`), then
+# bounce the server app and check it serves. Libraries are delivered ONLY by the bundle, which is
+# built here from the checkout and must equal the published bundle-artifacts entry for this SHA.
 #
 # Usage: mcp_watchdog_deploy.sh [path/to/hubitat-mcp-server.groovy]
 # Env:   MCP_URL               -- the MCP server under test
@@ -53,7 +45,7 @@ if [ "${#INCLUDES[@]}" -gt 0 ] && [ -z "$BUNDLE_BASENAMES" ]; then
   echo "::error::App #includes ${#INCLUDES[@]} library(ies) (${INCLUDES[*]}) but packageManifest.json declares NO bundle to deliver them. A bundle-only install would leave the #include directives unresolved and the app would not compile. Add the libraries' bundle to the manifest."
   exit 1
 fi
-echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- delivered via the package bundle (section 2), the HPM way (no redundant per-library install)."
+echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- delivered via the package bundle, the HPM way (no redundant per-library install)."
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +96,7 @@ echo "::add-mask::${WATCHDOG_URL##*access_token=}"
 
 
 # ===========================================================================
-# 4) CLEAR THE PER-APP LOAD THROTTLE -- bounce (disable/enable) the server app.
+# CLEAR THE PER-APP LOAD THROTTLE -- bounce (disable/enable) the server app.
 #    Hubitat's platform load limiter ("LimitExceededException: App N generates
 #    excessive hub load") silently blocks the app's device-method dispatch once
 #    tripped -- device commands false-succeed (the exception is thrown in the
@@ -150,8 +142,8 @@ else
     # the tests. The first request after an enable absorbs any lazy-recompile/warmup latency here
     # instead of inside the first test, and a bounce that somehow left the endpoint dead fails THIS
     # step with a precise message rather than 100 tests with a misleading one. The bounce itself
-    # already cannot race a compile: it only runs after every app deploy above was CONFIRMED landed
-    # (fresh lastSelfDeploy + live-length cross-check), so the saves' compiles are complete.
+    # cannot race a compile: it runs only after deploy-pr returned, i.e. v3 verified each app's
+    # source hash and advanced code version and both endpoints answered.
     if [ -n "${HUBITAT_HUB_URL:-}" ] && [ -n "${HUBITAT_ACCESS_TOKEN:-}" ]; then
       MAIN_MCP_URL="${HUBITAT_HUB_URL}/apps/${SERVER_APP_ID}/mcp?access_token=${HUBITAT_ACCESS_TOKEN}"
       READY="false"

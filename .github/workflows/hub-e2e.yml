@@ -115,10 +115,10 @@ permissions:
 # each other, and an unapproved fork PR only ever holds ITS OWN branch's group -- never the shared
 # hub or another PR. Cross-PR FIFO serialization is the e2e job's SEPARATE `queue: max` group; the
 # two can't be one block (queue:max + cancel-in-progress:true is an invalid combination).
-# Cancelling mid-run is safe: the e2e job's restore + lease-release steps are `if: always()` (so a
-# cancel still frees the hub). A hard kill leaves the hub on PR code and possibly a held deployment
-# until the next run, whose prepare step releases the hold and whose install replaces the code; the
-# 30-min lease TTL frees the hub.
+# Cancelling mid-run is safe: a cancelled job skips the main restore, releases its deployment hold
+# and purges fixtures instead, and still releases the lease. Either a cancel or a hard kill leaves
+# the hub on PR code (a hard kill possibly with a held deployment) until the next run, whose prepare
+# step releases the hold and whose install replaces the code; the 30-min lease TTL frees the hub.
 # group + cancel-in-progress: a run that should SUPERSEDE another -- a commit/reopen/dispatch, the
 # FIRST full-run label promoting a live FOCUSED run to full, OR the e2e:skip label add (which must
 # cancel whatever is in flight and then posts the gate pending) -- shares the per-branch group, so
@@ -839,15 +839,8 @@ jobs:
           if ! printf '%s' "$MAIN_SHA" | grep -qE '^[0-9a-f]{40}$'; then
             echo "::error::unexpected main-branch SHA shape: $MAIN_SHA"; exit 1
           fi
-          MAIN_URL="https://raw.githubusercontent.com/$DEFAULT_REPO/$MAIN_SHA/hubitat-mcp-server.groovy"
-          MAIN_CHARS=$(curl -fsSL "$MAIN_URL" | LC_ALL=C.UTF-8 wc -m | tr -d '[:space:]')
-          if ! printf '%s' "$MAIN_CHARS" | grep -qE '^[0-9]+$' || [ "$MAIN_CHARS" -lt 100000 ]; then
-            echo "::error::canonical main source char count looks wrong ($MAIN_CHARS) -- refusing to drive a main refresh"; exit 1
-          fi
-          echo "MAIN_SOURCE_URL=$MAIN_URL" >> "$GITHUB_ENV"
           echo "MAIN_SHA=$MAIN_SHA" >> "$GITHUB_ENV"
-          echo "MAIN_CHARS=$MAIN_CHARS" >> "$GITHUB_ENV"
-          echo "::notice::canonical main: $MAIN_URL (${MAIN_CHARS} chars)"
+          echo "::notice::canonical main: $MAIN_SHA"
 
       # The watchdog is NOT deployed by e2e: e2e never writes to the watchdog app, it only drives the
       # standing watchdog's endpoint. A PR that changes the watchdog source
@@ -858,12 +851,6 @@ jobs:
       # run, or a hub restart mid-install). The script keeps its historical file name.
       - name: Watchdog - prepare
         if: steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
-        env:
-          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
-          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
-          MAIN_SOURCE_URL: ${{ env.MAIN_SOURCE_URL }}
-          MAIN_SHA: ${{ env.MAIN_SHA }}
-          MAIN_CHARS: ${{ env.MAIN_CHARS }}
         run: bash .github/scripts/mcp_arm_watchdog.sh
 
       # Install THIS PR's package through watchdog v3: one background operation installs the
@@ -1053,6 +1040,8 @@ jobs:
       # only releases its hold and purges, leaving the time for the cleanup steps below.
       - name: Watchdog - release hold (cancelled run)
         if: cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
+        # The lease release below has to fit inside the same cancel window.
+        timeout-minutes: 3
         run: bash .github/scripts/mcp_disarm_watchdog.sh --cancelled
 
       # Bounded wait for the restore submitted above, so the MCP_URL-based cleanup and settings
@@ -1068,15 +1057,15 @@ jobs:
         if: always() && steps.gate.outputs.available == 'true'
         # Defensive — e2e_test.py cleans up after itself in the happy path,
         # but a crashed run can strand virtual devices / rules / variables
-        # under the BAT_E2E_ prefix. This sweeps anything left over. Runs AFTER main
-        # was restored, so it operates on a healthy server over MCP_URL.
+        # under the BAT_E2E_ prefix. This sweeps anything left over. Runs after the wait for
+        # main, so it normally operates on restored main over MCP_URL.
         run: python tests/e2e_test.py --cleanup-only
 
       - name: Restore test environment (settings back to pre-run state)
         if: always() && steps.gate.outputs.available == 'true'
         # Tolerant of missing pre-state file (early-exit no-op) so a setup
-        # failure before capture doesn't propagate here. Runs after the restore so
-        # MCP_URL points at restored main, not a possibly-broken PR app.
+        # failure before capture doesn't propagate here. Runs after the wait for main, so
+        # MCP_URL normally points at restored main, not a possibly-broken PR app.
         run: bash .github/scripts/mcp_restore_env.sh
 
       - name: Post-run hub status probe
@@ -1085,7 +1074,7 @@ jobs:
         if: always() && steps.gate.outputs.available == 'true' && steps.run_e2e.outcome == 'failure'
         # The pre-run probe's counterpart: capture what the run LEFT BEHIND (stranded artifacts,
         # load-limiter trips in the error log, memory descent, watchdog state) while we still
-        # hold the lease. Runs after main was restored, so the hub is quiet. Diagnostic only -- must never fail the run.
+        # hold the lease. Runs after the wait for main, so the hub is normally quiet. Diagnostic only -- must never fail the run.
         continue-on-error: true
         run: bash .github/scripts/mcp_probe_hub.sh
 

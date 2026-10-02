@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# Prepare the test hub for a run. The file keeps its historical name because hub-e2e.yml on main
-# calls it by name, and that workflow file drives the scripts of every open PR.
-#
-# Watchdog v3 has nothing to arm: it never restores on its own, so there is no flag and no
-# deadline. This step confirms v3 answers, reports whether it can see the MCP endpoint, and
-# releases any deployment hold an earlier run left behind (a cancelled or crashed run, or a hub
-# restart mid-install). It takes no backup: a hub backup is a heavy operation the platform's
-# load limiter punishes, and the restore source is GitHub, not the hub.
+# Prepare the test hub for a run: `watchdog_v3.py prepare` (flow: AGENTS.md, e2e architecture).
+# The file keeps its historical name because hub-e2e.yml on main calls every open PR's scripts by name.
 #
 # Env: MCP_URL, WATCHDOG_URL (secret WATCHDOG_MCP_URL), RUNNER_TEMP
 set -euo pipefail

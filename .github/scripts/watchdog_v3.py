@@ -26,7 +26,19 @@ PACKAGE_APPS = ("MCP Rule", "MCP Rule Server")
 
 
 class HubError(RuntimeError):
-    """A refusal or failure whose message is safe to print (never carries a URL or token)."""
+    """A refusal or failure whose message is safe to print (never an endpoint URL or its token)."""
+
+
+class ToolError(OSError):
+    """The hub answered with an error of its own. Its message is the hub's and safe to print."""
+
+    def __init__(self, message, *, invalid=False):
+        super().__init__(message)
+        self.invalid = invalid  # the hub rejected the arguments: nothing was done
+
+
+class Unreadable(OSError):
+    """The hub answered but could not read what was asked. Retryable; the message is safe to print."""
 
 
 class Transport:
@@ -43,15 +55,24 @@ class Transport:
             # A body cut off mid-read is an HTTPException, not an OSError; it is a lost response too.
             # urllib exceptions can contain the URL and its OAuth token.
             raise OSError("Endpoint did not return a usable response") from None
-        if not isinstance(result, dict) or result.get("error") or not isinstance(result.get("result"), dict):
+        error = result.get("error") if isinstance(result, dict) else None
+        if isinstance(error, dict) and error.get("message"):
+            raise ToolError(str(error["message"])[:300], invalid=error.get("code") == -32602)
+        if not isinstance(result, dict) or error or not isinstance(result.get("result"), dict):
             raise OSError("Endpoint rejected the MCP request")
         return result["result"]
 
     def call(self, url, name, args):
         result = self.rpc(url, "tools/call", {"name": name, "arguments": args})
         try:
-            value = json.loads(result["content"][0]["text"])
-        except (KeyError, IndexError, TypeError, ValueError):
+            text = result["content"][0]["text"]
+            value = json.loads(text)
+        except ValueError:
+            # A tool that threw answers in plain text; that is a failure on the hub, not a lost response.
+            if text.startswith("Tool error:"):
+                raise ToolError(text[:300]) from None
+            raise OSError("Tool returned an invalid result") from None
+        except (KeyError, IndexError, TypeError, AttributeError):
             raise OSError("Tool returned an invalid result") from None
         if not isinstance(value, dict):
             raise OSError("Tool returned an invalid result")
@@ -115,34 +136,46 @@ def instance_snapshot(transport, v3):
     Everything else is left out on purpose: test fixtures (rules, child apps) come and go while a
     deployment runs, and the restore runs alongside the fixture purge.
     """
-    apps = transport.call(v3, "hub_list_app_instances", {}).get("apps")
+    answer = transport.call(v3, "hub_list_app_instances", {})
+    apps = answer.get("apps")
     if not isinstance(apps, list) or not apps:
-        raise HubError("Cannot read the installed app instances")
-    kept = sorted((str(a["id"]), a.get("type"), a.get("disabled")) for a in apps
-                  if a.get("type") in ("MCP Rule Server", V3_APP_NAME))
+        raise Unreadable(f"Cannot read the installed app instances: {answer.get('error')}")
+    kept = sorted((str(a.get("id")), a.get("type"), a.get("disabled")) for a in apps
+                  if isinstance(a, dict) and a.get("type") in ("MCP Rule Server", V3_APP_NAME))
     if not any(kind == "MCP Rule Server" for _id, kind, _disabled in kept):
         raise HubError("The MCP Rule Server instance is not installed")
     return kept
 
 
 def code_versions(transport, v3):
-    types = transport.call(v3, "hub_list_apps", {"scope": "types"}).get("apps") or []
+    """The code versions of everything a deployment writes: both apps and every mcp library."""
+    answer = transport.call(v3, "hub_list_apps", {"scope": "types"})
+    types = answer.get("apps")
+    if not isinstance(types, list) or not types:
+        raise Unreadable(f"Cannot read the app code list: {answer.get('error') or answer.get('note')}")
     versions = {}
     for name in PACKAGE_APPS:
-        ids = [item["id"] for item in types if item.get("namespace") == "mcp" and item.get("name") == name]
+        ids = [item.get("id") for item in types
+               if isinstance(item, dict) and item.get("namespace") == "mcp" and item.get("name") == name]
         if len(ids) != 1:
             raise HubError(f"Expected one {name} code class, found {len(ids)}")
         head = transport.call(v3, "hub_get_source", {
             "type": "app", "id": str(ids[0]), "offset": 0, "length": 1, "noSave": True,
         })
         if head.get("success") is not True:
-            raise HubError(f"Cannot read the {name} code version")
+            raise Unreadable(f"Cannot read the {name} code version: {head.get('error')}")
         versions[name] = (head.get("version"), head.get("totalLength"))
+    listing = transport.call(v3, "hub_list_libraries", {})
+    libraries = listing.get("libraries")
+    if not isinstance(libraries, list) or listing.get("source") != "hub_api":
+        raise Unreadable(f"Cannot read the library list: {listing.get('error') or listing.get('note')}")
+    versions["libraries"] = sorted((str(item.get("name")), str(item.get("version"))) for item in libraries
+                                   if isinstance(item, dict) and item.get("namespace") == "mcp")
     return versions
 
 
 def wait_until_settled(transport, v3, *, samples=3, interval=15, attempts=40):
-    """A save still compiling bumps a code version when it lands; require a quiet stretch."""
+    """A save or bundle import still running bumps a code version when it lands; require a quiet stretch."""
     quiet, last = 0, None
     for _ in range(attempts):
         try:
@@ -159,7 +192,11 @@ def wait_until_settled(transport, v3, *, samples=3, interval=15, attempts=40):
 
 
 def clear_hold(transport, v3, *, interval=15, attempts=80, settle=wait_until_settled):
-    """Release whatever deployment hold an earlier run left behind. Returns the status it cleared."""
+    """Release whatever deployment hold is in place. Returns the status it cleared, or None.
+
+    A hold is abandoned only once its worker has stopped (or v3 reports it stale) and the package
+    code versions have been quiet.
+    """
     held = None
     for _ in range(attempts):
         try:
@@ -180,8 +217,8 @@ def clear_hold(transport, v3, *, interval=15, attempts=80, settle=wait_until_set
         "requestId": held["requestId"], "abandon": True, "writesSettled": True, "confirm": True,
     })
     if released.get("hold") is not False:
-        raise HubError(f"Could not release the leftover hold: {released.get('error')}")
-    log(f"Released the leftover hold of {held.get('requestId')} (was {held.get('phase')}: {held.get('error')})")
+        raise HubError(f"Could not release the hold of {held.get('requestId')}: {released.get('error')}")
+    log(f"Released the hold of {held.get('requestId')} (was {held.get('phase')}: {held.get('error')})")
     return held
 
 
@@ -192,6 +229,11 @@ def submit(transport, v3, arguments, *, interval=20, attempts=75):
     for _ in range(attempts):
         try:
             accepted = transport.call(v3, "hub_update_package", arguments)
+        except ToolError as error:
+            if error.invalid:
+                raise HubError(f"Deployment refused: {error}") from None
+            log(f"::warning::{request_id}: the start request failed on the hub ({error}); reading its status")
+            return
         except OSError:
             return  # The request may have reached the hub; the caller reads status by its ID.
         if accepted.get("success") is True and accepted.get("requestId") == request_id:
@@ -209,7 +251,7 @@ def submit(transport, v3, arguments, *, interval=20, attempts=75):
 
 
 def verify_endpoints(transport, v3, mcp, baseline, *, interval=15, wait_s=1500):
-    """The original endpoint URLs and tokens still answer and no app instance changed.
+    """The original endpoint URLs and tokens still answer, and the MCP server and watchdog instances are unchanged.
 
     The MCP server can stay dark for many minutes after its code is saved (14 observed), so this
     waits generously and says which endpoint it is waiting on.
@@ -254,7 +296,11 @@ def follow(transport, v3, mcp, plan, request_id, baseline, *, interval=10, attem
            retry_interrupted=True, endpoint_wait_s=1500):
     """Follow a submitted deployment to its end and release its hold."""
     last, unseen, release_failures, silent = None, 0, 0, 0
+    # Status reads that time out take far longer than `interval`, so the attempts are also capped by time.
+    deadline = time.monotonic() + attempts * max(interval, 1) * 2
     for _ in range(attempts):
+        if time.monotonic() > deadline:
+            break
         try:
             status = transport.call(v3, "hub_get_package_deployment", {"requestId": request_id})
         except OSError:
@@ -287,12 +333,22 @@ def follow(transport, v3, mcp, plan, request_id, baseline, *, interval=10, attem
                           attempts=attempts, retry_interrupted=False, endpoint_wait_s=endpoint_wait_s)
         if phase in ("stopped", "abandoned"):
             raise HubError(f"Deployment {phase}: {status.get('error')}")
+        if status.get("workerStale") is True:
+            raise HubError(f"The deployment worker went silent in {phase} ({status.get('component') or 'no component'}); "
+                           "safety hold retained")
         if phase == "awaiting_verification" and status.get("workerActive") is not True:
             verify_endpoints(transport, v3, mcp, baseline, wait_s=endpoint_wait_s)
             try:
                 released = transport.call(v3, "hub_set_package_deployment", {
                     "requestId": request_id, "endpointVerified": True, "confirm": True,
                 })
+            except ToolError as error:
+                release_failures += 1
+                if release_failures >= 5:
+                    raise HubError(f"Completion failed on the hub: {error}") from None
+                log(f"{request_id}: the release failed on the hub ({error}); the hold is retained, retrying")
+                time.sleep(interval)
+                continue
             except OSError:
                 log(f"{request_id}: the release got no answer; it may have landed, reading status")
                 time.sleep(interval)
@@ -304,7 +360,8 @@ def follow(transport, v3, mcp, plan, request_id, baseline, *, interval=10, attem
                 raise HubError(f"Completion was refused: {released.get('error')}")
             log(f"Completion not accepted yet ({released.get('error')}); the hold is retained, retrying")
         time.sleep(interval)
-    raise HubError("Deployment observation timed out; safety hold retained")
+    where = f"{last[0]} ({last[1] or 'no component'})" if last else "no status was ever read"
+    raise HubError(f"Deployment observation timed out at {where}; safety hold retained")
 
 
 def plan_from_bundle(ref, bundle_bytes):
@@ -327,7 +384,8 @@ def plan_from_bundle(ref, bundle_bytes):
 
 
 def fetch(url, *, attempts=3, interval=5):
-    """Return the bytes at a public URL, or None when it does not exist."""
+    """Return the bytes at a public URL, or None when it does not exist (404 only)."""
+    status = "no response"
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(url, timeout=60) as response:
@@ -335,11 +393,12 @@ def fetch(url, *, attempts=3, interval=5):
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 return None
+            status = f"HTTP {error.code}"
         except (OSError, http.client.HTTPException):
-            pass
+            status = "no response"
         if attempt < attempts - 1:
             time.sleep(interval)
-    raise HubError(f"Could not download {url}")
+    raise HubError(f"Could not download {url} ({status})")
 
 
 def artifact_url(base, sha):
@@ -365,7 +424,7 @@ def command_prepare(_args):
         peer = transport.call(v3, "hub_get_info", {"peer": True}).get("peerEndpoint") or {}
         log(f"MCP endpoint available: {peer.get('available')} {peer.get('reason') or ''}".rstrip())
     except OSError:
-        # Not fatal: the install below replaces the MCP package whatever state it is in.
+        # Not fatal: the install step replaces the MCP package whatever state it is in.
         log("::warning::The MCP endpoint check got no answer; continuing.")
     clear_hold(transport, v3)
 
@@ -390,9 +449,12 @@ def current_main_sha(repository):
         listing = subprocess.run(["git", "ls-remote", f"https://github.com/{repository}.git", "refs/heads/main"],
                                  capture_output=True, text=True, timeout=60, check=True).stdout
     except (OSError, subprocess.SubprocessError):
-        return None
+        listing = ""
     sha = listing.split()[0] if listing.split() else ""
-    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+    if re.fullmatch(r"[0-9a-f]{40}", sha):
+        return sha
+    log("::warning::Could not resolve main's current SHA; using the run's starting main instead.")
+    return None
 
 
 def purge_fixtures(transport, v3):
@@ -410,46 +472,62 @@ def purge_fixtures(transport, v3):
 
 
 def command_restore_main(args):
-    transport, v3, _mcp = endpoints()
-    if args.cancelled:
-        # GitHub ends a cancelled job after about five minutes, less than a deployment takes, and a
-        # cancel is normally followed by a run that installs its own code. So leave the package as
-        # it is and spend the time on the cleanup steps that follow.
-        try:
-            clear_hold(transport, v3, attempts=4)
-            purge_fixtures(transport, v3)
-        except (HubError, OSError):
-            # Cancelled mid-install: the worker is still saving, and v3 refuses a purge under a hold.
-            log("::warning::A deployment is still running, so its hold and the fixtures were left for "
-                "the next run's prepare and restore steps.")
-        log("Run cancelled: main was NOT restored. The next run's install replaces the package.")
-        return
-    # Fire and forget: whether main comes back has no bearing on the PR, and the run's result is
-    # already posted. So this submits the deployment and returns; nothing here fails the run.
+    """Fire and forget. Whether main comes back has no bearing on the PR, so nothing here fails a run."""
     try:
-        repository = os.environ["GITHUB_REPOSITORY"]
-        base = f"https://raw.githubusercontent.com/{repository}"
-        # Main can move while a run is in flight; restore what main is now, not what it was at the start.
-        candidates = [sha for sha in (current_main_sha(repository), os.environ.get("MAIN_SHA")) if sha]
-        for sha in dict.fromkeys(candidates):
-            bundle = fetch(artifact_url(base, sha))
-            if bundle is not None:
-                break
-            log(f"::warning::No bundle-artifacts entry for main at {sha} yet; trying the run's starting main.")
+        if args.cancelled:
+            release_cancelled()
         else:
-            raise HubError("No published bundle for main")
-        # A failed PR install leaves its hold, and a hold blocks the purge, so release it first.
-        clear_hold(transport, v3)
-        purge_fixtures(transport, v3)
-        plan = {**plan_from_bundle(sha, bundle), "baseUrl": base, "bundleBaseUrl": base}
-        request_id = operation_id("main")
-        baseline = start(transport, v3, plan, request_id)
-        restore_state().write_text(json.dumps({"requestId": request_id, "plan": plan, "baseline": baseline}))
-        log(f"Main ({sha}) is being restored on the hub as {request_id}; this step does not wait for it.")
-    except HubError as error:
+            submit_restore()
+    except (HubError, ToolError, Unreadable) as error:
         not_restored(str(error))
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+    except Exception:
+        # Never print it: it can carry an endpoint URL and its token.
         not_restored("an endpoint or input was unavailable")
+
+
+def release_cancelled():
+    """GitHub ends a cancelled job after about five minutes, less than a deployment takes, and a
+    cancel is normally followed by a run that installs its own code. So leave the package as it
+    is, and be quick: the lease release still has to run inside that window."""
+    transport, v3, _mcp = endpoints()
+    transport.timeout = 20
+    try:
+        clear_hold(transport, v3, attempts=3, settle=lambda t, url: wait_until_settled(t, url, attempts=6))
+        purge_fixtures(transport, v3)
+    except (HubError, ToolError, Unreadable) as error:
+        # Usually a cancel mid-install: the worker is still saving, and v3 refuses a purge under a hold.
+        log(f"::warning::The hold and the fixtures were left for the next run's prepare and restore steps: {error}")
+    except OSError:
+        log("::warning::The watchdog did not answer; the hold and the fixtures were left for the next run.")
+    log("Run cancelled: main was NOT restored. The next run's install replaces the package.")
+
+
+def submit_restore():
+    transport, v3, _mcp = endpoints()
+    repository = os.environ["GITHUB_REPOSITORY"]
+    base = f"https://raw.githubusercontent.com/{repository}"
+    # Main can move while a run is in flight; restore what main is now, not what it was at the start.
+    candidates = list(dict.fromkeys(
+        sha for sha in (current_main_sha(repository), os.environ.get("MAIN_SHA")) if sha))
+    for position, sha in enumerate(candidates, start=1):
+        bundle = fetch(artifact_url(base, sha))
+        if bundle is not None:
+            break
+        more = "; trying the run's starting main" if position < len(candidates) else ""
+        log(f"::warning::No bundle-artifacts entry for main at {sha}{more}.")
+    else:
+        raise HubError("No published bundle for main")
+    # A failed PR install leaves its hold, and a hold blocks the purge, so release it first.
+    clear_hold(transport, v3)
+    purge_fixtures(transport, v3)
+    plan = {**plan_from_bundle(sha, bundle), "baseUrl": base, "bundleBaseUrl": base}
+    request_id = operation_id("main")
+    baseline = start(transport, v3, plan, request_id)
+    log(f"Main ({sha}) is being restored on the hub as {request_id}; this step does not wait for it.")
+    try:
+        restore_state().write_text(json.dumps({"requestId": request_id, "plan": plan, "baseline": baseline}))
+    except OSError:
+        log("::warning::Could not record the restore for the wait step; the next run's prepare releases its hold.")
 
 
 def restore_state():
@@ -474,9 +552,10 @@ def command_wait_restore(_args):
         result = follow(transport, v3, mcp, state["plan"], state["requestId"], baseline,
                         attempts=72, endpoint_wait_s=600)
         log(f"Restored main: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
-    except HubError as error:
+    except (HubError, ToolError, Unreadable) as error:
         not_restored(str(error))
-    except (OSError, ValueError, KeyError):
+    except Exception:
+        # Never print it: it can carry an endpoint URL and its token.
         not_restored("an endpoint or input was unavailable")
 
 
@@ -500,7 +579,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         args.run(args)
-    except HubError as error:
+    except (HubError, ToolError, Unreadable) as error:
         raise SystemExit(f"::error::{error}") from None
     except (OSError, ValueError, KeyError, zipfile.BadZipFile):
         # Never print the exception: it can carry an endpoint URL and its token.

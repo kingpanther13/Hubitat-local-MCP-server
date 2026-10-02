@@ -18,10 +18,9 @@ hub. It does so at most once per 30 minutes and never into a reboot or platform
 update it was asked to start. The `autoRebootOnWedge` setting turns it off.
 
 V3 refuses to disable or force-delete its own instance, or to delete its own
-code class. It also refuses to
-replace its own code unless the MCP server's endpoint answers (checked over
-loopback: one installed, enabled instance whose `tools/list` offers a
-code-update tool). `hub_get_info` with `peer:true` reports the same check.
+code class. It also refuses to replace its own code unless the MCP server's
+endpoint answers (checked over loopback: one installed, enabled instance whose
+`tools/list` offers a code-update tool). `hub_get_info` with `peer:true` reports the same check.
 
 ## Manual capabilities
 
@@ -71,8 +70,8 @@ code version, without replaying the save.
 
 ## Concurrency and recovery
 
-Reserve the hub through the existing exclusive lease, take a fresh backup, and
-record app/code identities before deployment. The write guards below do not
+Reserve the hub through the existing exclusive lease and record app/code
+identities before deployment. The write guards below do not
 coordinate independent controllers: the lease remains necessary.
 
 An active or held package operation blocks other manual writes through v3,

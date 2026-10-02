@@ -129,6 +129,27 @@ class WatchdogV3ParitySpec extends WatchdogV3Harness {
         reboots == [[confirm: true, force: true]]
     }
 
+    def 'a forced reboot passes while another manual write is running, and an unforced one is refused as busy'() {
+        given: 'a purge hung on a wedged hub still holds the manual-write claim'
+        Map unforced
+        Map forced
+        List reboots = []
+        script.metaClass.adminRebootHub = { Map args -> reboots << args; [success: true] }
+        script.metaClass.adminPurgeE2eArtifacts = { Map args ->
+            unforced = script.executeAdminTool('hub_reboot', [confirm: true])
+            forced = script.executeAdminTool('hub_reboot', [confirm: true, force: true])
+            [success: true]
+        }
+        when:
+        script.executeAdminTool('hub_purge_e2e_artifacts', [confirm: true])
+        then:
+        unforced.success == false
+        unforced.busy
+        unforced.activeTool == 'hub_purge_e2e_artifacts'
+        forced.success
+        reboots == [[confirm: true, force: true]]
+    }
+
     def 'source reads without autosave remain available during a held deployment'() {
         given:
         persisted.packageDeployment = [hold: true]

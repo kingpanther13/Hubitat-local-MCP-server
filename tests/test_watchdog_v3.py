@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -36,6 +37,7 @@ class Hub:
         self.release_replies = []
         self.instances = [{"id": 38, "parentId": None, "type": "MCP Rule Server", "disabled": False}]
         self.versions = [7]
+        self.library_versions = [3]
 
     def probe(self, url):
         self.calls.append((url, "probe"))
@@ -75,6 +77,11 @@ class Hub:
         if name == "hub_get_source":
             version = self.versions.pop(0) if len(self.versions) > 1 else self.versions[0]
             return {"success": True, "version": version, "totalLength": 100}
+        if name == "hub_list_libraries":
+            version = self.library_versions.pop(0) if len(self.library_versions) > 1 else self.library_versions[0]
+            return {"source": "hub_api", "libraries": [
+                {"id": "12", "name": "Example", "namespace": "mcp", "version": version},
+                {"id": "40", "name": "Unrelated", "namespace": "other", "version": 1}]}
         raise AssertionError(name)
 
     def count(self, name):
@@ -196,7 +203,7 @@ def test_an_awaiting_status_with_an_active_worker_is_not_acknowledged(module):
         return result
 
     hub.call = call
-    with pytest.raises(module.HubError, match="timed out"):
+    with pytest.raises(module.HubError, match=r"timed out at awaiting_verification \(MCP Rule Server\)"):
         run(module, hub)
     assert hub.count("hub_set_package_deployment") == 0
 
@@ -213,7 +220,8 @@ def test_a_lost_release_response_keeps_polling_until_status_shows_complete(modul
 
     hub.call = call
     assert run(module, hub)["phase"] == "complete"
-    assert hub.count("hub_set_package_deployment") <= 2
+    assert hub.count("hub_set_package_deployment") == 2
+    assert hub.started == ["op"]
 
 
 def test_a_refused_completion_is_retried_while_the_hold_stays(module):
@@ -475,7 +483,9 @@ def test_a_run_cancelled_mid_install_leaves_the_hold_and_does_not_fail(cli, monk
     monkeypatch.setattr(module, "clear_hold", still_running)
     hub.call = lambda url, name, args: pytest.fail("nothing may be written while the worker runs")
     module.main(["restore-main", "--cancelled"])
-    assert "left for the next run" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "left for the next run" in out
+    assert "A package deployment is still running on the hub" in out
 
 
 def test_a_purge_that_reports_failures_warns_and_does_not_fail(cli, monkeypatch, capsys):
@@ -620,3 +630,223 @@ def test_an_endpoint_failure_never_prints_the_exception(cli, monkeypatch):
     with pytest.raises(SystemExit) as failure:
         module.main(["prepare"])
     assert "secret" not in str(failure.value)
+
+
+def answering(hub, tool, replies):
+    """Make `tool` answer (or raise) each of `replies` once, then behave as the fake normally does."""
+    original = hub.call
+    queue = list(replies)
+
+    def call(url, name, args):
+        if name == tool and queue:
+            hub.calls.append((url, name))
+            reply = queue.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            if reply is not None:
+                return reply
+        return original(url, name, args)
+
+    hub.call = call
+
+
+def test_a_failed_instance_read_after_the_install_is_retried_not_fatal(module):
+    """v3 answers a failed loopback read with success:false; that is a retry, not an identity change."""
+    hub = Hub()
+    original = hub.call
+    failures = [{"success": False, "error": "empty response from /hub2/appsList"}]
+
+    def call(url, name, args):
+        if name == "hub_list_app_instances" and hub.started and failures:
+            return failures.pop()
+        return original(url, name, args)
+
+    hub.call = call
+    assert run(module, hub)["phase"] == "complete"
+    assert hub.started == ["op"]
+
+
+def test_an_unreadable_instance_list_names_the_hubs_reason(module):
+    hub = Hub()
+    answering(hub, "hub_list_app_instances", [{"success": False, "error": "empty response from /hub2/appsList"}])
+    with pytest.raises(module.Unreadable, match="empty response from /hub2/appsList"):
+        module.instance_snapshot(hub, "watchdog")
+
+
+@pytest.mark.parametrize("tool,reply", [
+    ("hub_get_source", {"success": False, "error": "Empty response from hub"}),
+    ("hub_list_apps", {"apps": [], "note": "Empty response from hub API"}),
+    ("hub_list_libraries", {"libraries": [], "count": 0}),
+], ids=["source", "app-list", "library-list"])
+def test_settling_resamples_after_a_read_the_hub_could_not_serve(module, tool, reply):
+    hub = Hub()
+    answering(hub, tool, [reply])
+    module.wait_until_settled(hub, "watchdog", samples=3, interval=0)
+
+
+def test_settling_gives_up_while_a_library_version_keeps_moving(module):
+    hub = Hub()
+    hub.library_versions = list(range(100))
+    with pytest.raises(module.HubError, match="still in flight"):
+        module.wait_until_settled(hub, "watchdog", samples=3, interval=0, attempts=5)
+
+
+def test_dropped_status_reads_are_polled_through_without_resubmitting(module):
+    hub = Hub(phases=["updating_app", "awaiting_verification"])
+    answering(hub, "hub_get_package_deployment", [OSError("relay timeout"), None, OSError("relay timeout")])
+    assert run(module, hub)["phase"] == "complete"
+    assert hub.started == ["op"]
+
+
+def test_a_start_the_hub_rejects_reports_its_reason_at_once(module):
+    hub = Hub()
+    answering(hub, "hub_update_package", [module.ToolError(
+        "Invalid params: libraries must contain the expected name and SHA-256", invalid=True)])
+    with pytest.raises(module.HubError, match="Deployment refused: Invalid params: libraries"):
+        run(module, hub)
+    assert hub.count("hub_get_package_deployment") == 0
+
+
+def test_a_start_that_threw_on_the_hub_is_followed_by_reading_status(module, capsys):
+    hub = Hub()
+    answering(hub, "hub_update_package", [module.ToolError("Tool error: scheduler unavailable")])
+    assert run(module, hub)["phase"] == "complete"
+    assert hub.started == []
+    assert "the start request failed on the hub (Tool error: scheduler unavailable)" in capsys.readouterr().out
+
+
+def test_a_release_that_fails_on_the_hub_says_so_and_is_retried(module, capsys):
+    hub = Hub()
+    answering(hub, "hub_set_package_deployment", [module.ToolError("Tool error: Could not persist deployment stage")])
+    assert run(module, hub)["phase"] == "complete"
+    assert "the release failed on the hub (Tool error: Could not persist deployment stage)" in capsys.readouterr().out
+
+
+def test_a_worker_that_went_silent_stops_the_wait_and_names_where(module):
+    hub = Hub(phases=["updating_app"])
+    original = hub.call
+
+    def call(url, name, args):
+        result = original(url, name, args)
+        if name == "hub_get_package_deployment":
+            result.update(workerActive=True, workerStale=True)
+        return result
+
+    hub.call = call
+    with pytest.raises(module.HubError, match=r"went silent in updating_app \(MCP Rule Server\)"):
+        run(module, hub)
+    assert hub.count("hub_set_package_deployment") == 0
+
+
+def test_a_json_rpc_error_carries_the_hubs_message(module, monkeypatch):
+    body = b'{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params: ref"}}'
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda request, timeout: io.BytesIO(body))
+    with pytest.raises(module.ToolError, match="Invalid params: ref") as failure:
+        module.Transport().rpc("https://hub.invalid/mcp", "tools/call", {})
+    assert failure.value.invalid
+
+
+def test_a_tool_that_threw_is_a_hub_failure_not_a_lost_response(module, monkeypatch):
+    transport = module.Transport()
+    monkeypatch.setattr(transport, "rpc", lambda *args: {
+        "isError": True, "content": [{"type": "text", "text": "Tool error: boom"}]})
+    with pytest.raises(module.ToolError, match="boom") as failure:
+        transport.call("v3", "hub_update_package", {})
+    assert not failure.value.invalid
+
+
+def test_only_a_404_means_the_bundle_does_not_exist(module, monkeypatch):
+    def failing(code):
+        def urlopen(url, timeout):
+            raise module.urllib.error.HTTPError(url, code, "nope", None, None)
+        return urlopen
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", failing(404))
+    assert module.fetch("https://example.invalid/bundle.zip", interval=0) is None
+    monkeypatch.setattr(module.urllib.request, "urlopen", failing(503))
+    with pytest.raises(module.HubError, match="HTTP 503"):
+        module.fetch("https://example.invalid/bundle.zip", interval=0)
+
+
+def test_an_unresolvable_main_says_it_fell_back(module, monkeypatch, capsys):
+    def no_network(*args, **kwargs):
+        raise module.subprocess.SubprocessError("no network")
+
+    monkeypatch.setattr(module.subprocess, "run", no_network)
+    assert module.current_main_sha("owner/repo") is None
+    assert "::warning::Could not resolve main's current SHA" in capsys.readouterr().out
+
+
+def test_a_discovered_endpoint_is_masked_before_it_is_first_used(module, monkeypatch, capsys):
+    """Until the secret points at v3, the discovered URL is not a GitHub secret: the mask is its only cover."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    hub = Discovery(2, V3_INSTANCE, V3_PAGE)
+    original = hub.call
+    printed_before_use = []
+
+    def call(url, name, args):
+        if url == V3_URL:
+            printed_before_use.append(capsys.readouterr().out)
+        return original(url, name, args)
+
+    hub.call = call
+    module.resolve_v3_url(hub, "main", "configured")
+    assert printed_before_use == [f"::add-mask::{V3_URL}\n::add-mask::abc-123\n"]
+
+
+def test_the_endpoint_command_prints_the_url_as_its_last_line(cli, capsys):
+    """mcp_watchdog_deploy.sh takes the last stdout line as WATCHDOG_URL."""
+    module, _hub, _seen, _bundle = cli
+    module.main(["endpoint"])
+    assert capsys.readouterr().out.splitlines()[-1] == "watchdog"
+
+
+@pytest.mark.parametrize("argv", [["restore-main"], ["restore-main", "--cancelled"], ["wait-restore"]],
+                         ids=["restore", "cancelled", "wait"])
+def test_no_restore_command_fails_a_run_when_the_watchdog_cannot_be_reached(cli, monkeypatch, capsys, tmp_path, argv):
+    module, _hub, _seen, _bundle = cli
+    (tmp_path / "watchdog-v3-restore.json").write_text('{"requestId": "x", "plan": {}, "baseline": []}')
+
+    def endpoints():
+        raise OSError("https://cloud.hubitat.com/api/x/apps/1/mcp?access_token=secret")
+
+    monkeypatch.setattr(module, "endpoints", endpoints)
+    module.main(argv)
+    out = capsys.readouterr().out
+    assert "::warning::Main was not restored" in out
+    assert "secret" not in out
+
+
+def test_a_restore_that_cannot_be_recorded_is_still_reported_as_submitted(cli, monkeypatch, capsys, tmp_path):
+    module, hub, seen, _bundle = cli
+    monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)
+    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: bundle_bytes())
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path / "missing"))
+    hub.call = lambda url, name, args: {"success": True}
+    module.main(["restore-main"])
+    out = capsys.readouterr().out
+    assert seen["order"] == ["clear_hold", "submit"]
+    assert "is being restored on the hub" in out
+    assert "::warning::Could not record the restore" in out
+    assert "Main was not restored" not in out
+
+
+def test_the_real_restore_sequence_releases_the_hold_purges_and_submits_once(module, monkeypatch, tmp_path):
+    hub = Hub()
+    hub.held = {"requestId": "e2e-77-2-pr", "phase": "stopped", "hold": True, "workerActive": False}
+    answering(hub, "hub_purge_e2e_artifacts", [{"success": True, "deletedCount": 2}])
+    monkeypatch.setattr(module, "endpoints", lambda: (hub, "watchdog", "main"))
+    monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)
+    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: bundle_bytes())
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GITHUB_RUN_ID", "77")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+    module.main(["restore-main"])
+    names = [name for _url, name in hub.calls]
+    assert names.index("hub_set_package_deployment") < names.index("hub_purge_e2e_artifacts") \
+        < names.index("hub_update_package")
+    assert hub.started == ["e2e-77-2-main"]
+    state = json.loads((tmp_path / "watchdog-v3-restore.json").read_text())
+    assert state["requestId"] == "e2e-77-2-main"
+    assert state["baseline"] == [["38", "MCP Rule Server", False]]

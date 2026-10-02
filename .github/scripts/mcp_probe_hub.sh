@@ -179,8 +179,7 @@ else
 fi
 
 echo "######## Watchdog state ########"
-# hub_get_info on v3 carries the held package deployment and the wedge counters.
+# hub_get_info on v3 carries the latest package deployment (and its hold) and the wedge counters.
 section "watchdog hub_get_info (package deployment hold + wedge state)" "$WATCHDOG_URL" "$(tool_rpc hub_get_info '{}')"
-section "watchdog read e2e-deferred-native-rules.json" "$WATCHDOG_URL" "$(tool_rpc hub_read_file '{"fileName":"e2e-deferred-native-rules.json"}')"
 
 echo "######## PROBE COMPLETE ########"

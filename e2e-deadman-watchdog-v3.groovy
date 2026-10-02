@@ -54,8 +54,8 @@ mappings {
 @groovy.transform.Field static final Map LOOPBACK = [failStreak: 0, lastOkAt: null, streakStartedAt: null]
 @groovy.transform.Field static final int WEDGE_STREAK_MIN = 8
 @groovy.transform.Field static final Object REBOOT_LOCK = new Object()
-// Longer than any single blocking call the worker makes (the 420s app save), so a worker silent
-// for this long is dead rather than slow.
+// Longer than any single blocking call the worker makes (the 420s app save). A worker silent this
+// long is treated as dead; if it is only slow, packageRequireHold stops it before its next write.
 @groovy.transform.Field static final long WORKER_STALE_MS = 900000L
 // Live deployment progress, kept in memory the way HPM keeps its status message: only the hold is
 // persisted. A hub restart or code load empties it, which is how a dead deployment is recognised.
@@ -394,7 +394,7 @@ def adminGetPackageDeployment(Map args) {
     def job = packageJob()
     if (!job || job.requestId != args.requestId?.toString())
         return [success: false, error: "No deployment with this requestId",
-                note: "hub_get_info.packageDeployment reports the operation this watchdog currently holds."]
+                note: "hub_get_info.packageDeployment reports this watchdog's latest operation."]
     return packageStatus(job)
 }
 
@@ -467,11 +467,23 @@ def adminSetPackageDeployment(Map args) {
         failure = "Could not recheck installed sources (${e.message})"
     } finally {
         synchronized (PACKAGE_DEPLOY_LOCK) {
+            String restPhase = job.phase
+            String restComponent = job.component ?: ""
             job.workerActive = false
             job.hold = failure != null
-            // A failed recheck keeps the phase, so completion can be retried once the hub reads cleanly.
-            if (failure != null) packageStage(job, job.phase, job.component ?: "", "${failure}; safety hold retained")
-            else packageStage(job, abandon ? "abandoned" : "complete")
+            try {
+                // A failed recheck keeps the phase, so completion can be retried once the hub reads cleanly.
+                if (failure != null) packageStage(job, restPhase, restComponent, "${failure}; safety hold retained")
+                else packageStage(job, abandon ? "abandoned" : "complete")
+            } catch (Exception e) {
+                // The record still holds: put memory back to match it, without this release's claim.
+                job.phase = restPhase
+                job.component = restComponent
+                job.hold = true
+                job.error = "Could not persist the release (${e.message}); safety hold retained".toString()
+                packagePublish(job)
+                throw e
+            }
         }
     }
     def status = adminGetPackageDeployment(args)
@@ -751,7 +763,7 @@ String packageSourceHash(String source) {
 def getPackageToolDefinitions() {
     return [
         [name: "hub_update_package", annotations: [title: "Deploy MCP Package", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true],
-         description: "Start one background repair of the existing MCP package at an immutable commit. Reserve the E2E hub, verify the original MCP and v3 endpoints, and back up first. Holds further deployments and competing manual writes until hub_set_package_deployment releases the hold. Deploy a known-good ref to request restoration. A library the commit adds is created by its bundle; existing libraries must each be installed exactly once. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
+         description: "Start one background repair of the existing MCP package at an immutable commit. Reserve the E2E hub and verify the original MCP and v3 endpoints first. Holds further deployments and competing manual writes until hub_set_package_deployment releases the hold. Deploy a known-good ref to request restoration. A library the commit adds is created by its bundle; existing libraries must each be installed exactly once. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
          inputSchema: [type: "object", properties: [requestId: [type: "string"], ref: [type: "string", description: "Full 40-character commit SHA."],
              baseUrl: [type: "string", description: "Raw GitHub source repository URL; defaults to upstream."],
              bundleBaseUrl: [type: "string", description: "Raw GitHub repository hosting bundle-artifacts/shas/<ref>/mcp-libraries.zip; defaults to upstream."],
@@ -970,10 +982,9 @@ def adminUpdateApp(args) {
         }
 
         // Deploy-outcome record (generalized from the issue #237 lastSelfDeploy; persists across reloads).
-        // Stashed for EVERY app update (with appId), not just self-update: the ~1.6MB app deploy exceeds
-        // the cloud relay's response window, so CI recovers success + the verbatim compile error by polling
-        // hub_get_info.lastSelfDeploy. The watchdog is stable (deploying the MAIN server never bricks IT),
-        // so this record is always queryable -- the whole point of routing deploys through the watchdog.
+        // Stashed for EVERY app update (with appId), not just self-update: a large app save outlives
+        // the cloud relay's response window, so a caller recovers success + the verbatim compile error
+        // by polling hub_get_info.lastSelfDeploy.
         try {
             atomicState.lastSelfDeploy = [
                 appId: itemId?.toString(),
@@ -1247,7 +1258,9 @@ def adminDeleteItem(args) {
 
     if (type == "app") {
         def current = _parseJsonBody(hubGet("/app/ajax/code", [id: id]))
-        if (current instanceof Map && isWatchdogSource(current.source))
+        if (!(current instanceof Map))
+            return [success: false, appId: id, error: "Could not read app ${id} to rule out this watchdog's own code; nothing was deleted."]
+        if (isWatchdogSource(current.source))
             return [success: false, appId: id, error: "Refused: app ${id} is this watchdog's own code, the hub's remote repair path."]
     }
     def deletePath = (type == "app") ? "/app/edit/deleteJsonSafe/" : "/driver/editor/deleteJson/"
@@ -1435,8 +1448,8 @@ private Map purgeNoOpResult(String prefix, String note) {
 // forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
 // round-trip instead of N. Hard-scoped to the prefix (never a real app); confirm:true required.
 // SINGLE-FLIGHT LATCH + SHORT RESULT CACHE. This sweep takes minutes (N apps x forcedelete + verify-gone), which is far longer than
-// the ~10s cloud-relay timeout, so CI's retry-on-dropped-response fires while the FIRST sweep is
-// still running. Observed live 2026-09-01: five overlapping invocations, each re-enumerating the
+// the ~10s cloud-relay timeout, so a caller that retries a dropped response does so while the FIRST
+// sweep is still running. Observed live 2026-09-01: five overlapping invocations, each re-enumerating the
 // same app list and racing on the same ids (three hit forcedelete/30839 in the same millisecond),
 // each running 11+ minutes. That pile-on is what exhausted the hub's web thread pool and wedged
 // it for 3h32m. A duplicate call now returns the in-flight marker instead of starting a sweep,
@@ -2425,7 +2438,7 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [:]]],
         [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
          inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
-        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [peer: [type: "boolean", description: "Also check that the MCP server's own endpoint answers (peerEndpoint.available); this calls its tools/list over loopback, so do not poll with it."]]], description: "Hub model/firmware/memory, the lastSelfDeploy record of the latest hub_update_app (with ageMs; hub_update_package does not write it), the held package deployment, and loopback wedge health including the last automatic reboot. The package is never restored automatically."],
+        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [peer: [type: "boolean", description: "Also check that the MCP server's own endpoint answers (peerEndpoint.available); this calls its tools/list over loopback, so do not poll with it."]]], description: "Hub model/firmware/memory, the lastSelfDeploy record of the latest hub_update_app (with ageMs; hub_update_package does not write it), the latest package deployment (check its hold), and loopback wedge health including the last automatic reboot. The package is never restored automatically."],
         [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List Apps Code types (scope='types') or installed apps.",
          inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],
         [name: "hub_list_libraries", annotations: [title: "List Libraries", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List libraries (id/name/namespace/version summaries)."],

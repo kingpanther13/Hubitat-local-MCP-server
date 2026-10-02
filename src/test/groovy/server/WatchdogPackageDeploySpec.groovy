@@ -11,6 +11,12 @@ import support.PassThroughAppValidator
 import support.PermissiveLog
 
 class WatchdogPackageDeploySpec extends WatchdogV3Harness {
+    /** An atomicState whose writes do not land. */
+    static class DroppingMap extends HashMap {
+        DroppingMap(Map source) { super(source) }
+        @Override Object put(Object key, Object value) { null }
+    }
+
     def 'watchdog advertises start status and release tools through MCP'() {
         when:
         def response = script.processJsonRpcMessage([jsonrpc: '2.0', id: 1, method: 'tools/list'])
@@ -344,13 +350,72 @@ class WatchdogPackageDeploySpec extends WatchdogV3Harness {
         writes.empty
     }
 
-    def 'the health tick is armed once per code load, by the first request or by initialize'() {
+    def 'the first request after a code load arms the health tick, once'() {
+        given: 'a code update runs no initialize(); the next POST to /mcp is the first thing to execute'
+        def injected = me.biocomp.hubitat_ci.app.HubitatAppScript.getDeclaredField('injectedMappingHandlerData')
+        injected.accessible = true
+        injected.set(script, [request: [JSON: [jsonrpc: '2.0', id: 1, method: 'tools/list']]])
         when:
-        script.ensureHealthTick()
-        script.ensureHealthTick()
+        script.handleMcpRequest()
+        script.handleMcpRequest()
         script.initialize()
         then:
         periodic == ['checkHubHealth']
+    }
+
+    def 'a restart after the install came to rest does not interrupt it, and completion still releases'() {
+        given:
+        script.adminUpdatePackage(request())
+        tick()
+        when: 'the watchdog restarts: the in-memory progress is gone, the persisted record remains'
+        script.PACKAGE_PROGRESS.clear()
+        def status = script.adminGetPackageDeployment([requestId: 'test-operation'])
+        def released = script.adminSetPackageDeployment([requestId: 'test-operation', confirm: true, endpointVerified: true])
+        then:
+        status.phase == 'awaiting_verification'
+        status.hold == true
+        released.phase == 'complete'
+        job().hold == false
+    }
+
+    def 'a release whose record cannot be persisted keeps the hold and leaves no claim behind'() {
+        given:
+        script.adminUpdatePackage(request())
+        tick()
+        Map release = [requestId: 'test-operation', confirm: true, endpointVerified: true]
+        Map healthy = persisted
+        when: 'the record write does not land'
+        persisted = new DroppingMap(healthy)
+        script.adminSetPackageDeployment(release)
+        then:
+        thrown(IllegalStateException)
+        job().hold == true
+        job().phase == 'awaiting_verification'
+        !job().workerActive
+        when:
+        persisted = healthy
+        def released = script.adminSetPackageDeployment(release)
+        then:
+        released.phase == 'complete'
+        job().hold == false
+    }
+
+    def 'a worker that outlived a code load stops once the persisted hold is no longer its own'() {
+        given: 'a newer class admits another operation mid-save; this worker sees only its own memory'
+        script.adminUpdatePackage(request())
+        script.metaClass.hubPostForm = { String path, Map body ->
+            writes << [path: path, body: body]
+            persisted.packageDeployment = [requestId: 'newer', hold: true, phase: 'queued', startedAt: clock]
+            sources[body.id.toString()] = body.source
+            versions[body.id.toString()]++
+            [status: 200, data: '{"status":"success"}']
+        }
+        when:
+        tick()
+        then: 'the bundle and the child were written; the parent never is, and the newer hold is untouched'
+        writes.size() == 2
+        persisted.packageDeployment.requestId == 'newer'
+        persisted.packageDeployment.hold == true
     }
 
     def 'saving the settings page does not cancel a pending verification poll'() {

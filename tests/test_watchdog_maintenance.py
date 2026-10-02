@@ -57,6 +57,9 @@ elif name == "hub_update_app":
         "appId": "42", "selfUpdate": True, "selfClassId": "42", "confirm": True,
         "importUrl": "https://raw.githubusercontent.com/fixture/repo/expected/e2e-deadman-watchdog-v3.groovy",
     }
+    if fixture.get("refusal"):
+        emit({"success": False, "error": fixture["refusal"]})
+        sys.exit(0)
     (root / "source-at-deploy").write_bytes((root / "watchdog-before.groovy").read_bytes())
     (root / "deployed").touch()
     emit({"success": True})
@@ -210,3 +213,20 @@ def test_deploy_rechecks_the_hold_after_backup_download(tmp_path):
     assert (tmp_path / "watchdog-maintenance-verified/watchdog-before.groovy").read_bytes() == (
         "".join(SOURCE_PARTS).encode()
     )
+
+
+def test_maintenance_fails_with_the_refusal_when_v3_declines_its_own_update(tmp_path):
+    """V3 refuses to replace its own code while the MCP server's endpoint does not answer."""
+    refusal = "Refused: the MCP server endpoint does not answer; it is the only repair path"
+
+    def refuse_the_update(directory):
+        fixture_path = directory.parent / "fixture.json"
+        fixture = json.loads(fixture_path.read_text())
+        fixture["refusal"] = refusal
+        fixture_path.write_text(json.dumps(fixture))
+
+    result, calls = run_maintenance(tmp_path, damage=refuse_the_update)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert refusal in result.stderr
+    assert not (tmp_path / "deployed").exists()
+    assert not any(call["params"].get("name") == "hub_set_mcp_developer_mode" for call in calls)

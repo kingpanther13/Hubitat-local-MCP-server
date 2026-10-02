@@ -23,7 +23,7 @@ class WatchdogV3ManualSpec extends Specification {
                 _ * getLog() >> new PermissiveLog()
                 _ * getSettings() >> [hubSecurityEnabled: false, debugLogging: false]
                 _ * getAtomicState() >> { atomicStateMap }
-                // Real wall-clock: the single-flight latch computes (now() - restoreInFlightAt);
+                // Real wall-clock: the single-flight latch computes (now() - purgeInFlightAt);
                 // an unstubbed mock now() returns 0, making every latch age hugely negative.
                 _ * now() >> { System.currentTimeMillis() }
                 _ * runIn(*_) >> { args -> runInCalls << (args as List) }
@@ -134,7 +134,7 @@ class WatchdogV3ManualSpec extends Specification {
     }
 
     def "a live probe that answers stands the auto-reboot down, even with a wedged-looking streak"() {
-        given: 'counters survive a hub restart, so the first tick after recovery sees a stale streak'
+        given: 'a wedged-looking streak left over from before the hub recovered'
         String posted = null
         script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
         script.metaClass.probeLoopbackAlive = { -> true }
@@ -365,6 +365,24 @@ class WatchdogV3ManualSpec extends Specification {
         'a catalog with no code-update tool'    | [[id: 38, type: 'MCP Rule Server']]                                         | [[name: 'accessToken', value: 't']] | '{"result":{"tools":[{"name":"hub_list_devices"}]}}'  | false     | 'no code-update tool'
     }
 
+    def "the watchdog deletes no app whose code it cannot read"() {
+        given: 'the read that would rule out the watchdog\'s own code fails'
+        def deletes = []
+        script.metaClass.hubGet = { String p, Map q ->
+            if (p == '/app/ajax/code') return null
+            deletes << p
+            '{"status":"true"}'
+        }
+
+        when:
+        def res = script.adminDeleteItem([type: 'app', id: '77', confirm: true])
+
+        then:
+        res.success == false
+        res.error.contains('nothing was deleted')
+        deletes == []
+    }
+
     def "the watchdog refuses to delete its own code class but deletes another"() {
         given:
         def deletes = []
@@ -406,8 +424,6 @@ class WatchdogV3ManualSpec extends Specification {
         script.hubPostTimeoutSec('/installedapp/btn') == 420
         script.hubPostTimeoutSec('/hub/cloud/updatePlatform') == 420
     }
-
-
 
     @Unroll
     def "adminUpdateLibrary fails CLOSED on a dropped/invalid POST (#scenario)"() {
@@ -454,32 +470,14 @@ class WatchdogV3ManualSpec extends Specification {
         false  || true
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // ---- defer-native-deletes: force-delete an installed-app instance (RM rule) for the disarm sweep ----
+    // ---- force-delete an installed-app instance (RM rule), as the fixture purge does ----
 
     def "adminForceDeleteInstalledApp GETs /installedapp/forcedelete/<id>/quiet then verifies gone via /installedapp/json"() {
         given:
         // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list; hubGetStatus
         // captures that status off the thrown response (followRedirects:false), so the tool sees a 3xx.
         // The 302 alone is not trusted: a follow-up /installedapp/json existence read (404 = gone)
-        // must confirm, because the disarm sweep fires these mid-recompile where commits strand.
+        // must confirm, because the fixture purge can fire these mid-recompile, where commits strand.
         def paths = []
         script.metaClass.hubGetStatus = { String path, Map q ->
             paths << path
@@ -547,7 +545,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "adminForceDeleteInstalledApp reports success:false when the request never reaches the hub (status null)"() {
         given:
         // hubGetStatus leaves status null on an auth/cookie failure or a request that never reached the
-        // hub -- the tool must NOT report success then, so the disarm sweep can warn + keep its id list.
+        // hub -- the tool must NOT report success then, so the fixture purge reports the failure.
         script.metaClass.hubGetStatus = { String path, Map q -> [status: null, location: null, data: null] }
 
         when:
@@ -755,7 +753,7 @@ class WatchdogV3ManualSpec extends Specification {
         'missing'     | null
     }
 
-    // ---- PR #247: bundle tools mirrored into the watchdog + the no-stale restore cleanup ----
+    // ---- bundle tools mirrored into the watchdog ----
 
     @Unroll
     def "adminListBundles parses the hub bundle list (#scenario)"() {
@@ -803,20 +801,6 @@ class WatchdogV3ManualSpec extends Specification {
         script.adminDeleteBundle([bundleId: '99', confirm: true]).success == false
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def "adminGetHubLogs parses tab-delimited rows newest-first with a level filter"() {
         given:
         script.metaClass.hubGet = { String p, Map q, int t = 30 ->
@@ -832,26 +816,25 @@ class WatchdogV3ManualSpec extends Specification {
         r.totalParsed == 3
     }
 
-    def "adminGetJobs reads /logs/json and maps checkDeadman (the watchdog schedule check)"() {
+    def "adminGetJobs reads /logs/json and maps a scheduled job by its method name"() {
         given:
         // hub_get_jobs reads the verified /logs/json shape (jobs / runningJobs / hubCommands, keyed by
-        // methodName) -- NOT the old non-existent /hub/scheduledJobs/json that 404'd and blinded the
-        // pre-arm checkDeadman schedule check in mcp_arm_watchdog.sh.
+        // methodName) -- NOT the non-existent /hub/scheduledJobs/json, which 404s.
         String requestedPath = null
         script.metaClass.hubGet = { String p, Map q ->
             requestedPath = p
-            '{"uptime":"1d","jobs":[{"name":"checkDeadman","methodName":"checkDeadman","recurring":true}],"runningJobs":[],"hubCommands":[]}'
+            '{"uptime":"1d","jobs":[{"name":"checkHubHealth","methodName":"checkHubHealth","recurring":true}],"runningJobs":[],"hubCommands":[]}'
         }
 
         when:
         def r = script.adminGetJobs([:])
 
-        then: 'the schedule check reads /logs/json, never /hub/scheduledJobs/json'
+        then: 'the schedule read goes to /logs/json, never /hub/scheduledJobs/json'
         requestedPath == '/logs/json'
 
-        and: 'checkDeadman is surfaced via job.methodName so the arm-time jq can confirm it is scheduled'
+        and: 'the health tick is surfaced via job.methodName, so a caller can confirm it is scheduled'
         r.scheduledJobs.count == 1
-        r.scheduledJobs.jobs[0].method == 'checkDeadman'
+        r.scheduledJobs.jobs[0].method == 'checkHubHealth'
         r.hubActions.count == 0
     }
 
@@ -889,14 +872,6 @@ class WatchdogV3ManualSpec extends Specification {
         r.summary.currentMemoryKB == 300
     }
 
-
-
-
-
-
-
-
-
     def "adminDeleteBundle reports verified=false when the post-delete re-list is degraded"() {
         given:
         int calls = 0
@@ -915,8 +890,6 @@ class WatchdogV3ManualSpec extends Specification {
         r.success == false      // a destructive op must NOT claim success it couldn't verify
         r.verified == false
     }
-
-
 
     // ---- hub_update_platform: apply the pending platform update (test-hub maintenance) ----
 
@@ -1054,12 +1027,6 @@ class WatchdogV3ManualSpec extends Specification {
 
     // ---- wedge detection + auto-reboot escape -------------------------------------------------
 
-
-
-
-
-
-
     def "a successful loopback call clears the wedge streak"() {
         given:
         script.LOOPBACK.failStreak = 12
@@ -1071,15 +1038,6 @@ class WatchdogV3ManualSpec extends Specification {
         script.LOOPBACK.failStreak == 0
         script.LOOPBACK.lastOkAt != null
     }
-
-    // ---- restore retry backoff ----------------------------------------------------------------
-    // Each restore attempt is a 660KB source fetch + a bundle install + two app recompiles. The old
-    // code retried on every 1-minute tick, piling that load onto the condition that made the
-    // restore fail in the first place.
-
-
-
-
 
     // ---- hub_reboot admin tool ---------------------------------------------------------------
 
@@ -1249,8 +1207,6 @@ class WatchdogV3ManualSpec extends Specification {
         defs.findAll { it.annotations.readOnlyHint == true }.every { !it.annotations.containsKey('destructiveHint') }
     }
 
-
-
     def "hub_reboot is declared a destructive write"() {
         given:
         def rb = script.getAdminToolDefinitions().find { it.name == 'hub_reboot' }
@@ -1317,8 +1273,6 @@ class WatchdogV3ManualSpec extends Specification {
         script.LOOPBACK.lastOkAt != null
     }
 
-
-
     // ---- purge failures carry an aggregate error + recovery note ------------------------------
 
     def "a purge with failures reports a top-level error and actionable note"() {
@@ -1358,12 +1312,6 @@ class WatchdogV3ManualSpec extends Specification {
     // ---- the auto-reboot must NOT fire on downtime we caused, or on stale counters -------------
     // These are the misfire modes that matter: rebooting mid platform-install, and boot-looping a
     // hub that has already come back. Both are worse than the wedge the escape exists to clear.
-
-
-
-
-
-
 
     def "hub_reboot stamps the downtime window so it cannot trigger its own escape"() {
         given:
@@ -1465,7 +1413,7 @@ class WatchdogV3ManualSpec extends Specification {
     }
 
 
-    // ---- CodeRabbit round 4: contracts and latch edge cases -----------------------------------
+    // ---- contracts and latch edge cases -------------------------------------------------------
 
     def "every tool definition carries an object-root inputSchema (the MCP spec makes it REQUIRED)"() {
         given: "tools/list returns these straight to the wire"
@@ -1599,8 +1547,6 @@ class WatchdogV3ManualSpec extends Specification {
         res.note?.contains('Retry')
     }
 
-
-
     def "a null getAllGlobalVars is reported as an enumeration failure, never as a clean sweep"() {
         given:
         script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
@@ -1615,8 +1561,6 @@ class WatchdogV3ManualSpec extends Specification {
         res.variablesFailed[0].name == '*'
         res.variablesFailed[0].error.contains('could not enumerate')
     }
-
-    // ---- review round 7 ----------------------------------------------------------------------
 
     def "findHubVariablesAppId anchors on the configure path and follows the create hop (#scenario)"() {
         given: "the redirect shapes the hub actually produces"
@@ -1693,8 +1637,6 @@ class WatchdogV3ManualSpec extends Specification {
         atomicStateMap.expectedDownUntil == null
     }
 
-
-
     def "hub_manage_variables sub-tools declare their real parameters"() {
         given:
         def catalog = script.adminManageVariables([:])
@@ -1706,12 +1648,6 @@ class WatchdogV3ManualSpec extends Specification {
         subs.find { it.name == 'hub_get_variable' }.inputSchema.required == ['name']
         subs.find { it.name == 'hub_set_variable' }.inputSchema.required.containsAll(['name', 'value', 'confirm'])
     }
-
-
-
-
-
-
 
     def "a rejected reboot POST restores the downtime window it found, rather than clearing it"() {
         given: "a platform update already has a window open; the hub then answers the reboot"
@@ -1727,7 +1663,7 @@ class WatchdogV3ManualSpec extends Specification {
         atomicStateMap.expectedDownUntil == existing
     }
 
-    def "the persisted failure streak saturates at the wedge threshold (streak #streak)"() {
+    def "the failure streak saturates at the wedge threshold (streak #streak)"() {
         given:
         script.LOOPBACK.failStreak = streak
         script.LOOPBACK.streakStartedAt = System.currentTimeMillis() - 1_000L
@@ -1735,7 +1671,7 @@ class WatchdogV3ManualSpec extends Specification {
         when:
         script.noteLoopback(false)
 
-        then: "below the threshold it still counts; at or past it nothing is written"
+        then: "below the threshold it still counts; at or past it the count is left alone"
         script.LOOPBACK.failStreak == expected
 
         where:
@@ -1744,8 +1680,6 @@ class WatchdogV3ManualSpec extends Specification {
         8      | 8
         40     | 40
     }
-
-
 
     def "a failed reboot leaves a NEWER downtime window alone"() {
         given: "a platform update stamps its window while the reboot POST is in flight"
@@ -1783,10 +1717,6 @@ class WatchdogV3ManualSpec extends Specification {
         (atomicStateMap.purgeInFlightAt as Long) > 1L
         res.failed.any { it.id == 2 && it.error.contains("claim lost") }
     }
-
-
-
-
 
     def "a platform update claims the downtime window BEFORE its request"() {
         given:
@@ -1854,8 +1784,6 @@ class WatchdogV3ManualSpec extends Specification {
         atomicStateMap.expectedDownReason == 'hub_reboot'
     }
 
-
-
     def "a fresh purge stamp that no claim owns is not treated as cover for this sweep"() {
         given: "the timestamp of a sweep that has finished and cleared its claim"
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis()
@@ -1871,8 +1799,6 @@ class WatchdogV3ManualSpec extends Specification {
         swept == true
         r.inFlight != true
     }
-
-
 
     def "hub_reboot is refused while an accepted platform update is installing, unless forced"() {
         given: "the update window claimed by hub_update_platform"
@@ -1892,10 +1818,6 @@ class WatchdogV3ManualSpec extends Specification {
         forced.success == true
         posts == ['/hub/reboot']
     }
-
-
-
-
 
     def "hub_get_info exposes the wedge detector's state, so an auto-reboot can be attributed after the log buffer has rolled"() {
         given: "a stamped auto-reboot and a short streak, on a hub whose loopback answers"
@@ -1946,12 +1868,6 @@ class WatchdogV3ManualSpec extends Specification {
         res.variablesFailed.any { it.name == 'BAT_E2E_v1' && it.error.contains('claim lost') && it.error.contains('delConfirm') }
         res.variablesDeleted == []
     }
-
-
-
-
-
-
 
 }
 
