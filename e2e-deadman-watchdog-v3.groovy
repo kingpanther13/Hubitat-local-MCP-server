@@ -1,7 +1,7 @@
 /**
- * Manual administration and package deployment for the E2E hub.
- * Preserves v2 tools without autonomous restoration or reboot.
- * Requires an exclusive hub lease and a fresh backup before manual deployment.
+ * Manual administration and package deployment for the E2E hub. Never restores a package on its own;
+ * its only automatic action is rebooting a hub whose web stack is wedged.
+ * Callers must hold the exclusive hub lease and take a fresh backup before deploying.
  */
 definition(
     name: "E2E Dead-Man Watchdog v3",
@@ -17,8 +17,9 @@ definition(
 
 preferences {
     page(name: "mainPage", title: "E2E Dead-Man Watchdog v3", install: true, uninstall: true) {
-        section("Package deployment") {
+        section("Watchdog") {
             input "debugLogging", "bool", title: "Debug logging", defaultValue: false, required: false
+            input "autoRebootOnWedge", "bool", title: "Auto-reboot when the hub's loopback HTTP stays dead for 4+ minutes (the web stack is wedged)", defaultValue: true, required: false
         }
         section("MCP Deploy Endpoint") {
             if (state.accessToken) {
@@ -50,14 +51,90 @@ mappings {
 @groovy.transform.Field static final Object LOOPBACK_LOCK = new Object()
 @groovy.transform.Field static final int WEDGE_STREAK_MIN = 8
 @groovy.transform.Field static final Object REBOOT_LOCK = new Object()
+// Longer than any single blocking call the worker makes (the 420s app save), so a worker silent
+// for this long is dead rather than slow.
+@groovy.transform.Field static final long WORKER_STALE_MS = 900000L
 
 def installed() { initialize() }
-def updated() { unschedule(); initialize() }
+// No unschedule(): it would drop a pending deployment verification poll and strand the hold.
+def updated() { initialize() }
 def initialize() {
     if (!state.accessToken) {
         try { createAccessToken() }
-        catch (Exception ignored) { log.warn "Enable OAuth for the v3 code class, then save this app to create its endpoint." }
+        catch (Exception e) { log.warn "createAccessToken() failed (${e.message}). Enable OAuth for the v3 code class, then save this app to create its endpoint." }
     }
+    runEvery1Minute("checkHubHealth")
+}
+
+// A wedged web stack cannot serve this app's own /mcp endpoint, so no remote caller can request the
+// reboot; only this on-hub tick can. The probe keeps the wedge counters live on an idle hub.
+def checkHubHealth() {
+    probeLoopbackAlive()
+    maybeAutoRebootWedgedHub()
+}
+
+// Rate-limited to one attempt per 30 minutes so a reboot that does not clear the wedge cannot
+// become a boot loop.
+private boolean maybeAutoRebootWedgedHub() {
+    if (settings?.autoRebootOnWedge == false) return false
+    if (!hubLooksWedged()) return false
+    Long downUntil = null
+    try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
+    if (downUntil != null && now() < downUntil) {
+        log.warn "E2E Dead-Man Watchdog v3: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- not rebooting into it."
+        return false
+    }
+    // Never act on accumulated counters alone: a live probe must also fail right now. Outside the
+    // monitor on purpose -- a 10s probe under it would hold every queued tick.
+    if (probeLoopbackAlive()) {
+        log.warn "E2E Dead-Man Watchdog v3: the wedge counters were stale -- a live probe answered, so the hub is healthy. NOT rebooting."
+        return false
+    }
+    long nowMs = now()
+    synchronized (REBOOT_LOCK) {
+        Long lastReboot = null
+        try { lastReboot = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { lastReboot = null }
+        if (lastReboot != null && (nowMs - lastReboot) < 1800000L) {
+            log.warn "E2E Dead-Man Watchdog v3: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again within 30 minutes. The hub may need a physical power cycle."
+            return false
+        }
+        // Re-validate under the lock: another tick's probe may have answered, or an operator may
+        // have started a reboot or platform update, since the checks above.
+        if (!hubLooksWedged()) {
+            log.warn "E2E Dead-Man Watchdog v3: the hub recovered while the reboot slot was being claimed -- NOT rebooting."
+            return false
+        }
+        try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
+        if (downUntil != null && nowMs < downUntil) {
+            log.warn "E2E Dead-Man Watchdog v3: a deliberate reboot/platform update began while the reboot slot was being claimed -- not rebooting into it."
+            return false
+        }
+        // Claim under the lock so an overlapping tick cannot also reach the POST; the POST itself
+        // runs outside it so a hung request holds nothing but its own thread.
+        atomicState.lastAutoRebootAt = nowMs
+        Long stampBack = null
+        try { stampBack = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { stampBack = null }
+        if (stampBack != nowMs) {
+            log.error "E2E Dead-Man Watchdog v3: the auto-reboot rate-limit stamp did NOT persist (state holds ${stampBack}); rebooting anyway, but a following tick could fire a second reboot."
+        }
+    }
+    // A loopback call already in flight can answer in the gap; never reboot a hub that just came back.
+    if (!hubLooksWedged()) {
+        log.warn "E2E Dead-Man Watchdog v3: the hub answered while the reboot was being prepared -- NOT rebooting, and the rate-limit slot is given back."
+        try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
+        return false
+    }
+    log.error "E2E Dead-Man Watchdog v3: hub loopback HTTP has been dead for at least ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
+    def r = adminRebootHub([confirm: true])
+    if (!r?.success) {
+        log.error "E2E Dead-Man Watchdog v3: auto-reboot POST did not confirm (${r?.error})."
+        // An ambiguous POST may have landed, so its stamp keeps the 30-minute limit; an answered
+        // rejection proves nothing rebooted, so the slot is freed for a real retry.
+        if (r?.ambiguous != true) {
+            try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
+        }
+    }
+    return true
 }
 
 def handleMcpGet() {
@@ -147,7 +224,7 @@ def handleInitialize(msg) {
         protocolVersion: negotiated,
         capabilities: [tools: [:]],
         serverInfo: [name: "e2e-deadman-watchdog-v3", version: "3"],
-        instructions: "Manual administration and package deployment with persisted progress. Reserve the E2E hub before changes. Restoration and reboot require explicit requests."
+        instructions: "Manual administration and package deployment with persisted progress. Reserve the E2E hub before changes. Restoration requires an explicit request; the only automatic action is a reboot when the hub's web stack has been wedged for 4+ minutes."
     ])
 }
 
@@ -185,25 +262,48 @@ def jsonRpcError(id, code, message, data = null) {
 }
 
 def executeAdminTool(String toolName, Map args) {
+    // Status makes no hub HTTP call, so it stays readable when Hub Security auth is broken.
     if (toolName == "hub_get_package_deployment") return adminGetPackageDeployment(args)
     if (settings?.hubSecurityEnabled == true && secCookie() == null)
         return [success: false, error: "Hub Security authentication failed; check v3 settings"]
     if (toolName == "hub_update_package") return adminUpdatePackage(args)
     if (toolName == "hub_set_package_deployment") return adminSetPackageDeployment(args)
     if (!manualToolWrites(toolName, args)) return executeManualTool(toolName, args)
+    // A forced reboot is the only in-band recovery from a wedged hub, so it never waits behind a
+    // hold or another write.
+    if (toolName == "hub_reboot" && args.force == true) return executeManualTool(toolName, args)
+    boolean repeatedPurge = false
     synchronized (PACKAGE_DEPLOY_LOCK) {
         def deployment = atomicState.packageDeployment
         if (deployment?.hold == true || deployment?.workerActive == true)
-            return [success: false, error: "A package deployment is held; manual writes are blocked"]
-        if (!MANUAL_WRITE.isEmpty())
-            return [success: false, error: "Another manual write is running; nothing was submitted"]
-        MANUAL_WRITE.tool = toolName
+            return packageHeldRefusal(deployment, "manual writes are blocked")
+        if (MANUAL_WRITE.isEmpty()) {
+            MANUAL_WRITE.tool = toolName
+        } else if (toolName == "hub_purge_e2e_artifacts" && MANUAL_WRITE.tool == toolName) {
+            // The purge's own single-flight latch answers a repeat (in-flight, busy or cached).
+            repeatedPurge = true
+        } else {
+            return manualWriteBusyRefusal("nothing was submitted")
+        }
     }
+    if (repeatedPurge) return executeManualTool(toolName, args)
     try {
         return executeManualTool(toolName, args)
     } finally {
         synchronized (PACKAGE_DEPLOY_LOCK) { MANUAL_WRITE.clear() }
     }
+}
+
+Map packageHeldRefusal(deployment, String consequence) {
+    return [success: false, heldRequestId: deployment?.requestId, phase: deployment?.phase,
+            error: "Package deployment ${deployment?.requestId} is held (phase ${deployment?.phase}); ${consequence}",
+            note: "Poll hub_get_package_deployment with that requestId. Release the hold with hub_set_package_deployment: endpointVerified:true to complete, or abandon:true plus writesSettled:true to give it up."]
+}
+
+Map manualWriteBusyRefusal(String consequence) {
+    return [success: false, busy: true, activeTool: MANUAL_WRITE.tool,
+            error: "A manual write (${MANUAL_WRITE.tool}) is still running; ${consequence}",
+            note: "Nothing was changed by this call. Retry after that write returns."]
 }
 
 boolean manualToolWrites(String toolName, Map args) {
@@ -248,14 +348,14 @@ def adminUpdatePackage(Map args) {
         return adminGetPackageDeployment([requestId: requestId])
     }
     synchronized (PACKAGE_DEPLOY_LOCK) {
-        if (!MANUAL_WRITE.isEmpty()) return [success: false, error: "A manual write is running; no package deployment was scheduled"]
+        if (!MANUAL_WRITE.isEmpty()) return manualWriteBusyRefusal("no package deployment was scheduled")
         def current = atomicState.packageDeployment
         if (current?.requestId == requestId) {
             if (current.binding != binding) return [success: false, error: "requestId is already bound to different inputs"]
             return adminGetPackageDeployment([requestId: requestId])
         }
         if (current?.hold == true || current?.workerActive == true)
-            return [success: false, error: "A v3 deployment is still held; nothing was scheduled"]
+            return packageHeldRefusal(current, "nothing was scheduled")
         atomicState.packageDeployment = [requestId: requestId, ref: ref, binding: binding,
             baseUrl: baseUrl, bundleBaseUrl: bundleBaseUrl, libraries: libraries, hold: true, phase: "queued", status: "queued", startedAt: now(),
             stageStartedAt: now(), updatedAt: now(), history: [], workerActive: false]
@@ -265,9 +365,10 @@ def adminUpdatePackage(Map args) {
     }
     try {
         runIn(1, "runWatchdogPackageDeploy", [data: [requestId: requestId]])
-    } catch (Exception ignored) {
+    } catch (Exception e) {
+        log.error "hub_update_package ${requestId}: could not schedule the worker: ${e.message}"
         def job = [:] + atomicState.packageDeployment
-        packageStage(job, "stopped", "", "Could not schedule deployment. Safety hold retained.")
+        packageStage(job, "stopped", "", "Could not schedule deployment (${e.message}). Safety hold retained.")
     }
     return adminGetPackageDeployment([requestId: requestId])
 }
@@ -275,48 +376,76 @@ def adminUpdatePackage(Map args) {
 def adminGetPackageDeployment(Map args) {
     def job = atomicState.packageDeployment
     if (!job || job.requestId != args.requestId?.toString())
-        return [success: false, error: "No deployment with this requestId"]
+        return [success: false, error: "No deployment with this requestId",
+                note: "hub_get_info.packageDeployment reports the operation this watchdog currently holds."]
     return [success: !(job.phase in ["stopped", "abandoned"]), requestId: job.requestId, ref: job.ref,
         phase: job.phase, status: job.phase, component: job.component, hold: job.hold,
         startedAt: job.startedAt, updatedAt: job.updatedAt, elapsedMs: now() - (job.startedAt as long),
         stageElapsedMs: now() - (job.stageStartedAt as long), workerActive: job.workerActive == true,
-        error: job.error, history: job.history ?: []]
+        workerStale: packageWorkerStale(job), detail: job.detail, error: job.error, history: job.history ?: []]
+}
+
+// A restart mid-save leaves workerActive set with nothing running; only silence tells that apart
+// from a slow worker.
+boolean packageWorkerStale(Map job) {
+    return job.workerActive == true && job.updatedAt != null && (now() - (job.updatedAt as long)) > WORKER_STALE_MS
 }
 
 def adminSetPackageDeployment(Map args) {
     requireConfirm(args)
     if (!args.requestId) throw new IllegalArgumentException("requestId is required to release a package deployment")
+    boolean abandon = args.abandon == true
     synchronized (PACKAGE_DEPLOY_LOCK) {
         def stored = atomicState.packageDeployment
-        if (stored?.requestId != args.requestId?.toString() || stored.workerActive == true)
-            return [success: false, error: "A matching operation with no active worker is required"]
-        if (args.abandon == true ? args.writesSettled != true : args.endpointVerified != true)
-            return [success: false, error: "Verify original endpoints for completion, or explicitly confirm writesSettled before abandoning a stopped deployment for repair"]
-        if (!(args.abandon == true ? stored.phase == "stopped" : stored.phase == "awaiting_verification"))
-            return [success: false, error: "The operation is not ready for release"]
+        if (stored?.requestId != args.requestId?.toString())
+            return [success: false, error: "No deployment with this requestId"]
+        if (stored.hold != true) return adminGetPackageDeployment(args)
+        if (stored.workerActive == true && !(abandon && packageWorkerStale(stored)))
+            return [success: false, requestId: stored.requestId, phase: stored.phase,
+                    error: "A worker or another release is still active for this operation",
+                    note: "Poll hub_get_package_deployment. A worker silent for ${(WORKER_STALE_MS / 60000) as long} minutes reports workerStale:true and can then be abandoned."]
+        if (abandon ? args.writesSettled != true : args.endpointVerified != true)
+            return [success: false, error: "Verify original endpoints for completion, or explicitly confirm writesSettled before abandoning a deployment for repair"]
+        if (!abandon && stored.phase != "awaiting_verification")
+            return [success: false, requestId: stored.requestId, phase: stored.phase,
+                    error: "The operation is not ready for completion; only abandon:true with writesSettled:true can release it in this phase"]
+        // workerActive doubles as the claim that keeps the worker and a second release out.
         def job = [:] + stored
         job.workerActive = true
+        job.updatedAt = now()
         atomicState.packageDeployment = job
     }
     def job = [:] + atomicState.packageDeployment
-    boolean release = false
+    String failure = "Release was interrupted"
     try {
-        if (args.abandon != true && (!packageLibrariesMatch(job) || !job.apps.every { packageAppMatches(it) }))
-            return [success: false, error: "Source verification changed; safety hold retained"]
-        release = true
-    } catch (Exception ignored) {
-        return [success: false, error: "Could not recheck installed sources; safety hold retained"]
+        failure = abandon ? null : packageInstallMismatch(job)
+    } catch (Exception e) {
+        log.error "hub_set_package_deployment ${job.requestId}: recheck failed: ${e.message}"
+        failure = "Could not recheck installed sources (${e.message})"
     } finally {
         synchronized (PACKAGE_DEPLOY_LOCK) {
             if (atomicState.packageDeployment?.requestId == job.requestId) {
                 job.workerActive = false
-                job.hold = !release
-                packageStage(job, release ? (args.abandon == true ? "abandoned" : "complete") : "stopped", "",
-                             release ? null : "Completion verification failed; safety hold retained")
+                job.hold = failure != null
+                // A failed recheck keeps the phase, so completion can be retried once the hub reads cleanly.
+                if (failure != null) packageStage(job, job.phase, job.component ?: "", "${failure}; safety hold retained")
+                else packageStage(job, abandon ? "abandoned" : "complete")
             }
         }
     }
-    return adminGetPackageDeployment(args)
+    def status = adminGetPackageDeployment(args)
+    return failure == null ? status : status + [success: false]
+}
+
+// Null when every expected library and app is installed as deployed, else the first difference.
+String packageInstallMismatch(Map job) {
+    def snapshot = packageLibrarySnapshot(job)
+    if (!snapshot.readable || !snapshot.matches) return snapshot.reason
+    for (def target : (job.apps ?: [])) {
+        String reason = packageAppMismatch(target)
+        if (reason != null) return reason
+    }
+    return null
 }
 
 def runWatchdogPackageDeploy(Map data) {
@@ -334,23 +463,27 @@ def runWatchdogPackageDeploy(Map data) {
             packageStage(job, "preflight")
             prepareWatchdogPackage(job)
             def baseline = packageLibrarySnapshot(job)
-            if (!baseline.readable) throw new IllegalStateException("Cannot read the complete library baseline; bundle was not submitted")
+            if (!baseline.readable) throw new IllegalStateException("Cannot read the complete library baseline (${baseline.reason}); bundle was not submitted")
             if (!baseline.matches) {
                 packageStage(job, "installing_bundle", "MCP libraries")
                 job.verifyUntil = now() + 600000L
                 atomicState.packageDeployment = job
                 def bundle = adminInstallBundle([importUrl: job.bundleUrl, confirm: true])
+                // Only an explicit rejection stops here. A lost or unreadable response may still have
+                // installed, so it goes to hash verification rather than a replay.
                 def rejection = _parseJsonBody(bundle?.rawResponse)
                 if (bundle?.success != true &&
                     (rejection == false || (rejection instanceof Map && rejection.success == false)))
                     throw new IllegalStateException("Bundle install rejected: ${bundle.rawResponse}")
+                if (bundle?.success != true) job.bundleNote = "bundle install was not confirmed (${bundle?.error ?: 'no response'})".toString()
             }
             job.verifyUntil = now() + 600000L
             packageStage(job, "verifying_libraries", "MCP libraries")
         }
         if (job.phase in ["installing_bundle", "verifying_libraries"]) {
-            if (!packageLibrariesMatch(job)) {
-                packageWait(job, "verifying_libraries", "MCP libraries")
+            def snapshot = packageLibrarySnapshot(job)
+            if (!snapshot.readable || !snapshot.matches) {
+                packageWait(job, "verifying_libraries", "MCP libraries", [snapshot.reason, job.bundleNote].findAll().join("; "))
                 return
             }
             job.appIndex = 0
@@ -372,13 +505,17 @@ def runWatchdogPackageDeploy(Map data) {
                 def result = _parseJsonBody(response?.data)
                 if (result instanceof Map && result.status == "error")
                     throw new IllegalStateException("App compile/save rejected: ${result.errorMessage ?: 'no diagnostic'}")
+                // Any other response is uncertain: the save may still land, so it is verified by
+                // reading the source back, never replayed.
+                target.saveStatus = response?.status
                 job.verifyUntil = now() + 600000L
                 packageStage(job, "verifying_app", target.name)
             }
             if (!(job.phase in ["updating_app", "verifying_app"]))
                 throw new IllegalStateException("Interrupted before save; inspect operation before retrying")
-            if (!packageAppMatches(target)) {
-                packageWait(job, "verifying_app", target.name)
+            String mismatch = packageAppMismatch(target)
+            if (mismatch != null) {
+                packageWait(job, "verifying_app", target.name, "${mismatch}; save returned HTTP ${target.saveStatus ?: 'no status'}")
                 return
             }
             job.appIndex = (job.appIndex as int) + 1
@@ -386,11 +523,22 @@ def runWatchdogPackageDeploy(Map data) {
         }
         packageStage(job, "awaiting_verification", "Original MCP and watchdog endpoints")
     } catch (Exception e) {
-        packageStage(job, "stopped", job.component?.toString() ?: "", e.message?.take(1000) ?: "Deployment failed")
+        log.error "Package deployment ${job.requestId} stopped at ${job.phase}: ${e.message}"
+        if (!packageSuperseded(job))
+            packageStage(job, "stopped", job.component?.toString() ?: "", e.message?.take(1000) ?: "Deployment failed")
     } finally {
-        job.workerActive = false
-        atomicState.packageDeployment = job
+        if (!packageSuperseded(job)) {
+            job.workerActive = false
+            atomicState.packageDeployment = job
+        }
     }
+}
+
+// A worker silent past WORKER_STALE_MS can be abandoned by the operator. If it was only slow, it
+// must not write again or revive the released hold.
+boolean packageSuperseded(Map job) {
+    def stored = atomicState.packageDeployment
+    return stored?.requestId != job.requestId || stored.phase == "abandoned"
 }
 
 def prepareWatchdogPackage(Map job) {
@@ -427,59 +575,87 @@ def prepareWatchdogPackage(Map job) {
     if (!(installed instanceof List)) throw new IllegalStateException("Cannot read installed libraries")
     job.libraries = job.libraries.collect { expected ->
         def matches = installed.findAll { it.namespace == "mcp" && it.name == expected.name }
-        if (matches.size() != 1) throw new IllegalStateException("Library ${expected.name} must already exist uniquely")
-        return expected + [id: matches[0].id.toString()]
+        if (matches.size() > 1) throw new IllegalStateException("Library ${expected.name} is installed ${matches.size()} times; remove the duplicates first")
+        // A library the commit adds is absent until the bundle creates it, so it carries no id to pin.
+        return matches ? expected + [id: matches[0].id.toString()] : expected
     }
     job.bundleUrl = "${packageRepository(job.bundleBaseUrl)}/bundle-artifacts/shas/${job.ref}/mcp-libraries.zip".toString()
 }
 
-def packageLibrariesMatch(Map job) {
-    def snapshot = packageLibrarySnapshot(job)
-    return snapshot.readable && snapshot.matches
-}
-
+// readable:false means the install could not be inspected; matches:false means it was inspected
+// and differs. reason names the first library responsible for either.
 Map packageLibrarySnapshot(Map job) {
     try {
         def installed = _parseJsonBody(hubGet("/hub2/userLibraries", [:]))
-        if (!(installed instanceof List)) return [readable: false, matches: false]
-        boolean allMatch = true
+        if (!(installed instanceof List)) return [readable: false, matches: false, reason: "Could not read the installed library list"]
+        String differs = null
         for (def expected : job.libraries) {
             def matches = installed.findAll { it.namespace == "mcp" && it.name == expected.name }
-            if (matches.size() != 1 || matches[0].id.toString() != expected.id) return [readable: false, matches: false]
-            def data = _parseJsonBody(hubGet("/library/list/single/data/${expected.id}".toString(), [:]))
+            if (matches.size() > 1)
+                return [readable: false, matches: false, reason: "Library ${expected.name} is installed ${matches.size()} times".toString()]
+            if (!matches) {
+                if (expected.id) return [readable: false, matches: false, reason: "Library ${expected.name} (id ${expected.id}) is no longer installed".toString()]
+                differs = differs ?: "Library ${expected.name} is not installed yet".toString()
+                continue
+            }
+            String id = matches[0].id.toString()
+            if (expected.id && id != expected.id)
+                return [readable: false, matches: false, reason: "Library ${expected.name} changed id from ${expected.id} to ${id}".toString()]
+            def data = _parseJsonBody(hubGet("/library/list/single/data/${id}".toString(), [:]))
             if (!(data instanceof List) || data.size() != 1 || !(data[0].source instanceof String))
-                return [readable: false, matches: false]
-            if (packageSourceHash(data[0].source) != expected.sha256) allMatch = false
+                return [readable: false, matches: false, reason: "Could not read the source of library ${expected.name} (id ${id})".toString()]
+            if (packageSourceHash(data[0].source) != expected.sha256)
+                differs = differs ?: "Library ${expected.name} (id ${id}) does not match the expected source".toString()
         }
-        return [readable: true, matches: allMatch]
-    } catch (Exception ignored) { return [readable: false, matches: false] }
+        return [readable: true, matches: differs == null, reason: differs]
+    } catch (Exception e) {
+        log.error "packageLibrarySnapshot: ${e.message}"
+        return [readable: false, matches: false, reason: "Library check failed: ${e.message}".toString()]
+    }
 }
 
-def packageAppMatches(Map target) {
+// Null when the installed app is the deployed source, else why not. The version must advance:
+// that is what proves a save landed when the new source equals the old.
+String packageAppMismatch(Map target) {
     try {
         def types = _parseJsonBody(hubGet("/hub2/userAppTypes", [:]))
-        if (!(types instanceof List)) return false
+        if (!(types instanceof List)) return "Could not read the Apps Code list"
         def matches = types.findAll { it.namespace == "mcp" && it.name == target.name }
-        if (matches.size() != 1 || matches[0].id.toString() != target.id) return false
+        if (matches.size() != 1 || matches[0].id.toString() != target.id)
+            return "${target.name} no longer resolves to the single code class ${target.id}".toString()
         def data = _parseJsonBody(hubGet("/app/ajax/code", [id: target.id]))
-        return data instanceof Map && data.source instanceof String && data.version?.toString()?.isLong() &&
-            data.version.toString().toLong() > (target.beforeVersion as long) && packageSourceHash(data.source) == target.sha256
-    } catch (Exception ignored) { return false }
+        if (!(data instanceof Map) || !(data.source instanceof String) || !data.version?.toString()?.isLong())
+            return "Could not read the source of ${target.name}".toString()
+        if (data.version.toString().toLong() <= (target.beforeVersion as long))
+            return "${target.name} is still at code version ${data.version}; the save has not landed".toString()
+        if (packageSourceHash(data.source) != target.sha256)
+            return "${target.name} does not match the expected source".toString()
+        return null
+    } catch (Exception e) {
+        log.error "packageAppMismatch ${target.name}: ${e.message}"
+        return "Check of ${target.name} failed: ${e.message}".toString()
+    }
 }
 
-def packageWait(Map job, String phase, String component) {
+def packageWait(Map job, String phase, String component, String reason = null) {
     if (now() >= (job.verifyUntil as long)) {
-        packageStage(job, "stopped", component, "Timed out verifying ${component}; no write was retried. Safety hold retained.")
+        packageStage(job, "stopped", component, "Timed out verifying ${component}${reason ? ' (' + reason + ')' : ''}; no write was retried. Safety hold retained.")
     } else {
         packageStage(job, phase, component)
+        // After the stage write, which clears detail on a phase change.
+        job.detail = reason
+        atomicState.packageDeployment = job
         runIn(10, "runWatchdogPackageDeploy", [data: [requestId: job.requestId]])
     }
 }
 
 def packageStage(Map job, String phase, String component = "", String error = null) {
+    if (phase != "abandoned" && packageSuperseded(job))
+        throw new IllegalStateException("Deployment was abandoned or replaced; no further writes are allowed")
     long stamp = now()
     if (job.phase != phase || job.component != component) {
         job.stageStartedAt = stamp
+        job.detail = null
         job.history = ((job.history ?: []) + [[phase: phase, component: component, at: stamp]]).takeRight(40)
     }
     job.phase = phase
@@ -507,19 +683,19 @@ String packageSourceHash(String source) {
 def getPackageToolDefinitions() {
     return [
         [name: "hub_update_package", annotations: [title: "Deploy MCP Package", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true],
-         description: "Start one background repair of the existing MCP package at an immutable commit. Reserve the E2E hub, verify the original MCP and v3 endpoints, and back up first. Holds further deployments and competing manual writes until explicit verification. Deploy a known-good ref to request restoration. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
+         description: "Start one background repair of the existing MCP package at an immutable commit. Reserve the E2E hub, verify the original MCP and v3 endpoints, and back up first. Holds further deployments and competing manual writes until hub_set_package_deployment releases the hold. Deploy a known-good ref to request restoration. A library the commit adds is created by its bundle; existing libraries must each be installed exactly once. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
          inputSchema: [type: "object", properties: [requestId: [type: "string"], ref: [type: "string", description: "Full 40-character commit SHA."],
              baseUrl: [type: "string", description: "Raw GitHub source repository URL; defaults to upstream."],
              bundleBaseUrl: [type: "string", description: "Raw GitHub repository hosting bundle-artifacts/shas/<ref>/mcp-libraries.zip; defaults to upstream."],
              libraries: [type: "array", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
              confirm: [type: "boolean"]], required: ["requestId", "ref", "libraries", "confirm"]]],
         [name: "hub_get_package_deployment", annotations: [title: "Get Package Deployment", readOnlyHint: true, idempotentHint: true, openWorldHint: false],
-         description: "Read persisted package stages, elapsed time, errors, and safety hold without contacting hub HTTP. A stopped or missing operation never authorizes replaying the install.",
+         description: "Read persisted package stages, elapsed time, errors, and safety hold without contacting hub HTTP. detail carries the latest verification finding while a stage waits; workerStale:true means the worker has been silent for 15 minutes and is presumed dead. A stopped or missing operation never authorizes replaying the install.",
          inputSchema: [type: "object", properties: [requestId: [type: "string"]], required: ["requestId"]]],
         [name: "hub_set_package_deployment", annotations: [title: "Release Package Deployment", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false],
-         description: "Release a package safety hold after verifying original MCP and v3 endpoints/tokens and unchanged app instances. Rechecks code hashes before completing. Explicit abandon:true may release a stopped, inactive job for repair after the operator confirms writesSettled:true (all submitted hub writes finished). This does not claim MCP is healthy. Normal completion requires endpointVerified:true. confirm:true required.",
+         description: "Release a package safety hold. Completion needs endpointVerified:true (the original MCP and v3 endpoint URLs and tokens still answer, app instances unchanged) on an operation awaiting verification; installed code hashes are rechecked first, and a failed recheck keeps the hold so completion can be retried. abandon:true with writesSettled:true gives up a held operation in any phase for repair, for example to redeploy a known-good ref when the installed MCP is broken; it is refused while a worker is active unless workerStale is true. Abandonment never marks the deployment successful. confirm:true required.",
          inputSchema: [type: "object", properties: [requestId: [type: "string"], endpointVerified: [type: "boolean"], abandon: [type: "boolean"],
-             writesSettled: [type: "boolean", description: "For abandonment only: operator verified all submitted hub writes have finished; never assume this after a timeout."],
+             writesSettled: [type: "boolean", description: "For abandonment only: operator verified every submitted hub write has finished (the code versions and sources no longer change); never assume this after a timeout."],
              confirm: [type: "boolean"]], required: ["requestId", "confirm"]]],
     ]
 }
@@ -560,6 +736,11 @@ def executeManualTool(String toolName, Map args) {
     }
 }
 
+// NON-PRIVATE so specs can stand in an instance id.
+boolean isOwnInstance(id) {
+    try { return id != null && id.toString() == app?.id?.toString() } catch (Exception ignore) { return false }
+}
+
 // confirm gate for the WRITE tools (server uses requireDestructiveConfirm; this app's surface is
 // already token-gated by OAuth, so the floor is the explicit confirm flag the CI scripts pass).
 private void requireConfirm(args) {
@@ -572,14 +753,14 @@ private void requireConfirm(args) {
 
 // hub_update_app: copied from toolUpdateItemCodeInner (hubitat-mcp-server.groovy),
 // KEEPING the issue #237 verbatim compile-error capture: read /app/ajax/update's errorMessage
-// synchronously AND, for the self-update case, stash a lastSelfDeploy-style record in atomicState.
+// synchronously AND stash a lastSelfDeploy record in atomicState for every update.
 // Adapted from hubInternalGet/PostForm to hubGet/hubPostForm.
 def adminUpdateApp(args) {
     requireConfirm(args)
     def itemId = args.appId
     if (!itemId) throw new IllegalArgumentException("appId is required")
 
-    // Source resolution: exactly one of source / sourceFile / importUrl / resave (server 12942-12950).
+    // Source resolution: exactly one of source / sourceFile / importUrl / resave.
     def modesSet = [args.resave, args.sourceFile, args.source, args.importUrl].count { it }
     if (modesSet == 0) throw new IllegalArgumentException("One of 'source', 'sourceFile', 'importUrl', or 'resave' is required")
     if (modesSet > 1) throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', 'importUrl', or 'resave'")
@@ -611,7 +792,7 @@ def adminUpdateApp(args) {
         sourceCode = args.source
     }
 
-    // Resolve current version for the optimistic lock (server 13024-13040, simplified).
+    // Resolve current version for the optimistic lock.
     def currentVersion = freshVersion
     if (currentVersion == null) {
         try {
@@ -623,17 +804,15 @@ def adminUpdateApp(args) {
     }
     if (currentVersion == null) throw new IllegalArgumentException("Could not determine current version for app ID ${itemId}. The app may not exist.")
 
-    // Self-update detection (server 13095-13110): the watchdog can be asked to deploy the MAIN
-    // server's OWN app-code class. A self-deploy of the MAIN server can't return its outcome on
-    // the call (success reloads it; a big-file failure 504s), so we stash the hub's verbatim
-    // result -- keyed on a manifest-supplied selfClassId or the args.selfUpdate flag the CI passes.
+    // Self-update = the watchdog saving its OWN code class, which reloads it mid-request. Keyed on
+    // the selfUpdate flag or a selfClassId equal to appId.
     boolean isSelfUpdate = (args.selfUpdate == true) ||
         (args.selfClassId != null && itemId?.toString() == args.selfClassId?.toString())
 
     mcpAdminLog "Updating app ID ${itemId} (version ${currentVersion}, mode ${sourceMode}, sourceLength ${sourceCode.length()})"
     try {
-        // Copied error-capture from toolUpdateItemCodeInner (server 13112-13230): read the
-        // /app/ajax/update response errorMessage synchronously.
+        // Copied error-capture from toolUpdateItemCodeInner: read the /app/ajax/update response
+        // errorMessage synchronously.
         def result = hubPostForm("/app/ajax/update", [id: itemId, version: currentVersion, source: sourceCode])
         def responseData = result?.data
         def success = false
@@ -714,8 +893,7 @@ def adminUpdateApp(args) {
 }
 
 // hub_get_source: copied from toolGetSource / toolGetItemSource / toolGetLibrarySource
-// (hubitat-mcp-server.groovy). The File Manager
-// auto-save side effect (uploadHubFile of the full source) is how the backup caches main.
+// (hubitat-mcp-server.groovy), including the File Manager auto-save of a large source.
 def adminGetSource(args) {
     def type = args.type
     if (!(type in ["app", "driver", "library"])) {
@@ -964,10 +1142,9 @@ def adminDeleteItem(args) {
 // child/device checks. Loosely based on the server's _rmForceDeleteApp (same endpoint). Status-aware
 // via hubGetStatus: the forcedelete endpoint answers SUCCESS with a 302 redirect, so a 2xx/3xx status
 // is success while >=400 -- or no status at all, meaning the request never reached the hub (auth/
-// transport) -- is reported as success:false so the disarm sweep can warn + keep its recovery list
-// (any rule that survives is reaped by the separate post-restore --cleanup-only prefix sweep, not a
-// re-list). DISTINCT from hub_delete_item(type:'app'), which hits /app/edit/deleteJsonSafe (an Apps
-// Code CLASS, not a running instance). Used by the disarm-time deferred-native-rule sweep.
+// transport) -- is reported as success:false so the caller can warn + keep its recovery list.
+// DISTINCT from hub_delete_item(type:'app'), which hits /app/edit/deleteJsonSafe (an Apps Code
+// CLASS, not a running instance). Used by the fixture purge.
 def adminForceDeleteInstalledApp(args) {
     requireConfirm(args)
     def id = (args.id != null) ? args.id : args.appId
@@ -975,18 +1152,20 @@ def adminForceDeleteInstalledApp(args) {
     if (!id.toString().isInteger() || id.toString().toInteger() <= 0) {
         throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
     }
+    if (isOwnInstance(id))
+        return [success: false, id: id, error: "Refused: ${id} is this watchdog's own instance, the hub's only remote repair path."]
     mcpAdminLog "Force-deleting installed app instance ${id} (/installedapp/forcedelete/${id}/quiet)"
     def resp = hubGetStatus("/installedapp/forcedelete/${id}/quiet", [:])
     Integer st = (resp?.status != null) ? (resp.status as Integer) : null
     // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list (a plain 2xx is
     // also fine). >=400 -- or no status at all, meaning the request never reached the hub
-    // (auth/transport) -- is a real failure: report it so the disarm sweep warns + keeps its id list.
+    // (auth/transport) -- is a real failure: report it so the caller warns + keeps its id list.
     if (st == null || st >= 400) {
         return [success: false, error: "Force-delete of installed app ${id} did not confirm (status=${st ?: 'none'}) -- endpoint error, auth failure, or the request never reached the hub.", id: id]
     }
-    // The 302 alone is NOT proof the delete committed: the disarm sweep fires these while the hub is
-    // recompiling the restored main app, a window where admin-endpoint writes are known to commit
-    // late or strand on this firmware. Verify gone-ness via /installedapp/json/<id> (the same
+    // The 302 alone is NOT proof the delete committed: teardown fires these while the hub may be
+    // recompiling the MCP app, a window where admin-endpoint writes are known to commit late or
+    // strand on this firmware. Verify gone-ness via /installedapp/json/<id> (the same
     // existence read the server's VRB delete uses: {id,...} while installed, 404/empty once gone).
     // Only a definite "absent" confirms; "still found" or an unreadable check reports success:false
     // so the caller keeps the id on its recovery list -- re-deleting a gone app is a harmless no-op.
@@ -1117,10 +1296,8 @@ private Map purgeNoOpResult(String prefix, String note) {
 // instance whose name starts with the BAT_E2E_ test prefix (via /hub2/appsList, the same read
 // adminListAppInstances uses) and force-deletes each by reusing adminForceDeleteInstalledApp's
 // forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
-// round-trip instead of N -- replacing the disarm's per-item reap loop and the post-restore
-// --cleanup-only RM sweep. Hard-scoped to the prefix (never a real app); confirm:true required.
-// SINGLE-FLIGHT LATCH + SHORT RESULT CACHE -- the same protection actAndRecord has, for the same
-// reason. This sweep takes minutes (N apps x forcedelete + verify-gone), which is far longer than
+// round-trip instead of N. Hard-scoped to the prefix (never a real app); confirm:true required.
+// SINGLE-FLIGHT LATCH + SHORT RESULT CACHE. This sweep takes minutes (N apps x forcedelete + verify-gone), which is far longer than
 // the ~10s cloud-relay timeout, so CI's retry-on-dropped-response fires while the FIRST sweep is
 // still running. Observed live 2026-09-01: five overlapping invocations, each re-enumerating the
 // same app list and racing on the same ids (three hit forcedelete/30839 in the same millisecond),
@@ -1156,7 +1333,7 @@ def adminPurgeE2eArtifacts(args) {
                     note: "Retry after the running sweep completes (its results are cached for 5 minutes, so the retry will not re-run it)."]
         }
         mcpAdminLog "Purge already in flight (${((nowMs - purgeAt) / 1000) as long}s) -- returning the in-flight marker instead of starting a second sweep."
-        return purgeNoOpResult(prefix, "A purge started ${((nowMs - purgeAt) / 1000) as long}s ago is still running; this call was a no-op. Do NOT retry -- the running sweep covers the same prefix. The post-restore --cleanup-only sweep remains the backstop.")
+        return purgeNoOpResult(prefix, "A purge started ${((nowMs - purgeAt) / 1000) as long}s ago is still running; this call was a no-op. Do NOT retry -- the running sweep covers the same prefix.")
     }
     Long cachedAt = null
     try { cachedAt = atomicState.purgeResultAt as Long } catch (Exception ignore) { cachedAt = null }
@@ -1316,7 +1493,7 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     def problems = []
     if (!failed.isEmpty()) problems << "${failed.size()} app(s)"
     if (!varsFailed.isEmpty()) problems << "${varsFailed.size()} variable(s)"
-    def deviceNote = "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); the post-restore --cleanup-only sweep still reaps ${prefix} devices."
+    def deviceNote = "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); delete ${prefix} devices through the main MCP server."
     def result = [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
             deletedCount: deleted.size(), failedCount: failed.size(), deleted: deleted, failed: failed,
             variablesDeletedCount: varsDeleted.size(), variablesFailedCount: varsFailed.size(),
@@ -1376,6 +1553,8 @@ def adminSetAppDisabled(args) {
         throw new IllegalArgumentException("appId must be a positive integer (got: '${id}')")
     }
     boolean disable = (args.disable == true || args.disable?.toString() == "true")
+    if (disable && isOwnInstance(id))
+        return [success: false, appId: id, error: "Refused: ${id} is this watchdog's own instance, and a disabled watchdog cannot be re-enabled remotely."]
     mcpAdminLog "Setting installed app ${id} disabled=${disable} (/installedapp/disable)"
     def body = groovy.json.JsonOutput.toJson([id: id.toString().toInteger(), disable: disable])
     Map resp = hubPostJson("/installedapp/disable", body)
@@ -1591,7 +1770,7 @@ def adminInstallBundle(args) {
     try {
         def respBody
         if (modern) {
-            // bundle2 is a GET with the url/pwd/private query (server 13577). `private` quoted (keyword).
+            // bundle2 is a GET with the url/pwd/private query. `private` quoted (keyword).
             respBody = hubGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
         } else {
             def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
@@ -1645,8 +1824,7 @@ def _bundleResponseSucceeded(resp) {
 
 // hub_list_bundles: mirror of McpBundlesLib.toolListBundles (PR #247), adapted to hubGet. Lists the
 // installed bundle CONTAINERS (id/name/namespace), distinct from Libraries Code. Read-only. No
-// pagination -- the watchdog uses this internally (restorePackage cleanup + the disarm no-stale check)
-// and for the deploy scripts by URL swap; the test hub never has enough bundles to need paging.
+// pagination -- the test hub never has enough bundles to need paging.
 def adminListBundles(args) {
     def result = [:]
     try {
@@ -1692,8 +1870,7 @@ def adminListBundles(args) {
 
 // hub_delete_bundle: mirror of McpBundlesLib.toolDeleteBundle (PR #247), adapted to hubGet. Deletes a
 // bundle CONTAINER by id (GET /bundle/delete/<id>, 302 on success), then re-lists to confirm it is
-// gone (the 302 alone is not proof). confirm:true required. restorePackage uses this to remove a PR's
-// leftover bundle so the restored hub carries only main's bundle(s).
+// gone (the 302 alone is not proof). confirm:true required.
 def adminDeleteBundle(args) {
     requireConfirm(args)
     def rawId = args?.bundleId
@@ -1731,7 +1908,7 @@ def adminDeleteBundle(args) {
 }
 
 // hub_get_info: condensed from toolGetHubInfo (hubitat-mcp-server.groovy), surfacing the
-// fields CI needs incl. the issue #237 lastSelfDeploy record with ageMs (server 7086-7090).
+// fields CI needs incl. the issue #237 lastSelfDeploy record with ageMs.
 def adminGetInfo(args) {
     def hub = location?.hub
     def info = [:]
@@ -1746,8 +1923,9 @@ def adminGetInfo(args) {
     info.watchdogEndpoint = true
     info.watchdogVersion = 3
     info.automaticRecovery = false
+    info.autoRebootOnWedge = settings?.autoRebootOnWedge != false
     info.packageDeployment = atomicState.packageDeployment ? adminGetPackageDeployment([requestId: atomicState.packageDeployment.requestId]) : null
-    // issue #237 self-deploy outcome (server 7086-7090): persists across reloads; add ageMs.
+    // issue #237 self-deploy outcome: persists across reloads; add ageMs.
     if (atomicState.lastSelfDeploy != null) {
         def lsd = [:] + atomicState.lastSelfDeploy
         if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
@@ -1944,7 +2122,7 @@ def adminCreateBackup(args) {
         // hubGet swallows its own transport exception (returns null), so this try/catch alone can't see
         // a failed backup; /hub/backupDB also returns no useful body on success, so we can't hard-fail
         // on null without false-failing. Report it honestly as a best-effort snapshot -- this backup is
-        // a DEFENSIVE snapshot, NOT a restore prerequisite (the real restore floor is the source cache).
+        // a DEFENSIVE snapshot, NOT a restore prerequisite (restores redeploy from GitHub).
         def resp = hubGet("/hub/backupDB", [fileName: "latest"])
         def backupTime = now()
         state.lastBackupTimestamp = backupTime
@@ -2005,8 +2183,8 @@ def adminManageVariables(args) {
 
 // ==================== EXTERNAL FETCH (importUrl) ====================
 //
-// fetchExternal: copies _fetchSourceFromUrl (hubitat-mcp-server.groovy) +
-// _httpFetchUrl (8981-9003) VERBATIM in behaviour. httpGet [uri, textParser:true, timeout:60],
+// fetchExternal: copies _fetchSourceFromUrl + _httpFetchUrl (hubitat-mcp-server.groovy)
+// VERBATIM in behaviour. httpGet [uri, textParser:true, timeout:60],
 // NO ignoreSSLIssues (external cert validation -- this is a hub-side fetch of executable code,
 // so the trusted-CA handshake is the floor; self-signed / MITM-d URLs fail). Validates
 // scheme / status / body.
@@ -2069,13 +2247,14 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [
             appId: [type: "string", description: "Apps Code CLASS id to update."],
             source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"],
-            selfUpdate: [type: "boolean", description: "Set true when deploying the MAIN MCP server's own app-code class so the issue #237 lastSelfDeploy outcome is captured."],
-            selfClassId: [type: "string", description: "The MAIN server's own Apps Code class id; if it matches appId, the #237 self-deploy capture arms."],
+            selfUpdate: [type: "boolean", description: "Set true ONLY when updating this watchdog's own code class: the save reloads the watchdog mid-request, so an empty response is then read as success. Never set it when deploying another app."],
+            selfClassId: [type: "string", description: "This watchdog's own Apps Code class id; when it equals appId the call is treated as selfUpdate."],
             confirm: [type: "boolean"]], required: ["appId", "confirm"]]],
-        [name: "hub_get_source", annotations: [title: "Get Source", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read app/driver/library source (chunked); auto-saves the full source to File Manager so a restore can read it. The auto-save fires only for sources over 64,000 characters, and noSave:true skips it (the deploy probes pass it so verification does not overwrite a saved recovery source).",
+        [name: "hub_get_source", annotations: [title: "Get Source", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read app/driver/library source (chunked). A source over 64,000 characters is also saved whole to File Manager as a convenience copy, which makes the call a write; noSave:true skips that copy and keeps the call read-only (allowed during a held package deployment).",
          inputSchema: [type: "object", properties: [
             type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"],
-            offset: [type: "integer"], length: [type: "integer"]], required: ["type", "id"]]],
+            offset: [type: "integer"], length: [type: "integer"],
+            noSave: [type: "boolean", description: "Skip the File Manager copy."]], required: ["type", "id"]]],
         [name: "hub_create_library", annotations: [title: "Create Library", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true], description: "Install a new library. One of source/sourceFile/importUrl; confirm:true required.",
          inputSchema: [type: "object", properties: [
             source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], confirm: [type: "boolean"]], required: ["confirm"]]],
@@ -2085,14 +2264,14 @@ def getManualToolDefinitions() {
             required: ["libraryId", "confirm"]]],
         [name: "hub_delete_item", annotations: [title: "Delete Item", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete an app/driver/library by id. confirm:true required.",
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
-        [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
+        [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. Refuses the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
-        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
+        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Refused with busy:true while a different manual write is running, and with the held requestId during a package deployment hold. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
-        [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
+        [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. Refuses to disable the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
         [name: "hub_get_metrics", annotations: [title: "Get Metrics", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
-        [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. Reboot is manual only; no automatic recovery is scheduled. Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."], force: [type: "boolean", description: "Reboot even while a platform update the hub accepted is still installing (refused otherwise)."]], required: ["confirm"]]],
+        [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. The watchdog also reboots on its own when loopback HTTP has been dead for 4+ minutes (at most once per 30 minutes; the autoRebootOnWedge setting). Refused during a package deployment hold or while another manual write runs, unless force:true. Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."], force: [type: "boolean", description: "Reboot even during a package deployment hold, another manual write, or a platform update the hub accepted that is still installing (all refused otherwise)."]], required: ["confirm"]]],
         [name: "hub_update_platform", annotations: [title: "Update Platform", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true], description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
         [name: "hub_get_memory_history", annotations: [title: "Get Memory History", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
          inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
@@ -2105,7 +2284,7 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [:]]],
         [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
          inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
-        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Hub model/firmware/memory, the lastSelfDeploy record (with ageMs), package deployment, and diagnostic loopback health. No automatic recovery."],
+        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Hub model/firmware/memory, the lastSelfDeploy record of the latest hub_update_app (with ageMs; hub_update_package does not write it), the held package deployment, and loopback wedge health including the last automatic reboot. The package is never restored automatically."],
         [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List Apps Code types (scope='types') or installed apps.",
          inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],
         [name: "hub_list_libraries", annotations: [title: "List Libraries", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List libraries (id/name/namespace/version summaries)."],
@@ -2116,30 +2295,18 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [fileName: [type: "string"], content: [type: "string"], confirm: [type: "boolean"]], required: ["fileName", "content", "confirm"]]],
         [name: "hub_create_backup", annotations: [title: "Create Backup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false], description: "Trigger a hub DB backup. confirm:true required.",
          inputSchema: [type: "object", properties: [confirm: [type: "boolean"]], required: ["confirm"]]],
-        [name: "hub_manage_variables", annotations: [title: "Manage Variables", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Read/set hub variables for the lease (hub_get_variable / hub_set_variable). Call with no action to list sub-tools.",
+        [name: "hub_manage_variables", annotations: [title: "Manage Variables", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Read/set hub variables (hub_get_variable / hub_set_variable). Call with no action to list sub-tools.",
          inputSchema: [type: "object", properties: [action: [type: "string", enum: ["hub_get_variable", "hub_set_variable"]], name: [type: "string"], value: [type: "string"], confirm: [type: "boolean"]]]]
     ]
 }
 
 // Parse a loopback POST response body (String) into a Map/List. hubPostJson returns [status,data];
-// data is the raw body String. Mirrors hubInternalPostJson's parse step (server 9270-9280).
+// data is the raw body String. Mirrors hubInternalPostJson's parse step.
 def _parseJsonBody(data) {
     if (data == null) return null
     if (data instanceof Map || data instanceof List) return data
     try { return new groovy.json.JsonSlurper().parseText(data.toString()) }
     catch (Exception e) { log.error "_parseJsonBody: response not JSON: ${data.toString()?.take(200)}"; return null }
-}
-
-// ---- flag file IO (File Manager, hub-local) ----
-String readHubFileText(String name) {
-    try {
-        def bytes = downloadHubFile(name)
-        if (bytes == null) return null
-        return new String(bytes, "UTF-8")
-    } catch (Exception e) {
-        logDebug "readHubFileText('${name}'): ${e.message}"
-        return null
-    }
 }
 
 // ---- minimal hub-internal loopback (mirrors the main app's _hubRequest, trimmed) ----
@@ -2173,9 +2340,8 @@ Integer httpStatusOf(Exception e) {
 
 // ---- wedge detection ------------------------------------------------------
 // Loopback reads to 127.0.0.1:8080 normally answer in milliseconds. When the platform's web
-// thread pool is exhausted -- the failure mode that concurrent purges + restores produce, see the
-// single-flight latch note on actAndRecord -- EVERY loopback read starts returning "Read timed
-// out" and the hub stops serving its own admin UI. Observed live 2026-09-01: wedged 06:01, still
+// thread pool is exhausted -- the failure mode that concurrent purges + deploys produce -- EVERY
+// loopback read starts returning "Read timed out" and the hub stops serving its own admin UI. Observed live 2026-09-01: wedged 06:01, still
 // dead at 09:33, recovered only by a manual power cycle. Nothing in-process recovers from it, so
 // the watchdog has to be able to SEE it. Track consecutive loopback failures plus the last
 // success so "one flaky read" is distinguishable from "the hub is gone".
@@ -2234,7 +2400,7 @@ private boolean hubLooksWedged() {
     }
 }
 
-// One cheap read for explicit liveness diagnostics. Routed
+// One cheap read per health tick, and the live confirmation before an auto-reboot. Routed
 // through hubGetStatus so a success updates the wedge counters as a side effect.
 // NON-PRIVATE deliberately: a private method's internal callers bypass metaClass dispatch, so a
 // spec could not override it and the reboot tests would silently pass on the real implementation
@@ -2411,7 +2577,7 @@ Map hubGetStatus(String path, Map query, int timeoutSec = 30) {
 private int hubPostTimeoutSec(String path) { path == "/hub/reboot" ? 20 : 420 }
 
 Map hubPostForm(String path, Map body) {
-    // 420s: restoring the ~1.6MB MCP server source is a large form POST that can be slow.
+    // 420s: saving the ~1.6MB MCP server source is a large form POST that can be slow.
     def params = [uri: "http://127.0.0.1:8080", path: path, body: body,
                   requestContentType: "application/x-www-form-urlencoded",
                   textParser: true, ignoreSSLIssues: true, timeout: hubPostTimeoutSec(path)]
