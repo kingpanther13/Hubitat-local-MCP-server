@@ -20,6 +20,8 @@ import support.PermissiveLog
  *     source over the dead-man restore cache -- the critical cache-poisoning fix);
  *   - checkDeadman parses a non-numeric deadline defensively (fires, never throws out of the tick).
  */
+// V2 is kept in the tree as a fallback only; v3 drives e2e, so its specs no longer run.
+@spock.lang.Ignore("watchdog v2 is retired to a fallback; see e2e-deadman-watchdog-v3.groovy")
 class WatchdogV2Spec extends Specification {
     HubitatAppScript script
     List<List<Object>> runInCalls = []     // captures (delaySeconds, handler[, opts]) of every runIn

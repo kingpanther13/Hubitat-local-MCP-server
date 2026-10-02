@@ -16,6 +16,8 @@ import support.PermissiveLog
  * after the one-time live fire-test was removed. This compiles the watchdog in a sandbox and drives
  * restoreApp with stubbed I/O so the version-advance logic is exercised on every build.
  */
+// V1 is kept in the tree as a fallback only; v3 drives e2e, so its specs no longer run.
+@spock.lang.Ignore("watchdog v1 is retired to a fallback; see e2e-deadman-watchdog-v3.groovy")
 class WatchdogRestoreSpec extends Specification {
     HubitatAppScript script
 
