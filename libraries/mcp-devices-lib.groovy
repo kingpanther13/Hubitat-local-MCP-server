@@ -1584,6 +1584,57 @@ private _deviceConfigurationPublicValue(value, key = '') {
     return value
 }
 
+// Z-Wave Alliance manufacturer IDs. Canonical form is hex (e.g. 0x027A = Zooz), but Hubitat
+// surfaces device.data.manufacturer as a bare DECIMAL string ("634" = 0x027A). Curated set of
+// common home-automation brands, keyed by the integer id. Runtime data in a helper -- it does
+// not touch the flat tool-catalog budget. An unlisted id resolves to null (no name invented).
+// Returned via a getter because the Hubitat sandbox rejects `private static final` at script scope.
+private Map getZwaveManufacturers() {
+    return [
+        0x0000: 'Silicon Labs', 0x000C: 'HomeSeer', 0x001D: 'Leviton', 0x0039: 'Honeywell',
+        0x003B: 'Schlage', 0x0060: 'Everspring', 0x0063: 'GE/Jasco', 0x0086: 'Aeotec',
+        0x0090: 'Kwikset', 0x0109: 'Vision Security', 0x010F: 'Fibaro', 0x0129: 'Yale',
+        0x0131: 'Zipato', 0x013C: 'Philio', 0x0138: 'First Alert', 0x014A: 'Ecolink',
+        0x014F: 'GoControl/Linear', 0x0154: 'POPP', 0x0159: 'Qubino', 0x0184: 'Dragon Tech',
+        0x0234: 'Logic Group', 0x0258: 'NEO Coolcam', 0x027A: 'Zooz', 0x031E: 'Inovelli',
+        0x0346: 'Ring', 0x0371: 'Aeotec', 0x0460: 'Shelly'
+    ]
+}
+
+// Resolve a Z-Wave manufacturer id to a brand name, or null when it is unknown or not a bare
+// numeric id (an already-resolved brand string is left for the caller to keep untouched).
+// Handles the Hubitat decimal wire form ("634") plus hex ("0x027A" / "027A").
+private String _zwaveManufacturerName(id) {
+    if (id == null) return null
+    String s = id.toString().trim()
+    if (!s) return null
+    Integer code = null
+    try {
+        if (s.length() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) code = Integer.parseInt(s.substring(2), 16)
+        else if (s ==~ /(?i)[0-9a-f]*[a-f][0-9a-f]*/) code = Integer.parseInt(s, 16)
+        else if (s ==~ /\d+/) code = Integer.parseInt(s, 10)
+        else return null
+    } catch (Exception ignored) {
+        return null
+    }
+    return getZwaveManufacturers()[code]
+}
+
+// Add a resolved manufacturerName beside a bare numeric manufacturer id in a device data map,
+// preserving the raw value for chaining. Non-maps, missing/name-form manufacturer values, and
+// unknown ids pass through unchanged; an existing manufacturerName is never overwritten.
+private _withResolvedManufacturer(value) {
+    if (!(value instanceof Map) || !value.containsKey('manufacturer') || value.containsKey('manufacturerName')) return value
+    String name = _zwaveManufacturerName(value.get('manufacturer'))
+    if (name == null) return value
+    def copy = [:]
+    value.each { k, v ->
+        copy.put(k, v)
+        if (k == 'manufacturer') copy.put('manufacturerName', name)
+    }
+    return copy
+}
+
 private Map _publicDevicePreference(Map entry) {
     def copy = [:]
     entry.each { key, value ->
@@ -2015,7 +2066,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                 value = _deviceConfigurationPublicValue(fj?.commands)
                 break
             case 'data':
-                value = _deviceConfigurationPublicValue(d.get('data'))
+                value = _withResolvedManufacturer(_deviceConfigurationPublicValue(d.get('data')))
                 break
             case 'state':
                 value = _deviceConfigurationPublicValue(fj?.deviceState)
