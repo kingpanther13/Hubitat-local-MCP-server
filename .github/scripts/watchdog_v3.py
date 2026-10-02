@@ -7,6 +7,7 @@ submitted once; a lost response is followed by reading status, never by a resubm
 
 import argparse
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -38,7 +39,8 @@ class Transport:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 result = json.load(response)
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
+            # A body cut off mid-read is an HTTPException, not an OSError; it is a lost response too.
             # urllib exceptions can contain the URL and its OAuth token.
             raise OSError("Endpoint did not return a usable response") from None
         if not isinstance(result, dict) or result.get("error") or not isinstance(result.get("result"), dict):
@@ -333,7 +335,7 @@ def fetch(url, *, attempts=3, interval=5):
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 return None
-        except OSError:
+        except (OSError, http.client.HTTPException):
             pass
         if attempt < attempts - 1:
             time.sleep(interval)
@@ -399,6 +401,9 @@ def purge_fixtures(transport, v3):
         log("Fixture purge: " + json.dumps({k: purged.get(k) for k in (
             "success", "inFlight", "cached", "deletedCount", "failedCount",
             "variablesDeletedCount", "variablesFailedCount", "error")}))
+        if purged.get("success") is not True or purged.get("failedCount") or purged.get("variablesFailedCount"):
+            # Not fatal here: the --cleanup-only step sweeps again and fails closed on leftovers.
+            log("::warning::The fixture purge reported failures; the cleanup step is the backstop.")
     except OSError:
         # The sweep outlives the relay timeout and keeps running on the hub.
         log("::warning::The fixture purge returned no response; it may still be running on the hub.")
@@ -410,8 +415,13 @@ def command_restore_main(args):
         # GitHub ends a cancelled job after about five minutes, less than a deployment takes, and a
         # cancel is normally followed by a run that installs its own code. So leave the package as
         # it is and spend the time on the cleanup steps that follow.
-        clear_hold(transport, v3, attempts=4)
-        purge_fixtures(transport, v3)
+        try:
+            clear_hold(transport, v3, attempts=4)
+            purge_fixtures(transport, v3)
+        except (HubError, OSError):
+            # Cancelled mid-install: the worker is still saving, and v3 refuses a purge under a hold.
+            log("::warning::A deployment is still running, so its hold and the fixtures were left for "
+                "the next run's prepare and restore steps.")
         log("Run cancelled: main was NOT restored. The next run's install replaces the package.")
         return
     # Fire and forget: whether main comes back has no bearing on the PR, and the run's result is

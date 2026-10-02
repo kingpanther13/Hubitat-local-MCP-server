@@ -466,6 +466,37 @@ def test_a_cancelled_run_releases_its_hold_and_purges_but_deploys_nothing(cli, c
     assert "main was NOT restored" in capsys.readouterr().out
 
 
+def test_a_run_cancelled_mid_install_leaves_the_hold_and_does_not_fail(cli, monkeypatch, capsys):
+    module, hub, _seen, _bundle = cli
+
+    def still_running(*args, **kwargs):
+        raise module.HubError("A package deployment is still running on the hub")
+
+    monkeypatch.setattr(module, "clear_hold", still_running)
+    hub.call = lambda url, name, args: pytest.fail("nothing may be written while the worker runs")
+    module.main(["restore-main", "--cancelled"])
+    assert "left for the next run" in capsys.readouterr().out
+
+
+def test_a_purge_that_reports_failures_warns_and_does_not_fail(cli, monkeypatch, capsys):
+    module, hub, seen, _bundle = cli
+    monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)
+    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: bundle_bytes())
+    hub.call = lambda url, name, args: {"success": False, "failedCount": 2}
+    module.main(["restore-main"])
+    assert seen["order"] == ["clear_hold", "submit"]
+    assert "::warning::The fixture purge reported failures" in capsys.readouterr().out
+
+
+def test_a_response_cut_off_mid_body_is_a_lost_response(module, monkeypatch):
+    def cut_off(request, timeout):
+        raise module.http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", cut_off)
+    with pytest.raises(OSError, match="usable response"):
+        module.Transport().rpc("https://hub.invalid/mcp", "tools/list", {})
+
+
 def test_restore_falls_back_to_the_starting_main_when_the_new_one_has_no_bundle_yet(cli, monkeypatch):
     module, hub, seen, _bundle = cli
     monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)

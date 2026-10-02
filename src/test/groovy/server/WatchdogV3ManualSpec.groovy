@@ -1000,12 +1000,15 @@ class WatchdogV3ManualSpec extends Specification {
         int enumerations = 0
         script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 1_000_000L
+        atomicStateMap.purgeClaim = 'purge-killed'
+        atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
 
         when:
-        script.adminPurgeE2eArtifacts([confirm: true])
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
 
         then: 'the stale latch is overridden and the sweep runs'
         enumerations == 1
+        res.inFlight != true
     }
 
     def "the purge latch is released once the sweep completes"() {

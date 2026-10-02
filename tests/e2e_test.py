@@ -17194,8 +17194,8 @@ def main() -> None:
         return
 
     if args.cleanup_only:
-        # The restore step deploys main through watchdog v3 and waits for it to complete, so the
-        # hub is already back on main (or the step failed loudly) by the time this runs.
+        # The workflow's wait step follows the main restore before this runs (bounded, never fatal),
+        # so the hub is normally back on main by now.
         refuse_unless_leased_test_hub(client)
         runner.cleanup()
         # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
