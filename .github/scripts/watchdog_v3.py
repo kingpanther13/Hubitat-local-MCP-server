@@ -373,8 +373,27 @@ def current_main_sha(repository):
     return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
 
 
-def command_restore_main(_args):
+def purge_fixtures(transport, v3):
+    try:
+        purged = transport.call(v3, "hub_purge_e2e_artifacts", {"confirm": True})
+        log("Fixture purge: " + json.dumps({k: purged.get(k) for k in (
+            "success", "inFlight", "cached", "deletedCount", "failedCount",
+            "variablesDeletedCount", "variablesFailedCount", "error")}))
+    except OSError:
+        # The sweep outlives the relay timeout and keeps running on the hub.
+        log("::warning::The fixture purge returned no response; it may still be running on the hub.")
+
+
+def command_restore_main(args):
     transport, v3, mcp = endpoints()
+    if args.cancelled:
+        # GitHub ends a cancelled job after about five minutes, less than a deployment takes, and a
+        # cancel is normally followed by a run that installs its own code. So leave the package as
+        # it is and spend the time on the cleanup steps that follow.
+        clear_hold(transport, v3, attempts=4)
+        purge_fixtures(transport, v3)
+        log("Run cancelled: main was NOT restored. The next run's install replaces the package.")
+        return
     repository = os.environ["GITHUB_REPOSITORY"]
     base = f"https://raw.githubusercontent.com/{repository}"
     # Main can move while a run is in flight; restore what main is now, not what it was at the start.
@@ -388,14 +407,7 @@ def command_restore_main(_args):
         raise HubError("No published bundle for main; cannot restore")
     # A failed PR install leaves its hold, and a hold blocks the purge, so release it first.
     clear_hold(transport, v3)
-    try:
-        purged = transport.call(v3, "hub_purge_e2e_artifacts", {"confirm": True})
-        log("Fixture purge: " + json.dumps({k: purged.get(k) for k in (
-            "success", "inFlight", "cached", "deletedCount", "failedCount",
-            "variablesDeletedCount", "variablesFailedCount", "error")}))
-    except OSError:
-        # The sweep outlives the relay timeout and keeps running; the deployment below waits for it.
-        log("::warning::The fixture purge returned no response; it may still be running on the hub.")
+    purge_fixtures(transport, v3)
     plan = plan_from_bundle(sha, bundle)
     result = deploy(transport, v3, mcp, {**plan, "baseUrl": base, "bundleBaseUrl": base}, operation_id("main"))
     log(f"Restored main {sha}: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
@@ -413,7 +425,9 @@ def main(argv=None):
     deploy_pr = commands.add_parser("deploy-pr")
     deploy_pr.add_argument("--bundle", required=True, help="mcp-libraries.zip built from the checkout")
     deploy_pr.set_defaults(run=command_deploy_pr)
-    commands.add_parser("restore-main").set_defaults(run=command_restore_main)
+    restore = commands.add_parser("restore-main")
+    restore.add_argument("--cancelled", action="store_true", help="the run was cancelled: clean up, deploy nothing")
+    restore.set_defaults(run=command_restore_main)
     commands.add_parser("endpoint").set_defaults(run=command_endpoint)
     args = parser.parse_args(argv)
     try:

@@ -403,6 +403,23 @@ def test_restore_deploys_main_as_it_is_now_after_releasing_the_hold_and_purging(
     assert plan["baseUrl"] == plan["bundleBaseUrl"] == "https://raw.githubusercontent.com/owner/repo"
 
 
+def test_a_cancelled_run_releases_its_hold_and_purges_but_deploys_nothing(cli, capsys):
+    module, hub, seen, _bundle = cli
+    original = hub.call
+
+    def call(url, name, args):
+        if name == "hub_purge_e2e_artifacts":
+            seen["order"].append("purge")
+            return {"success": True, "deletedCount": 1}
+        return original(url, name, args)
+
+    hub.call = call
+    module.main(["restore-main", "--cancelled"])
+    assert seen["order"] == ["clear_hold", "purge"]
+    assert seen["deploys"] == []
+    assert "main was NOT restored" in capsys.readouterr().out
+
+
 def test_restore_falls_back_to_the_starting_main_when_the_new_one_has_no_bundle_yet(cli, monkeypatch):
     module, hub, seen, _bundle = cli
     monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)

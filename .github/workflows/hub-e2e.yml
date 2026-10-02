@@ -1047,8 +1047,15 @@ jobs:
       # PR app -- restoring main first means they operate on a healthy server. The script keeps its
       # historical file name.
       - name: Watchdog - restore main
-        if: always() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
+        if: always() && !cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         run: bash .github/scripts/mcp_disarm_watchdog.sh
+
+      # A cancelled job gets about five minutes before GitHub ends it, less than a deployment takes,
+      # and a cancel is normally followed by a run that installs its own code. So a cancelled run
+      # only releases its hold and purges, leaving the time for the cleanup steps below.
+      - name: Watchdog - release hold (cancelled run)
+        if: cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
+        run: bash .github/scripts/mcp_disarm_watchdog.sh --cancelled
 
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'

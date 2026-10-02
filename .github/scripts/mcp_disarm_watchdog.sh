@@ -7,9 +7,12 @@
 # is NOW (main can move while a run is in flight) and wait for the result. A failure here fails
 # the step: the hub is then not on main, and the next run's prepare step is what recovers it.
 #
+# With --cancelled it only releases the hold and purges: GitHub ends a cancelled job after about
+# five minutes, which is less than a deployment takes, and the next run installs its own code.
+#
 # Env: MCP_URL, WATCHDOG_URL (secret WATCHDOG_MCP_URL), GITHUB_REPOSITORY, MAIN_SHA, RUNNER_TEMP
 set -euo pipefail
 : "${MCP_URL:?MCP_URL env var required (the MCP server under test)}"
 : "${WATCHDOG_URL:?WATCHDOG_URL env var required (the watchdog endpoint, from secret WATCHDOG_MCP_URL)}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY env var required}"
-exec python3 "$(dirname "$0")/watchdog_v3.py" restore-main
+exec python3 "$(dirname "$0")/watchdog_v3.py" restore-main "$@"
