@@ -110,7 +110,7 @@ def test_a_dead_mcp_endpoint_after_install_keeps_the_hold_and_names_the_endpoint
     clock = iter(range(0, 100000, 400))
     monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
     with pytest.raises(module.HubError, match="the MCP server did not answer"):
-        run(module, hub)
+        run(module, hub, wait_s=10**9)
     assert hub.count("hub_set_package_deployment") == 0
 
 
@@ -850,3 +850,13 @@ def test_the_real_restore_sequence_releases_the_hold_purges_and_submits_once(mod
     state = json.loads((tmp_path / "watchdog-v3-restore.json").read_text())
     assert state["requestId"] == "e2e-77-2-main"
     assert state["baseline"] == [["38", "MCP Rule Server", False]]
+
+
+def test_status_reads_that_never_answer_are_bounded_by_time_not_only_by_attempts(module, monkeypatch):
+    hub = Hub()
+    answering(hub, "hub_get_package_deployment", [OSError("relay timeout")] * 50)
+    clock = iter(range(0, 100000, 70))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
+    with pytest.raises(module.HubError, match="timed out at no status was ever read"):
+        module.deploy(hub, "watchdog", "main", PLAN, "op", attempts=50, interval=0, wait_s=300)
+    assert hub.count("hub_get_package_deployment") < 10

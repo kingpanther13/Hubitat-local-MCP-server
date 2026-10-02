@@ -293,11 +293,11 @@ def deploy(transport, v3, mcp, plan, request_id, **options):
 
 
 def follow(transport, v3, mcp, plan, request_id, baseline, *, interval=10, attempts=270,
-           retry_interrupted=True, endpoint_wait_s=1500):
+           retry_interrupted=True, endpoint_wait_s=1500, wait_s=None):
     """Follow a submitted deployment to its end and release its hold."""
     last, unseen, release_failures, silent = None, 0, 0, 0
     # Status reads that time out take far longer than `interval`, so the attempts are also capped by time.
-    deadline = time.monotonic() + attempts * max(interval, 1) * 2
+    deadline = time.monotonic() + (attempts * max(interval, 1) * 2 if wait_s is None else wait_s)
     for _ in range(attempts):
         if time.monotonic() > deadline:
             break
@@ -330,7 +330,8 @@ def follow(transport, v3, mcp, plan, request_id, baseline, *, interval=10, attem
             log("::warning::The hub restarted during the deployment. Releasing its hold and deploying once more.")
             clear_hold(transport, v3)
             return deploy(transport, v3, mcp, plan, f"{request_id}-retry", interval=interval,
-                          attempts=attempts, retry_interrupted=False, endpoint_wait_s=endpoint_wait_s)
+                          attempts=attempts, retry_interrupted=False, endpoint_wait_s=endpoint_wait_s,
+                          wait_s=wait_s)
         if phase in ("stopped", "abandoned"):
             raise HubError(f"Deployment {phase}: {status.get('error')}")
         if status.get("workerStale") is True:
