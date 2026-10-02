@@ -36,7 +36,9 @@ runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
 
 Updating the watchdog requires an explicit `hub-e2e.yml` dispatch with
 `watchdog_update=true`, a ref with passing non-E2E CI, and the exclusive test-hub
-lease. Normal E2E does not update watchdog source.
+lease. Normal E2E does not update watchdog source. Watchdog v3 refuses to replace its
+own code unless the MCP server's endpoint answers, so restore the MCP package first
+if it is broken.
 
 Before deployment, maintenance uploads `watchdog-before-maintenance-<attempt>`
 and downloads it again to verify the prior source and its metadata. An upload,

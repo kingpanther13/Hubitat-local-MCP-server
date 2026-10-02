@@ -17194,63 +17194,8 @@ def main() -> None:
         return
 
     if args.cleanup_only:
-        # The disarm step fires the watchdog's restore-to-main asynchronously, so this
-        # step races a ~3-5 min window where the hub recompiles the restored main app
-        # and every MCP call 504s through the cloud relay. A single liveness probe is
-        # not enough -- the recompile opens at an unpredictable point and can land
-        # MID-sweep (seen live: probe answered on attempt 3, sweeps still 504ed three
-        # minutes later). Gate on restore COMPLETION instead: the watchdog stamps the
-        # canonical-main SHA marker only after its restore verifies, so marker ==
-        # MAIN_SHA means the recompile is behind us. Each poll rides through the 504s;
-        # on budget exhaustion (or a failed restore, which leaves the marker cleared)
-        # sweep anyway -- the fail-closed verify below still decides the outcome.
-        main_sha = os.environ.get("MAIN_SHA", "")
-        if main_sha:
-            print("Waiting for the watchdog's restore-to-main to complete (canonical-main marker)...")
-            # Poll cadence: short early (the restore lands ~2-2.5 min in, so a tight early cadence trims
-            # the overshoot past completion), backing off to 10s for the long failed-restore tail -- same
-            # ~8-min worst-case ceiling, just more attempts at the shorter early intervals.
-            _restore_backoff = (3, 3, 3, 3, 5, 5, 5, 7, 7, 10)
-
-            def _read_restore_marker() -> str:
-                # The main app is MID-RECOMPILE for most of this window and cannot answer
-                # anything -- polling it just manufactures relay 504s (four per run, the
-                # last 504s anywhere in the logs). The watchdog is a separate app the
-                # recompile never touches, so it answers throughout; the main-app read is
-                # only the no-watchdog local fallback.
-                if getattr(runner, "watchdog_url", ""):
-                    response = requests.post(url=runner.watchdog_url, json={
-                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                        "params": {
-                            "name": "hub_read_file",
-                            "arguments": {"fileName": "mcp-main-deployed-sha.txt"},
-                        },
-                    }, timeout=30)
-                    response.raise_for_status()
-                    result = response.json().get("result", {})
-                    content = result.get("content") if isinstance(result, dict) else None
-                    text = content[0].get("text", "") if isinstance(content, list) and content else ""
-                    marker = json.loads(text) if text else {}
-                else:
-                    marker = runner.client.call_tool("hub_manage_files", {
-                        "tool": "hub_read_file",
-                        "args": {"fileName": "mcp-main-deployed-sha.txt"},
-                    })
-                return (marker.get("content") or "").strip() if isinstance(marker, dict) else ""
-
-            for attempt in range(1, 60):
-                try:
-                    if _read_restore_marker() == main_sha:
-                        print(f"  Restore complete: marker matches main SHA (attempt {attempt}).")
-                        break
-                except Exception:
-                    pass
-                if attempt == 59:
-                    print("  [WARN] restore-complete marker never matched after ~8 min "
-                          "(failed restore, or a slow recompile); sweeping anyway.")
-                else:
-                    time.sleep(_restore_backoff[min(attempt - 1, len(_restore_backoff) - 1)])
-        # Now that the recompile window is behind us, the hub-side identity tell.
+        # The restore step deploys main through watchdog v3 and waits for it to complete, so the
+        # hub is already back on main (or the step failed loudly) by the time this runs.
         refuse_unless_leased_test_hub(client)
         runner.cleanup()
         # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all

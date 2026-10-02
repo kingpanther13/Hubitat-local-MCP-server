@@ -7,9 +7,9 @@
 # Rules, Button Controllers/Rules, Visual Rules, Notifiers, Room Lighting -- every app
 # type, as one parent/child tree), hub variables, File Manager contents, location
 # events (lowMemory/systemStart/mode/HSM), per-BAT-device events/subscribers, and the
-# watchdog's flag/marker files. Device/rule/variable/file reads and the live wedge check
+# watchdog's own state. Device/rule/variable/file reads and the live wedge check
 # go through the MAIN server ($MCP_URL); hub-health reads (info-jobs / metrics / memory /
-# logs / app-instances / libraries / bundles) and the watchdog's own state files go
+# logs / app-instances / libraries / bundles) and the watchdog's own state go
 # through the always-alive WATCHDOG endpoint, so the probe reads hub health even while the
 # main server is recompiling or throttled. NOTHING IS TRUNCATED: sections print their full tool response (each
 # is already bounded by the server's ~120KB response cap), so one probe run carries the
@@ -178,9 +178,9 @@ else
   echo "(D: fresh-device create did not return an id: $(printf '%s' "$FRESH" | head -c 300))"
 fi
 
-echo "######## Watchdog flag / marker files ########"
-for f in e2e-deadman-v2.json e2e-deferred-native-rules.json mcp-main-deployed-sha.txt; do
-  section "watchdog read ${f}" "$WATCHDOG_URL" "$(tool_rpc hub_read_file "{\"fileName\":\"${f}\"}")"
-done
+echo "######## Watchdog state ########"
+# hub_get_info on v3 carries the held package deployment and the wedge counters.
+section "watchdog hub_get_info (package deployment hold + wedge state)" "$WATCHDOG_URL" "$(tool_rpc hub_get_info '{}')"
+section "watchdog read e2e-deferred-native-rules.json" "$WATCHDOG_URL" "$(tool_rpc hub_read_file '{"fileName":"e2e-deferred-native-rules.json"}')"
 
 echo "######## PROBE COMPLETE ########"
