@@ -1041,11 +1041,9 @@ jobs:
           done
 
       # Put canonical main back through watchdog v3: release any hold the PR install left, purge the
-      # BAT_E2E_ fixtures, deploy main as it is NOW, and wait for the result. It runs FIRST in
-      # teardown, BEFORE the MCP_URL-based cleanup/settings-restore below, on purpose: if the PR
-      # compiled but broke the main MCP runtime, those MCP_URL steps would fail against the broken
-      # PR app -- restoring main first means they operate on a healthy server. The script keeps its
-      # historical file name.
+      # BAT_E2E_ fixtures, and submit a deployment of main as it is NOW. Fire and forget: the gate
+      # status is already posted above, and whether main comes back has no bearing on the PR, so
+      # this step neither waits nor fails the run. The script keeps its historical file name.
       - name: Watchdog - restore main
         if: always() && !cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         run: bash .github/scripts/mcp_disarm_watchdog.sh
@@ -1056,6 +1054,15 @@ jobs:
       - name: Watchdog - release hold (cancelled run)
         if: cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         run: bash .github/scripts/mcp_disarm_watchdog.sh --cancelled
+
+      # Bounded wait for the restore submitted above, so the MCP_URL-based cleanup and settings
+      # restore below run against a recompiled main instead of into its compile. It releases the
+      # hold once both endpoints verify. If the PR compiled but broke the main MCP runtime, those
+      # steps would otherwise fail against the broken PR app. Never fails the run.
+      - name: Watchdog - wait for main
+        if: always() && !cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
+        continue-on-error: true
+        run: python3 .github/scripts/watchdog_v3.py wait-restore
 
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'

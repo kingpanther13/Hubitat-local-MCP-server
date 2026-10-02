@@ -393,7 +393,7 @@ def test_a_stopped_status_inside_an_error_envelope_keeps_its_details(module, mon
 def cli(module, monkeypatch, tmp_path):
     """The CLI with its hub and GitHub edges replaced; records what it would have done."""
     hub = Hub()
-    seen = {"deploys": [], "order": []}
+    seen = {"deploys": [], "order": [], "follows": []}
     monkeypatch.setattr(module, "endpoints", lambda: (hub, "watchdog", "main"))
     monkeypatch.setattr(module, "clear_hold", lambda *args, **kwargs: seen["order"].append("clear_hold"))
 
@@ -402,7 +402,21 @@ def cli(module, monkeypatch, tmp_path):
         seen["order"].append("deploy")
         return {"requestId": request_id, "phase": "complete", "hold": False}
 
+    def start(transport, v3, plan, request_id):
+        seen["deploys"].append((plan, request_id))
+        seen["order"].append("submit")
+        return [("38", "MCP Rule Server", False)]
+
+    def follow(transport, v3, mcp, plan, request_id, baseline, **kwargs):
+        seen["follows"].append((request_id, baseline, kwargs))
+        if seen.get("follow_error"):
+            raise seen["follow_error"]
+        return {"requestId": request_id, "phase": "complete", "hold": False}
+
     monkeypatch.setattr(module, "deploy", deploy)
+    monkeypatch.setattr(module, "start", start)
+    monkeypatch.setattr(module, "follow", follow)
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
     monkeypatch.setenv("GITHUB_RUN_ID", "77")
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
@@ -414,7 +428,7 @@ def cli(module, monkeypatch, tmp_path):
     return module, hub, seen, bundle
 
 
-def test_restore_deploys_main_as_it_is_now_after_releasing_the_hold_and_purging(cli, monkeypatch):
+def test_restore_submits_main_as_it_is_now_after_releasing_the_hold_and_purging(cli, monkeypatch):
     module, hub, seen, _bundle = cli
     monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)
     monkeypatch.setattr(module, "fetch", lambda url, **kwargs: bundle_bytes())
@@ -428,7 +442,8 @@ def test_restore_deploys_main_as_it_is_now_after_releasing_the_hold_and_purging(
 
     hub.call = call
     module.main(["restore-main"])
-    assert seen["order"] == ["clear_hold", "purge", "deploy"]
+    assert seen["order"] == ["clear_hold", "purge", "submit"]
+    assert seen["follows"] == []
     plan, request_id = seen["deploys"][0]
     assert plan["ref"] == "d" * 40 and request_id == "e2e-77-2-main"
     assert plan["baseUrl"] == plan["bundleBaseUrl"] == "https://raw.githubusercontent.com/owner/repo"
@@ -470,16 +485,49 @@ def test_restore_still_deploys_when_the_purge_response_is_lost(cli, monkeypatch)
 
     hub.call = call
     module.main(["restore-main"])
-    assert seen["order"] == ["clear_hold", "deploy"]
+    assert seen["order"] == ["clear_hold", "submit"]
 
 
-def test_restore_fails_loudly_when_main_has_no_published_bundle(cli, monkeypatch):
+def test_a_restore_that_cannot_start_warns_and_never_fails_the_run(cli, monkeypatch, capsys):
     module, _hub, seen, _bundle = cli
     monkeypatch.setattr(module, "current_main_sha", lambda repository: None)
     monkeypatch.setattr(module, "fetch", lambda url, **kwargs: None)
-    with pytest.raises(SystemExit, match="No published bundle for main"):
-        module.main(["restore-main"])
+    module.main(["restore-main"])
     assert seen["deploys"] == []
+    out = capsys.readouterr().out
+    assert "::warning::Main was not restored (No published bundle for main)" in out
+    assert "does not affect the e2e result" in out
+
+
+def test_the_wait_follows_the_submitted_restore_with_its_baseline(cli, monkeypatch):
+    module, hub, seen, _bundle = cli
+    monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)
+    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: bundle_bytes())
+    hub.call = lambda url, name, args: {"success": True}
+    module.main(["restore-main"])
+    module.main(["wait-restore"])
+    request_id, baseline, options = seen["follows"][0]
+    assert request_id == "e2e-77-2-main"
+    assert baseline == [("38", "MCP Rule Server", False)]
+    assert options["attempts"] == 72
+
+
+def test_the_wait_never_fails_the_run(cli, monkeypatch, capsys):
+    module, hub, seen, _bundle = cli
+    monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)
+    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: bundle_bytes())
+    hub.call = lambda url, name, args: {"success": True}
+    module.main(["restore-main"])
+    seen["follow_error"] = module.HubError("Deployment stopped: compile rejected")
+    module.main(["wait-restore"])
+    assert "::warning::Main was not restored (Deployment stopped: compile rejected)" in capsys.readouterr().out
+
+
+def test_the_wait_does_nothing_when_no_restore_was_submitted(cli, capsys):
+    module, _hub, seen, _bundle = cli
+    module.main(["wait-restore"])
+    assert seen["follows"] == []
+    assert "nothing to wait for" in capsys.readouterr().out
 
 
 def test_pr_install_requires_the_published_bundle_to_equal_the_checkout_build(cli, monkeypatch):

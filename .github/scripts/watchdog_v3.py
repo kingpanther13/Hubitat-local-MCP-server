@@ -234,12 +234,23 @@ def verify_endpoints(transport, v3, mcp, baseline, *, interval=15, wait_s=1500):
         return
 
 
-def deploy(transport, v3, mcp, plan, request_id, *, interval=10, attempts=270, retry_interrupted=True):
-    """Deploy one commit and release its hold. Returns the completed status."""
+def start(transport, v3, plan, request_id):
+    """Submit one deployment. Returns the instance baseline its release is checked against."""
     transport.probe(v3)
     baseline = instance_snapshot(transport, v3)
     log(f"Starting package operation {request_id} at {plan['ref']}")
     submit(transport, v3, {**plan, "requestId": request_id, "confirm": True})
+    return baseline
+
+
+def deploy(transport, v3, mcp, plan, request_id, **options):
+    """Deploy one commit and release its hold. Returns the completed status."""
+    return follow(transport, v3, mcp, plan, request_id, start(transport, v3, plan, request_id), **options)
+
+
+def follow(transport, v3, mcp, plan, request_id, baseline, *, interval=10, attempts=270,
+           retry_interrupted=True, endpoint_wait_s=1500):
+    """Follow a submitted deployment to its end and release its hold."""
     last, unseen, release_failures, silent = None, 0, 0, 0
     for _ in range(attempts):
         try:
@@ -271,11 +282,11 @@ def deploy(transport, v3, mcp, plan, request_id, *, interval=10, attempts=270, r
             log("::warning::The hub restarted during the deployment. Releasing its hold and deploying once more.")
             clear_hold(transport, v3)
             return deploy(transport, v3, mcp, plan, f"{request_id}-retry", interval=interval,
-                          attempts=attempts, retry_interrupted=False)
+                          attempts=attempts, retry_interrupted=False, endpoint_wait_s=endpoint_wait_s)
         if phase in ("stopped", "abandoned"):
             raise HubError(f"Deployment {phase}: {status.get('error')}")
         if phase == "awaiting_verification" and status.get("workerActive") is not True:
-            verify_endpoints(transport, v3, mcp, baseline)
+            verify_endpoints(transport, v3, mcp, baseline, wait_s=endpoint_wait_s)
             try:
                 released = transport.call(v3, "hub_set_package_deployment", {
                     "requestId": request_id, "endpointVerified": True, "confirm": True,
@@ -394,7 +405,7 @@ def purge_fixtures(transport, v3):
 
 
 def command_restore_main(args):
-    transport, v3, mcp = endpoints()
+    transport, v3, _mcp = endpoints()
     if args.cancelled:
         # GitHub ends a cancelled job after about five minutes, less than a deployment takes, and a
         # cancel is normally followed by a run that installs its own code. So leave the package as
@@ -403,23 +414,60 @@ def command_restore_main(args):
         purge_fixtures(transport, v3)
         log("Run cancelled: main was NOT restored. The next run's install replaces the package.")
         return
-    repository = os.environ["GITHUB_REPOSITORY"]
-    base = f"https://raw.githubusercontent.com/{repository}"
-    # Main can move while a run is in flight; restore what main is now, not what it was at the start.
-    candidates = [sha for sha in (current_main_sha(repository), os.environ.get("MAIN_SHA")) if sha]
-    for sha in dict.fromkeys(candidates):
-        bundle = fetch(artifact_url(base, sha))
-        if bundle is not None:
-            break
-        log(f"::warning::No bundle-artifacts entry for main at {sha} yet; trying the run's starting main.")
-    else:
-        raise HubError("No published bundle for main; cannot restore")
-    # A failed PR install leaves its hold, and a hold blocks the purge, so release it first.
-    clear_hold(transport, v3)
-    purge_fixtures(transport, v3)
-    plan = plan_from_bundle(sha, bundle)
-    result = deploy(transport, v3, mcp, {**plan, "baseUrl": base, "bundleBaseUrl": base}, operation_id("main"))
-    log(f"Restored main {sha}: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
+    # Fire and forget: whether main comes back has no bearing on the PR, and the run's result is
+    # already posted. So this submits the deployment and returns; nothing here fails the run.
+    try:
+        repository = os.environ["GITHUB_REPOSITORY"]
+        base = f"https://raw.githubusercontent.com/{repository}"
+        # Main can move while a run is in flight; restore what main is now, not what it was at the start.
+        candidates = [sha for sha in (current_main_sha(repository), os.environ.get("MAIN_SHA")) if sha]
+        for sha in dict.fromkeys(candidates):
+            bundle = fetch(artifact_url(base, sha))
+            if bundle is not None:
+                break
+            log(f"::warning::No bundle-artifacts entry for main at {sha} yet; trying the run's starting main.")
+        else:
+            raise HubError("No published bundle for main")
+        # A failed PR install leaves its hold, and a hold blocks the purge, so release it first.
+        clear_hold(transport, v3)
+        purge_fixtures(transport, v3)
+        plan = {**plan_from_bundle(sha, bundle), "baseUrl": base, "bundleBaseUrl": base}
+        request_id = operation_id("main")
+        baseline = start(transport, v3, plan, request_id)
+        restore_state().write_text(json.dumps({"requestId": request_id, "plan": plan, "baseline": baseline}))
+        log(f"Main ({sha}) is being restored on the hub as {request_id}; this step does not wait for it.")
+    except HubError as error:
+        not_restored(str(error))
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+        not_restored("an endpoint or input was unavailable")
+
+
+def restore_state():
+    return Path(os.environ.get("RUNNER_TEMP", "."), "watchdog-v3-restore.json")
+
+
+def not_restored(reason):
+    log(f"::warning::Main was not restored ({reason}). This does not affect the e2e result: the next "
+        "run's prepare and install steps recover the hub.")
+
+
+def command_wait_restore(_args):
+    """Bounded wait for the submitted restore, so cleanup runs against a recompiled main. Never fatal."""
+    try:
+        state = json.loads(restore_state().read_text())
+    except (OSError, ValueError):
+        log("No restore was submitted by this run; nothing to wait for.")
+        return
+    try:
+        transport, v3, mcp = endpoints()
+        baseline = [tuple(item) for item in state["baseline"]]
+        result = follow(transport, v3, mcp, state["plan"], state["requestId"], baseline,
+                        attempts=72, endpoint_wait_s=600)
+        log(f"Restored main: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
+    except HubError as error:
+        not_restored(str(error))
+    except (OSError, ValueError, KeyError):
+        not_restored("an endpoint or input was unavailable")
 
 
 def command_endpoint(_args):
@@ -437,6 +485,7 @@ def main(argv=None):
     restore = commands.add_parser("restore-main")
     restore.add_argument("--cancelled", action="store_true", help="the run was cancelled: clean up, deploy nothing")
     restore.set_defaults(run=command_restore_main)
+    commands.add_parser("wait-restore").set_defaults(run=command_wait_restore)
     commands.add_parser("endpoint").set_defaults(run=command_endpoint)
     args = parser.parse_args(argv)
     try:
