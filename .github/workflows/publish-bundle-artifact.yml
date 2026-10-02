@@ -8,7 +8,7 @@ name: Publish bundle artifact
 #
 # packageManifest.json's bundles[].location points at branches/main/ -- HPM users
 # install from this branch. The e2e deploy installs the PR's shas/<sha>/ entry (byte-
-# verified against its own CI build), and the dead-man restore installs shas/<MAIN_SHA>/
+# verified against its own CI build), and the e2e restore installs main's shas/<sha>/
 # -- so every consumer rides the ONE mechanism e2e proves on every run; there is no
 # committed zip and no separate post-merge rebuild. No paths filter: every push (incl.
 # release-bot bookkeeping commits) gets a shas/ entry, so a restore pinned to any main

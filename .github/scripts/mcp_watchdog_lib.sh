@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shared helpers for the watchdog-driven e2e scripts (deploy / arm). Source it:
+# Shared helpers for the shell scripts that call the watchdog's manual tools (the deploy script's
+# throttle bounce, watchdog maintenance). The package install itself is watchdog_v3.py. Source it:
 #   source "$(dirname "$0")/mcp_watchdog_lib.sh"
 # Every call targets $WATCHDOG_URL (the watchdog's own /mcp endpoint), never the main $MCP_URL.
 #
@@ -86,15 +87,6 @@ resolve_class_id() {
   exit 1
 }
 
-# app_total_length CLASS_ID -> echoes the live app source totalLength (a noSave probe, so it never
-# auto-saves the live source over the dead-man restore cache), or empty.
-app_total_length() {
-  local id="$1"
-  call_tool_retry "$(jq -nc --arg id "$id" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1,noSave:true}}}')" \
-    | jq -r '.totalLength // empty' 2>/dev/null || true
-}
-
 # deploy_app_via_watchdog CLASS_ID SOURCE_URL [LABEL] [SELF_CLASS_ID]
 # Deploy an app via the watchdog importUrl and CONFIRM it landed via a FRESH lastSelfDeploy success.
 # This is the only confirmation that survives a relay-dropped 1.6MB response, a SAME-LENGTH source change
@@ -157,30 +149,4 @@ deploy_app_via_watchdog() {
   done
   echo "::error::[$label] deploy did not confirm within 420s (no FRESH lastSelfDeploy success for class ${class_id}, at > ${pre_at}). Re-run; if it persists, check the watchdog app logs." >&2
   exit 1
-}
-
-# ---------------------------------------------------------------------------
-# resolve_main_bundle_artifact_url <zip-basename>
-# Echo the canonical-main bundle URL on the bundle-artifacts branch: prefer the
-# SHA-pinned entry for MAIN_SHA (immutable -- a mid-run merge to main cannot shift
-# what the restore installs), fall back to branches/main (always-current; covers
-# SHAs predating the publish-on-every-push change). Returns 1 when neither
-# resolves -- the caller decides severity. Uses the .size markers (~10 bytes)
-# as the existence probe. Requires MAIN_SOURCE_URL + MAIN_SHA in the env (the
-# workflow's canonical-main resolution), independent of PR_RAW_BASE so fork PRs
-# still resolve against the BASE repo.
-resolve_main_bundle_artifact_url() {
-  local zip_basename="$1"
-  local repo_base="${MAIN_SOURCE_URL%/*/*}"   # strip /<sha>/<file> -> https://raw.githubusercontent.com/<owner>/<repo>
-  local sha_url="${repo_base}/bundle-artifacts/shas/${MAIN_SHA}/${zip_basename}"
-  local branch_url="${repo_base}/bundle-artifacts/branches/main/${zip_basename}"
-  if curl -fsSL --max-time 30 -o /dev/null "${sha_url}.size" 2>/dev/null; then
-    printf '%s' "$sha_url"
-    return 0
-  fi
-  if curl -fsSL --max-time 30 -o /dev/null "${branch_url}.size" 2>/dev/null; then
-    printf '%s' "$branch_url"
-    return 0
-  fi
-  return 1
 }

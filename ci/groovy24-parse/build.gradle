@@ -31,6 +31,7 @@ def productionFiles = [
     // No #include, so the resolver passes them through unchanged.
     new File(repoRoot, 'e2e-deadman-watchdog.groovy'),
     new File(repoRoot, 'e2e-deadman-watchdog-v2.groovy'),
+    new File(repoRoot, 'e2e-deadman-watchdog-v3.groovy'),
     new File(repoRoot, 'tests/fixtures/deadman-test-target.groovy'),
     new File(repoRoot, 'tests/fixtures/e2e-throwaway-app.groovy'),
     new File(repoRoot, 'tests/fixtures/app-code-update.groovy'),
