@@ -1,7 +1,7 @@
 /**
  * Manual administration and package deployment for the E2E hub. Never restores a package on its own;
  * its only automatic action is rebooting a hub whose web stack is wedged.
- * Callers must hold the exclusive hub lease and take a fresh backup before deploying.
+ * Callers must hold the exclusive hub lease before deploying.
  */
 definition(
     name: "E2E Dead-Man Watchdog v3",
