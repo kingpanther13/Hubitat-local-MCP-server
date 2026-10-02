@@ -87,5 +87,7 @@ settings page does not cancel a pending verification poll.
 
 If MCP fails, deploy a known-good ref through v3. Do not update, disable, restart,
 or reboot the working controller while investigating the other app. Each app is
-the other's repair path: v3 enforces that for its own code, and the other route
-to updating v3 is through the MCP server itself.
+the other's repair path. V3 enforces only part of that rule: it will not disable
+or delete itself, and it replaces its own code only when the MCP check passes.
+It does not block a reboot (`hub_reboot` with `force:true` always runs), and the
+MCP server can still update or remove v3.
