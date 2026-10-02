@@ -54,6 +54,7 @@ mappings {
 // Longer than any single blocking call the worker makes (the 420s app save), so a worker silent
 // for this long is dead rather than slow.
 @groovy.transform.Field static final long WORKER_STALE_MS = 900000L
+@groovy.transform.Field static final Map HEALTH_TICK = [:]
 
 def installed() { initialize() }
 // No unschedule(): it would drop a pending deployment verification poll and strand the hold.
@@ -63,7 +64,16 @@ def initialize() {
         try { createAccessToken() }
         catch (Exception e) { log.warn "createAccessToken() failed (${e.message}). Enable OAuth for the v3 code class, then save this app to create its endpoint." }
     }
-    runEvery1Minute("checkHubHealth")
+    ensureHealthTick()
+}
+
+// A code update does not run initialize(), so the first request after each class load arms the tick too.
+void ensureHealthTick() {
+    if (HEALTH_TICK.armed) return
+    try {
+        runEvery1Minute("checkHubHealth")
+        HEALTH_TICK.armed = true
+    } catch (Exception e) { log.error "Could not schedule the hub health tick: ${e.message}" }
 }
 
 // A wedged web stack cannot serve this app's own /mcp endpoint, so no remote caller can request the
@@ -144,6 +154,7 @@ def handleMcpGet() {
 }
 
 def handleMcpRequest() {
+    ensureHealthTick()
     def requestBody
     try {
         requestBody = request.JSON
