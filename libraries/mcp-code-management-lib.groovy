@@ -315,7 +315,8 @@ private stripOptionsHtml(options) {
 // disable<N> settings are blank button inputs and the state lives in RM's app
 // state, so stripping tags makes a disabled action read as live. The same markup
 // wraps the literal legend "Disabled Actions" in the selectActions table header,
-// which is not an action. Live-captured on firmware 2.5.2 / RM 5.1.
+// (singular with one disabled row), which is not an action. Live-captured on
+// firmware 2.5.2 / RM 5.1.
 private String _rmDisabledActionSpanRegex() {
     return /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
 }
@@ -334,7 +335,8 @@ private Map _rmMarkDisabledActions(String html) {
     while (m.find()) {
         def inner = m.group(1)
         def text = stripAppConfigHtml(inner)
-        if (!text || text.equalsIgnoreCase("Disabled Actions")) continue
+        // RM pluralizes the legend by count: "Disabled Action" with one row disabled.
+        if (!text || text ==~ /(?i)Disabled Actions?/) continue
         out << html.substring(last, m.start()) << _rmDisabledActionMark() << inner
         last = m.end()
         disabled << text
@@ -3002,7 +3004,7 @@ A transport drop can lose the response while the hub still commits this write; v
             name: "hub_get_app_config",
             description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page. Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.). Read-only.
 
-Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names. A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions`, and flagged `disabled:true` on its selectActions row in embeddedActions; unmarked actions are live.
+Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions`, and flagged `disabled:true` on its selectActions row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
 
 Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]] Requires Read master.""",
             inputSchema: [

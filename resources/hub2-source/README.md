@@ -154,7 +154,8 @@ per-action; `<N>` is the action index unless noted.
   `<span style='color:red'><i>Notify ...</i></span>` — on both the `mainPage` actions
   paragraph and the `selectActions` row (`data-stateAttribute='doAct'` div); a live
   action is plain text. The table header's legend uses the same markup around the
-  literal `Disabled Actions`; `*BROKEN*` is red but not italic. Clicking `disable<N>`
+  literal `Disabled Action` / `Disabled Actions` (pluralized by count); `*BROKEN*` is
+  red but not italic. Clicking `disable<N>`
   via `/installedapp/btn` (no `stateAttribute`) toggles it — live-verified; used by
   `hub_get_app_config` (`[DISABLED]` mark + `disabledActions`).
 - **String `*contains*` comparator** — for a STRING-typed variable or a

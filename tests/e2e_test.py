@@ -11734,8 +11734,9 @@ class TestRunner:
             live_rows = [a for a in embedded if a.get("stateAttribute") == "doAct" and not a.get("disabled")]
             assert not any("disabled-mark fixture" in str(a.get("description")) for a in live_rows), \
                 f"the disabled action also appears as a live row: {embedded}"
-            # The legend "Disabled Actions" in the table header uses the same markup and must not count.
-            assert not any("Disabled Actions" == str(d).strip() for d in (rows.get("disabledActions") or [])), \
+            # The header legend ("Disabled Action" with one row, "Disabled Actions" with more) uses the
+            # same markup and must not count.
+            assert not any(re.fullmatch(r"Disabled Actions?", str(d).strip()) for d in (rows.get("disabledActions") or [])), \
                 f"selectActions legend reported as a disabled action: {rows.get('disabledActions')}"
         finally:
             self._delete_native(app_id)

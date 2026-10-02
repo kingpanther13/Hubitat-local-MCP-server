@@ -1780,11 +1780,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.disabledActionsNote.contains('[DISABLED]')
     }
 
-    def "RM selectActions legend span is not reported as a disabled action"() {
+    @spock.lang.Unroll
+    def "RM selectActions legend span '#legend' is not reported as a disabled action"() {
         given:
         settingsMap.enableRead = true
-        // The table header wraps its colour legend in the same red italic markup.
-        def html = "<th>Actions for <b>My Rule</b><span style='color:red'>           <i>Disabled Actions</i></span></th>" +
+        // The table header wraps its colour legend in the same red italic markup; RM
+        // pluralizes it by count (live: "Disabled Action" with one row, "Disabled Actions" with two).
+        def html = "<th>Actions for <b>My Rule</b><span style='color:red'>           <i>${legend}</i></span></th>" +
             "<td><span style='color:red'><i>Delay 0:02:00\n</i></span></td>"
         hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
 
@@ -1793,8 +1795,11 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         result.disabledActions == ['Delay 0:02:00']
-        result.page.sections[0].paragraphs[0].contains('Disabled Actions')
-        !result.page.sections[0].paragraphs[0].contains('[DISABLED] Disabled Actions')
+        result.page.sections[0].paragraphs[0].contains(legend)
+        !result.page.sections[0].paragraphs[0].contains("[DISABLED] ${legend}")
+
+        where:
+        legend << ['Disabled Action', 'Disabled Actions']
     }
 
     def "a page with no disabled RM actions omits disabledActions"() {
