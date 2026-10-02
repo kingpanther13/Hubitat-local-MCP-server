@@ -392,6 +392,10 @@ def adminGetPackageDeployment(Map args) {
     if (!job || job.requestId != args.requestId?.toString())
         return [success: false, error: "No deployment with this requestId",
                 note: "hub_get_info.packageDeployment reports the operation this watchdog currently holds."]
+    return packageStatus(job)
+}
+
+Map packageStatus(Map job) {
     return [success: !(job.phase in ["stopped", "abandoned"]), requestId: job.requestId, ref: job.ref,
         phase: job.phase, status: job.phase, component: job.component, hold: job.hold,
         startedAt: job.startedAt, updatedAt: job.updatedAt, elapsedMs: now() - (job.startedAt as long),
@@ -2007,10 +2011,12 @@ def adminGetInfo(args) {
     info.automaticRecovery = false
     info.autoRebootOnWedge = settings?.autoRebootOnWedge != false
     if (args?.peer == true) info.peerEndpoint = peerEndpointStatus()
-    info.packageDeployment = atomicState.packageDeployment ? adminGetPackageDeployment([requestId: atomicState.packageDeployment.requestId]) : null
+    def deployment = atomicState.packageDeployment
+    info.packageDeployment = deployment ? packageStatus(deployment) : null
     // issue #237 self-deploy outcome: persists across reloads; add ageMs.
-    if (atomicState.lastSelfDeploy != null) {
-        def lsd = [:] + atomicState.lastSelfDeploy
+    def lastDeploy = atomicState.lastSelfDeploy
+    if (lastDeploy != null) {
+        def lsd = [:] + lastDeploy
         if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
         info.lastSelfDeploy = lsd
     }
