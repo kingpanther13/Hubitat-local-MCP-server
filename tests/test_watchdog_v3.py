@@ -265,7 +265,7 @@ class Discovery:
     def call(self, url, name, args):
         self.calls.append((url, name))
         if name == "hub_get_info":
-            return {"watchdogVersion": 3 if url.startswith("https://cloud.hubitat.com") else self.version}
+            return {"watchdogVersion": 3 if url == V3_URL else self.version}
         if name == "hub_list_app_instances":
             return {"apps": self.instances}
         if name == "hub_read_apps_code":
