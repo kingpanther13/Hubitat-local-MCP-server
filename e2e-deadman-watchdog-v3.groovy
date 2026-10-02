@@ -405,7 +405,8 @@ Map packageJob() {
     if (!(stored instanceof Map)) return null
     Map live = null
     synchronized (PACKAGE_DEPLOY_LOCK) {
-        if (PACKAGE_PROGRESS.job?.requestId == stored.requestId) live = [:] + PACKAGE_PROGRESS.job
+        def current = PACKAGE_PROGRESS.job
+        if (current != null && current.requestId == stored.requestId) live = [:] + current
     }
     if (live != null) return ([:] + stored) + live
     if (stored.hold == true && !(stored.phase in ["stopped", "awaiting_verification"]))
