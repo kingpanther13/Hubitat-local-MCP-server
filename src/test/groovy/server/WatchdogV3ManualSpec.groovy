@@ -221,6 +221,35 @@ class WatchdogV3ManualSpec extends Specification {
         pool.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
     }
 
+    def "a watchdog that has never had a successful loopback call can still detect a wedge"() {
+        given: "no lastOkAt at all -- the hub was wedged before this code loaded"
+        script.LOOPBACK.failStreak = 12
+        script.LOOPBACK.lastOkAt = null
+        script.LOOPBACK.streakStartedAt = System.currentTimeMillis() - 300_000L
+        String posted = null
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+
+        when:
+        script.checkHubHealth()
+
+        then: "the streak-start timestamp is the baseline, so the escape still fires"
+        posted == '/hub/reboot'
+    }
+
+    def "every tick probes the loopback before the wedge decision, wedged or not"() {
+        given: "healthy counters -- nothing below the probe would run on its own"
+        int probes = 0
+        script.metaClass.probeLoopbackAlive = { -> probes++; true }
+        script.LOOPBACK.failStreak = 0
+
+        when:
+        script.checkHubHealth()
+
+        then: "the probe ran once on an idle tick, so a latched streak can clear without watchdog traffic"
+        probes == 1
+    }
+
     def "an auto-reboot is vetoed under the lock when a concurrent probe cleared the streak"() {
         given:
         wedge(300_000L, 8)
@@ -1190,6 +1219,16 @@ class WatchdogV3ManualSpec extends Specification {
     }
 
     // ---- annotation completeness ------------------------------------------------------------
+
+    def "the tools that reach the open internet are the ones that fetch by URL"() {
+        given: "openWorldHint is an accuracy statement: the hub is the closed-world system"
+        def defs = script.getAdminToolDefinitions()
+
+        expect: "only the importUrl/zip-fetch/platform-download tools leave the hub"
+        (defs.findAll { it.annotations?.openWorldHint == true }*.name as Set) ==
+            ['hub_update_package', 'hub_update_app', 'hub_create_library', 'hub_update_library',
+             'hub_update_platform', 'hub_install_bundle'] as Set
+    }
 
     def "every watchdog tool definition carries explicit annotation hints"() {
         given: "tools/list returns getAdminToolDefinitions() directly, so these reach the wire"

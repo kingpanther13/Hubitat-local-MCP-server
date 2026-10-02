@@ -44,7 +44,9 @@ GROOVY_FILES = [
     REPO_ROOT / "hubitat-mcp-rule.groovy",
     # Standalone e2e watchdog app: it runs in the Hubitat sandbox on the e2e hub, so lint it for
     # forbidden patterns here rather than discovering a violation only at live install time.
-    # The v1 and v2 watchdogs stay in the tree as a fallback but are no longer deployed or linted.
+    # The v1 and v2 watchdogs are retired: not deployed, linted or tested. Their files stay so a
+    # revert of #485's e2e scripts could bring v2 back (re-enable together with the @Ignore on their
+    # specs); the hub keeps its v2 instance disabled.
     # REPO_ROOT / "e2e-deadman-watchdog.groovy",
     # REPO_ROOT / "e2e-deadman-watchdog-v2.groovy",
     REPO_ROOT / "e2e-deadman-watchdog-v3.groovy",

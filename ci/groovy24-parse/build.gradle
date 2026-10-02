@@ -25,9 +25,10 @@ def productionFiles = [
     new File(repoRoot, 'hubitat-mcp-server.groovy'),
     new File(repoRoot, 'hubitat-mcp-rule.groovy'),
     // Standalone e2e watchdog app: parse it here so a syntax / 3.0-only break (or a sandbox-blocked
-    // ClassExpression) is caught in the fast lane, not only when maintenance compiles it live on the
+    // ClassExpression) is caught in the fast lane, not only when the watchdog_update maintenance job compiles it live on the
     // e2e hub. No #include, so the resolver passes it through unchanged. The v1 and v2 watchdogs
-    // stay in the tree as a fallback but are no longer deployed or parsed.
+    // are retired (not deployed, parsed or tested); their files stay so a revert of #485's e2e
+    // scripts could bring v2 back. Re-enable together with the @Ignore on their specs.
     // new File(repoRoot, 'e2e-deadman-watchdog.groovy'),
     // new File(repoRoot, 'e2e-deadman-watchdog-v2.groovy'),
     new File(repoRoot, 'e2e-deadman-watchdog-v3.groovy'),
