@@ -411,7 +411,8 @@ Map packageJob() {
     if (stored.hold == true && !(stored.phase in ["stopped", "awaiting_verification"]))
         return ([:] + stored) + [phase: "interrupted", workerActive: false,
             error: "The watchdog restarted during this deployment (last recorded phase ${stored.phase}); nothing is running and nothing was resumed. Safety hold retained.".toString()]
-    return [:] + stored
+    // Liveness is memory-only, whatever an older record stored.
+    return ([:] + stored) + [workerActive: false]
 }
 
 void packagePublish(Map job) {
