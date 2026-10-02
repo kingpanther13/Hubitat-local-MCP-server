@@ -7,7 +7,7 @@ definition(
     name: "E2E Dead-Man Watchdog v3",
     namespace: "mcp",
     author: "kingpanther13",
-    description: "Manual hub administration and MCP package deployment with persisted progress. E2E test hub only.",
+    description: "Manual hub administration and MCP package deployment with live progress. E2E test hub only.",
     category: "Utility",
     iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
     iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
@@ -57,6 +57,9 @@ mappings {
 // Longer than any single blocking call the worker makes (the 420s app save), so a worker silent
 // for this long is dead rather than slow.
 @groovy.transform.Field static final long WORKER_STALE_MS = 900000L
+// Live deployment progress, kept in memory the way HPM keeps its status message: only the hold is
+// persisted. A hub restart or code load empties it, which is how a dead deployment is recognised.
+@groovy.transform.Field static final Map PACKAGE_PROGRESS = [:]
 @groovy.transform.Field static final Map HEALTH_TICK = [:]
 
 def installed() { initialize() }
@@ -238,7 +241,7 @@ def handleInitialize(msg) {
         protocolVersion: negotiated,
         capabilities: [tools: [:]],
         serverInfo: [name: "e2e-deadman-watchdog-v3", version: "3"],
-        instructions: "Manual administration and package deployment with persisted progress. Reserve the E2E hub before changes. Restoration requires an explicit request; the only automatic action is a reboot when the hub's web stack has been wedged for 4+ minutes."
+        instructions: "Manual administration and package deployment with live progress. Reserve the E2E hub before changes. Restoration requires an explicit request; the only automatic action is a reboot when the hub's web stack has been wedged for 4+ minutes."
     ])
 }
 
@@ -288,9 +291,8 @@ def executeAdminTool(String toolName, Map args) {
     if (toolName == "hub_reboot" && args.force == true) return executeManualTool(toolName, args)
     boolean repeatedPurge = false
     synchronized (PACKAGE_DEPLOY_LOCK) {
-        def deployment = atomicState.packageDeployment
-        if (deployment?.hold == true || deployment?.workerActive == true)
-            return packageHeldRefusal(deployment, "manual writes are blocked")
+        def deployment = packageJob()
+        if (deployment?.hold == true) return packageHeldRefusal(deployment, "manual writes are blocked")
         if (MANUAL_WRITE.isEmpty()) {
             MANUAL_WRITE.tool = toolName
         } else if (toolName == "hub_purge_e2e_artifacts" && MANUAL_WRITE.tool == toolName) {
@@ -361,49 +363,71 @@ def adminUpdatePackage(Map args) {
         if (prior.binding != binding) return [success: false, error: "requestId is already bound to different inputs"]
         return adminGetPackageDeployment([requestId: requestId])
     }
+    Map job
     synchronized (PACKAGE_DEPLOY_LOCK) {
         if (!MANUAL_WRITE.isEmpty()) return manualWriteBusyRefusal("no package deployment was scheduled")
-        def current = atomicState.packageDeployment
+        def current = packageJob()
         if (current?.requestId == requestId) {
             if (current.binding != binding) return [success: false, error: "requestId is already bound to different inputs"]
-            return adminGetPackageDeployment([requestId: requestId])
+            return packageStatus(current)
         }
-        if (current?.hold == true || current?.workerActive == true)
-            return packageHeldRefusal(current, "nothing was scheduled")
-        atomicState.packageDeployment = [requestId: requestId, ref: ref, binding: binding,
-            baseUrl: baseUrl, bundleBaseUrl: bundleBaseUrl, libraries: libraries, hold: true, phase: "queued", status: "queued", startedAt: now(),
-            stageStartedAt: now(), updatedAt: now(), history: [], workerActive: false]
+        if (current?.hold == true) return packageHeldRefusal(current, "nothing was scheduled")
+        job = [requestId: requestId, ref: ref, binding: binding, baseUrl: baseUrl, bundleBaseUrl: bundleBaseUrl,
+               libraries: libraries, hold: true, phase: "queued", startedAt: now()]
+        atomicState.packageDeployment = job
         def back = atomicState.packageDeployment
         if (back?.requestId != requestId || back.hold != true)
             return [success: false, error: "Could not persist deployment safety hold; nothing was scheduled"]
+        job = job + [stageStartedAt: now(), updatedAt: now(), history: [], workerActive: false]
+        PACKAGE_PROGRESS.job = [:] + job
     }
     try {
         runIn(1, "runWatchdogPackageDeploy", [data: [requestId: requestId]])
     } catch (Exception e) {
         log.error "hub_update_package ${requestId}: could not schedule the worker: ${e.message}"
-        def job = [:] + atomicState.packageDeployment
         packageStage(job, "stopped", "", "Could not schedule deployment (${e.message}). Safety hold retained.")
     }
     return adminGetPackageDeployment([requestId: requestId])
 }
 
 def adminGetPackageDeployment(Map args) {
-    def job = atomicState.packageDeployment
+    def job = packageJob()
     if (!job || job.requestId != args.requestId?.toString())
         return [success: false, error: "No deployment with this requestId",
                 note: "hub_get_info.packageDeployment reports the operation this watchdog currently holds."]
     return packageStatus(job)
 }
 
+// The persisted record overlaid with live progress. A held record with no live progress and no
+// resting phase means the watchdog restarted mid-deployment: nothing is running any more.
+Map packageJob() {
+    def stored = atomicState.packageDeployment
+    if (!(stored instanceof Map)) return null
+    Map live = null
+    synchronized (PACKAGE_DEPLOY_LOCK) {
+        if (PACKAGE_PROGRESS.job?.requestId == stored.requestId) live = [:] + PACKAGE_PROGRESS.job
+    }
+    if (live != null) return ([:] + stored) + live
+    if (stored.hold == true && !(stored.phase in ["stopped", "awaiting_verification"]))
+        return ([:] + stored) + [phase: "interrupted", workerActive: false,
+            error: "The watchdog restarted during this deployment (last recorded phase ${stored.phase}); nothing is running and nothing was resumed. Safety hold retained.".toString()]
+    return [:] + stored
+}
+
+void packagePublish(Map job) {
+    synchronized (PACKAGE_DEPLOY_LOCK) { PACKAGE_PROGRESS.job = [:] + job }
+}
+
 Map packageStatus(Map job) {
-    return [success: !(job.phase in ["stopped", "abandoned"]), requestId: job.requestId, ref: job.ref,
+    long started = (job.startedAt ?: now()) as long
+    return [success: !(job.phase in ["stopped", "abandoned", "interrupted"]), requestId: job.requestId, ref: job.ref,
         phase: job.phase, status: job.phase, component: job.component, hold: job.hold,
-        startedAt: job.startedAt, updatedAt: job.updatedAt, elapsedMs: now() - (job.startedAt as long),
-        stageElapsedMs: now() - (job.stageStartedAt as long), workerActive: job.workerActive == true,
+        startedAt: job.startedAt, updatedAt: job.updatedAt, elapsedMs: now() - started,
+        stageElapsedMs: now() - ((job.stageStartedAt ?: started) as long), workerActive: job.workerActive == true,
         workerStale: packageWorkerStale(job), detail: job.detail, error: job.error, history: job.history ?: []]
 }
 
-// A restart mid-save leaves workerActive set with nothing running; only silence tells that apart
+// A worker that hangs without a restart keeps its in-memory claim; only silence tells that apart
 // from a slow worker.
 boolean packageWorkerStale(Map job) {
     return job.workerActive == true && job.updatedAt != null && (now() - (job.updatedAt as long)) > WORKER_STALE_MS
@@ -413,27 +437,26 @@ def adminSetPackageDeployment(Map args) {
     requireConfirm(args)
     if (!args.requestId) throw new IllegalArgumentException("requestId is required to release a package deployment")
     boolean abandon = args.abandon == true
+    Map job
     synchronized (PACKAGE_DEPLOY_LOCK) {
-        def stored = atomicState.packageDeployment
-        if (stored?.requestId != args.requestId?.toString())
+        job = packageJob()
+        if (job?.requestId != args.requestId?.toString())
             return [success: false, error: "No deployment with this requestId"]
-        if (stored.hold != true) return adminGetPackageDeployment(args)
-        if (stored.workerActive == true && !(abandon && packageWorkerStale(stored)))
-            return [success: false, requestId: stored.requestId, phase: stored.phase,
+        if (job.hold != true) return packageStatus(job)
+        if (job.workerActive == true && !(abandon && packageWorkerStale(job)))
+            return [success: false, requestId: job.requestId, phase: job.phase,
                     error: "A worker or another release is still active for this operation",
                     note: "Poll hub_get_package_deployment. A worker silent for ${(WORKER_STALE_MS / 60000) as long} minutes reports workerStale:true and can then be abandoned."]
         if (abandon ? args.writesSettled != true : args.endpointVerified != true)
             return [success: false, error: "Verify original endpoints for completion, or explicitly confirm writesSettled before abandoning a deployment for repair"]
-        if (!abandon && stored.phase != "awaiting_verification")
-            return [success: false, requestId: stored.requestId, phase: stored.phase,
+        if (!abandon && job.phase != "awaiting_verification")
+            return [success: false, requestId: job.requestId, phase: job.phase,
                     error: "The operation is not ready for completion; only abandon:true with writesSettled:true can release it in this phase"]
-        // workerActive doubles as the claim that keeps the worker and a second release out.
-        def job = [:] + stored
+        // The in-memory claim keeps the worker and a second release out while the recheck runs.
         job.workerActive = true
         job.updatedAt = now()
-        atomicState.packageDeployment = job
+        PACKAGE_PROGRESS.job = [:] + job
     }
-    def job = [:] + atomicState.packageDeployment
     String failure = "Release was interrupted"
     try {
         failure = abandon ? null : packageInstallMismatch(job)
@@ -442,13 +465,11 @@ def adminSetPackageDeployment(Map args) {
         failure = "Could not recheck installed sources (${e.message})"
     } finally {
         synchronized (PACKAGE_DEPLOY_LOCK) {
-            if (atomicState.packageDeployment?.requestId == job.requestId) {
-                job.workerActive = false
-                job.hold = failure != null
-                // A failed recheck keeps the phase, so completion can be retried once the hub reads cleanly.
-                if (failure != null) packageStage(job, job.phase, job.component ?: "", "${failure}; safety hold retained")
-                else packageStage(job, abandon ? "abandoned" : "complete")
-            }
+            job.workerActive = false
+            job.hold = failure != null
+            // A failed recheck keeps the phase, so completion can be retried once the hub reads cleanly.
+            if (failure != null) packageStage(job, job.phase, job.component ?: "", "${failure}; safety hold retained")
+            else packageStage(job, abandon ? "abandoned" : "complete")
         }
     }
     def status = adminGetPackageDeployment(args)
@@ -469,12 +490,13 @@ String packageInstallMismatch(Map job) {
 def runWatchdogPackageDeploy(Map data) {
     Map job
     synchronized (PACKAGE_DEPLOY_LOCK) {
-        def stored = atomicState.packageDeployment
-        if (stored?.requestId != data.requestId?.toString() || stored.hold != true || stored.workerActive == true ||
-            stored.phase in ["complete", "abandoned", "stopped", "awaiting_verification"]) return
-        job = [:] + stored
+        // No live progress means this class never admitted the operation (a restart): never resume.
+        def live = PACKAGE_PROGRESS.job
+        if (live?.requestId != data.requestId?.toString() || live.hold != true || live.workerActive == true ||
+            live.phase in ["complete", "abandoned", "stopped", "awaiting_verification"]) return
+        job = [:] + live
         job.workerActive = true
-        atomicState.packageDeployment = job
+        PACKAGE_PROGRESS.job = [:] + job
     }
     try {
         if (job.phase == "queued") {
@@ -485,7 +507,7 @@ def runWatchdogPackageDeploy(Map data) {
             if (!baseline.matches) {
                 packageStage(job, "installing_bundle", "MCP libraries")
                 job.verifyUntil = now() + 600000L
-                atomicState.packageDeployment = job
+                packageRequireHold(job)
                 def bundle = adminInstallBundle([importUrl: job.bundleUrl, confirm: true])
                 // Only an explicit rejection stops here. A lost or unreadable response may still have
                 // installed, so it goes to hash verification rather than a replay.
@@ -518,7 +540,7 @@ def runWatchdogPackageDeploy(Map data) {
                 target.beforeVersion = before.version.toString().toLong()
                 packageStage(job, "updating_app", target.name)
                 job.verifyUntil = now() + 600000L
-                atomicState.packageDeployment = job
+                packageRequireHold(job)
                 def response = hubPostForm("/app/ajax/update", [id: target.id, version: before.version, source: source])
                 def result = _parseJsonBody(response?.data)
                 if (result instanceof Map && result.status == "error")
@@ -542,12 +564,12 @@ def runWatchdogPackageDeploy(Map data) {
         packageStage(job, "awaiting_verification", "Original MCP and watchdog endpoints")
     } catch (Exception e) {
         log.error "Package deployment ${job.requestId} stopped at ${job.phase}: ${e.message}"
-        if (!packageSuperseded(job))
+        if (!packageSuperseded(job) && !packageHoldLost(job))
             packageStage(job, "stopped", job.component?.toString() ?: "", e.message?.take(1000) ?: "Deployment failed")
     } finally {
         if (!packageSuperseded(job)) {
             job.workerActive = false
-            atomicState.packageDeployment = job
+            packagePublish(job)
         }
     }
 }
@@ -555,8 +577,24 @@ def runWatchdogPackageDeploy(Map data) {
 // A worker silent past WORKER_STALE_MS can be abandoned by the operator. If it was only slow, it
 // must not write again or revive the released hold.
 boolean packageSuperseded(Map job) {
+    synchronized (PACKAGE_DEPLOY_LOCK) {
+        def live = PACKAGE_PROGRESS.job
+        return live == null || live.requestId != job.requestId || live.phase == "abandoned"
+    }
+}
+
+// The same question against the persisted hold, for a worker that outlived a code load and so
+// sees only its own class's memory.
+boolean packageHoldLost(Map job) {
     def stored = atomicState.packageDeployment
-    return stored?.requestId != job.requestId || stored.phase == "abandoned"
+    return stored?.requestId != job.requestId || stored.hold != true
+}
+
+// Checked immediately before each hub write.
+void packageRequireHold(Map job) {
+    if (packageSuperseded(job) || packageHoldLost(job))
+        throw new IllegalStateException("Deployment hold was released or replaced; nothing further was written")
+    packagePublish(job)
 }
 
 def prepareWatchdogPackage(Map job) {
@@ -660,15 +698,16 @@ def packageWait(Map job, String phase, String component, String reason = null) {
         packageStage(job, "stopped", component, "Timed out verifying ${component}${reason ? ' (' + reason + ')' : ''}; no write was retried. Safety hold retained.")
     } else {
         packageStage(job, phase, component)
-        // After the stage write, which clears detail on a phase change.
+        // After the stage update, which clears detail on a phase change.
         job.detail = reason
-        atomicState.packageDeployment = job
+        packagePublish(job)
         runIn(10, "runWatchdogPackageDeploy", [data: [requestId: job.requestId]])
     }
 }
 
 def packageStage(Map job, String phase, String component = "", String error = null) {
-    if (phase != "abandoned" && packageSuperseded(job))
+    // A running worker whose operation was abandoned or replaced stops before its next step.
+    if (job.workerActive == true && packageSuperseded(job))
         throw new IllegalStateException("Deployment was abandoned or replaced; no further writes are allowed")
     long stamp = now()
     if (job.phase != phase || job.component != component) {
@@ -680,10 +719,19 @@ def packageStage(Map job, String phase, String component = "", String error = nu
     job.component = component
     job.updatedAt = stamp
     job.error = error
-    atomicState.packageDeployment = job
-    def back = atomicState.packageDeployment
-    if (back?.requestId != job.requestId || back.phase != phase || back.hold != job.hold)
-        throw new IllegalStateException("Could not persist deployment stage; no further writes are allowed")
+    // Persisted only where the hold comes to rest; in between, progress lives in memory.
+    if (phase in ["stopped", "awaiting_verification", "complete", "abandoned"]) {
+        if (job.workerActive == true && packageHoldLost(job))
+            throw new IllegalStateException("Deployment hold was released or replaced; no further writes are allowed")
+        // Liveness is memory-only: a persisted workerActive would outlive the worker across a restart.
+        Map record = [:] + job
+        record.remove("workerActive")
+        atomicState.packageDeployment = record
+        def back = atomicState.packageDeployment
+        if (back?.requestId != job.requestId || back.phase != phase || back.hold != job.hold)
+            throw new IllegalStateException("Could not persist deployment stage; no further writes are allowed")
+    }
+    packagePublish(job)
 }
 
 String packageSourceHash(String source) {
@@ -708,7 +756,7 @@ def getPackageToolDefinitions() {
              libraries: [type: "array", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
              confirm: [type: "boolean"]], required: ["requestId", "ref", "libraries", "confirm"]]],
         [name: "hub_get_package_deployment", annotations: [title: "Get Package Deployment", readOnlyHint: true, idempotentHint: true, openWorldHint: false],
-         description: "Read persisted package stages, elapsed time, errors, and safety hold without contacting hub HTTP. detail carries the latest verification finding while a stage waits; workerStale:true means the worker has been silent for 15 minutes and is presumed dead. A stopped or missing operation never authorizes replaying the install.",
+         description: "Read package deployment stages, elapsed time, errors, and safety hold without contacting hub HTTP. detail carries the latest verification finding while a stage waits. Only the hold is persisted; progress is kept in memory, so phase interrupted means the watchdog restarted mid-deployment and nothing is running, and workerStale:true means a worker has been silent for 15 minutes and is presumed dead. A stopped, interrupted or missing operation never authorizes replaying the install.",
          inputSchema: [type: "object", properties: [requestId: [type: "string"]], required: ["requestId"]]],
         [name: "hub_set_package_deployment", annotations: [title: "Release Package Deployment", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false],
          description: "Release a package safety hold. Completion needs endpointVerified:true (the original MCP and v3 endpoint URLs and tokens still answer, app instances unchanged) on an operation awaiting verification; installed code hashes are rechecked first, and a failed recheck keeps the hold so completion can be retried. abandon:true with writesSettled:true gives up a held operation in any phase for repair, for example to redeploy a known-good ref when the installed MCP is broken; it is refused while a worker is active unless workerStale is true. Abandonment never marks the deployment successful. confirm:true required.",
@@ -2011,7 +2059,7 @@ def adminGetInfo(args) {
     info.automaticRecovery = false
     info.autoRebootOnWedge = settings?.autoRebootOnWedge != false
     if (args?.peer == true) info.peerEndpoint = peerEndpointStatus()
-    def deployment = atomicState.packageDeployment
+    def deployment = packageJob()
     info.packageDeployment = deployment ? packageStatus(deployment) : null
     // issue #237 self-deploy outcome: persists across reloads; add ageMs.
     def lastDeploy = atomicState.lastSelfDeploy

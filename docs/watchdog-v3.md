@@ -2,7 +2,7 @@
 
 `e2e-deadman-watchdog-v3.groovy` is E2E test-hub tooling: a small MCP server with
 its own OAuth `/mcp` endpoint, separate from the MCP app under test. It exposes
-v2's 26 manual tools plus package start, persisted status, and hold release. It
+v2's 26 manual tools plus package start, live status, and hold release. It
 is never in the HPM manifest and never on a user hub.
 
 ## What v3 does on its own
@@ -38,14 +38,18 @@ and OAuth settings. Status contains the component, elapsed time, the latest
 verification finding (`detail`), the error, and stage history; Hubitat does not
 expose compiler percentages through this operation.
 
+Like HPM, v3 keeps that progress in memory and persists only the hold: the
+operation record is written at admission, when it comes to rest (`stopped` or
+`awaiting_verification`), and at release.
+
 - `hub_update_package`: caller-chosen `requestId`, immutable 40-character `ref`,
   expected library `name`/`sha256` pairs, and `confirm:true`. Optional `baseUrl`
   selects a raw GitHub source repository; `bundleBaseUrl` selects the repository
   hosting the SHA-specific bundle. This permits fork source with a bundle
   published by the upstream workflow. Both default to the upstream repository.
   Independently build and compare the published bundle before submitting once.
-- `hub_get_package_deployment`: reads persisted status for `requestId` without
-  hub HTTP. Reconnect using the same ID after a lost response.
+- `hub_get_package_deployment`: reads status for `requestId` without hub HTTP.
+  Reconnect using the same ID after a lost response.
 - `hub_set_package_deployment`: releases the hold, with `confirm:true`.
   - Complete: `endpointVerified:true`, once the operation is
     `awaiting_verification` and the caller has checked that the original MCP and
@@ -79,11 +83,13 @@ running tool. Two exceptions: a repeated `hub_purge_e2e_artifacts` reaches the
 purge's own single-flight latch, and `hub_reboot` with `force:true` is never
 blocked.
 
-A stopped operation retains its hold until it is abandoned. A hub restart during
-a save leaves `workerActive:true` with nothing running. V3 does not resume
-uncertain writes; after 15 minutes without progress the status reports
-`workerStale:true`, and the operation can then be abandoned. Saving the app's
-settings page does not cancel a pending verification poll.
+A stopped operation retains its hold until it is abandoned. A hub restart or a
+v3 code load during a deployment empties the in-memory progress, so the status
+reports `interrupted` at once: nothing is running, and v3 never resumes
+uncertain writes. Abandon it once the submitted writes have settled. A worker
+that hangs without a restart reports `workerStale:true` after 15 minutes without
+progress and can then be abandoned. Saving the app's settings page does not
+cancel a pending verification poll.
 
 If MCP fails, deploy a known-good ref through v3. Do not update, disable, restart,
 or reboot the working controller while investigating the other app. Each app is
