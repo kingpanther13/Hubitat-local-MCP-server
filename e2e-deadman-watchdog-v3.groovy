@@ -49,6 +49,9 @@ mappings {
 @groovy.transform.Field static final Map MANUAL_WRITE = [:]
 @groovy.transform.Field static final Object PURGE_CLAIM_LOCK = new Object()
 @groovy.transform.Field static final Object LOOPBACK_LOCK = new Object()
+// Wedge counters live in memory, not atomicState: they are touched on every loopback call and
+// every health tick, and a reboot or code load should start them from zero anyway.
+@groovy.transform.Field static final Map LOOPBACK = [failStreak: 0, lastOkAt: null, streakStartedAt: null]
 @groovy.transform.Field static final int WEDGE_STREAK_MIN = 8
 @groovy.transform.Field static final Object REBOOT_LOCK = new Object()
 // Longer than any single blocking call the worker makes (the 420s app save), so a worker silent
@@ -134,7 +137,7 @@ private boolean maybeAutoRebootWedgedHub() {
         try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
         return false
     }
-    log.error "E2E Dead-Man Watchdog v3: hub loopback HTTP has been dead for at least ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
+    log.error "E2E Dead-Man Watchdog v3: hub loopback HTTP has been dead for at least ${loopbackState().failStreak} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
     def r = adminRebootHub([confirm: true])
     if (!r?.success) {
         log.error "E2E Dead-Man Watchdog v3: auto-reboot POST did not confirm (${r?.error})."
@@ -2013,9 +2016,10 @@ def adminGetInfo(args) {
     }
     def wedge = [:]
     try {
-        wedge.loopbackFailStreak = (atomicState.loopbackFailStreak ?: 0) as int
-        wedge.loopbackLastOkAt = atomicState.loopbackLastOkAt
-        wedge.loopbackStreakStartedAt = atomicState.loopbackStreakStartedAt
+        def loopback = loopbackState()
+        wedge.loopbackFailStreak = loopback.failStreak
+        wedge.loopbackLastOkAt = loopback.lastOkAt
+        wedge.loopbackStreakStartedAt = loopback.streakStartedAt
         wedge.lastAutoRebootAt = atomicState.lastAutoRebootAt
         if (wedge.lastAutoRebootAt instanceof Number) wedge.lastAutoRebootAgeMs = now() - (wedge.lastAutoRebootAt as long)
         wedge.expectedDownUntil = atomicState.expectedDownUntil
@@ -2427,34 +2431,22 @@ Integer httpStatusOf(Exception e) {
 // success so "one flaky read" is distinguishable from "the hub is gone".
 private void noteLoopback(boolean ok) {
     synchronized (LOOPBACK_LOCK) {
-        try {
-            int prior = (atomicState.loopbackFailStreak ?: 0) as int
-            if (!ok) {
-                // Stamp when THIS streak began so hubLooksWedged has a baseline even if the
-                // watchdog has never seen a successful loopback call.
-                if (prior == 0) atomicState.loopbackStreakStartedAt = now()
-                // Past the threshold the count no longer matters (the start stamp says how long
-                // the hub has been dark), so stop writing it: a purge sweep on a wedged hub makes
-                // 150+ failing calls, and each write here would be a DB write from the app whose
-                // job is to keep the hub unloaded.
-                if (prior < WEDGE_STREAK_MIN) atomicState.loopbackFailStreak = prior + 1
-                return
-            }
-            // Every atomicState write is a DB write, and a purge sweep makes 150+ loopback calls.
-            // The success path is the steady state, so it writes only when something CHANGED: a
-            // streak to clear, or a lastOk older than 30s. That keeps the bookkeeping at ~2 writes
-            // a minute on a healthy hub instead of one per call on the app whose job is to keep
-            // the hub unloaded.
-            if (prior != 0) {
-                atomicState.loopbackFailStreak = 0
-                atomicState.loopbackStreakStartedAt = null
-            }
-            Long lastOk = null
-            try { lastOk = atomicState.loopbackLastOkAt as Long } catch (Exception ignore) { lastOk = null }
-            long nowMs = now()
-            if (lastOk == null || (nowMs - lastOk) > 30000L) atomicState.loopbackLastOkAt = nowMs
-        } catch (Exception ignore) { /* never let bookkeeping break a hub call */ }
+        if (!ok) {
+            // Stamp when THIS streak began so hubLooksWedged has a baseline even if the
+            // watchdog has never seen a successful loopback call.
+            if (LOOPBACK.failStreak == 0) LOOPBACK.streakStartedAt = now()
+            if (LOOPBACK.failStreak < WEDGE_STREAK_MIN) LOOPBACK.failStreak = LOOPBACK.failStreak + 1
+            return
+        }
+        LOOPBACK.failStreak = 0
+        LOOPBACK.streakStartedAt = null
+        LOOPBACK.lastOkAt = now()
     }
+}
+
+// A copy of the wedge counters, for diagnostics. NON-PRIVATE so specs can read them.
+Map loopbackState() {
+    synchronized (LOOPBACK_LOCK) { return [:] + LOOPBACK }
 }
 
 // Both conditions are required on purpose. The streak alone fires on a burst of slow reads from a
@@ -2462,21 +2454,13 @@ private void noteLoopback(boolean ok) {
 // calls. Together they describe only the observed wedge: many consecutive failures AND no
 // successful loopback read for minutes.
 private boolean hubLooksWedged() {
-    // Under the lock the success path writes: the streak and its baseline are two atomicState keys
-    // and noteLoopback updates them together, so reading them outside it can pair a stale streak
-    // with a stale baseline and call a hub that just answered wedged.
     synchronized (LOOPBACK_LOCK) {
-    try {
-        int streak = (atomicState.loopbackFailStreak ?: 0) as int
-        if (streak < WEDGE_STREAK_MIN) return false
-        // Fall back to the FIRST failure of the current streak when there has never been a success.
-        // A hub already wedged when the watchdog started (or restarted into a wedged hub) has no
-        // lastOk at all -- returning false there hid a stalled hub in exactly the case this check exists
-        // for, leaving the app to tick silently forever the way it did on 2026-09-01.
-        Long baseline = (atomicState.loopbackLastOkAt ?: atomicState.loopbackStreakStartedAt) as Long
+        if (LOOPBACK.failStreak < WEDGE_STREAK_MIN) return false
+        // Fall back to the FIRST failure of the current streak when there has never been a success:
+        // a hub already wedged when the watchdog loaded has no lastOk at all.
+        Long baseline = (LOOPBACK.lastOkAt ?: LOOPBACK.streakStartedAt) as Long
         if (baseline == null) return false
         return (now() - baseline) > 240000L
-    } catch (Exception ignore) { return false }
     }
 }
 
