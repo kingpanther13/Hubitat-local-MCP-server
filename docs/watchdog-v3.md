@@ -17,7 +17,8 @@ with no success for 4 minutes, and a live probe that also fails, v3 reboots the
 hub. It does so at most once per 30 minutes and never into a reboot or platform
 update it was asked to start. The `autoRebootOnWedge` setting turns it off.
 
-V3 refuses to disable or force-delete its own instance. It also refuses to
+V3 refuses to disable or force-delete its own instance, or to delete its own
+code class. It also refuses to
 replace its own code unless the MCP server's endpoint answers (checked over
 loopback: one installed, enabled instance whose `tools/list` offers a
 code-update tool). `hub_get_info` with `peer:true` reports the same check.

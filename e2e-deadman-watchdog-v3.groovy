@@ -1187,6 +1187,11 @@ def adminDeleteItem(args) {
         }
     }
 
+    if (type == "app") {
+        def current = _parseJsonBody(hubGet("/app/ajax/code", [id: id]))
+        if (current instanceof Map && isWatchdogSource(current.source))
+            return [success: false, appId: id, error: "Refused: app ${id} is this watchdog's own code, the hub's remote repair path."]
+    }
     def deletePath = (type == "app") ? "/app/edit/deleteJsonSafe/" : "/driver/editor/deleteJson/"
     mcpAdminLog "Deleting ${type} ID ${id}"
     try {
@@ -2337,7 +2342,7 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [
             libraryId: [type: "string"], source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"], confirm: [type: "boolean"]],
             required: ["libraryId", "confirm"]]],
-        [name: "hub_delete_item", annotations: [title: "Delete Item", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete an app/driver/library by id. confirm:true required.",
+        [name: "hub_delete_item", annotations: [title: "Delete Item", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete an app/driver/library by id. Refuses the watchdog's own code class. confirm:true required.",
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. Refuses the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
