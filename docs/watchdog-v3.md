@@ -17,7 +17,10 @@ with no success for 4 minutes, and a live probe that also fails, v3 reboots the
 hub. It does so at most once per 30 minutes and never into a reboot or platform
 update it was asked to start. The `autoRebootOnWedge` setting turns it off.
 
-V3 refuses to disable or force-delete its own instance.
+V3 refuses to disable or force-delete its own instance. It also refuses to
+replace its own code unless the MCP server's endpoint answers (checked over
+loopback: one installed, enabled instance whose `tools/list` offers a
+code-update tool). `hub_get_info` with `peer:true` reports the same check.
 
 ## Manual capabilities
 
@@ -82,6 +85,6 @@ uncertain writes; after 15 minutes without progress the status reports
 settings page does not cancel a pending verification poll.
 
 If MCP fails, deploy a known-good ref through v3. Do not update, disable, restart,
-or reboot the working controller while investigating the other app. V3's own code
-is updated only while the MCP app is healthy, because each app is the other's
-repair path.
+or reboot the working controller while investigating the other app. Each app is
+the other's repair path: v3 enforces that for its own code, and the other route
+to updating v3 is through the MCP server itself.

@@ -752,6 +752,52 @@ boolean isOwnInstance(id) {
     try { return id != null && id.toString() == app?.id?.toString() } catch (Exception ignore) { return false }
 }
 
+boolean isWatchdogSource(source) {
+    return source instanceof String && (source =~ /definition\s*\(\s*name:\s*"E2E Dead-Man Watchdog v3"/).find()
+}
+
+// Whether the MCP server could repair this watchdog right now: installed once, enabled, and its
+// own /mcp endpoint lists a code-update tool. Loopback only, so the cloud relay is not involved.
+Map peerEndpointStatus() {
+    try {
+        def inventory = _parseJsonBody(hubGet("/hub2/appsList", [:]))
+        def found = []
+        def walk
+        walk = { node ->
+            def d = node?.data
+            if (d?.type == "MCP Rule Server" && d.id != null) found << d
+            node?.children?.each { c -> walk(c) }
+        }
+        (inventory instanceof Map ? (inventory.apps ?: []) : []).each { a -> walk(a) }
+        if (found.size() != 1) return [available: false, reason: "expected one installed MCP Rule Server, found ${found.size()}".toString()]
+        String id = found[0].id.toString()
+        if (found[0].disabled == true) return [available: false, appId: id, reason: "the MCP server instance is disabled"]
+        def status = _parseJsonBody(hubGet("/installedapp/statusJson/${id}".toString(), [:]))
+        def entry = (status instanceof Map ? (status.appState ?: []) : []).find { it?.name?.toString() == "accessToken" }
+        String token = entry?.value?.toString()
+        if (!token) return [available: false, appId: id, reason: "could not read the MCP server's access token"]
+        def answer = _parseJsonBody(peerPost(id, token, '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'))
+        def tools = (answer instanceof Map && answer.result instanceof Map) ? answer.result.tools : null
+        if (!(tools instanceof List)) return [available: false, appId: id, reason: "the MCP server endpoint did not answer tools/list"]
+        if (!tools.any { it?.name in ["hub_manage_code", "hub_update_app"] })
+            return [available: false, appId: id, reason: "the MCP server lists no code-update tool"]
+        return [available: true, appId: id]
+    } catch (Exception e) {
+        return [available: false, reason: "peer check failed: ${e.message}".toString()]
+    }
+}
+
+// NON-PRIVATE so specs can stand in the peer's answer. Never logs the exception: it can carry the token.
+String peerPost(String appId, String token, String json) {
+    String out = null
+    try {
+        httpPost([uri: "http://127.0.0.1:8080", path: "/apps/api/${appId}/mcp".toString(), query: [access_token: token],
+                  body: json, requestContentType: "application/json", textParser: true,
+                  ignoreSSLIssues: true, timeout: 30]) { resp -> out = respText(resp) }
+    } catch (Exception ignore) { log.warn "The MCP server endpoint did not answer the peer check." }
+    return out
+}
+
 // confirm gate for the WRITE tools (server uses requireDestructiveConfirm; this app's surface is
 // already token-gated by OAuth, so the floor is the explicit confirm flag the CI scripts pass).
 private void requireConfirm(args) {
@@ -779,6 +825,7 @@ def adminUpdateApp(args) {
     def sourceCode = null
     def sourceMode = null
     def freshVersion = null
+    def currentSource = null
 
     if (args.resave) {
         sourceMode = "resave"
@@ -789,6 +836,7 @@ def adminUpdateApp(args) {
             throw new IllegalArgumentException("Cannot read app ID ${itemId}: ${parsed.errorMessage ?: 'no source returned'}")
         }
         sourceCode = parsed.source
+        currentSource = parsed.source
         freshVersion = parsed.version
     } else if (args.sourceFile) {
         sourceMode = "sourceFile"
@@ -808,12 +856,27 @@ def adminUpdateApp(args) {
     if (currentVersion == null) {
         try {
             def vt = hubGet("/app/ajax/code", [id: itemId])
-            if (vt) currentVersion = (new groovy.json.JsonSlurper().parseText(vt)).version
+            if (vt) {
+                def current = new groovy.json.JsonSlurper().parseText(vt)
+                currentVersion = current.version
+                currentSource = current.source
+            }
         } catch (Exception vErr) {
             logDebug "adminUpdateApp: version fetch failed: ${vErr.message}"
         }
     }
     if (currentVersion == null) throw new IllegalArgumentException("Could not determine current version for app ID ${itemId}. The app may not exist.")
+
+    // The watchdog and the MCP server are each other's only repair path, so the watchdog's own
+    // code is replaced only while the MCP server's endpoint answers.
+    if (isWatchdogSource(currentSource)) {
+        def peer = peerEndpointStatus()
+        if (peer.available != true) {
+            return [success: false, appId: itemId, peerEndpoint: peer,
+                    error: "Refused: app ${itemId} is this watchdog's own code, and the MCP server endpoint that could repair a bad update is not available (${peer.reason}).",
+                    note: "Nothing was changed. Deploy a known-good MCP package with hub_update_package, confirm hub_get_info(peer:true) reports the endpoint available, then retry."]
+        }
+    }
 
     // Self-update = the watchdog saving its OWN code class, which reloads it mid-request. Keyed on
     // the selfUpdate flag or a selfClassId equal to appId.
@@ -1935,6 +1998,7 @@ def adminGetInfo(args) {
     info.watchdogVersion = 3
     info.automaticRecovery = false
     info.autoRebootOnWedge = settings?.autoRebootOnWedge != false
+    if (args?.peer == true) info.peerEndpoint = peerEndpointStatus()
     info.packageDeployment = atomicState.packageDeployment ? adminGetPackageDeployment([requestId: atomicState.packageDeployment.requestId]) : null
     // issue #237 self-deploy outcome: persists across reloads; add ageMs.
     if (atomicState.lastSelfDeploy != null) {
@@ -2254,7 +2318,7 @@ def getManualToolDefinitions() {
         [name: "hub_set_mcp_developer_mode", annotations: [title: "Enable MCP Developer Mode", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false],
          description: "Enable Developer Mode on the test hub's MCP server instance for E2E setup. Verifies the app code identity and reads the setting back. Only enabled:true is accepted; confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], enabled: [type: "boolean", enum: [true]], confirm: [type: "boolean"]], required: ["appId", "enabled", "confirm"]]],
-        [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required.",
+        [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required. Updating this watchdog's own code is refused unless the MCP server's endpoint answers, because that server is the only path that could repair a bad watchdog update.",
          inputSchema: [type: "object", properties: [
             appId: [type: "string", description: "Apps Code CLASS id to update."],
             source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"],
@@ -2295,7 +2359,7 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [:]]],
         [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
          inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
-        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Hub model/firmware/memory, the lastSelfDeploy record of the latest hub_update_app (with ageMs; hub_update_package does not write it), the held package deployment, and loopback wedge health including the last automatic reboot. The package is never restored automatically."],
+        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [peer: [type: "boolean", description: "Also check that the MCP server's own endpoint answers (peerEndpoint.available); this calls its tools/list over loopback, so do not poll with it."]]], description: "Hub model/firmware/memory, the lastSelfDeploy record of the latest hub_update_app (with ageMs; hub_update_package does not write it), the held package deployment, and loopback wedge health including the last automatic reboot. The package is never restored automatically."],
         [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List Apps Code types (scope='types') or installed apps.",
          inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],
         [name: "hub_list_libraries", annotations: [title: "List Libraries", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List libraries (id/name/namespace/version summaries)."],
