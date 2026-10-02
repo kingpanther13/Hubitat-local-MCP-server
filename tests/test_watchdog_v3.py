@@ -98,11 +98,29 @@ def test_a_stopped_deployment_reports_the_hub_error_and_releases_nothing(module)
     assert hub.count("hub_set_package_deployment") == 0
 
 
-def test_a_dead_mcp_endpoint_after_install_keeps_the_hold(module):
+def test_a_dead_mcp_endpoint_after_install_keeps_the_hold_and_names_the_endpoint(module, monkeypatch):
     hub = Hub(dead_main=True)
-    with pytest.raises(module.HubError, match="does not answer"):
+    clock = iter(range(0, 100000, 400))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
+    with pytest.raises(module.HubError, match="the MCP server did not answer"):
         run(module, hub)
     assert hub.count("hub_set_package_deployment") == 0
+
+
+def test_a_slow_mcp_endpoint_is_waited_for_and_reported(module, capsys):
+    hub = Hub()
+    original = hub.probe
+    failures = iter([True] * 4)
+
+    def probe(url):
+        if url == "main" and hub.started and next(failures, False):
+            hub.calls.append((url, "probe"))
+            raise OSError("no response from hub")
+        original(url)
+
+    hub.probe = probe
+    assert run(module, hub)["phase"] == "complete"
+    assert capsys.readouterr().out.count("waiting for the MCP server to answer") == 4
 
 
 def test_a_changed_app_instance_refuses_the_release(module):

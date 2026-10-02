@@ -197,16 +197,27 @@ def submit(transport, v3, arguments, *, interval=20, attempts=75):
     raise HubError("The watchdog stayed busy with a manual write; nothing was scheduled")
 
 
-def verify_endpoints(transport, v3, mcp, baseline, *, interval=10, attempts=18):
-    """The original endpoint URLs and tokens still answer and no app instance changed."""
-    for attempt in range(attempts):
+def verify_endpoints(transport, v3, mcp, baseline, *, interval=15, wait_s=1500):
+    """The original endpoint URLs and tokens still answer and no app instance changed.
+
+    The MCP server can stay dark for many minutes after its code is saved (14 observed), so this
+    waits generously and says which endpoint it is waiting on.
+    """
+    started = time.monotonic()
+    while True:
+        waiting_on = "watchdog v3"
         try:
             transport.probe(v3)
+            waiting_on = "the MCP server"
             transport.probe(mcp)
+            waiting_on = "watchdog v3"
             after = instance_snapshot(transport, v3)
         except OSError:
-            if attempt == attempts - 1:
-                raise HubError("An endpoint does not answer after the deployment; safety hold retained") from None
+            elapsed = int(time.monotonic() - started)
+            if elapsed >= wait_s:
+                raise HubError(f"{waiting_on} did not answer for {elapsed}s after the deployment; "
+                               "safety hold retained") from None
+            log(f"Installed; waiting for {waiting_on} to answer ({elapsed}s)")
             time.sleep(interval)
             continue
         if after != baseline:
@@ -220,13 +231,17 @@ def deploy(transport, v3, mcp, plan, request_id, *, interval=10, attempts=270, r
     baseline = instance_snapshot(transport, v3)
     log(f"Starting package operation {request_id} at {plan['ref']}")
     submit(transport, v3, {**plan, "requestId": request_id, "confirm": True})
-    last, unseen, release_failures = None, 0, 0
+    last, unseen, release_failures, silent = None, 0, 0, 0
     for _ in range(attempts):
         try:
             status = transport.call(v3, "hub_get_package_deployment", {"requestId": request_id})
         except OSError:
-            time.sleep(interval)  # relay drop, or the hub is restarting
+            silent += 1  # relay drop, or the hub is restarting
+            if silent % 6 == 0:
+                log(f"{request_id}: the watchdog has not answered {silent} status reads in a row")
+            time.sleep(interval)
             continue
+        silent = 0
         if status.get("requestId") != request_id:
             unseen += 1
             if unseen >= 6:
@@ -257,7 +272,8 @@ def deploy(transport, v3, mcp, plan, request_id, *, interval=10, attempts=270, r
                     "requestId": request_id, "endpointVerified": True, "confirm": True,
                 })
             except OSError:
-                time.sleep(interval)  # The release may have landed; status decides.
+                log(f"{request_id}: the release got no answer; it may have landed, reading status")
+                time.sleep(interval)
                 continue
             if released.get("phase") == "complete" and released.get("hold") is False:
                 return released
