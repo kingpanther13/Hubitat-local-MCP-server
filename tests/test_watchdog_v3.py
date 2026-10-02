@@ -138,6 +138,37 @@ def test_a_changed_app_instance_refuses_the_release(module):
     assert hub.count("hub_set_package_deployment") == 0
 
 
+def test_fixtures_deleted_during_a_deployment_do_not_block_the_release(module):
+    """The restore runs alongside the fixture purge, which deletes test rules and child apps."""
+    hub = Hub()
+    hub.instances += [{"id": 501, "parentId": None, "type": "Rule-5.1", "disabled": False},
+                      {"id": 502, "parentId": 38, "type": "MCP Rule", "disabled": False}]
+    original = hub.call
+
+    def call(url, name, args):
+        if name == "hub_list_app_instances" and hub.started:
+            hub.instances[:] = hub.instances[:1]
+        return original(url, name, args)
+
+    hub.call = call
+    assert run(module, hub)["phase"] == "complete"
+
+
+def test_a_disabled_mcp_server_refuses_the_release(module):
+    hub = Hub()
+    original = hub.call
+
+    def call(url, name, args):
+        if name == "hub_list_app_instances" and hub.started:
+            hub.instances[0]["disabled"] = True
+        return original(url, name, args)
+
+    hub.call = call
+    with pytest.raises(module.HubError, match="instance"):
+        run(module, hub)
+    assert hub.count("hub_set_package_deployment") == 0
+
+
 def test_status_for_another_operation_cannot_release_this_one(module):
     hub = Hub()
     original = hub.call

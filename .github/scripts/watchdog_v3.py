@@ -108,10 +108,19 @@ def resolve_v3_url(transport, mcp_url, watchdog_url, cache=None):
 
 
 def instance_snapshot(transport, v3):
+    """The instances whose identity a deployment must preserve: the MCP server and the watchdog.
+
+    Everything else is left out on purpose: test fixtures (rules, child apps) come and go while a
+    deployment runs, and the restore runs alongside the fixture purge.
+    """
     apps = transport.call(v3, "hub_list_app_instances", {}).get("apps")
     if not isinstance(apps, list) or not apps:
         raise HubError("Cannot read the installed app instances")
-    return sorted((str(a["id"]), str(a.get("parentId")), a.get("type"), a.get("disabled")) for a in apps)
+    kept = sorted((str(a["id"]), a.get("type"), a.get("disabled")) for a in apps
+                  if a.get("type") in ("MCP Rule Server", V3_APP_NAME))
+    if not any(kind == "MCP Rule Server" for _id, kind, _disabled in kept):
+        raise HubError("The MCP Rule Server instance is not installed")
+    return kept
 
 
 def code_versions(transport, v3):
