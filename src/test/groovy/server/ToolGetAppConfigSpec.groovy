@@ -22,6 +22,8 @@ import support.ToolSpecBase
  *  - Not-found 404/410 throw (deleted / mid-delete / install shell whose config page
  *    can't render): clean 'app not found (404)' degrade at warn, full + summary modes
  *  - HTML stripping: span tags removed from labels
+ *  - RM disabled actions: red italic span -> [DISABLED] paragraph mark, disabledActions list,
+ *    embeddedActions disabled:true; legend span and *BROKEN* marker excluded
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
  * the same tool through {@code mcpDriver.callTool} so the production
@@ -1730,6 +1732,129 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def sensorInput = inner.page.sections[0].inputs.find { it.name == 'mySensor' }
         sensorInput != null
         !sensorInput.containsKey('value')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // -------------------------------------------------------------------------
+    // Rule Machine disabled-action marker
+    // -------------------------------------------------------------------------
+
+    // RM's only carrier of a disabled action is the red italic span around the row
+    // text (disable<N> settings stay blank); the tag-stripping read used to render a
+    // disabled action exactly like a live one. Shape mirrors a live RM 5.1 mainPage
+    // actions paragraph (fw 2.5.2), including a condition's green (T) span and a
+    // *BROKEN* marker, which is red but NOT italic.
+    private static final String RM_ACTIONS_PARAGRAPH =
+        "IF (Switch on<span style='color:green'>(T)</span>) THEN\n" +
+        "\t<span style='color:red'><i>Notify Pushover: 'Fixed mismatch'\n</i></span>" +
+        "\tNotify Pushover: 'still cooling'\n" +
+        "\tOn: Lamp <span style='color:red'>*BROKEN*</span>\n" +
+        "END-IF"
+
+    private static String rmActionsPageJson(String paragraphHtml, String pageName = 'mainPage') {
+        makeAppConfigJson([configPage: [name: pageName, title: 'Rule', install: true, refreshInterval: null,
+            sections: [[title: 'Actions', input: [], body: [[element: 'paragraph', description: paragraphHtml]]]]]])
+    }
+
+    def "RM disabled actions are marked in paragraphs and listed in disabledActions"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(RM_ACTIONS_PARAGRAPH) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def para = result.page.sections[0].paragraphs[0]
+
+        then: 'the disabled row carries the mark, the live row and the broken marker do not'
+        para.contains("[DISABLED] Notify Pushover: 'Fixed mismatch'")
+        para.contains("\tNotify Pushover: 'still cooling'")
+        !para.contains("[DISABLED] Notify Pushover: 'still cooling'")
+        para.contains('On: Lamp *BROKEN*')
+        !para.contains('[DISABLED] *BROKEN*')
+        !para.contains('<span')
+
+        and: 'the structured list names only the disabled action'
+        result.disabledActions == ["Notify Pushover: 'Fixed mismatch'"]
+        result.disabledActionsNote.contains('[DISABLED]')
+    }
+
+    def "RM selectActions legend span is not reported as a disabled action"() {
+        given:
+        settingsMap.enableRead = true
+        // The table header wraps its colour legend in the same red italic markup.
+        def html = "<th>Actions for <b>My Rule</b><span style='color:red'>           <i>Disabled Actions</i></span></th>" +
+            "<td><span style='color:red'><i>Delay 0:02:00\n</i></span></td>"
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
+
+        then:
+        result.disabledActions == ['Delay 0:02:00']
+        result.page.sections[0].paragraphs[0].contains('Disabled Actions')
+        !result.page.sections[0].paragraphs[0].contains('[DISABLED] Disabled Actions')
+    }
+
+    def "a page with no disabled RM actions omits disabledActions"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            rmActionsPageJson("Notify Pushover: 'live'\n<span style='color:red'>*BROKEN*</span>")
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        !result.containsKey('disabledActions')
+        !result.containsKey('disabledActionsNote')
+    }
+
+    def "selectActions embeddedActions flag the disabled action row with disabled:true"() {
+        given:
+        settingsMap.enableRead = true
+        // Two RM action rows as the selectActions table emits them: the hidden button-name
+        // input precedes each row's submitOnChange div; row 2 is disabled.
+        def html = "<input type='hidden' name='1.0.false.type' value='button'>" +
+            "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>Thermostats: Tstat --> Cool: 85.0</div>" +
+            "<input type='hidden' name='2.0.false.type' value='button'>" +
+            "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>" +
+            "<span style='color:red'><i>Notify Pushover: 'Fixed mismatch'\n</i></span></div>"
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
+        def rows = result.page.sections[0].embeddedActions
+
+        then:
+        rows.size() == 2
+        rows[0].name == '1.0.false'
+        !rows[0].containsKey('disabled')
+        rows[1].name == '2.0.false'
+        rows[1].disabled == true
+        rows[1].description == "Notify Pushover: 'Fixed mismatch'"
+        result.disabledActions == ["Notify Pushover: 'Fixed mismatch'"]
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch marks RM disabled actions (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(RM_ACTIONS_PARAGRAPH) }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.disabledActions == ["Notify Pushover: 'Fixed mismatch'"]
+        inner.page.sections[0].paragraphs[0].contains("[DISABLED] Notify Pushover: 'Fixed mismatch'")
 
         where:
         useGateways << [true, false]

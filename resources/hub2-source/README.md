@@ -145,6 +145,18 @@ per-action; `<N>` is the action index unless noted.
   (same dash-index as `tCapab-<N>`/`tDev-<N>`/`tstate-<N>`). waitEvents does not
   NPE on a partial duration the way the trigger does, but all three are written
   (default 0) for a clean total-wait computation.
+- **Disabled actions (RM 5.1, fw 2.5.2)** — the per-row Disable button on
+  `selectActions` is button `disable<N>` (N = 1-based row position; the
+  `settings[disable<N>]` input stays `""`, the state lives in RM app state and is
+  NOT in `settings`). Its `submitOnChange` div's `title` flips between `Disable
+  Action` (icon `he-checkbox-unchecked`) and `Enable Action` (`he-checkbox-checked`).
+  The ONLY render-side carrier of the flag is a red italic span around the row text —
+  `<span style='color:red'><i>Notify ...</i></span>` — on both the `mainPage` actions
+  paragraph and the `selectActions` row (`data-stateAttribute='doAct'` div); a live
+  action is plain text. The table header's legend uses the same markup around the
+  literal `Disabled Actions`; `*BROKEN*` is red but not italic. Clicking `disable<N>`
+  via `/installedapp/btn` (no `stateAttribute`) toggles it — live-verified; used by
+  `hub_get_app_config` (`[DISABLED]` mark + `disabledActions`).
 - **String `*contains*` comparator** — for a STRING-typed variable or a
   free-valued Custom Attribute, the comparator field (`RelrDev_<N>` on the
   condition wizard, `ReltDev<N>` on the trigger row) offers `=`, `≠` (the
