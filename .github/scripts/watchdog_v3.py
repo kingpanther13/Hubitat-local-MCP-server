@@ -321,9 +321,14 @@ def operation_id(suffix):
 
 def command_prepare(_args):
     transport, v3, _mcp = endpoints()
-    info = transport.call(v3, "hub_get_info", {"peer": True})
-    log(f"Watchdog v3 answers: firmware {info.get('firmwareVersion')}, free memory {info.get('freeMemoryKB')} KB, "
-        f"MCP endpoint available: {(info.get('peerEndpoint') or {}).get('available')}")
+    info = transport.call(v3, "hub_get_info", {})
+    log(f"Watchdog v3 answers: firmware {info.get('firmwareVersion')}, free memory {info.get('freeMemoryKB')} KB")
+    try:
+        peer = transport.call(v3, "hub_get_info", {"peer": True}).get("peerEndpoint") or {}
+        log(f"MCP endpoint available: {peer.get('available')} {peer.get('reason') or ''}".rstrip())
+    except OSError:
+        # Not fatal: the install below replaces the MCP package whatever state it is in.
+        log("::warning::The MCP endpoint check got no answer; continuing.")
     clear_hold(transport, v3)
 
 

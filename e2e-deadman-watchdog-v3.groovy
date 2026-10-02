@@ -845,12 +845,13 @@ Map peerEndpointStatus() {
 }
 
 // NON-PRIVATE so specs can stand in the peer's answer. Never logs the exception: it can carry the token.
+// The timeout stays under the cloud relay's ~10s limit, so a dead peer is reported, not lost.
 String peerPost(String appId, String token, String json) {
     String out = null
     try {
         httpPost([uri: "http://127.0.0.1:8080", path: "/apps/api/${appId}/mcp".toString(), query: [access_token: token],
                   body: json, requestContentType: "application/json", textParser: true,
-                  ignoreSSLIssues: true, timeout: 30]) { resp -> out = respText(resp) }
+                  ignoreSSLIssues: true, timeout: 7]) { resp -> out = respText(resp) }
     } catch (Exception ignore) { log.warn "The MCP server endpoint did not answer the peer check." }
     return out
 }

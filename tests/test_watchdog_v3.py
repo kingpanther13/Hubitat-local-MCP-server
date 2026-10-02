@@ -450,6 +450,21 @@ def test_prepare_releases_a_leftover_hold_and_takes_no_backup(cli):
     assert hub.count("hub_create_backup") == 0
 
 
+def test_prepare_still_releases_a_hold_when_the_mcp_endpoint_check_gets_no_answer(cli, capsys):
+    module, hub, seen, _bundle = cli
+    original = hub.call
+
+    def call(url, name, args):
+        if name == "hub_get_info" and args.get("peer"):
+            raise OSError("relay timeout")
+        return original(url, name, args)
+
+    hub.call = call
+    module.main(["prepare"])
+    assert seen["order"] == ["clear_hold"]
+    assert "::warning::The MCP endpoint check got no answer" in capsys.readouterr().out
+
+
 def test_an_endpoint_failure_never_prints_the_exception(cli, monkeypatch):
     module, _hub, _seen, _bundle = cli
 
