@@ -1673,6 +1673,7 @@ class TestRunner:
         "bool_flag": ("E2E_PERM_Var_BoolFlag", "Boolean", "false"),
         "in_use": ("E2E_PERM_Var_InUse", "Number", "0"),
         "mesh_share": ("E2E_PERM_Var_MeshShare", "String", "share-me"),
+        "bps_write": ("E2E_PERM_Var_BpsWrite", "String", "v1"),
     }
 
     def _hub_variables_by_name(self) -> dict[str, dict]:
@@ -15059,21 +15060,6 @@ class TestRunner:
             self._set_bps(enableMandatoryBPS=False, mcpLogLevel="error")
 
     @test("best_practice_gating")
-    def test_bps_gate_disabled_allows_keyless_write(self) -> None:
-        """Gate explicitly OFF -> a write WITHOUT any key succeeds (the toggle genuinely disables it)."""
-        var_name = f"{PREFIX}BPS_Off"
-        self._set_bps(enableMandatoryBPS=False)
-        self.created_variable_names.append(var_name)
-        created = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_create_variable",
-            "args": {"name": var_name, "type": "String", "value": "v1", "confirm": True}})
-        assert created.get("success") is True, f"gate OFF but a keyless write failed: {created}"
-        self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
-        if var_name in self.created_variable_names:
-            self.created_variable_names.remove(var_name)
-
-    @test("best_practice_gating")
     def test_bps_gate_guide_reachable_when_gate_on(self) -> None:
         """Gate ON -> hub_get_tool_guide stays reachable (the read escape hatch) and the section
         actually carries the key, so the AI can always discover it. No lockout."""
@@ -15090,21 +15076,16 @@ class TestRunner:
     @test("best_practice_gating")
     def test_bps_gate_self_disable_escape_hatch(self) -> None:
         """Gate ON -> hub_update_mcp_settings can turn the gate OFF WITHOUT the key (the toggle-off
-        escape hatch). After that, a keyless write succeeds again."""
-        var_name = f"{PREFIX}BPS_SelfDisable"
+        escape hatch). After that, a keyless write succeeds again -- which also proves an OFF gate
+        genuinely stops gating."""
+        var_name = self._ensure_perm_variables("bps_write")["bps_write"]
         self._set_bps(enableMandatoryBPS=True)
         try:
             # Disable the gate WITHOUT supplying the key -- proves the settings tool is exempt.
             self._set_bps(enableMandatoryBPS=False)
-            self.created_variable_names.append(var_name)
-            created = self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_create_variable",
-                "args": {"name": var_name, "type": "String", "value": "v1", "confirm": True}})
-            assert created.get("success") is True, f"keyless write failed after self-disable: {created}"
-            self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
-            if var_name in self.created_variable_names:
-                self.created_variable_names.remove(var_name)
+            written = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": var_name, "value": "v2"}})
+            assert written.get("success") is True, f"keyless write failed after self-disable: {written}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
