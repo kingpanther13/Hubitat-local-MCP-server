@@ -1771,7 +1771,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         para.contains("[DISABLED] Notify Pushover: 'Fixed mismatch'")
         para.contains("\tNotify Pushover: 'still cooling'")
         !para.contains("[DISABLED] Notify Pushover: 'still cooling'")
-        para.contains('On: Lamp *BROKEN*')
+        para.contains("\tOn: Lamp *BROKEN*")
+        !para.contains('[DISABLED] On: Lamp *BROKEN*')
         !para.contains('[DISABLED] *BROKEN*')
         !para.contains('<span')
 

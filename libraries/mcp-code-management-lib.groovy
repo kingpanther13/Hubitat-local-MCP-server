@@ -318,7 +318,9 @@ private stripOptionsHtml(options) {
 // (singular with one disabled row), which is not an action. Live-captured on
 // firmware 2.5.2 / RM 5.1.
 private String _rmDisabledActionSpanRegex() {
-    return /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    // Assigned first: the hub's Groovy 2.4 parses a slashy literal right after `return` as division.
+    def regex = /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    return regex
 }
 
 private String _rmDisabledActionMark() { return "[DISABLED] " }

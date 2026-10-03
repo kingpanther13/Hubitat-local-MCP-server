@@ -150,7 +150,7 @@ per-action; `<N>` is the action index unless noted.
   `settings[disable<N>]` input stays `""`, the state lives in RM app state and is
   NOT in `settings`). Its `submitOnChange` div's `title` flips between `Disable
   Action` (icon `he-checkbox-unchecked`) and `Enable Action` (`he-checkbox-checked`).
-  The ONLY render-side carrier of the flag is a red italic span around the row text —
+  The only inline action-TEXT carrier of the flag is a red italic span around the row text —
   `<span style='color:red'><i>Notify ...</i></span>` — on both the `mainPage` actions
   paragraph and the `selectActions` row (`data-stateAttribute='doAct'` div); a live
   action is plain text. The table header's legend uses the same markup around the
