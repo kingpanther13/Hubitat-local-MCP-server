@@ -1268,6 +1268,7 @@ class TestRunner:
         # Permanent non-child fixture devices (see _ensure_perm_fixture) and the driver-name -> type-id
         # catalog they resolve through. Both are per-run caches only; the DEVICES persist on the hub.
         self._perm_fixture_ids: dict[str, str] = {}
+        self._last_created_dni = ""
         self._driver_type_ids: dict[str, str] = {}
         self._driver_buckets: dict[str, str | None] = {}
         # Permanent fixtures are reset rather than deleted, so a reset that fails leaves cross-run
@@ -1576,7 +1577,7 @@ class TestRunner:
 
         # Check if one already exists from a previous test group
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": SCAFFOLD_PREFIX, "fields": ["id", "label"]})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1606,7 +1607,7 @@ class TestRunner:
 
         label = f"{SCAFFOLD_PREFIX}Action_Shade"
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": SCAFFOLD_PREFIX, "fields": ["id", "label"]})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1633,7 +1634,7 @@ class TestRunner:
         dev_id = (dev_obj or {}).get("id") or res_map.get("id", res_map.get("deviceId", ""))
         if not dev_id:
             time.sleep(0.3)
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1669,7 +1670,8 @@ class TestRunner:
         if cached:
             return cached
 
-        found = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
+        # One lookup resolves every fixture: they share the E2E_PERM_ label prefix.
+        found = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": "E2E_PERM_"})
         # A structured failure ([success:false,...]) carries no isError, so call_tool returns it as an
         # ordinary dict with no "devices" key. Treating that as "absent" would create a duplicate
         # PERMANENT device on every incident, and nothing ever sweeps E2E_PERM_*.
@@ -1677,10 +1679,12 @@ class TestRunner:
             f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
         assert isinstance(found.get("devices"), list), \
             f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
-        for d in found["devices"]:
-            if (d.get("label") or "") == label and d.get("id") is not None:
-                self._perm_fixture_ids[key] = str(d["id"])
-                return self._perm_fixture_ids[key]
+        by_label = {(d.get("label") or ""): str(d["id"]) for d in found["devices"] if d.get("id") is not None}
+        for other, (other_label, _) in self.PERM_FIXTURES.items():
+            if other_label in by_label:
+                self._perm_fixture_ids.setdefault(other, by_label[other_label])
+        if key in self._perm_fixture_ids:
+            return self._perm_fixture_ids[key]
 
         type_id = self._driver_type_id(driver_name)
         created = self.client.call_tool("hub_manage_devices", {
@@ -1751,11 +1755,12 @@ class TestRunner:
         res_map = result if isinstance(result, dict) else {}
         dev_obj = res_map.get("device")
         dev_id = (dev_obj or {}).get("id") or res_map.get("id", res_map.get("deviceId", ""))
+        self._last_created_dni = str((dev_obj or {}).get("deviceNetworkId") or "")
 
         # Response may not include ID directly (or was dropped by a 504) — look it up
         if not dev_id:
             time.sleep(0.3)
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1778,7 +1783,7 @@ class TestRunner:
         labels = [f"{SCAFFOLD_PREFIX}Temp_A", f"{SCAFFOLD_PREFIX}Temp_B"]
         found: dict[str, str] = {}
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": SCAFFOLD_PREFIX, "fields": ["id", "label"]})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1807,7 +1812,7 @@ class TestRunner:
             dev_id = result.get("id", result.get("deviceId", ""))
             if not dev_id:
                 time.sleep(0.3)
-                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": want})
                 dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
                 for d in dev_list:
                     lbl = d.get("label") or d.get("name") or ""
@@ -4202,7 +4207,8 @@ class TestRunner:
     def _find_device_dni_by_label(self, label: str) -> str | None:
         """Look up a virtual device's DNI by exact run-unique label."""
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            # Filter on the label itself: a PREFIX filter reads fullJson for every BAT_E2E_ device.
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
         except (McpError, McpToolError, requests.HTTPError) as exc:
             print(f"    [WARN] hub_list_devices lookup for {label!r} failed: {exc}")
             return None
@@ -4215,8 +4221,8 @@ class TestRunner:
                     return found
         return None
 
-    def _device_dni_present(self, dni: str) -> bool:
-        listed = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+    def _device_dni_present(self, dni: str, label: str = PREFIX) -> bool:
+        listed = self.client.call_tool("hub_list_devices", {"labelFilter": label})
         devices = listed if isinstance(listed, list) else listed.get("devices", [])
         return any(
             str(d.get("deviceNetworkId", d.get("dni", ""))) == str(dni)
@@ -4251,9 +4257,8 @@ class TestRunner:
         result = cw["response"]
         # Captured before the labelFilter lookup below, which is itself a tool call.
         create_rounds = self.client._last_continuation_rounds
-        # Response may be {success: true, message: "..."} without device IDs at top level
-        # Track DNI if available, otherwise look it up via hub_list_devices (labelFilter)
-        dni = result.get("deviceNetworkId", result.get("dni", ""))
+        # The create returns the device under "device"; fall back to a labelFilter lookup.
+        dni = (result.get("device") or {}).get("deviceNetworkId") or result.get("deviceNetworkId", result.get("dni", ""))
         if dni:
             self.virtual_switch_dni = str(dni)
             self.created_device_dnis.append(self.virtual_switch_dni)
@@ -4293,16 +4298,20 @@ class TestRunner:
         assert dev_id, "Failed to create the command round-trip throwaway switch"
         # Capture the DNI for the inline delete below; also track it so the cleanup
         # sweep reaps the device if this test dies before its finally.
-        cmd_dni = ""
-        try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}CmdRoundtrip"})
-            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-                cmd_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                if cmd_dni:
-                    self.created_device_dnis.append(cmd_dni)
-                    break
-        except Exception:
-            pass
+        cmd_dni = self._last_created_dni
+        if not cmd_dni:
+            try:
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}CmdRoundtrip"})
+                for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                    cmd_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    if cmd_dni:
+                        break
+            except Exception:
+                pass
+        if cmd_dni:
+            self.created_device_dnis.append(cmd_dni)
+        own_label = self.client.call_tool("hub_get_device", {"deviceId": dev_id}).get("label")
+        assert isinstance(own_label, str) and own_label.startswith(f"{PREFIX}CmdRoundtrip"), own_label
 
         # Event processing can lag on a busy hub, so block-poll the attribute instead
         # of the old fixed sleep + single read (which flaked as "Expected switch=on,
@@ -4383,9 +4392,7 @@ class TestRunner:
             return _poll_switch(value)
 
         def _assert_filtered_switch(value: str) -> None:
-            summary = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
-            label = summary.get("label")
-            assert isinstance(label, str) and label.startswith(f"{PREFIX}CmdRoundtrip"), summary
+            label = own_label
             inventory = self.client.call_tool("hub_list_devices", {
                 "labelFilter": label, "onlyOn": True,
             })
@@ -4460,7 +4467,6 @@ class TestRunner:
             # command-<name> event, so the switch's own state events carry producedBy -- hub HTML
             # that must come back parsed. Command-driven rows name the device itself; the initial
             # state the MCP app set at creation names that app instead.
-            own_label = self.client.call_tool("hub_get_device", {"deviceId": dev_id}).get("label")
             ev = self.client.call_tool("hub_list_device_events", {
                 "deviceId": dev_id, "attribute": "switch", "hoursBack": 1,
             })
@@ -4484,6 +4490,7 @@ class TestRunner:
                     self.client.call_tool("hub_manage_virtual_device", {
                         "action": "delete", "deviceNetworkId": cmd_dni, "confirm": True,
                     })
+                    self.created_device_dnis.remove(cmd_dni)
                 except Exception as exc:
                     print(f"  [WARN] could not delete the command round-trip switch ({cmd_dni}): {exc}")
 
@@ -4774,7 +4781,7 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
-        result = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+        result = self.client.call_tool("hub_list_devices", {"labelFilter": self.virtual_switch_label})
         dev_list = result if isinstance(result, list) else result.get("devices", [])
         found = any(
             self.virtual_switch_label == (d.get("label") or d.get("name") or "")
@@ -4861,17 +4868,20 @@ class TestRunner:
             # Recover any committed create whose response/DNI lookup failed, then remove
             # every fixture this scenario can identify. Global cleanup retains the DNIs
             # until each deletion is verified.
-            for label in owned_labels:
-                recovered = self._find_device_dni_by_label(label)
-                if recovered and recovered not in owned_dnis:
-                    owned_dnis.append(recovered)
-                    self.created_device_dnis.append(recovered)
+            page_label = f"{PREFIX}Virtual_Page_{suffix}_"
+            if len(owned_dnis) < len(owned_labels):
+                listed = self.client.call_tool("hub_list_devices", {"labelFilter": page_label})
+                for d in listed.get("devices", []) if isinstance(listed, dict) else []:
+                    recovered = str(d.get("deviceNetworkId") or "")
+                    if recovered and recovered not in owned_dnis:
+                        owned_dnis.append(recovered)
+                        self.created_device_dnis.append(recovered)
             for dni in reversed(owned_dnis):
                 try:
                     deleted = self._soft_write(
                         lambda dni=dni: self.client.call_tool("hub_manage_virtual_device", {
                             "action": "delete", "deviceNetworkId": dni, "confirm": True}),
-                        lambda dni=dni: not self._device_dni_present(dni),
+                        lambda dni=dni: not self._device_dni_present(dni, page_label),
                         f"delete virtual pagination fixture {dni}",
                     )
                     if deleted["relayDropped"]:
@@ -4879,22 +4889,27 @@ class TestRunner:
                     else:
                         assert deleted["response"].get("success") is True, \
                             f"pagination fixture delete failed: {deleted['response']}"
-                    assert not self._device_dni_present(dni), \
-                        f"pagination fixture {dni} remains after successful delete"
-                    while dni in self.created_device_dnis:
-                        self.created_device_dnis.remove(dni)
                 except Exception as exc:
                     cleanup_errors.append(f"{dni}: {exc}")
+            # One listing proves every delete landed.
+            remaining = self.client.call_tool("hub_list_devices", {"labelFilter": page_label})
+            left = {str(d.get("deviceNetworkId") or "") for d in remaining.get("devices", [])}
+            for dni in owned_dnis:
+                if dni in left:
+                    cleanup_errors.append(f"{dni}: remains after successful delete")
+                else:
+                    while dni in self.created_device_dnis:
+                        self.created_device_dnis.remove(dni)
             assert not cleanup_errors, "Virtual pagination fixture cleanup failed: " + "; ".join(cleanup_errors)
 
     @test("virtual_device_lifecycle")
     def test_delete_virtual_switch(self) -> None:
         # Prefer the exact identity captured from create. The label fallback is only
         # for a response shape that carried no DNI; it is exact + run-unique.
-        vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-        dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
         target_dni = self.virtual_switch_dni
         if not target_dni:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": self.virtual_switch_label})
+            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
                 if self.virtual_switch_label == lbl:
@@ -4910,7 +4925,7 @@ class TestRunner:
                 "action": "delete",
                 "deviceNetworkId": target_dni,
                 "confirm": True}),
-            lambda: not self._device_dni_present(target_dni),
+            lambda: not self._device_dni_present(target_dni, self.virtual_switch_label),
             "delete virtual switch",
         )
         if dw["relayDropped"]:
@@ -4920,7 +4935,7 @@ class TestRunner:
         self.virtual_switch_dni = None
 
         # Verify it is gone
-        vdevs2 = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+        vdevs2 = self.client.call_tool("hub_list_devices", {"labelFilter": self.virtual_switch_label})
         dev_list2 = vdevs2 if isinstance(vdevs2, list) else vdevs2.get("devices", [])
         still_there = any(
             str(d.get("deviceNetworkId", d.get("dni", ""))) == str(target_dni)
@@ -7735,12 +7750,13 @@ class TestRunner:
         # authoritative broken:true verdict from /app/ruleBuilderJson. Proves the marquee path live.
         dev_id = self._create_virtual_switch_device(f"{PREFIX}RHBrokenDev")
         assert dev_id, "could not create the trigger device"
-        dni = ""
-        vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-        for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-            if str(d.get("id")) == str(dev_id):
-                dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
-                break
+        dni = self._last_created_dni
+        if not dni:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}RHBrokenDev"})
+            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                if str(d.get("id")) == str(dev_id):
+                    dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
+                    break
         assert dni, f"could not resolve DNI for trigger device {dev_id}"
         self.created_device_dnis.append(dni)  # teardown safety net (harmless if already deleted mid-test)
 
@@ -11774,12 +11790,13 @@ class TestRunner:
             "deviceLabel": label,
             "confirm": True,
         })
-        dev_id = str(result.get("id", result.get("deviceId", "")) or "")
-        dni = str(result.get("deviceNetworkId", result.get("dni", "")) or "")
+        device = result.get("device") or {}
+        dev_id = str(device.get("id") or result.get("id", result.get("deviceId", "")) or "")
+        dni = str(device.get("deviceNetworkId") or result.get("deviceNetworkId", result.get("dni", "")) or "")
         if not dev_id or not dni:
             # Response may not carry the ids -- look the device up by label.
             time.sleep(0.3)
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
             devices_list = vdevs if isinstance(vdevs, list) else (vdevs.get("devices", []) if isinstance(vdevs, dict) else [])
             for d in devices_list:
                 if label in (d.get("label") or d.get("name") or ""):
@@ -12583,6 +12600,7 @@ class TestRunner:
         original_mode = before.get("currentMode") if isinstance(before, dict) else None
         original_mgr = (before.get("modeManager") or {}).get("selected") if isinstance(before, dict) else None
         created_id = None
+        mode_deleted = False
         try:
             # PORTION 1 -- create WITH icon, then read it back (name + icon round-trip via /modes/json)
             print("    [MODE PORTION 1] create + icon round-trip read-back")
@@ -12675,7 +12693,8 @@ class TestRunner:
             assert str(dl.get("deletedModeId")) == created_id, f"deletedModeId mismatch: {dl} (expected {created_id})"
             _time.sleep(STEP)
             assert renamed2 not in _mode_names(), "mode still present after a confirmed delete"
-            created_id = None  # deleted -- the finally sweep has nothing to do
+            created_id = None
+            mode_deleted = True  # the finally sweep has nothing to do
 
             print(f"    MODE_LIFECYCLE ok -- full surface proven by e2e: icons, id+name(+case) resolution, "
                   f"confirm gate both ways, manager+conditions in one call (manager was: {original_mgr})")
@@ -12692,7 +12711,7 @@ class TestRunner:
                     _mode_call("hub_manage_mode", {"action": "activate", "mode": original_mode}, "restore active mode (finally)")
                 except Exception:
                     pass
-            for nm in (renamed2, renamed, mode_name):
+            for nm in (renamed2, renamed, mode_name) if not mode_deleted else ():
                 try:
                     dl = _mode_call("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True}, f"cleanup delete {nm}")
                     if isinstance(dl, dict) and dl.get("success"):
@@ -14795,24 +14814,8 @@ class TestRunner:
             auth = str(children[0]["id"])
             self._device_replace_boundary_checks(unauth, auth)
             self._bypass_boundary_checks(unauth, self._set_device_bypass)
-
-            # Retain the selected-child enabled readback scenario using its raw native value.
-            original = self.client.call_tool("hub_get_device", {
-                "deviceId": auth, "mode": "configuration", "fields": ["enabled"],
-            })
-            enabled = next(row["value"] for row in original["editableFields"] if row["name"] == "enabled")
-            assert type(enabled) is bool, f"Child enabled state is not restorable: {original}"
-            try:
-                flipped = self.client.call_tool("hub_update_device", {"deviceId": auth, "enabled": not enabled})
-                assert flipped.get("success") is True, f"Native child enabled flip failed: {flipped}"
-                assert any(row.get("property") == "enabled" for row in flipped.get("changes", [])), flipped
-            finally:
-                restored = self.client.call_tool("hub_update_device", {"deviceId": auth, "enabled": enabled})
-                assert restored.get("success") is True, f"Child enabled restoration failed: {restored}"
-                readback = self.client.call_tool("hub_get_device", {
-                    "deviceId": auth, "mode": "configuration", "fields": ["enabled"],
-                })
-                assert next(row["value"] for row in readback["editableFields"] if row["name"] == "enabled") is enabled
+            # The child enabled flip and readback live in test_device_configuration_matrix's child
+            # profile, which verifies it through an independent observer.
             after = self.client.call_tool("hub_list_devices", {
                 "scope": "all", "labelFilter": f"{SCAFFOLD_PREFIX}Configuration",
             })
