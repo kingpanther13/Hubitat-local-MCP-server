@@ -7856,6 +7856,8 @@ class TestRunner:
             # Break it: delete the trigger device so the trigger reference dangles.
             self.client.call_tool("hub_manage_virtual_device", {
                 "action": "delete", "deviceNetworkId": dni, "confirm": True})
+            if dni in self.created_device_dnis:
+                self.created_device_dnis.remove(dni)
 
             # The compiled `broken` boolean lags the *BROKEN* label until the rule re-validates;
             # rendering the config page forces that re-validation.
