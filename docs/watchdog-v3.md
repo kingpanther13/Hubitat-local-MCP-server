@@ -29,7 +29,8 @@ hub backups, hub variables, Developer Mode setup, fixture cleanup, diagnostics,
 and explicitly requested reboot/platform updates, under v2's tool names.
 `hub_purge_e2e_artifacts` is the whole e2e teardown: it removes every `BAT_E2E_`
 app, hub variable, device, room and file plus the `mcptest` throwaway code, so
-teardown never depends on the MCP app under test.
+teardown never depends on the MCP app under test. `BAT_E2E_KEEP_` scaffolds are
+kept.
 `hub_get_source` saves a large source to File Manager unless `noSave:true`.
 
 ## Package deployment

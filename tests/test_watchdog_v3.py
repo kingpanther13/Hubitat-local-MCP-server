@@ -527,6 +527,23 @@ def test_a_response_cut_off_mid_body_is_a_lost_response(module, monkeypatch):
         module.Transport().rpc("https://hub.invalid/mcp", "tools/list", {})
 
 
+def test_a_spent_time_budget_fails_calls_as_lost_responses_without_sending(module, monkeypatch):
+    sent = []
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda request, timeout: sent.append(timeout))
+    transport = module.Transport(timeout=20)
+    transport.deadline = module.time.monotonic() - 1
+    with pytest.raises(OSError, match="time budget"):
+        transport.rpc("https://hub.invalid/mcp", "tools/list", {})
+    assert sent == []
+
+
+def test_a_cancelled_teardown_sets_a_time_budget(cli):
+    module, hub, seen, _bundle = cli
+    purging(hub, seen, [{"success": True}])
+    module.main(["teardown", "--cancelled"])
+    assert hub.deadline is not None
+
+
 def test_install_main_deploys_main_as_it_is_now_after_releasing_the_hold(cli, monkeypatch):
     module, _hub, seen, _bundle = cli
     monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)

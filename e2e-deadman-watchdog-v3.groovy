@@ -1579,17 +1579,20 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     def targets = []
     // A Button Controller relabels itself after the device it binds, so a test's controller is
     // recognised by type plus a fixture-device name; the mcptest throwaway apps never carry the prefix.
-    Set throwawayAppTypes = throwawayCodeClasses("/hub2/userAppTypes")*.name as Set
+    List appClasses = throwawayCodeClasses("/hub2/userAppTypes")
+    Set throwawayAppTypes = (appClasses ?: [])*.name as Set
+    String keep = "${prefix}KEEP_".toString()
     def recurse
     recurse = { Map node, boolean isChild ->
         def d = node?.data ?: [:]
         // The list carries the display label, which can wrap status markup such as "(Paused)".
         String name = d.name instanceof String ? d.name.replaceAll(/<[^>]*>/, "").trim() : ""
-        boolean prefixed = name.startsWith(prefix) && !name.startsWith("${prefix}KEEP_")
+        boolean prefixed = name.startsWith(prefix)
         boolean strandedController = isChild && d.type == "Button Controller-5.1" &&
             (name.contains(prefix) || name.contains("E2E_PERM_"))
-        if (d.id != null && (prefixed || strandedController || d.type in throwawayAppTypes)) {
-            targets << [id: d.id, name: name]
+        boolean throwaway = !prefixed && !strandedController && d.type in throwawayAppTypes
+        if (d.id != null && !name.startsWith(keep) && (prefixed || strandedController || throwaway)) {
+            targets << [id: d.id, name: name, throwaway: throwaway]
         }
         node?.children?.each { c -> recurse(c, true) }
     }
@@ -1597,10 +1600,22 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     mcpAdminLog "Purging ${targets.size()} ${prefix}* installed-app instance(s) locally."
     def deleted = []
     def failed = []
+    if (appClasses == null) {
+        failed << [id: "*", name: "/hub2/userAppTypes", error: "could not read the app code classes, so mcptest throwaway instances were not purged"]
+    }
     targets.each { t ->
         if (!renewPurgeClaim(claim)) {
             failed << [id: t.id, name: t.name, error: "purge claim lost to a newer sweep -- stopped before this delete"]
             return
+        }
+        if (t.throwaway) {
+            // The apps list names the type but not its namespace: confirm it is the mcptest class.
+            def ns = _parseJsonBody(hubGet("/installedapp/configure/json/${t.id}".toString(), [:]))?.app?.appType?.namespace
+            if (ns == null) {
+                failed << [id: t.id, name: t.name, error: "could not read the instance's code class, so it was left in place"]
+                return
+            }
+            if (ns != "mcptest") return
         }
         def r
         try { r = adminForceDeleteInstalledApp([id: t.id, confirm: true]) }
@@ -1670,11 +1685,11 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
 }
 
 // The mcptest throwaway code classes the e2e suite creates ("Deadman Test Target*"), from
-// /hub2/userAppTypes or /hub2/userDeviceTypes. An unreadable list yields none.
-private List throwawayCodeClasses(String path) {
+// /hub2/userAppTypes or /hub2/userDeviceTypes; null when the list is unreadable. Non-private for specs.
+List throwawayCodeClasses(String path) {
     def parsed = _parseJsonBody(hubGet(path, [:]))
-    def rows = parsed instanceof List ? parsed : []
-    return rows.findAll { it instanceof Map && it.namespace == "mcptest" && it.id != null &&
+    if (!(parsed instanceof List)) return null
+    return parsed.findAll { it instanceof Map && it.namespace == "mcptest" && it.id != null &&
         (it.name instanceof String) && it.name.startsWith("Deadman Test Target") }
 }
 
@@ -1737,22 +1752,28 @@ Map purgeOtherFixturesLocked(String prefix, String claim) {
     }
 
     // Throwaway code classes (their instances went with the app sweep) and the throwaway bundle.
-    throwawayCodeClasses("/hub2/userAppTypes").each { c ->
-        attempt("app code", c.id, c.name) {
-            def r = adminDeleteItem([type: "app", id: c.id, confirm: true])
-            r?.success == true ? null : (r?.error ?: "app code delete failed")
+    [["app", "/hub2/userAppTypes"], ["driver", "/hub2/userDeviceTypes"]].each { type, path ->
+        List classes = throwawayCodeClasses(path)
+        if (classes == null) {
+            failed << [kind: "${type} code".toString(), id: "*", error: "could not read ${path}, so no ${type} code was purged".toString()]
+            return
+        }
+        classes.each { c ->
+            attempt("${type} code".toString(), c.id, c.name) {
+                def r = adminDeleteItem([type: type, id: c.id, confirm: true])
+                r?.success == true ? null : (r?.error ?: "${type} code delete failed".toString())
+            }
         }
     }
-    throwawayCodeClasses("/hub2/userDeviceTypes").each { c ->
-        attempt("driver code", c.id, c.name) {
-            def r = adminDeleteItem([type: "driver", id: c.id, confirm: true])
-            r?.success == true ? null : (r?.error ?: "driver code delete failed")
-        }
-    }
-    (adminListBundles([:])?.bundles ?: []).findAll { it?.namespace == "mcptest" && it.id != null }.each { b ->
-        attempt("bundle", b.id, b.name) {
-            def r = adminDeleteBundle([bundleId: b.id.toString(), confirm: true])
-            r?.success == true ? null : (r?.error ?: "bundle delete failed")
+    def bundleList = adminListBundles([:])
+    if (bundleList?.source != "hub_api") {
+        failed << [kind: "bundle", id: "*", error: "could not read the bundle list, so no bundle was purged"]
+    } else {
+        (bundleList.bundles ?: []).findAll { it?.namespace == "mcptest" && it.id != null }.each { b ->
+            attempt("bundle", b.id, b.name) {
+                def r = adminDeleteBundle([bundleId: b.id.toString(), confirm: true])
+                r?.success == true ? null : (r?.error ?: "bundle delete failed")
+            }
         }
     }
 
@@ -1764,7 +1785,8 @@ Map purgeOtherFixturesLocked(String prefix, String claim) {
         failed << [kind: "file", id: "*", error: "could not read /hub/fileManager/json, so no files were purged"]
     } else {
         files.collect { it instanceof Map ? it.name : it }.findAll { nm ->
-            nm instanceof String && (nm.startsWith(prefix) || (nm.startsWith("e2e-") && nm.contains("_backup_")))
+            nm instanceof String && !nm.startsWith(keep) &&
+                (nm.startsWith(prefix) || (nm.startsWith("e2e-") && nm.contains("_backup_")))
         }.each { nm ->
             attempt("file", nm, nm) { deleteHubFile(nm) ? null : "deleteHubFile returned false" }
         }

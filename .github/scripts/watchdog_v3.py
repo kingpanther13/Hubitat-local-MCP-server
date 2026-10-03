@@ -44,12 +44,18 @@ class Unreadable(OSError):
 class Transport:
     def __init__(self, timeout=60):
         self.timeout = timeout
+        self.deadline = None  # time.monotonic() after which every call fails as a lost response
 
     def rpc(self, url, method, params):
+        timeout = self.timeout
+        if self.deadline is not None:
+            timeout = min(timeout, self.deadline - time.monotonic())
+            if timeout <= 0:
+                raise OSError("The time budget for this step is spent")
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
         request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.load(response)
         except (OSError, ValueError, http.client.HTTPException):
             # A body cut off mid-read is an HTTPException, not an OSError; it is a lost response too.
@@ -473,9 +479,13 @@ def command_teardown(args):
         # GitHub ends a cancelled job after about five minutes and the lease release still has to
         # fit, so be quick and leave anything unfinished to the next run's prepare step.
         transport.timeout = 20
+        # Calls stop at 110 s; with the sleeps below the worst case stays under the step's 3-minute
+        # timeout, so the warning always prints.
+        transport.deadline = time.monotonic() + 110
         try:
-            clear_hold(transport, v3, attempts=3, settle=lambda t, url: wait_until_settled(t, url, attempts=6))
-            purge_fixtures(transport, v3, attempts=8)
+            clear_hold(transport, v3, interval=5, attempts=3,
+                       settle=lambda t, url: wait_until_settled(t, url, interval=5, attempts=4))
+            purge_fixtures(transport, v3, interval=5, attempts=4)
         except (HubError, ToolError, Unreadable) as error:
             log(f"::warning::The hold or the fixtures were left for the next run: {error}")
         except OSError:

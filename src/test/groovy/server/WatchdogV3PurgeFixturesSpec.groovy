@@ -40,8 +40,8 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
             [status: 200, data: '{}']
         }
         script.metaClass.deleteHubFile = { String name -> deletedFiles << name; true }
-        script.metaClass.adminListBundles = { Map a -> [bundles: [[id: 3, name: 'Throwaway', namespace: 'mcptest'],
-                                                                   [id: 4, name: 'Real', namespace: 'someone']]] }
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [[id: 3, name: 'Throwaway', namespace: 'mcptest'],
+                                                                                     [id: 4, name: 'Real', namespace: 'someone']]] }
         script.metaClass.adminDeleteBundle = { Map a -> [success: a.bundleId == '3'] }
         script.metaClass.adminDeleteItem = { Map a -> [success: true] }
     }
@@ -64,7 +64,8 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
                                     [id: 23, name: 'Something Else', namespace: 'mcptest']],
              '/hub2/userDeviceTypes': [[id: 31, name: 'Deadman Test Target Driver', namespace: 'mcptest']],
              '/hub/fileManager/json': [[name: 'BAT_E2E_note.txt'], [name: 'e2e-deferred_backup_1.json'],
-                                       [name: 'e2e-config.json'], [name: 'mcp-rm-backup-5-x.json'], [name: 'mine.txt']]])
+                                       [name: 'e2e-config.json'], [name: 'mcp-rm-backup-5-x.json'], [name: 'mine.txt'],
+                                       [name: 'BAT_E2E_KEEP_baseline.json']]])
         def codeDeletes = []
         script.metaClass.adminDeleteItem = { Map a -> codeDeletes << "${a.type}:${a.id}".toString(); [success: true] }
 
@@ -83,16 +84,19 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
         r.deleted*.kind.countBy { it } == [device: 2, room: 1, 'app code': 1, 'driver code': 1, bundle: 1, file: 2]
     }
 
-    def "an unreadable listing is reported as a failure, and the other kinds are still swept"() {
+    def "an unreadable listing is reported as a failure, never as nothing to purge"() {
         given:
         hub(['/hub/fileManager/json': [[name: 'BAT_E2E_note.txt']]])
+        script.metaClass.adminListBundles = { Map a -> [source: 'unavailable', bundles: []] }
 
         when:
         def r = script.purgeOtherFixturesLocked('BAT_E2E_', null)
 
         then:
-        r.failed*.kind == ['device']
+        r.failed*.kind == ['device', 'app code', 'driver code', 'bundle']
         r.failed[0].error.contains('/hub2/devicesList')
+
+        and: 'the readable kinds are still swept'
         deletedFiles == ['BAT_E2E_note.txt']
         postedRooms == ['/room/delete/7']
     }
@@ -117,9 +121,13 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
                     [data: [id: 41, name: 'E2E_PERM_Button', type: 'Button Controller-5.1']],
                     [data: [id: 42, name: 'Hallway Button', type: 'Button Controller-5.1']]]],
                 [data: [id: 50, name: 'Throwaway', type: 'Deadman Test Target']],
+                [data: [id: 51, name: 'Someone Else', type: 'Deadman Test Target']],
+                [data: [id: 52, name: 'Unreadable', type: 'Deadman Test Target']],
                 [data: [id: 60, name: '<span>BAT_E2E_Paused</span>', type: 'Rule-5.1']],
                 [data: [id: 61, name: 'BAT_E2E_KEEP_App', type: 'Rule-5.1']]]],
-             '/hub2/userAppTypes': [[id: 21, name: 'Deadman Test Target', namespace: 'mcptest']]])
+             '/hub2/userAppTypes': [[id: 21, name: 'Deadman Test Target', namespace: 'mcptest']],
+             '/installedapp/configure/json/50': [app: [appType: [namespace: 'mcptest']]],
+             '/installedapp/configure/json/51': [app: [appType: [namespace: 'someone']]]])
         script.metaClass.purgeOtherFixturesLocked = { String p, String c -> [deleted: [], failed: [], deletedCount: 0] }
         script.metaClass.adminForceDeleteInstalledApp = { Map a -> forced << a.id; [success: true] }
         script.metaClass.getAllGlobalVars = { -> [:] }
@@ -127,8 +135,23 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
         when:
         def r = script.purgeE2eArtifactsLocked('BAT_E2E_', null)
 
-        then:
-        r.success == true
+        then: 'a same-named app from another namespace is left alone, and an unconfirmed one is reported'
         forced.collect { it as Integer }.sort() == [41, 50, 60]
+        r.failed*.id == [52]
+        r.success == false
+    }
+
+    def "an unreadable app code list is a purge failure"() {
+        given:
+        hub(['/hub2/appsList': [apps: []]])
+        script.metaClass.purgeOtherFixturesLocked = { String p, String c -> [deleted: [], failed: [], deletedCount: 0] }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+
+        when:
+        def r = script.purgeE2eArtifactsLocked('BAT_E2E_', null)
+
+        then:
+        r.success == false
+        r.failed*.name == ['/hub2/userAppTypes']
     }
 }

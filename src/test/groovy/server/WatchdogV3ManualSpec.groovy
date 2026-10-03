@@ -38,6 +38,7 @@ class WatchdogV3ManualSpec extends Specification {
         )
         // The device/room/code/file leg has its own spec (WatchdogV3PurgeFixturesSpec).
         script.metaClass.purgeOtherFixturesLocked = { String prefix, String claim -> [deleted: [], failed: [], deletedCount: 0] }
+        script.metaClass.throwawayCodeClasses = { String path -> [] }
     }
 
     /** An atomicState whose writes of ONE key vanish -- a hub dropping state writes under load. */
