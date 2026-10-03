@@ -16205,6 +16205,26 @@ class TestRunner:
                 print(f"  [WARN] Failed to delete device DNI={dni}: {exc}")
         self.created_device_dnis.clear()
 
+        # Legacy rule-engine variables live in app state, out of the restore purge's reach (it deletes
+        # HUB variables only), so they are always swept here by prefix, deferred or not.
+        try:
+            listing = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": {}})
+            rule_vars = [str(v.get("name")) for v in (listing.get("ruleVariables") or []) if isinstance(v, dict)]
+        except Exception as exc:
+            rule_vars = []
+            print(f"  [WARN] rule-engine variable listing failed: {exc}")
+        for var_name in [n for n in rule_vars if n.startswith(PREFIX)]:
+            try:
+                print(f"  Sweep: deleting rule-engine variable {var_name}")
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_variable",
+                    "args": {"name": var_name, "confirm": True, "force": True},
+                })
+            except Exception as exc:
+                print(f"  [WARN] Failed to delete rule-engine variable {var_name}: {exc}")
+            if var_name in self.created_variable_names:
+                self.created_variable_names.remove(var_name)
+
         for var_name in list(self.created_variable_names) if not self.defer_native_deletes else []:
             try:
                 print(f"  Deleting tracked variable {var_name}")
