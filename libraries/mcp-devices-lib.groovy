@@ -153,7 +153,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     boolean labelOnly = labelFilter && !filterType && !capabilityFilter && !roomFilter && onlyOn != true && changedSinceDate == null
     if (filterType || labelFilter || capabilityFilter || roomFilter || onlyOn == true || changedSinceDate != null) {
         def required = (onlyOn == true ? ['currentStates'] : []) + (capabilityFilter ? ['capabilities'] : [])
-        _seedNativeInventoryFromTree(allDevices)
+        _seedNativeInventoryFromTree(allDevices, inventoryMeta.inventory as Map)
         def needFull = allDevices.findAll { rec ->
             if (rec._nativeLoaded == true) return false
             if (labelOnly && rec._nativeFilterLabel instanceof String && rec._nativeFilterLabel) return false
@@ -631,6 +631,8 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
             meta.idsComplete = false
             meta.partialNote = inventory.partialNote
         }
+        // Lets the caller seed from this same read instead of fetching the inventory again.
+        if (meta != null) meta.inventory = inventory
         def byId = [:]
         inventory.records.each { d -> byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) }
         return byId.values() as List
@@ -686,8 +688,8 @@ private void _hydrateNativeInventory(List records, List requiredCollections, boo
 // tree does not list are left unseeded (the caller decides whether to fetch them one by one).
 // Returns false when the bulk read itself failed -- nothing was seeded and the caller must
 // fall back or report.
-private boolean _seedNativeInventoryFromTree(List records) {
-    def inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
+private boolean _seedNativeInventoryFromTree(List records, Map inventory = null) {
+    if (inventory == null) inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
     if (inventory?.failure || !(inventory?.records instanceof List)) return false
     def byId = [:]
     inventory.records.each { r -> if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) }
@@ -743,8 +745,8 @@ def _contextResourcePerDeviceFetchCap() { 20 }
 // Load the whole MCP-visible population for a context resource: the bulk tree seeds every
 // device it lists; the remainder (or everything, when the bulk read failed) is fetched one by
 // one up to the cap. Returns the number of devices left unread.
-private int _loadContextResourcePopulation(List records) {
-    _seedNativeInventoryFromTree(records)
+private int _loadContextResourcePopulation(List records, Map inventory = null) {
+    _seedNativeInventoryFromTree(records, inventory)
     int fetched = 0
     int unread = 0
     records.each { record ->
@@ -778,7 +780,7 @@ def _buildContextSummaryText() {
     def meta = [:]
     try { records = _mcpVisibleDevices(null, meta) }
     catch (IllegalStateException e) { return "Context unavailable: ${e.message}".toString() }
-    _loadContextResourcePopulation(records)
+    _loadContextResourcePopulation(records, meta.inventory as Map)
     def attrNames = _contextAttributeNames()
     def lines = []
     int used = 0
@@ -832,7 +834,7 @@ def _buildContextJson() {
     catch (IllegalStateException e) { return [success: false, isError: true, error: e.message] }
     // One bulk read seeds room membership AND state for the whole population, so the rooms
     // index and the per-device room come from the same record and cannot disagree.
-    _loadContextResourcePopulation(allDevices)
+    _loadContextResourcePopulation(allDevices, meta.inventory as Map)
     allDevices.each { d -> if (d._nativeReadError) d._nativeRoomUnavailable = true }
     def contextAttrs = _contextAttributeNames() as Set
     int roomUnavailableCount = allDevices.count { it._nativeRoomUnavailable == true }

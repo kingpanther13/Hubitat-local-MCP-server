@@ -100,8 +100,14 @@
 @groovy.transform.Field static final long WORKER_POLL_MS = 50L
 // Serialize the one-time protected-app default across concurrent endpoint handlers.
 @groovy.transform.Field static final Map PROTECTED_APPS_LOCK = new java.util.HashMap()
-// Apps whose protected-app default is persisted, so warm requests skip the atomicState read.
-@groovy.transform.Field static final Set PROTECTED_APPS_READY = new java.util.HashSet()
+// Apps whose Hub Security shed is settled (done, or not due on this firmware). A firmware update or
+// redeploy restarts the class, so the check reruns exactly when its answer can change.
+@groovy.transform.Field static final Set HUB_SECURITY_CHECKED = new java.util.HashSet()
+// Per-app latest released version, mirrored from state.updateCheck so every result's serverInfo
+// skips the state read; only handleUpdateCheckResponse changes it.
+@groovy.transform.Field static final Map LATEST_VERSION_SEEN = new java.util.HashMap()
+// Per-app last recorded header readability; header lookups touch state only on a transition.
+@groovy.transform.Field static final Map HEADERS_READABLE_SEEN = new java.util.HashMap()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
@@ -233,7 +239,7 @@ def mainPage() {
                 paragraph "<b>App ID:</b> ${app.id}"
                 paragraph "<b>Version:</b> ${currentVersion()}"
                 if (appUpdateAvailable()) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v${currentVersion()}). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${_latestKnownVersion()}</b> (you have v${currentVersion()}). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
                 href name: "regenerateToken", page: "confirmRegenerateTokenPage",
                      title: "Regenerate access token",
@@ -630,7 +636,6 @@ def getChildAppById(appId) {
 
 def installed() {
     log.info "MCP Rule Server installed"
-    synchronized (PROTECTED_APPS_READY) { PROTECTED_APPS_READY.clear() }
     _protectedAppIds(true)
     _invalidateToolMetadata()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
@@ -765,18 +770,6 @@ private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
             mcpLog('warn', 'server', "Could not save protected-app defaults; protection remains active and initialization will retry: ${e.message}")
         }
         return selected
-    }
-}
-
-private void _ensureProtectedAppsDefault() {
-    String appKey = _stateOwnerKey()
-    synchronized (PROTECTED_APPS_READY) {
-        if (PROTECTED_APPS_READY.contains(appKey)) return
-    }
-    _protectedAppIds()
-    def policy = atomicState.protectedAppsPolicy
-    if (policy instanceof Map && policy.ids instanceof List) {
-        synchronized (PROTECTED_APPS_READY) { PROTECTED_APPS_READY.add(appKey) }
     }
 }
 
@@ -1018,9 +1011,8 @@ def handleMcpRequest() {
     }
 
     _cleanupRetiredToolState()
-    _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
+    _retireHubSecuritySettingsOnce()   // updated() alone would never fire for a user who does not open the app page
     _refreshSetupAfterUpdate()
-    _ensureProtectedAppsDefault()
     _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
@@ -1196,10 +1188,15 @@ def _requestHeader(String name) {
 // (headerValidation) so a support read shows it without needing the log, and the transition logs at
 // error level once per state change rather than per request.
 def _noteHeadersReadable(boolean readable) {
+    String appKey = _stateOwnerKey()
+    synchronized (HEADERS_READABLE_SEEN) {
+        if (HEADERS_READABLE_SEEN.get(appKey) == readable) return
+    }
     try {
         def prev = state.headersReadable
+        if (prev != readable) state.headersReadable = readable
+        synchronized (HEADERS_READABLE_SEEN) { HEADERS_READABLE_SEEN.put(appKey, readable) }
         if (prev == readable) return
-        state.headersReadable = readable
         if (readable) {
             // ONLY on recovery. The first-ever null->true transition is the normal healthy case, and
             // logging it wrote a line into every install's debug buffer on the first request -- which
@@ -1678,7 +1675,7 @@ def serverIdentity() {
         version: currentVersion()
     ]
     if (appUpdateAvailable()) {
-        info.updateAvailable = state.updateCheck.latestVersion
+        info.updateAvailable = _latestKnownVersion()
     }
     return info
 }
@@ -6926,13 +6923,27 @@ private boolean _hubSecurityObsolete() {
     return _firmwareAtLeast(fw, hubSecurityRetiredFw())
 }
 
-// Also called from every MCP request, not only updated(): updated() fires on a manual save, so a
-// hub whose package or firmware crossed the cutoff and whose page is never opened would keep the
-// dead credentials on disk. state.hubSecurityRetired makes it one-shot on a retired hub; below the
-// cutoff the marker is never stamped, so each request re-reads the firmware string.
-private void _retireHubSecuritySettings() {
-    if (state.hubSecurityRetired == true) return
-    if (!_hubSecurityObsolete()) return
+// Request-path entry: settles once per class load, so warm requests read neither state nor firmware.
+private void _retireHubSecuritySettingsOnce() {
+    String appKey = _stateOwnerKey()
+    synchronized (HUB_SECURITY_CHECKED) {
+        if (HUB_SECURITY_CHECKED.contains(appKey)) return
+    }
+    if (_retireHubSecuritySettings()) {
+        synchronized (HUB_SECURITY_CHECKED) { HUB_SECURITY_CHECKED.add(appKey) }
+    }
+}
+
+// Also reached from MCP requests, not only updated(): updated() fires on a manual save, so a hub
+// whose package or firmware crossed the cutoff and whose page is never opened would keep the dead
+// credentials on disk. Returns true once settled: shed, or below the cutoff on a readable firmware.
+private boolean _retireHubSecuritySettings() {
+    if (state.hubSecurityRetired == true) return true
+    if (!_hubSecurityObsolete()) {
+        String fw = null
+        try { fw = location?.hub?.firmwareVersionString?.toString()?.trim() } catch (Exception ignored) { }
+        return fw as boolean
+    }
     boolean had = (settings.hubSecurityEnabled == true) || settings.hubSecurityUser || settings.hubSecurityPassword
     try {
         // Credentials first: a partial failure then errs toward "secrets gone, toggle still on"
@@ -6946,7 +6957,7 @@ private void _retireHubSecuritySettings() {
     } catch (Exception e) {
         // This rides the request path; a cosmetic shed must never fail the request it arrived on.
         _cleanupError("hub-admin", "Hub Security credential shed failed; stored credentials may remain on disk (they are inert on firmware ${hubSecurityRetiredFw()}+): ${_cleanupFailureDetail(e)}")
-        return
+        return false
     }
     if (had) {
         // warn, not info: an irreversible deletion the user did not ask for. The default log level
@@ -6954,6 +6965,7 @@ private void _retireHubSecuritySettings() {
         // bug report carry the durable, level-independent record.
         mcpLog("warn", "hub-admin", "Hub Security credentials retired on firmware ${hubSecurityRetiredFw()}+ (an app's loopback requests are exempt from hub login; the stored credentials were unused)")
     }
+    return true
 }
 
 // Returns null on retired firmware, when Hub Security is off, or when credentials are not

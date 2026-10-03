@@ -81,6 +81,8 @@ LEGACY_PROTOCOL_VERSION = "2025-06-18"
 
 MRTR_MIN_LOGICAL_SECONDS = 10.0
 MRTR_RELAY_LEG_CEILING_SECONDS = 9.5
+# Pre-send gap for every hub call; caps app 38's short-window duty cycle (see _send).
+REQUEST_GAP_SECONDS = float(os.environ.get("E2E_REQUEST_GAP_SECONDS", "0.1"))
 
 
 def _sandbox_map_key_controls() -> dict:
@@ -680,7 +682,8 @@ class HubitatMcpClient:
         # short-window duty cycle over the limiter, cascading the heaviest group (native_apps
         # RM wizard) into a wall of 500s. So reads are paced too. Cost is ~0.2s x calls; the
         # alternative is a flaky full lane. E2E_PACE_SECONDS adds further per-TEST spacing.
-        time.sleep(0.2)
+        # E2E_REQUEST_GAP_SECONDS tunes it (0.2s until #463 measured 0.1s on a full lane).
+        time.sleep(REQUEST_GAP_SECONDS)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
         # raise the exact relay-504 error with probability <rate>. This reproduces on demand the
@@ -816,7 +819,7 @@ class HubitatMcpClient:
                 "raw E2E requests may use only 2026-07-28 or an unsupported-version "
                 "negative control; headerless and legacy revisions are forbidden"
             )
-        time.sleep(0.2)   # same per-call duty-cycle pacing as _send (see the limiter note there)
+        time.sleep(REQUEST_GAP_SECONDS)   # same per-call duty-cycle pacing as _send (see the limiter note there)
         last_exc: Exception | None = None
         for attempt in range(3):
             try:

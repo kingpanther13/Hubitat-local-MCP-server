@@ -626,8 +626,8 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         sharedAppStub.settingsStore.hubSecurityPassword = 'hunter2'
         atomicStateMap.hubSecurityCookie = 'JSESSIONID=stale'
 
-        when: 'the per-request hook fires (handleMcpRequest calls this directly)'
-        script._retireHubSecuritySettings()
+        when: 'the per-request hook fires'
+        script._retireHubSecuritySettingsOnce()
 
         then:
         sharedAppStub.settingsStore['hubSecurityEnabled'] == [type: 'bool', value: false]
@@ -650,5 +650,31 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         then: 'no further writes -- the marker returned before any settings access'
         sharedAppStub.settingsStore.hubSecurityUser == 'leftover'
         !sharedAppStub.settingsStore.containsKey('hubSecurityEnabled')
+    }
+
+    def "the request hook settles once per class load, but an unreadable firmware keeps retrying"() {
+        given: 'a readable firmware below the cutoff'
+        sharedLocation.hub = new TestHub(firmwareVersionString: '2.4.9.999')
+        sharedAppStub.settingsStore.hubSecurityUser = 'hubadmin'
+
+        when: 'the first request settles; a later request sees a firmware past the cutoff'
+        script._retireHubSecuritySettingsOnce()
+        sharedLocation.hub = new TestHub(firmwareVersionString: '2.5.1.181')
+        script._retireHubSecuritySettingsOnce()
+
+        then: 'warm requests do no further work until the class reloads'
+        sharedAppStub.settingsStore.hubSecurityUser == 'hubadmin'
+        stateMap.hubSecurityRetired != true
+
+        when: 'a class reload (firmware update or redeploy) clears the memo'
+        (scriptStaticField('HUB_SECURITY_CHECKED') as Set).clear()
+        sharedLocation.hub = new TestHub(firmwareVersionString: '')
+        script._retireHubSecuritySettingsOnce()
+        sharedLocation.hub = new TestHub(firmwareVersionString: '2.5.1.181')
+        script._retireHubSecuritySettingsOnce()
+
+        then: 'an unreadable firmware did not settle, so the next request sheds'
+        !sharedAppStub.settingsStore.containsKey('hubSecurityUser')
+        stateMap.hubSecurityRetired == true
     }
 }
