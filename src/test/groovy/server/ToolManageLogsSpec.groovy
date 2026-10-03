@@ -2146,8 +2146,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         !result.containsKey('updateAvailable')
 
-        when: "a genuinely newer version is known"
-        stateMap.updateCheck = [latestVersion: "999.0.0", updateAvailable: true]
+        when: "the update check records a genuinely newer version"
+        script.handleUpdateCheckResponse([status: 200, data: '{"version":"999.0.0"}'], null)
         def result2 = script.toolGetLoggingStatus([:])
 
         then:
