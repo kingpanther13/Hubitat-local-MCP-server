@@ -392,7 +392,14 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // (id + metadataUnavailable) so the caller can enumerate around it, and the response says
     // partial. Failing the whole page for one device would hide every other device with it.
     def requiredCollections = []
-    if (fieldSet == null || fieldSet.any { !(it in ["id", "mcpManaged"]) }) {
+    boolean labelOnlyProjection = fieldSet != null && !useDetailed && fieldSet.contains("label") &&
+        fieldSet.every { it in ["id", "mcpManaged", "label"] }
+    if (labelOnlyProjection) {
+        // The bulk inventory carries every label, so an id/label page needs no per-device fullJson.
+        def unlabeled = pagedDevices.findAll { it._nativeLoaded != true && !(it._nativeFilterLabel instanceof String && it._nativeFilterLabel) && !it.containsKey("label") }
+        if (unlabeled) _seedNativeInventoryFromTree(unlabeled, inventoryMeta.inventory as Map)
+        _hydrateNativeInventory(unlabeled.findAll { !it.containsKey("label") }, [], true)
+    } else if (fieldSet == null || fieldSet.any { !(it in ["id", "mcpManaged"]) }) {
         if (useDetailed) {
             if (fieldSet == null || fieldSet.contains('capabilities')) requiredCollections << 'capabilities'
             if (fieldSet == null || fieldSet.contains('commands')) requiredCollections << 'commands'
@@ -411,7 +418,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 
         info.id = deviceIdStr
         if (fieldSet == null || fieldSet.contains("name")) info.name = device.name
-        if (fieldSet == null || fieldSet.contains("label")) info.label = device.label ?: device.name
+        if (fieldSet == null || fieldSet.contains("label")) info.label = device.label ?: device._nativeFilterLabel ?: device.name
         if (fieldSet == null || fieldSet.contains("room")) info.room = device.roomName
         if (fieldSet == null || fieldSet.contains("disabled")) info.disabled = isDeviceDisabled(device)
         if (fieldSet == null || fieldSet.contains("deviceNetworkId")) info.deviceNetworkId = safeDni(device)
@@ -950,17 +957,24 @@ def _buildContextJson() {
 // On failure records is null and `failure` is "fetch" (with fetchError) or "shape" -- a missing
 // body, a missing `devices` key or a malformed node. The caller owns the wording.
 private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
-    try {
-        def txt = hubInternalGet("/device/listWithCapabilities/json")
-        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
-        // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
-        if (txt && parsed instanceof List && !parsed.isEmpty()) {
-            return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
+    boolean legacyGone
+    synchronized (LEGACY_DEVICE_LIST_GONE) { legacyGone = !LEGACY_DEVICE_LIST_GONE.isEmpty() }
+    if (!legacyGone) {
+        try {
+            def txt = hubInternalGet("/device/listWithCapabilities/json")
+            def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+            // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
+            if (txt && parsed instanceof List && !parsed.isEmpty()) {
+                return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
+            }
+            // A 200 that is not a device list is contract drift; say so rather than fall through silently.
+            mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
+        } catch (Exception e) {
+            if (_httpStatusOf(e) == 404) {
+                synchronized (LEGACY_DEVICE_LIST_GONE) { LEGACY_DEVICE_LIST_GONE.add("404") }
+            }
+            mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
         }
-        // A 200 that is not a device list is contract drift; say so rather than fall through silently.
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
-    } catch (Exception e) {
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
     }
 
     // The spine. Its failure modes are the caller's failure modes -- unless the feed can stand in.

@@ -108,6 +108,9 @@
 @groovy.transform.Field static final Map LATEST_VERSION_SEEN = new java.util.HashMap()
 // Per-app last recorded header readability; header lookups touch state only on a transition.
 @groovy.transform.Field static final Map HEADERS_READABLE_SEEN = new java.util.HashMap()
+// Set once /device/listWithCapabilities/json answers 404 (removed in 2.5.1.173); a firmware change
+// reboots the hub and resets it, so inventory reads stop paying for the dead first tier.
+@groovy.transform.Field static final Set LEGACY_DEVICE_LIST_GONE = new java.util.HashSet()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
@@ -7015,9 +7018,8 @@ def getHubSecurityCookie() {
 /**
  * HTTP status carried by an HTTPBuilder error, or null when it carries none. Duck-typed
  * (e.response.status) rather than naming HttpResponseException, which NCDFEs at parse
- * time on the test classpath. One caller today (shouldRetryWithFreshCookie); kept separate
- * because reading a status off an exception is the fiddly part and any future exception-path
- * status check belongs here rather than re-deriving it.
+ * time on the test classpath. Kept separate because reading a status off an exception is the
+ * fiddly part and any exception-path status check belongs here rather than re-deriving it.
  */
 private Integer _httpStatusOf(Exception e) {
     def resp = null
