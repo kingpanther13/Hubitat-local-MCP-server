@@ -1282,6 +1282,8 @@ class TestRunner:
         self.created_variable_names: list[str] = []
         # Fixture variables left for the same purge; a test re-run deletes them first (fixed names).
         self.deferred_variable_names: list[str] = []
+        # Legacy rule-engine variables live in app state, out of the purge's reach: always deleted inline.
+        self.rule_engine_variable_names: set[str] = set()
 
         # Dispatch-dependent tests may attempt a watchdog disable/enable before
         # one retry. Only the retried operation/readback establishes recovery;
@@ -2238,6 +2240,7 @@ class TestRunner:
         write may have committed; verify by reading it back (a genuine non-commit is
         surfaced, not silently soft-passed)."""
         self.created_variable_names.append(name)
+        self.rule_engine_variable_names.add(name)
         try:
             self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": name, "type": var_type, "value": value},
@@ -2374,6 +2377,8 @@ class TestRunner:
             print(f"    [WARN] deferred variables still present before the re-run: {deferred}")
 
     def _delete_variable_safe(self, name: str, *, inline: bool = False) -> None:
+        if name in getattr(self, "rule_engine_variable_names", ()):
+            inline = True
         if getattr(self, "defer_native_deletes", False) and not inline:
             if name in self.created_variable_names:
                 self.created_variable_names.remove(name)
@@ -14250,6 +14255,13 @@ class TestRunner:
             "args": {"name": var_name, "value": "safe"},
         })
         self.created_variable_names.append(var_name)
+        self.rule_engine_variable_names.add(var_name)
+        try:
+            self._t226_refusal_checks(var_name)
+        finally:
+            self._delete_variable_safe(var_name)
+
+    def _t226_refusal_checks(self, var_name: str) -> None:
 
         refused = False
         detail = None
