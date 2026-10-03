@@ -1659,6 +1659,83 @@ class TestRunner:
         "omni":     ("E2E_PERM_Omni",     "Virtual Omni Sensor"),
     }
 
+    # PERMANENT hub variables for tests that only need a variable to exist (create/delete is not their
+    # subject). Created on a fresh hub, reset to their starting value per use, never deleted; the
+    # E2E_PERM_ prefix keeps them out of the BAT_E2E_ purge. CRUD tests keep their own throwaways.
+    PERM_VARIABLES: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "sv_number": ("E2E_PERM_Var_SvNumber", "Number", "0"),
+        "sv_string": ("E2E_PERM_Var_SvString", "String", "init"),
+        "sv_bool": ("E2E_PERM_Var_SvBool", "Boolean", "false"),
+        "sv_str_src": ("E2E_PERM_Var_SvStrSrc", "String", "copied"),
+        "sv_num_src": ("E2E_PERM_Var_SvNumSrc", "Number", "7"),
+        "contains_msg": ("E2E_PERM_Var_ContainsMsg", "String", "init"),
+        "bool_flag": ("E2E_PERM_Var_BoolFlag", "Boolean", "false"),
+        "in_use": ("E2E_PERM_Var_InUse", "Number", "0"),
+    }
+
+    def _hub_variables_by_name(self) -> dict[str, dict]:
+        rows: dict[str, dict] = {}
+        cursor = None
+        while True:
+            args = {"cursor": cursor} if cursor else {}
+            page = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": args})
+            assert isinstance(page.get("hubVariables"), list), f"hub variable listing failed: {page}"
+            rows.update({str(v.get("name")): v for v in page["hubVariables"] if isinstance(v, dict)})
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return rows
+
+    def _ensure_perm_variables(self, *keys: str) -> dict[str, str]:
+        """Names of the requested permanent variables, created or reset to their starting values."""
+        def same(value, wanted: str) -> bool:
+            try:
+                return float(value) == float(wanted)
+            except (TypeError, ValueError):
+                return str(value).lower() == wanted.lower()
+
+        existing = self._hub_variables_by_name()
+        create, reset = [], []
+        for key in keys:
+            name, var_type, value = self.PERM_VARIABLES[key]
+            row = existing.get(name)
+            if row is not None and str(row.get("type", "")).lower() != var_type.lower():
+                self._delete_variable_safe(name, inline=True)
+                row = None
+            if row is None:
+                create.append({"name": name, "type": var_type, "value": value})
+            elif not same(row.get("value"), value):
+                reset.append((name, value))
+        if create:
+            print(f"    [PERM FIXTURE] creating hub variables {[it['name'] for it in create]} -- reused by later runs")
+            self._create_hub_variables_visible(create)
+        for name, value in reset:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": name, "value": value}})
+        return {key: self.PERM_VARIABLES[key][0] for key in keys}
+
+    def _create_hub_variables_visible(self, items: list[dict]) -> None:
+        """Bulk-create hub variables, then poll the bulk getAllGlobalVars() read until all are listed.
+
+        hub_create_variable has a known post-write visibility race (a commit that lags the bulk
+        read, or a 504 that still committed), so a miss re-issues the whole bulk create."""
+        names = [it["name"] for it in items]
+        for attempt in range(1, 4):
+            try:
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable", "args": {"variables": items, "confirm": True}})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                print(f"    bulk hub_create_variable attempt {attempt}/3 raised ({exc}); the visibility poll is authoritative")
+            deadline = time.time() + 12.0
+            while time.time() < deadline:
+                listed = self._hub_variables_by_name()
+                if all(n in listed for n in names):
+                    return
+                time.sleep(1.0)
+            if attempt < 3:
+                print(f"    not all of {names} visible after attempt {attempt}/3; re-issuing the bulk create")
+                time.sleep(2.0)
+        raise AssertionError(f"hub variables {names} never all appeared in the bulk getAllGlobalVars() read")
+
     def _ensure_perm_fixture(self, key: str) -> str:
         """Device id of a permanent non-child fixture, creating it if this hub has none yet.
 
@@ -8632,12 +8709,8 @@ class TestRunner:
         # a String variable Required Expression with comparator '*contains*' writes the
         # comparator VERBATIM (asterisks kept, not stripped or mapped to a glyph). A non-empty
         # initial value avoids the empty-String-var-never-persists bug.
-        str_var = f"{PREFIX}contains_msg"
-        # A Variable condition's xVar picker lists HUB variables, so this must be a real hub var
-        # via hub_create_variable -- hub_set_variable (the _create_variable helper) falls back to
-        # the rule_engine namespace for a missing name and never appears in the picker. Poll for
-        # the known create_variable post-write visibility race before the condition write.
-        self._create_hub_variable_visible(str_var, "String", "init")
+        str_var = self._ensure_perm_variables("contains_msg")["contains_msg"]
+        # A Variable condition's xVar picker lists HUB variables only, hence a permanent hub variable.
         contains_spec = {"conditions": [
             {"capability": "Variable", "variable": str_var,
              "comparator": "*contains*", "value": "error"}]}
@@ -8661,8 +8734,7 @@ class TestRunner:
         # A Boolean variable has no comparator field: both the Required Expression (STPage) and an
         # IF action (doActPage) write its true/false value directly. A second small rule keeps the
         # String fixture above untouched.
-        bool_var = f"{PREFIX}bool_flag"
-        self._create_hub_variable_visible(bool_var, "Boolean", "false")
+        bool_var = self._ensure_perm_variables("bool_flag")["bool_flag"]
         bool_app, bool_created = self._create_native_rule("BoolVarCond", {
             "addRequiredExpression": {"conditions": [{"capability": "Variable", "variable": bool_var, "value": True}]},
             "addActions": [
@@ -8930,438 +9002,381 @@ class TestRunner:
         # negative case, Rule D). Use a virtual temperature sensor for the numeric happy path.
         temp_id = int(self.get_test_temperature_ids()[0])
         switch_id = int(self.get_test_switch_id())
-        var_name = f"{PREFIX}sv_modes"          # Number target
-        str_var_name = f"{PREFIX}sv_str"        # String target (numeric-target-only reject)
-        bool_var_name = f"{PREFIX}sv_bool"      # Boolean target (numeric-target-only reject)
-        str_src_name = f"{PREFIX}sv_str_src"    # String copy source
-        num_src_name = f"{PREFIX}sv_num_src"    # Number copy source (Rule D runs the copy)
+        # Permanent variables, reset to their starting values: Number target, String and Boolean
+        # targets (numeric-target-only rejects), String copy source, Number copy source (Rule D).
+        perm = self._ensure_perm_variables("sv_number", "sv_string", "sv_bool", "sv_str_src", "sv_num_src")
+        var_name, str_var_name, bool_var_name = perm["sv_number"], perm["sv_string"], perm["sv_bool"]
+        str_src_name, num_src_name = perm["sv_str_src"], perm["sv_num_src"]
 
-        # Create a var via hub_create_variable (guaranteed to CREATE a missing var in the hub
-        # namespace, unlike hub_set_variable whose missing-var semantics are ambiguous), then wait
-        # for it to become visible to the BULK getAllGlobalVars() read. The setVariable handler
-        # validates the target against getAllGlobalVars(), and hub_list_variables reads that SAME
-        # surface -- so polling it is an exact proxy for what the validator sees.
-        #
-        # hub_create_variable has a known intermittent post-write visibility race: it spuriously
-        # errors ("wizard completed but not visible via getGlobalVar") or commits but the var does
-        # not appear in the bulk read for a beat -- and a fresh CREATE settles it. So each attempt
-        # is create-then-poll, and on a race (create error OR poll-miss) the WHOLE create is
-        # re-issued, up to a few times with short backoff. Only an exhausted retry budget fails.
-        def _create_vars_and_wait(items: list[dict]) -> None:
-            # Bulk-create ALL targets in ONE hub_create_variable call, then ONE shared poll until they
-            # are all visible in the bulk getAllGlobalVars() surface the setVariable validator consults.
-            # On the documented post-write visibility race (a commit that lags the bulk read, or a 504
-            # that still committed), re-issue the whole bulk create. Only an exhausted budget fails.
-            names = [it["name"] for it in items]
-            for n in names:
-                self.created_variable_names.append(n)
-            max_attempts = 3
-            poll_secs = 12.0
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_create_variable", "args": {"variables": items, "confirm": True}})
-                except (McpError, McpToolError, requests.HTTPError) as exc:
-                    print(f"    bulk hub_create_variable attempt {attempt}/{max_attempts} raised "
-                          f"({exc}); the visibility poll is authoritative")
-                deadline = time.time() + poll_secs
-                while time.time() < deadline:
-                    if all(self._hub_variable_visible_in_bulk(n) for n in names):
-                        return
-                    time.sleep(1.0)
-                if attempt < max_attempts:
-                    print(f"    not all of {names} visible after attempt {attempt}/{max_attempts} "
-                          "(create_variable post-write visibility race); re-issuing the bulk create")
-                    time.sleep(2.0)
-            raise AssertionError(
-                f"hub variables {names} never all appeared in the bulk getAllGlobalVars() read after "
-                f"{max_attempts} bulk-create attempts -- setVariable validation cannot proceed")
-
-        # A String var MUST get a NON-EMPTY value (an empty string does not persist -- the wizard reports
-        # complete but nothing lands). Numeric -> "0", Boolean -> "false", String -> a non-empty placeholder.
-        _create_vars_and_wait([
-            {"name": var_name, "type": "Number", "value": "0"},
-            {"name": str_var_name, "type": "String", "value": "init"},
-            {"name": bool_var_name, "type": "Boolean", "value": "false"},
-            {"name": str_src_name, "type": "String", "value": "copied"},
-            {"name": num_src_name, "type": "Number", "value": "7"},
-        ])
         # The matrix is split across SMALL rules (<=3 setVariable actions each): the classic wizard
         # re-POSTs the FULL rule page per submitOnChange, so piling many actions into one rule trips
         # the hub's per-app load limiter (a 5th action lands numOp.<N> as not_in_schema). Each rule
-        # below is pristine (created + deleted in its own try/finally); the three shared vars are
-        # created once up front (they do not conflict) and deleted at the very end.
+        # below is pristine (created + deleted in its own try/finally); the shared variables are
+        # permanent fixtures reset above.
+        # Rule A: fromDevice (temperature -> Number var) + value read-back.
+        from_device_spec = {"capability": "setVariable", "variable": var_name,
+                            "fromDevice": {"deviceId": temp_id, "attribute": "temperature"}}
+        app_a, created_a = self._create_native_rule("SetVarFromDev", {
+            "addActions": [from_device_spec],
+        }, return_result=True)
         try:
-            # Rule A: fromDevice (temperature -> Number var) + value read-back.
-            from_device_spec = {"capability": "setVariable", "variable": var_name,
-                                "fromDevice": {"deviceId": temp_id, "attribute": "temperature"}}
-            app_a, created_a = self._create_native_rule("SetVarFromDev", {
-                "addActions": [from_device_spec],
-            }, return_result=True)
-            try:
-                fd = ((created_a or {}).get("actions") or [{}])[0]
-                assert fd.get("success") is not False, \
-                    f"setVariable fromDevice hard-errored: {fd}"
-                fd_applied = fd.get("settingsApplied") or []
-                # Value read-back: assert the actual VALUE that landed, not just key presence -- a
-                # wrong-value write that still lands the key would pass a key-prefix-only check.
-                # The tCustomAttr key is namespaced by the RM-assigned action index.
-                settings_a = (self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config", "args": {"appId": app_a, "includeSettings": True}}).get("settings") or {})
-                fd_idx = fd.get("actionIndex") or next((str(k).split(".", 1)[1]
-                    for k, value in settings_a.items()
-                    if str(k).startswith("tCustomAttr.") and value == "temperature"), None)
-                assert fd_idx is not None, f"fromDevice action index was not returned or persisted: {settings_a}"
-                if created_a is not None:
-                    assert any(str(k).startswith("customDev.") for k in fd_applied), \
-                        f"fromDevice device picker (customDev.<N>) did not land; settingsApplied={fd_applied}"
-                    assert any(str(k).startswith("tCustomAttr.") for k in fd_applied), \
-                        f"fromDevice attribute enum (tCustomAttr.<N>) did not land; settingsApplied={fd_applied}"
-                    assert not fd.get("partial"), f"fromDevice action falsely flagged partial: {fd}"
-                assert settings_a.get(f"tCustomAttr.{fd_idx}") == "temperature", \
-                    f"fromDevice attribute persisted with the wrong value; settings={settings_a}"
-                # Read back the device-id VALUE too (customDev stores the selected device id), not
-                # just key presence -- a wrong device would still land the key. RM may serialize the
-                # capability picker as a bare id or an id-keyed map, so assert the id appears in the
-                # persisted value's string form rather than pinning one serialization.
-                customdev_val = str(settings_a.get(f"customDev.{fd_idx}"))
-                assert str(temp_id) in customdev_val, \
-                    f"fromDevice device id {temp_id} not in persisted customDev value {customdev_val!r}; settings={settings_a}"
-                self._assert_rule_healthy(app_a)
-            finally:
-                self._delete_native(app_a)
-
-            # Rule B: math binary '+' (constant second operand) + math var-minus-var (xVar4=varname)
-            # + value read-backs.
-            math_specs = [
-                {"capability": "setVariable", "variable": var_name,
-                 "math": {"left": var_name, "op": "+", "right": 10}},
-                {"capability": "setVariable", "variable": var_name,
-                 "math": {"left": var_name, "op": "-", "right": var_name}},
-                {"capability": "setVariable", "variable": var_name,
-                 "math": {"left": var_name, "op": "+", "right": 5.5}},
-            ]
-            # Use the real client continuation loop, without the fixture helper's early
-            # adopt-by-label fallback. A visible shell is not a completed multi-action write.
-            self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
-            math_label = (f"{PREFIX}SetVarMathBin_{_run_artifact_suffix()}_"
-                          f"{self._native_rule_fixture_seq}")
-            app_b, created_b = None, None
-            math_write_terminal = False
-            try:
-                try:
-                    created_b = self.client.call_tool("hub_set_rule", {
-                        "name": math_label, "confirm": True, "addActions": math_specs,
-                    })
-                    app_b = created_b.get("appId")
-                    math_write_terminal = True
-                    if app_b:
-                        self.created_native_app_ids.append(str(app_b))
-                    assert app_b, f"math create returned no appId: {created_b}"
-                    assert created_b.get("ruleId") == app_b, \
-                        f"math create returned a different ruleId: {created_b}"
-                    assert created_b.get("success") is True and not created_b.get("partial"), \
-                        f"math create did not fully commit: {created_b}"
-                except RelayLostResponseError:
-                    # The initial relay response can disappear before requestState arrives.
-                    # Follow the server's client-error instructions: wait about 15 seconds,
-                    # inspect recentWrites, then read the target. Do not resend the create.
-                    print("    math create response lost -- waiting for server write status")
-                    deadline = time.monotonic() + 120.0
-                    time.sleep(15.0)
-                    recent = []
-                    while time.monotonic() < deadline:
-                        info = self.client.call_tool("hub_get_info", {})
-                        recent = [row for row in info.get("recentWrites", [])
-                                  if row.get("tool") == "hub_set_rule"]
-                        if app_b is None:
-                            listed = self.client.call_tool("hub_list_rules", {})
-                            matches = [rule for rule in listed.get("rules", [])
-                                       if rule.get("label") == math_label or rule.get("name") == math_label]
-                            assert len(matches) <= 1, f"ambiguous math rule label: {matches}"
-                            if matches:
-                                app_b = matches[0].get("id")
-                                assert app_b, f"math rule has no id: {matches[0]}"
-                                self.created_native_app_ids.append(str(app_b))
-                        # Active records have no target id. Only a terminal record for THIS
-                        # app proves that configuration readback can begin. Other writes,
-                        # missing/evicted records, and a visible shell cannot prove completion.
-                        terminal = next((row for row in recent
-                                         if app_b is not None and str(row.get("appId")) == str(app_b)
-                                         and row.get("status") in ("finished", "finished_with_error")), None)
-                        if terminal is not None:
-                            math_write_terminal = True
-                            assert terminal.get("status") == "finished" and terminal.get("success") is True, \
-                                f"math create finished with an error: {terminal}"
-                            break
-                        time.sleep(5.0)
-                    else:
-                        raise AssertionError(
-                            f"math create completion unresolved for {math_label!r}, appId={app_b}; "
-                            f"recentWrites={recent}")
-                settings_b = (self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config",
-                    "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
-                if created_b is not None:
-                    math_entries = created_b.get("actions") or []
-                    assert len(math_entries) == 3, \
-                        f"math create results were incomplete: {created_b}"
-                    mb, mb2, md = math_entries
-                    mb_idx = mb.get("actionIndex")
-                    mb2_idx = mb2.get("actionIndex")
-                    md_idx = md.get("actionIndex")
-                else:
-                    def _math_index(op: str, *, constant: str | None = None,
-                                    right_variable: bool = False) -> str:
-                        matches = []
-                        for key, value in settings_b.items():
-                            if not str(key).startswith("valMathOp.") or str(value) != op:
-                                continue
-                            idx = str(key).split(".", 1)[1]
-                            if settings_b.get(f"xVar3.{idx}") != var_name:
-                                continue
-                            if constant is not None \
-                                    and str(settings_b.get(f"valConst2.{idx}")) != constant:
-                                continue
-                            if right_variable and settings_b.get(f"xVar4.{idx}") != var_name:
-                                continue
-                            matches.append(idx)
-                        assert len(matches) == 1, \
-                            f"completed math create did not persist one exact {op!r} action: {settings_b}"
-                        return matches[0]
-
-                    mb_idx = _math_index("+", constant="10")
-                    mb2_idx = _math_index("-", right_variable=True)
-                    md_idx = _math_index("+", constant="5.5")
-                # math binary: variable + 10 (numeric right operand becomes (constant)+valConst2).
-                if created_b is not None:
-                    assert mb.get("success") is not False, f"setVariable math binary hard-errored: {mb}"
-                    mb_applied = mb.get("settingsApplied") or []
-                    assert any(str(k).startswith("valMathOp.") for k in mb_applied), \
-                        f"math operator (valMathOp.<N>) did not land; settingsApplied={mb_applied}"
-                    assert any(str(k).startswith("valConst2.") for k in mb_applied), \
-                        f"math binary second constant (valConst2.<N>) did not land; settingsApplied={mb_applied}"
-                    assert not mb.get("partial"), f"math binary action falsely flagged partial: {mb}"
-
-                # math binary, second operator + var-operand combo: var - var (exercises a binary op
-                # OTHER than '+', and an xVar4=<varname> second operand instead of a (constant)).
-                if created_b is not None:
-                    assert mb2.get("success") is not False, f"setVariable math var-minus-var hard-errored: {mb2}"
-                    mb2_applied = mb2.get("settingsApplied") or []
-                    assert any(str(k).startswith("xVar4.") for k in mb2_applied), \
-                        f"var second operand (xVar4.<N>) did not land; settingsApplied={mb2_applied}"
-                    assert not any(str(k).startswith("valConst2.") for k in mb2_applied), \
-                        f"a var second operand must NOT write a constant slot; settingsApplied={mb2_applied}"
-                    assert not mb2.get("partial"), f"math var-minus-var action falsely flagged partial: {mb2}"
-
-                # math binary with a DECIMAL constant operand (var + 5.5): proves decimal-constant
-                # serialization end-to-end -- the constant must persist verbatim as "5.5", never
-                # integer-stripped (which would corrupt the intended value).
-                if created_b is not None:
-                    assert md.get("success") is not False, f"setVariable math decimal-constant hard-errored: {md}"
-                    assert not md.get("partial"), f"math decimal-constant action falsely flagged partial: {md}"
-                assert len({str(mb_idx), str(mb2_idx), str(md_idx)}) == 3, \
-                    f"math actions must persist under three distinct indices: {settings_b}"
-                assert settings_b.get(f"xVar3.{mb_idx}") == var_name, \
-                    f"math first-operand variable persisted with the wrong value; settings={settings_b}"
-                assert settings_b.get(f"valMathOp.{mb_idx}") == "+", \
-                    f"math binary operator persisted with the wrong value; settings={settings_b}"
-                assert str(settings_b.get(f"valConst2.{mb_idx}")) == "10", \
-                    f"math binary constant operand persisted with the wrong value; settings={settings_b}"
-                assert settings_b.get(f"valMathOp.{mb2_idx}") == "-", \
-                    f"math var-minus-var operator persisted with the wrong value; settings={settings_b}"
-                assert settings_b.get(f"xVar4.{mb2_idx}") == var_name, \
-                    f"math var second operand persisted with the wrong value; settings={settings_b}"
-                # The decimal constant must persist verbatim -- "5.5", not "5" or "6".
-                assert str(settings_b.get(f"valConst2.{md_idx}")) == "5.5", \
-                    f"math decimal constant persisted with the wrong value (expected 5.5); settings={settings_b}"
-                self._assert_rule_healthy(app_b)
-            finally:
-                # Do not race an unresolved server write with deletion; suite teardown
-                # retains the tracked id and run prefix for later cleanup.
-                if app_b is not None and math_write_terminal:
-                    self._delete_native(app_b)
-
-            # Rule C: math unary (no second operand) plus the three pre-write type-filter
-            # refusals. Refusals do not add action rows, so this stays a one-action rule.
-            unary_spec = {"capability": "setVariable", "variable": var_name,
-                          "math": {"left": var_name, "op": "absolute"}}
-            app_c, created_c = self._create_native_rule(
-                "SetVarMathUnaryStr", {"addActions": [unary_spec]}, return_result=True)
-            try:
-                unary_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
-                if created_c is not None:
-                    unary_actions = created_c.get("actions") or []
-                    assert len(unary_actions) == 1, \
-                        f"unary create result was incomplete: {created_c}"
-                    mu = unary_actions[0]
-                    mu_idx = mu.get("actionIndex")
-                    assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
-                    mu_applied = mu.get("settingsApplied") or []
-                    assert any(str(k).startswith("valMathOp.") for k in mu_applied), \
-                        f"math unary operator (valMathOp.<N>) did not land; settingsApplied={mu_applied}"
-                    assert not any(str(k).startswith("xVar4.") or str(k).startswith("valConst2.")
-                                   for k in mu_applied), \
-                        f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
-                    assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
-                else:
-                    unary_indices = [str(key).split(".", 1)[1]
-                                     for key, value in unary_settings.items()
-                                     if str(key).startswith("valMathOp.") and value == "absolute"]
-                    assert len(unary_indices) == 1, \
-                        f"relay-adopted unary create did not persist one absolute action: {unary_settings}"
-                    mu_idx = unary_indices[0]
-
-                # One batch per refusal: the first refused op stops a patches batch.
-                c_entries = []
-                for target in (str_var_name, bool_var_name, var_name):
-                    c_entries += self._patch_rule(app_c, [
-                        {"addAction": {"capability": "setVariable", "variable": target,
-                                       "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
-                    ], expected_refusals=1)
-                assert len(c_entries) == 3, f"rejection patches were incomplete: {c_entries}"
-                str_reject, bool_reject, neg = c_entries
-                assert mu_idx is not None, f"math unary action index was not returned or persisted: {unary_settings}"
-                assert unary_settings.get(f"xVarV.{mu_idx}") == var_name \
-                    and unary_settings.get(f"valMathOp.{mu_idx}") == "absolute", \
-                    f"math unary target/operator did not persist: {unary_settings}"
-                assert f"xVar4.{mu_idx}" not in unary_settings \
-                    and f"valConst2.{mu_idx}" not in unary_settings, \
-                    f"math unary persisted an illegal second operand: {unary_settings}"
-
-                # String-TARGET rejection: the device-attribute (fromDevice) and variable-math (math)
-                # source modes are Number/Decimal-target-only -- RM renders the numOp source-mode
-                # picker only for a numeric target var, so fromDevice/math into a String var is not an
-                # RM-supported operation and is rejected up-front (success=false) with the clear
-                # numeric-target requirement, NOT the cryptic deep not-in-schema reveal failure.
-                # (The "filter INCLUDES valid attributes" point is already proven by the Rule A
-                # happy-path fd: Number var + temperature -> tCustomAttr offered and lands.)
-                assert str_reject.get("success") is False, \
-                    f"fromDevice into a String var should be rejected (numeric-target-only mode), got: {str_reject}"
-                assert "requires a Number or Decimal target variable" in (str_reject.get("error") or ""), \
-                    f"String-target rejection did not name the Number/Decimal requirement: {str_reject}"
-                assert bool_reject.get("success") is False \
-                    and "requires a Number or Decimal target variable" in (bool_reject.get("error") or ""), \
-                    f"Boolean-target rejection did not name the Number/Decimal requirement: {bool_reject}"
-                assert neg.get("success") is False, \
-                    f"numeric var + enum 'switch' attribute should fail the type filter, got: {neg}"
-                neg_err = neg.get("error") or ""
-                # The type filter rejects 'switch' for a numeric var one of two ways, depending on
-                # whether the device exposes ANY numeric attribute: if some remain, 'switch' is "not
-                # in the device's attribute enum" (with the available list); if none do, the filtered
-                # enum is empty ("no enumerable options"). Both are the correct fail-loud verdict for
-                # the excluded attribute -- accept either, and confirm the requested attribute is named.
-                assert ("not in the device's attribute enum" in neg_err
-                        or "no enumerable options" in neg_err), \
-                    f"negative type-filter rejection did not name a filtered-attribute-enum frame: {neg}"
-                assert "tCustomAttr" in neg_err or "switch" in neg_err, \
-                    f"negative rejection should name the attribute field or the requested attribute; error={neg_err}"
-
-                # sourceVariable into a String target: a String var renders no numOp, so the copy
-                # goes through valStringOp="Copy variable", which reveals xVar3.<N>. The persisted
-                # settings are the proof, not the envelope.
-                copy_entry = self._patch_rule(app_c, [
-                    {"addAction": {"capability": "setVariable", "variable": str_var_name,
-                                   "sourceVariable": str_src_name}},
-                ])[0]
-                assert copy_entry.get("success") is not False, \
-                    f"String-target sourceVariable copy failed: {copy_entry}"
-                copy_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
-                copy_idx = copy_entry.get("actionIndex") or next(
-                    (str(k).split(".", 1)[1] for k, v in copy_settings.items()
-                     if str(k).startswith("valStringOp.") and v == "Copy variable"), None)
-                assert copy_idx is not None, \
-                    f"no valStringOp.<N>='Copy variable' persisted for the String copy: {copy_settings}"
-                assert copy_settings.get(f"valStringOp.{copy_idx}") == "Copy variable" \
-                    and copy_settings.get(f"xVarV.{copy_idx}") == str_var_name \
-                    and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
-                    f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
-                # The refused numeric-target fromDevice case above (the switch attribute) opened a
-                # row and wrote numOp/customDev before refusing; its actionCancel drops that row
-                # and consumes its index, so the copy must carry none of those leftovers.
-                copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
-                assert not any(k.startswith("numOp.") for k in copy_applied), \
-                    f"String copy wrote a numOp field: settingsApplied={copy_applied}"
-                stale = [k for k in (f"numOp.{copy_idx}", f"customDev.{copy_idx}") if k in copy_settings]
-                assert not stale, \
-                    f"String copy at index {copy_idx} inherited the refused add's fields {stale}: {copy_settings}"
-                # The cancelled rows themselves must be GONE: a refusal that left its actType
-                # behind would show up as an orphaned settings row in rule health, and its mode
-                # fields (numOp/customDev) must not linger at any index outside the rule's two
-                # real actions (the math unary owns its numOp; the String copy owns neither).
-                health_c = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_get_rule_health", "args": {"appId": app_c}})
-                assert not health_c.get("orphanedActionRows"), \
-                    f"refused adds left orphaned action rows behind: {health_c.get('orphanedActionRows')}"
-                known_c = {str(mu_idx), str(copy_idx)}
-                stray_c = [k for k in copy_settings
-                           if str(k).startswith(("numOp.", "customDev."))
-                           and str(k).split(".", 1)[1] not in known_c]
-                assert not stray_c, \
-                    f"refused adds left stale mode fields outside the real actions {known_c}: {stray_c}"
-                # A Boolean target's copy picker is uncaptured, so it is refused before any write.
-                bool_copy = self._patch_rule(app_c, [
-                    {"addAction": {"capability": "setVariable", "variable": bool_var_name,
-                                   "sourceVariable": bool_var_name}},
-                ], expected_refusals=1)[0]
-                assert "not supported yet" in (bool_copy.get("error") or ""), \
-                    f"Boolean-target copy should be refused by name, got: {bool_copy}"
-                self._assert_rule_healthy(app_c)
-            finally:
-                self._delete_native(app_c)
-
-            # Rule D: Number copy, then numOp "add number", then RUN the actions. The persisted
-            # settings alone do not prove it: without valOffset.<N> RM throws "Ambiguous method
-            # overloading ... Long#plus" at run time and leaves the target unchanged, although the
-            # rule saves and reads healthy. The run lands 7 + 3 = 10 only if both actions execute.
-            self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_set_variable", "args": {"name": var_name, "value": 0}})
-            copy_spec = {"capability": "setVariable", "variable": var_name,
-                         "sourceVariable": num_src_name}
-            add_spec = {"capability": "setVariable", "variable": var_name,
-                        "numOp": "add number", "value": 3}
-            app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec, add_spec]})
-            try:
-                d_settings = self._get_persisted_rule_config(app_d).get("settings") or {}
-                d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
-                              if str(k).startswith("numOp.") and v == "variable"), None)
-                assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
-                assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
-                add_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
-                                if str(k).startswith("numOp.") and v == "add number"), None)
-                assert add_idx is not None, f"no numOp.<N>='add number' persisted: {d_settings}"
-                assert str(d_settings.get(f"valNumber.{add_idx}")) in ("3", "3.0"), \
-                    f"add-number constant did not persist on index {add_idx}: {d_settings}"
-                self._assert_rule_healthy(app_d)
-                run, limited = self._call_with_limiter_bounce(
-                    "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_d, "action": "actions"},
-                    "hub_call_rule(action=actions)")
-                got = None
-                deadline = time.time() + 15.0
-                while time.time() < deadline:
-                    got = self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_get_variable", "args": {"name": var_name}}).get("value")
-                    if str(got) in ("10", "10.0"):
-                        break
-                    time.sleep(1.0)
-                # The limiter can abort the reply to a run that already happened, so the variable
-                # read above is the verdict; the run's own outcome explains a miss.
-                if str(got) not in ("10", "10.0"):
-                    assert not limited, (
-                        f"hub_call_rule(action=actions) stayed blocked by the platform load limiter "
-                        f"and {var_name} never reached 10 (got {got!r}): {limited}")
-                    assert not (isinstance(run, dict) and run.get("success") is False), \
-                        f"hub_call_rule(action=actions) reported failure and {var_name} is {got!r}: {run}"
-                assert str(got) in ("10", "10.0"), \
-                    f"running copy (7) then add number (3) did not set {var_name} to 10 (got {got!r}; run result {run})"
-            finally:
-                self._delete_native(app_d)
+            fd = ((created_a or {}).get("actions") or [{}])[0]
+            assert fd.get("success") is not False, \
+                f"setVariable fromDevice hard-errored: {fd}"
+            fd_applied = fd.get("settingsApplied") or []
+            # Value read-back: assert the actual VALUE that landed, not just key presence -- a
+            # wrong-value write that still lands the key would pass a key-prefix-only check.
+            # The tCustomAttr key is namespaced by the RM-assigned action index.
+            settings_a = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_a, "includeSettings": True}}).get("settings") or {})
+            fd_idx = fd.get("actionIndex") or next((str(k).split(".", 1)[1]
+                for k, value in settings_a.items()
+                if str(k).startswith("tCustomAttr.") and value == "temperature"), None)
+            assert fd_idx is not None, f"fromDevice action index was not returned or persisted: {settings_a}"
+            if created_a is not None:
+                assert any(str(k).startswith("customDev.") for k in fd_applied), \
+                    f"fromDevice device picker (customDev.<N>) did not land; settingsApplied={fd_applied}"
+                assert any(str(k).startswith("tCustomAttr.") for k in fd_applied), \
+                    f"fromDevice attribute enum (tCustomAttr.<N>) did not land; settingsApplied={fd_applied}"
+                assert not fd.get("partial"), f"fromDevice action falsely flagged partial: {fd}"
+            assert settings_a.get(f"tCustomAttr.{fd_idx}") == "temperature", \
+                f"fromDevice attribute persisted with the wrong value; settings={settings_a}"
+            # Read back the device-id VALUE too (customDev stores the selected device id), not
+            # just key presence -- a wrong device would still land the key. RM may serialize the
+            # capability picker as a bare id or an id-keyed map, so assert the id appears in the
+            # persisted value's string form rather than pinning one serialization.
+            customdev_val = str(settings_a.get(f"customDev.{fd_idx}"))
+            assert str(temp_id) in customdev_val, \
+                f"fromDevice device id {temp_id} not in persisted customDev value {customdev_val!r}; settings={settings_a}"
+            self._assert_rule_healthy(app_a)
         finally:
-            self._delete_variable_safe(var_name)
-            self._delete_variable_safe(str_var_name)
-            self._delete_variable_safe(bool_var_name)
-            self._delete_variable_safe(str_src_name)
-            self._delete_variable_safe(num_src_name)
+            self._delete_native(app_a)
+
+        # Rule B: math binary '+' (constant second operand) + math var-minus-var (xVar4=varname)
+        # + value read-backs.
+        math_specs = [
+            {"capability": "setVariable", "variable": var_name,
+             "math": {"left": var_name, "op": "+", "right": 10}},
+            {"capability": "setVariable", "variable": var_name,
+             "math": {"left": var_name, "op": "-", "right": var_name}},
+            {"capability": "setVariable", "variable": var_name,
+             "math": {"left": var_name, "op": "+", "right": 5.5}},
+        ]
+        # Use the real client continuation loop, without the fixture helper's early
+        # adopt-by-label fallback. A visible shell is not a completed multi-action write.
+        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
+        math_label = (f"{PREFIX}SetVarMathBin_{_run_artifact_suffix()}_"
+                      f"{self._native_rule_fixture_seq}")
+        app_b, created_b = None, None
+        math_write_terminal = False
+        try:
+            try:
+                created_b = self.client.call_tool("hub_set_rule", {
+                    "name": math_label, "confirm": True, "addActions": math_specs,
+                })
+                app_b = created_b.get("appId")
+                math_write_terminal = True
+                if app_b:
+                    self.created_native_app_ids.append(str(app_b))
+                assert app_b, f"math create returned no appId: {created_b}"
+                assert created_b.get("ruleId") == app_b, \
+                    f"math create returned a different ruleId: {created_b}"
+                assert created_b.get("success") is True and not created_b.get("partial"), \
+                    f"math create did not fully commit: {created_b}"
+            except RelayLostResponseError:
+                # The initial relay response can disappear before requestState arrives.
+                # Follow the server's client-error instructions: wait about 15 seconds,
+                # inspect recentWrites, then read the target. Do not resend the create.
+                print("    math create response lost -- waiting for server write status")
+                deadline = time.monotonic() + 120.0
+                time.sleep(15.0)
+                recent = []
+                while time.monotonic() < deadline:
+                    info = self.client.call_tool("hub_get_info", {})
+                    recent = [row for row in info.get("recentWrites", [])
+                              if row.get("tool") == "hub_set_rule"]
+                    if app_b is None:
+                        listed = self.client.call_tool("hub_list_rules", {})
+                        matches = [rule for rule in listed.get("rules", [])
+                                   if rule.get("label") == math_label or rule.get("name") == math_label]
+                        assert len(matches) <= 1, f"ambiguous math rule label: {matches}"
+                        if matches:
+                            app_b = matches[0].get("id")
+                            assert app_b, f"math rule has no id: {matches[0]}"
+                            self.created_native_app_ids.append(str(app_b))
+                    # Active records have no target id. Only a terminal record for THIS
+                    # app proves that configuration readback can begin. Other writes,
+                    # missing/evicted records, and a visible shell cannot prove completion.
+                    terminal = next((row for row in recent
+                                     if app_b is not None and str(row.get("appId")) == str(app_b)
+                                     and row.get("status") in ("finished", "finished_with_error")), None)
+                    if terminal is not None:
+                        math_write_terminal = True
+                        assert terminal.get("status") == "finished" and terminal.get("success") is True, \
+                            f"math create finished with an error: {terminal}"
+                        break
+                    time.sleep(5.0)
+                else:
+                    raise AssertionError(
+                        f"math create completion unresolved for {math_label!r}, appId={app_b}; "
+                        f"recentWrites={recent}")
+            settings_b = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
+            if created_b is not None:
+                math_entries = created_b.get("actions") or []
+                assert len(math_entries) == 3, \
+                    f"math create results were incomplete: {created_b}"
+                mb, mb2, md = math_entries
+                mb_idx = mb.get("actionIndex")
+                mb2_idx = mb2.get("actionIndex")
+                md_idx = md.get("actionIndex")
+            else:
+                def _math_index(op: str, *, constant: str | None = None,
+                                right_variable: bool = False) -> str:
+                    matches = []
+                    for key, value in settings_b.items():
+                        if not str(key).startswith("valMathOp.") or str(value) != op:
+                            continue
+                        idx = str(key).split(".", 1)[1]
+                        if settings_b.get(f"xVar3.{idx}") != var_name:
+                            continue
+                        if constant is not None \
+                                and str(settings_b.get(f"valConst2.{idx}")) != constant:
+                            continue
+                        if right_variable and settings_b.get(f"xVar4.{idx}") != var_name:
+                            continue
+                        matches.append(idx)
+                    assert len(matches) == 1, \
+                        f"completed math create did not persist one exact {op!r} action: {settings_b}"
+                    return matches[0]
+
+                mb_idx = _math_index("+", constant="10")
+                mb2_idx = _math_index("-", right_variable=True)
+                md_idx = _math_index("+", constant="5.5")
+            # math binary: variable + 10 (numeric right operand becomes (constant)+valConst2).
+            if created_b is not None:
+                assert mb.get("success") is not False, f"setVariable math binary hard-errored: {mb}"
+                mb_applied = mb.get("settingsApplied") or []
+                assert any(str(k).startswith("valMathOp.") for k in mb_applied), \
+                    f"math operator (valMathOp.<N>) did not land; settingsApplied={mb_applied}"
+                assert any(str(k).startswith("valConst2.") for k in mb_applied), \
+                    f"math binary second constant (valConst2.<N>) did not land; settingsApplied={mb_applied}"
+                assert not mb.get("partial"), f"math binary action falsely flagged partial: {mb}"
+
+            # math binary, second operator + var-operand combo: var - var (exercises a binary op
+            # OTHER than '+', and an xVar4=<varname> second operand instead of a (constant)).
+            if created_b is not None:
+                assert mb2.get("success") is not False, f"setVariable math var-minus-var hard-errored: {mb2}"
+                mb2_applied = mb2.get("settingsApplied") or []
+                assert any(str(k).startswith("xVar4.") for k in mb2_applied), \
+                    f"var second operand (xVar4.<N>) did not land; settingsApplied={mb2_applied}"
+                assert not any(str(k).startswith("valConst2.") for k in mb2_applied), \
+                    f"a var second operand must NOT write a constant slot; settingsApplied={mb2_applied}"
+                assert not mb2.get("partial"), f"math var-minus-var action falsely flagged partial: {mb2}"
+
+            # math binary with a DECIMAL constant operand (var + 5.5): proves decimal-constant
+            # serialization end-to-end -- the constant must persist verbatim as "5.5", never
+            # integer-stripped (which would corrupt the intended value).
+            if created_b is not None:
+                assert md.get("success") is not False, f"setVariable math decimal-constant hard-errored: {md}"
+                assert not md.get("partial"), f"math decimal-constant action falsely flagged partial: {md}"
+            assert len({str(mb_idx), str(mb2_idx), str(md_idx)}) == 3, \
+                f"math actions must persist under three distinct indices: {settings_b}"
+            assert settings_b.get(f"xVar3.{mb_idx}") == var_name, \
+                f"math first-operand variable persisted with the wrong value; settings={settings_b}"
+            assert settings_b.get(f"valMathOp.{mb_idx}") == "+", \
+                f"math binary operator persisted with the wrong value; settings={settings_b}"
+            assert str(settings_b.get(f"valConst2.{mb_idx}")) == "10", \
+                f"math binary constant operand persisted with the wrong value; settings={settings_b}"
+            assert settings_b.get(f"valMathOp.{mb2_idx}") == "-", \
+                f"math var-minus-var operator persisted with the wrong value; settings={settings_b}"
+            assert settings_b.get(f"xVar4.{mb2_idx}") == var_name, \
+                f"math var second operand persisted with the wrong value; settings={settings_b}"
+            # The decimal constant must persist verbatim -- "5.5", not "5" or "6".
+            assert str(settings_b.get(f"valConst2.{md_idx}")) == "5.5", \
+                f"math decimal constant persisted with the wrong value (expected 5.5); settings={settings_b}"
+            self._assert_rule_healthy(app_b)
+        finally:
+            # Do not race an unresolved server write with deletion; suite teardown
+            # retains the tracked id and run prefix for later cleanup.
+            if app_b is not None and math_write_terminal:
+                self._delete_native(app_b)
+
+        # Rule C: math unary (no second operand) plus the three pre-write type-filter
+        # refusals. Refusals do not add action rows, so this stays a one-action rule.
+        unary_spec = {"capability": "setVariable", "variable": var_name,
+                      "math": {"left": var_name, "op": "absolute"}}
+        app_c, created_c = self._create_native_rule(
+            "SetVarMathUnaryStr", {"addActions": [unary_spec]}, return_result=True)
+        try:
+            unary_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
+            if created_c is not None:
+                unary_actions = created_c.get("actions") or []
+                assert len(unary_actions) == 1, \
+                    f"unary create result was incomplete: {created_c}"
+                mu = unary_actions[0]
+                mu_idx = mu.get("actionIndex")
+                assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
+                mu_applied = mu.get("settingsApplied") or []
+                assert any(str(k).startswith("valMathOp.") for k in mu_applied), \
+                    f"math unary operator (valMathOp.<N>) did not land; settingsApplied={mu_applied}"
+                assert not any(str(k).startswith("xVar4.") or str(k).startswith("valConst2.")
+                               for k in mu_applied), \
+                    f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
+                assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
+            else:
+                unary_indices = [str(key).split(".", 1)[1]
+                                 for key, value in unary_settings.items()
+                                 if str(key).startswith("valMathOp.") and value == "absolute"]
+                assert len(unary_indices) == 1, \
+                    f"relay-adopted unary create did not persist one absolute action: {unary_settings}"
+                mu_idx = unary_indices[0]
+
+            # One batch per refusal: the first refused op stops a patches batch.
+            c_entries = []
+            for target in (str_var_name, bool_var_name, var_name):
+                c_entries += self._patch_rule(app_c, [
+                    {"addAction": {"capability": "setVariable", "variable": target,
+                                   "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
+                ], expected_refusals=1)
+            assert len(c_entries) == 3, f"rejection patches were incomplete: {c_entries}"
+            str_reject, bool_reject, neg = c_entries
+            assert mu_idx is not None, f"math unary action index was not returned or persisted: {unary_settings}"
+            assert unary_settings.get(f"xVarV.{mu_idx}") == var_name \
+                and unary_settings.get(f"valMathOp.{mu_idx}") == "absolute", \
+                f"math unary target/operator did not persist: {unary_settings}"
+            assert f"xVar4.{mu_idx}" not in unary_settings \
+                and f"valConst2.{mu_idx}" not in unary_settings, \
+                f"math unary persisted an illegal second operand: {unary_settings}"
+
+            # String-TARGET rejection: the device-attribute (fromDevice) and variable-math (math)
+            # source modes are Number/Decimal-target-only -- RM renders the numOp source-mode
+            # picker only for a numeric target var, so fromDevice/math into a String var is not an
+            # RM-supported operation and is rejected up-front (success=false) with the clear
+            # numeric-target requirement, NOT the cryptic deep not-in-schema reveal failure.
+            # (The "filter INCLUDES valid attributes" point is already proven by the Rule A
+            # happy-path fd: Number var + temperature -> tCustomAttr offered and lands.)
+            assert str_reject.get("success") is False, \
+                f"fromDevice into a String var should be rejected (numeric-target-only mode), got: {str_reject}"
+            assert "requires a Number or Decimal target variable" in (str_reject.get("error") or ""), \
+                f"String-target rejection did not name the Number/Decimal requirement: {str_reject}"
+            assert bool_reject.get("success") is False \
+                and "requires a Number or Decimal target variable" in (bool_reject.get("error") or ""), \
+                f"Boolean-target rejection did not name the Number/Decimal requirement: {bool_reject}"
+            assert neg.get("success") is False, \
+                f"numeric var + enum 'switch' attribute should fail the type filter, got: {neg}"
+            neg_err = neg.get("error") or ""
+            # The type filter rejects 'switch' for a numeric var one of two ways, depending on
+            # whether the device exposes ANY numeric attribute: if some remain, 'switch' is "not
+            # in the device's attribute enum" (with the available list); if none do, the filtered
+            # enum is empty ("no enumerable options"). Both are the correct fail-loud verdict for
+            # the excluded attribute -- accept either, and confirm the requested attribute is named.
+            assert ("not in the device's attribute enum" in neg_err
+                    or "no enumerable options" in neg_err), \
+                f"negative type-filter rejection did not name a filtered-attribute-enum frame: {neg}"
+            assert "tCustomAttr" in neg_err or "switch" in neg_err, \
+                f"negative rejection should name the attribute field or the requested attribute; error={neg_err}"
+
+            # sourceVariable into a String target: a String var renders no numOp, so the copy
+            # goes through valStringOp="Copy variable", which reveals xVar3.<N>. The persisted
+            # settings are the proof, not the envelope.
+            copy_entry = self._patch_rule(app_c, [
+                {"addAction": {"capability": "setVariable", "variable": str_var_name,
+                               "sourceVariable": str_src_name}},
+            ])[0]
+            assert copy_entry.get("success") is not False, \
+                f"String-target sourceVariable copy failed: {copy_entry}"
+            copy_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
+            copy_idx = copy_entry.get("actionIndex") or next(
+                (str(k).split(".", 1)[1] for k, v in copy_settings.items()
+                 if str(k).startswith("valStringOp.") and v == "Copy variable"), None)
+            assert copy_idx is not None, \
+                f"no valStringOp.<N>='Copy variable' persisted for the String copy: {copy_settings}"
+            assert copy_settings.get(f"valStringOp.{copy_idx}") == "Copy variable" \
+                and copy_settings.get(f"xVarV.{copy_idx}") == str_var_name \
+                and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
+                f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
+            # The refused numeric-target fromDevice case above (the switch attribute) opened a
+            # row and wrote numOp/customDev before refusing; its actionCancel drops that row
+            # and consumes its index, so the copy must carry none of those leftovers.
+            copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
+            assert not any(k.startswith("numOp.") for k in copy_applied), \
+                f"String copy wrote a numOp field: settingsApplied={copy_applied}"
+            stale = [k for k in (f"numOp.{copy_idx}", f"customDev.{copy_idx}") if k in copy_settings]
+            assert not stale, \
+                f"String copy at index {copy_idx} inherited the refused add's fields {stale}: {copy_settings}"
+            # The cancelled rows themselves must be GONE: a refusal that left its actType
+            # behind would show up as an orphaned settings row in rule health, and its mode
+            # fields (numOp/customDev) must not linger at any index outside the rule's two
+            # real actions (the math unary owns its numOp; the String copy owns neither).
+            health_c = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_c}})
+            assert not health_c.get("orphanedActionRows"), \
+                f"refused adds left orphaned action rows behind: {health_c.get('orphanedActionRows')}"
+            known_c = {str(mu_idx), str(copy_idx)}
+            stray_c = [k for k in copy_settings
+                       if str(k).startswith(("numOp.", "customDev."))
+                       and str(k).split(".", 1)[1] not in known_c]
+            assert not stray_c, \
+                f"refused adds left stale mode fields outside the real actions {known_c}: {stray_c}"
+            # A Boolean target's copy picker is uncaptured, so it is refused before any write.
+            bool_copy = self._patch_rule(app_c, [
+                {"addAction": {"capability": "setVariable", "variable": bool_var_name,
+                               "sourceVariable": bool_var_name}},
+            ], expected_refusals=1)[0]
+            assert "not supported yet" in (bool_copy.get("error") or ""), \
+                f"Boolean-target copy should be refused by name, got: {bool_copy}"
+            self._assert_rule_healthy(app_c)
+        finally:
+            self._delete_native(app_c)
+
+        # Rule D: Number copy, then numOp "add number", then RUN the actions. The persisted
+        # settings alone do not prove it: without valOffset.<N> RM throws "Ambiguous method
+        # overloading ... Long#plus" at run time and leaves the target unchanged, although the
+        # rule saves and reads healthy. The run lands 7 + 3 = 10 only if both actions execute.
+        self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_set_variable", "args": {"name": var_name, "value": 0}})
+        copy_spec = {"capability": "setVariable", "variable": var_name,
+                     "sourceVariable": num_src_name}
+        add_spec = {"capability": "setVariable", "variable": var_name,
+                    "numOp": "add number", "value": 3}
+        app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec, add_spec]})
+        try:
+            d_settings = self._get_persisted_rule_config(app_d).get("settings") or {}
+            d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
+                          if str(k).startswith("numOp.") and v == "variable"), None)
+            assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
+            assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
+            add_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
+                            if str(k).startswith("numOp.") and v == "add number"), None)
+            assert add_idx is not None, f"no numOp.<N>='add number' persisted: {d_settings}"
+            assert str(d_settings.get(f"valNumber.{add_idx}")) in ("3", "3.0"), \
+                f"add-number constant did not persist on index {add_idx}: {d_settings}"
+            self._assert_rule_healthy(app_d)
+            run, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_d, "action": "actions"},
+                "hub_call_rule(action=actions)")
+            got = None
+            deadline = time.time() + 15.0
+            while time.time() < deadline:
+                got = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": var_name}}).get("value")
+                if str(got) in ("10", "10.0"):
+                    break
+                time.sleep(1.0)
+            # The limiter can abort the reply to a run that already happened, so the variable
+            # read above is the verdict; the run's own outcome explains a miss.
+            if str(got) not in ("10", "10.0"):
+                assert not limited, (
+                    f"hub_call_rule(action=actions) stayed blocked by the platform load limiter "
+                    f"and {var_name} never reached 10 (got {got!r}): {limited}")
+                assert not (isinstance(run, dict) and run.get("success") is False), \
+                    f"hub_call_rule(action=actions) reported failure and {var_name} is {got!r}: {run}"
+            assert str(got) in ("10", "10.0"), \
+                f"running copy (7) then add number (3) did not set {var_name} to 10 (got {got!r}; run result {run})"
+        finally:
+            self._delete_native(app_d)
 
     @test("native_apps")
     def test_set_rule_walker_enum_required_expression(self) -> None:
@@ -12095,8 +12110,7 @@ class TestRunner:
     def test_hub_variable_delete_refuses_rule_machine_consumer(self) -> None:
         # A Rule Machine rule is not a child of this server, so only the hub's own in-use
         # registry can see it. Without force the delete must refuse and leave both intact.
-        var_name = f"{PREFIX}InUseVar"
-        self._create_hub_variable_visible(var_name, "Number", "0")
+        var_name = self._ensure_perm_variables("in_use")["in_use"]
         app_id = self._create_native_rule("VarConsumer", {
             "addActions": [{"capability": "setVariable", "variable": var_name, "value": 5}]})
         try:
@@ -12114,7 +12128,6 @@ class TestRunner:
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
-            self._delete_variable_safe(var_name)
 
     @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:

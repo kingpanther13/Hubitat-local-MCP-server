@@ -788,6 +788,41 @@ def test_a_test_rerun_deletes_its_deferred_variables_first(monkeypatch):
     assert runner.deferred_variable_names == []
 
 
+def test_permanent_variables_are_created_reset_or_recreated_only_when_needed():
+    runner = object.__new__(et.TestRunner)
+    runner.defer_native_deletes = True
+    runner.created_variable_names = []
+    runner.deferred_variable_names = []
+    hub = {
+        "E2E_PERM_Var_SvNumber": {"name": "E2E_PERM_Var_SvNumber", "type": "Number", "value": 0},
+        "E2E_PERM_Var_SvString": {"name": "E2E_PERM_Var_SvString", "type": "String", "value": "stale"},
+        "E2E_PERM_Var_SvBool": {"name": "E2E_PERM_Var_SvBool", "type": "String", "value": "false"},
+    }
+    calls = []
+
+    def call_tool(tool, args):
+        leaf, leaf_args = args["tool"], args.get("args", {})
+        calls.append((leaf, leaf_args.get("name") or [v["name"] for v in leaf_args.get("variables", [])]))
+        if leaf == "hub_list_variables":
+            return {"hubVariables": list(hub.values())}
+        if leaf == "hub_create_variable":
+            hub.update({v["name"]: dict(v) for v in leaf_args["variables"]})
+        if leaf == "hub_delete_variable":
+            hub.pop(leaf_args["name"], None)
+        return {"success": True}
+
+    runner.client = SimpleNamespace(_last_op=None, call_tool=call_tool)
+    names = runner._ensure_perm_variables("sv_number", "sv_string", "sv_bool", "sv_num_src")
+    assert names["sv_bool"] == "E2E_PERM_Var_SvBool"
+    writes = [c for c in calls if c[0] != "hub_list_variables"]
+    assert writes == [
+        ("hub_delete_variable", "E2E_PERM_Var_SvBool"),
+        ("hub_create_variable", ["E2E_PERM_Var_SvBool", "E2E_PERM_Var_SvNumSrc"]),
+        ("hub_set_variable", "E2E_PERM_Var_SvString"),
+    ]
+    assert runner.deferred_variable_names == []
+
+
 def test_assertion_failure_is_not_attributed_to_successful_cleanup():
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(_last_op=("hub_delete_variable", 3.6, True))
