@@ -748,6 +748,46 @@ def test_run_one_paces_once_after_terminal_result(monkeypatch, outcome, pace):
     assert runner.results[0]["status"] == {"retry": "pass"}.get(outcome, outcome)
 
 
+def _variable_delete_runner(defer):
+    runner = object.__new__(et.TestRunner)
+    runner.defer_native_deletes = defer
+    runner.created_variable_names = ["BAT_E2E_v"]
+    runner.deferred_variable_names = []
+    calls = []
+    runner.client = SimpleNamespace(_last_op=None, call_tool=lambda tool, args: calls.append(args["args"]["name"]))
+    return runner, calls
+
+
+@pytest.mark.parametrize("defer", [False, True])
+def test_variable_fixture_deletes_defer_to_the_purge_only_when_flagged(defer):
+    runner, calls = _variable_delete_runner(defer)
+    runner._delete_variable_safe("BAT_E2E_v")
+    assert calls == ([] if defer else ["BAT_E2E_v"])
+    assert runner.created_variable_names == []
+    assert runner.deferred_variable_names == (["BAT_E2E_v"] if defer else [])
+
+
+def test_a_test_rerun_deletes_its_deferred_variables_first(monkeypatch):
+    runner, calls = _variable_delete_runner(True)
+    runner._delete_variable_safe("BAT_E2E_v")
+    runner.results = []
+    runner._soft_passes = []
+    runner.pace_seconds = 0
+    runner._settle_before_504_retry = lambda name: None
+    monkeypatch.setattr(et.time, "sleep", lambda s: None)
+    seen = []
+
+    def probe():
+        seen.append(list(calls))
+        if len(seen) == 1:
+            raise et.RelayLostResponseError("504 Gateway Timeout")
+
+    runner.probe = probe
+    runner._run_one("isolated", "probe", "probe")
+    assert seen == [[], ["BAT_E2E_v"]]
+    assert runner.deferred_variable_names == []
+
+
 def test_assertion_failure_is_not_attributed_to_successful_cleanup():
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(_last_op=("hub_delete_variable", 3.6, True))

@@ -2012,9 +2012,7 @@ class TestRunner:
         retry_reason = ""
         for attempt in (1, 2):
             if attempt == 2:
-                for deferred in list(self.deferred_variable_names):
-                    self._delete_variable_safe(deferred, inline=True)
-                    self.deferred_variable_names.remove(deferred)
+                self._flush_deferred_variables()
             try:
                 method()
                 elapsed = time.monotonic() - t0
@@ -2288,8 +2286,15 @@ class TestRunner:
         assert act_field, f"doActPage should reveal an actType.<n> picker: {page}"
         return act_field.split(".", 1)[1]
 
+    def _flush_deferred_variables(self) -> None:
+        """Delete deferred fixture variables now, so a re-run can recreate its fixed names."""
+        deferred = getattr(self, "deferred_variable_names", [])
+        for name in list(deferred):
+            self._delete_variable_safe(name, inline=True)
+            deferred.remove(name)
+
     def _delete_variable_safe(self, name: str, *, inline: bool = False) -> None:
-        if self.defer_native_deletes and not inline:
+        if getattr(self, "defer_native_deletes", False) and not inline:
             if name in self.created_variable_names:
                 self.created_variable_names.remove(name)
             if name not in self.deferred_variable_names:
