@@ -9999,59 +9999,11 @@ class TestRunner:
     # ---- tests that keep their OWN rule (create/delete/lifecycle contracts) ----
 
     @test("native_apps")
-    def test_set_rule_create_with_required_expression(self) -> None:
-        # hub_set_rule CREATE (no appId) bundling addRequiredExpression. Pre-fix the
-        # create arm read only addTriggers/addActions, so a bundled RE was silently
-        # dropped and the call returned success=True on an empty shell. The fix honors
-        # addRequiredExpression on create (runs the RE walk post-create) and surfaces
-        # its outcome under result.requiredExpression. This pins create-with-RE
-        # end-to-end: the RE field is present (NOT dropped), the RE actually lands on
-        # the rule, and the rule is healthy.
+    def test_set_rule_create_refusal_and_fail_closed_stop(self) -> None:
+        # hub_set_rule CREATE argument handling. The bundled-Required-Expression create itself
+        # (requiredExpression result, conditionIndices, health) is proven by
+        # test_set_rule_required_expression_multi_condition's create.
         sw = int(self.get_test_switch_id())
-        create_label = f"{PREFIX}CreateRE"
-        cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {
-                    "name": create_label,
-                    "addRequiredExpression": {"conditions": [
-                        {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-                    "confirm": True,
-                }}),
-            lambda: self._find_app_id_by_label(create_label),
-            "create-with-RE",
-        )
-        if cw["relayDropped"]:
-            assert cw["committed"], f"create-with-RE lost to relay 504 and never committed ({create_label})"
-            app_id = cw["evidence"]
-            created = None
-        else:
-            created = cw["response"]
-            app_id = created.get("appId")
-            assert app_id, f"create-with-RE did not return appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
-        try:
-            if created is None:
-                # The bundled-RE response (requiredExpression/conditionIndices) is gone
-                # to the 504; the recoverable evidence is the rule rendering healthy
-                # (an unhealthy/broken RE would fail this). Skip the response-shape
-                # assertions with a printed line rather than soft-passing them.
-                print("    create-with-RE: requiredExpression response-field assertions skipped "
-                      "(relay 504); verifying rule health instead")
-                self._assert_rule_healthy(app_id)
-            else:
-                # The whole point: the bundled RE was honored, not silently dropped.
-                re_result = created.get("requiredExpression")
-                assert re_result is not None, \
-                    f"addRequiredExpression was silently dropped on create (no requiredExpression in result): {created}"
-                assert re_result.get("success") is not False, \
-                    f"bundled addRequiredExpression failed on create: {re_result}"
-                # The RE actually landed: a condition index was returned by the walk.
-                assert re_result.get("conditionIndices"), \
-                    f"create-with-RE produced no conditionIndices -- the expression did not land: {re_result}"
-                self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
 
         # An argument the checks can refuse up front is refused BEFORE the rule is created: no rule
         # with the label may exist afterwards.
