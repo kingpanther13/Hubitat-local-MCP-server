@@ -11667,9 +11667,9 @@ class TestRunner:
                     print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4f: installed_app_reads (2 tests) -- the thin app-summary mode of
-    # hub_get_app_config (/installedapp/json/<id>) and the per-app events mode
-    # of hub_list_device_events (/installedapp/eventsJson/<id>).
+    # GROUP 4f: installed_app_reads (3 tests) -- the thin app-summary mode of
+    # hub_get_app_config (/installedapp/json/<id>), its RM disabled-action marking,
+    # and the per-app events mode of hub_list_device_events (/installedapp/eventsJson/<id>).
     # -----------------------------------------------------------------------
 
     @test("installed_app_reads")
@@ -11693,6 +11693,51 @@ class TestRunner:
             # The point of summary mode: no rendered config page rides along.
             assert not result.get("page") and not result.get("configPage"), \
                 f"summary:true must omit the rendered config page: {sorted(result.keys())}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("installed_app_reads")
+    def test_get_app_config_marks_disabled_rm_action(self) -> None:
+        # RM keeps a disabled action in app state, not settings (disable<N> stays blank); the
+        # rendered red italic span is the only carrier. The read must surface it, or an AI
+        # treats a disabled action as live (2026-10-02: two already-disabled Notify actions
+        # were advised for deletion). One action keeps the rule small (per-edit wizard cost).
+        app_id = self._create_native_rule("DisabledMark", {
+            "addActions": [{"capability": "log", "message": "disabled-mark fixture"}]})
+        try:
+            # RM's own per-row Disable button on selectActions (row 1 = the only action).
+            self._walk_setup_step(app_id, {"page": "selectActions", "operation": "click",
+                                           "click": {"name": "disable1"}}, False)
+
+            main = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": str(app_id)}})
+            assert main.get("success") is True, f"mainPage read failed: {main}"
+            disabled = main.get("disabledActions") or []
+            assert any("disabled-mark fixture" in str(d) for d in disabled), \
+                f"disabled log action missing from disabledActions: {main}"
+            assert "[DISABLED]" in str(main.get("disabledActionsNote") or ""), \
+                f"disabledActionsNote missing or does not explain the mark: {main}"
+            paragraphs = [p for sect in ((main.get("page") or {}).get("sections") or [])
+                          for p in (sect.get("paragraphs") or [])]
+            assert any("[DISABLED]" in p and "disabled-mark fixture" in p for p in paragraphs), \
+                f"mainPage paragraph does not mark the disabled action: {paragraphs}"
+            assert not any("<span" in p for p in paragraphs), f"HTML leaked into paragraphs: {paragraphs}"
+
+            rows = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": str(app_id), "pageName": "selectActions"}})
+            assert rows.get("success") is True, f"selectActions read failed: {rows}"
+            embedded = [a for sect in ((rows.get("page") or {}).get("sections") or [])
+                        for a in (sect.get("embeddedActions") or [])]
+            flagged = [a for a in embedded if a.get("disabled") is True]
+            assert flagged and all("disabled-mark fixture" in str(a.get("description")) for a in flagged), \
+                f"selectActions row for the disabled action is not flagged disabled:true: {embedded}"
+            live_rows = [a for a in embedded if a.get("stateAttribute") == "doAct" and not a.get("disabled")]
+            assert not any("disabled-mark fixture" in str(a.get("description")) for a in live_rows), \
+                f"the disabled action also appears as a live row: {embedded}"
+            # The header legend ("Disabled Action" with one row, "Disabled Actions" with more) uses the
+            # same markup and must not count.
+            assert not any(re.fullmatch(r"Disabled Actions?", str(d).strip()) for d in (rows.get("disabledActions") or [])), \
+                f"selectActions legend reported as a disabled action: {rows.get('disabledActions')}"
         finally:
             self._delete_native(app_id)
 
