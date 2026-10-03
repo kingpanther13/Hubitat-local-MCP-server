@@ -1637,7 +1637,7 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
             varsFailed << [name: "*", error: "getAllGlobalVars returned null -- could not enumerate hub variables, so none were purged"]
             allVars = [:]
         }
-        def targetVars = allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) }
+        def targetVars = allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) && !it.startsWith("${prefix}KEEP_") }
         if (targetVars) {
             Integer hvAppId = findHubVariablesAppId()
             if (hvAppId == null) {

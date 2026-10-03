@@ -613,7 +613,8 @@ class WatchdogV3ManualSpec extends Specification {
             if (path == "/installedapp/btn" && b.stateAttribute == "deleteGV") { deleteClicks << b.name }
             [status: 200, data: 'ok']
         }
-        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: "string"], RealVar: [type: "string"], BAT_E2E_v2: [type: "integer"]] }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: "string"], RealVar: [type: "string"], BAT_E2E_v2: [type: "integer"],
+                                                  BAT_E2E_KEEP_v: [type: "string"]] }
         script.metaClass.getGlobalVar = { String n -> null }   // gone after the wizard commits
 
         when:

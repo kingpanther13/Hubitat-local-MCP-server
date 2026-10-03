@@ -485,7 +485,8 @@ def command_teardown(args):
         try:
             clear_hold(transport, v3, interval=5, attempts=3,
                        settle=lambda t, url: wait_until_settled(t, url, interval=5, attempts=4))
-            purge_fixtures(transport, v3, interval=5, attempts=4)
+            if purge_fixtures(transport, v3, interval=5, attempts=4).get("success") is not True:
+                log("::warning::The purge reported failures; the fixtures were left for the next run.")
         except (HubError, ToolError, Unreadable) as error:
             log(f"::warning::The hold or the fixtures were left for the next run: {error}")
         except OSError:

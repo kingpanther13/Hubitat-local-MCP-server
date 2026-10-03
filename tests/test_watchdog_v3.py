@@ -491,6 +491,13 @@ def test_a_cancelled_teardown_releases_its_hold_and_purges(cli):
     assert seen["deploys"] == []
 
 
+def test_a_cancelled_teardown_warns_when_the_purge_reports_failures(cli, capsys):
+    module, hub, seen, _bundle = cli
+    purging(hub, seen, [{"success": False, "error": "1 app(s)"}])
+    module.main(["teardown", "--cancelled"])
+    assert "left for the next run" in capsys.readouterr().out
+
+
 def test_a_run_cancelled_mid_install_leaves_the_hold_and_does_not_fail(cli, monkeypatch, capsys):
     module, hub, _seen, _bundle = cli
 
