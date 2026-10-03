@@ -17101,6 +17101,19 @@ def main() -> None:
         # so the hub is normally back on main by now.
         refuse_unless_leased_test_hub(client)
         runner.cleanup()
+        # The restore purge is the primary delete for BAT_E2E_ HUB variables; it only warns on a
+        # failure, so retry here and fail closed on anything left, as for native rules below.
+        try:
+            for name in [n for n in runner._hub_variables_by_name() if n.startswith(PREFIX)]:
+                print(f"  Sweep: deleting hub variable the purge left behind: {name}")
+                runner._delete_variable_safe(name, inline=True)
+            variable_leftovers = [n for n in runner._hub_variables_by_name() if n.startswith(PREFIX)]
+        except Exception as exc:
+            print(f"ERROR: cleanup-only could not list hub variables to verify cleanup -- failing closed: {exc}")
+            sys.exit(1)
+        if variable_leftovers:
+            print(f"ERROR: cleanup-only left {len(variable_leftovers)} BAT_E2E_ hub variable(s): {variable_leftovers}")
+            sys.exit(1)
         # Gating verification: cleanup() and the restore step's fixture purge are otherwise all
         # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
         # apps on the SHARED hub behind a green run. This backstop FAILS CLOSED -- re-list and exit
@@ -17114,7 +17127,7 @@ def main() -> None:
             print(f"ERROR: cleanup-only left {len(leftovers)} BAT_E2E_ native rule(s) on the hub: "
                   f"{leftovers}")
             sys.exit(1)
-        print("Cleanup-only mode complete; verified no BAT_E2E_ native rules remain.")
+        print("Cleanup-only mode complete; verified no BAT_E2E_ native rules or hub variables remain.")
         sys.exit(0)
 
     # Verify connectivity before running tests

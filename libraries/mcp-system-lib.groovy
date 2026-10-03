@@ -1162,8 +1162,11 @@ def _latestKnownVersion() {
         if (LATEST_VERSION_SEEN.containsKey(appKey)) return LATEST_VERSION_SEEN.get(appKey)
     }
     def latest = state.updateCheck?.latestVersion
-    synchronized (LATEST_VERSION_SEEN) { LATEST_VERSION_SEEN.put(appKey, latest) }
-    return latest
+    // A response handled since the state read above wins over this possibly older snapshot.
+    synchronized (LATEST_VERSION_SEEN) {
+        if (!LATEST_VERSION_SEEN.containsKey(appKey)) LATEST_VERSION_SEEN.put(appKey, latest)
+        return LATEST_VERSION_SEEN.get(appKey)
+    }
 }
 
 def checkForUpdate() {
