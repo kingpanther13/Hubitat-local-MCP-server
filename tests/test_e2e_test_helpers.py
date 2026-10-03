@@ -774,6 +774,33 @@ def test_variable_fixture_deletes_defer_to_the_purge_only_when_flagged(defer):
     assert runner.deferred_variable_names == (["BAT_E2E_v"] if defer else [])
 
 
+def test_rule_engine_variables_are_deleted_inline_even_when_deferring():
+    # They live in the MCP app's state, which the watchdog purge cannot reach.
+    runner, calls = _variable_delete_runner(True)
+    runner.rule_engine_variable_names = {"BAT_E2E_v"}
+    runner._delete_variable_safe("BAT_E2E_v")
+    assert calls == ["BAT_E2E_v"]
+    assert runner.deferred_variable_names == []
+
+
+def test_the_rule_engine_sweep_deletes_only_prefixed_rule_variables():
+    runner = object.__new__(et.TestRunner)
+    runner.created_variable_names = ["BAT_E2E_CondVar"]
+    deleted = []
+
+    def call_tool(tool, args):
+        if args["tool"] == "hub_list_variables":
+            return {"ruleVariables": [{"name": "BAT_E2E_CondVar"}, {"name": "Real"}],
+                    "hubVariables": [{"name": "BAT_E2E_Hub"}]}
+        deleted.append(args["args"]["name"])
+        return {"success": True}
+
+    runner.client = SimpleNamespace(_last_op=None, call_tool=call_tool)
+    runner._sweep_rule_engine_variables()
+    assert deleted == ["BAT_E2E_CondVar"]
+    assert runner.created_variable_names == []
+
+
 def test_a_test_rerun_deletes_its_deferred_variables_first(monkeypatch):
     runner, calls = _variable_delete_runner(True)
     runner._delete_variable_safe("BAT_E2E_v")

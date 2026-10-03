@@ -47,8 +47,7 @@ PREFIX = "BAT_E2E_"
 # carry this marker so the cleanup sweeps SKIP them by name -- created once and reused across runs,
 # never deleted. Under-test fixtures use the bare PREFIX and are still reaped. A missing KEEP_
 # fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
-# (The watchdog purges apps/vars only, never devices, so this is purely the test-side device sweep;
-# no watchdog change is needed -- the devices are simply named to dodge the sweep.)
+# The watchdog's teardown purge skips the same marker.
 SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
 
 
@@ -1273,11 +1272,10 @@ class TestRunner:
         self._fixture_reset_failures: list[str] = []
         self.created_dashboard_ids: list[str] = []
         # When set (the CI 'Run E2E tests' step only), per-test native-rule fixture deletes are SKIPPED
-        # (see _delete_native + cleanup Layer 4) and the rules are reaped by the restore step's
-        # fixture purge (one hub-local prefix sweep through the watchdog) instead of adding to the test
-        # critical path. Defaults OFF, so local runs + the post-restore --cleanup-only backstop are
-        # unchanged. The lifecycle/delete-assertion tests delete inline (not via _delete_native), so
-        # they are unaffected.
+        # (see _delete_native + cleanup Layer 4) and the rules are reaped by the teardown's watchdog
+        # purge (one hub-local prefix sweep) instead of adding to the test critical path. Defaults OFF,
+        # so local runs and --cleanup-only are unchanged. The lifecycle/delete-assertion tests delete
+        # inline (not via _delete_native), so they are unaffected.
         self.defer_native_deletes = os.environ.get("E2E_DEFER_NATIVE_DELETES") == "1"
         self.created_variable_names: list[str] = []
         # Fixture variables left for the same purge; a test re-run deletes them first (fixed names).
@@ -4269,7 +4267,7 @@ class TestRunner:
         finally:
             # Created via the catalog path (a real device, not an MCP child) -- delete by id
             # through hub_delete_device. Best-effort: the confirm gate needs a recent backup,
-            # so a failure here just leaves a labeled artifact for the --cleanup-only backstop.
+            # so a failure here just leaves a labeled artifact for the teardown purge.
             try:
                 self.client.call_tool("hub_manage_destructive_ops", {
                     "tool": "hub_delete_device", "args": {"deviceId": new_id, "confirm": True},
@@ -7495,7 +7493,7 @@ class TestRunner:
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
         # Fixture-teardown delete. When deferral is on, skip it (rule stays tracked) so it's reaped by
-        # the restore step's fixture purge, not inline on the test critical path. Tests whose
+        # the teardown's watchdog purge, not inline on the test critical path. Tests whose
         # delete IS the assertion call hub_delete_native_app directly (not this helper), so they keep
         # deleting inline regardless.
         if self.defer_native_deletes:
@@ -14406,13 +14404,32 @@ class TestRunner:
         except Exception as exc:
             print(f"    [WARN] could not discard the configuration baseline for {path}: {exc}")
 
+    def _sweep_rule_engine_variables(self) -> None:
+        """Delete BAT_E2E_ legacy rule-engine variables, which only the MCP app can reach."""
+        try:
+            listing = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": {}})
+            rule_vars = [str(v.get("name")) for v in (listing.get("ruleVariables") or []) if isinstance(v, dict)]
+        except Exception as exc:
+            rule_vars = []
+            print(f"  [WARN] rule-engine variable listing failed: {exc}")
+        for var_name in [n for n in rule_vars if n.startswith(PREFIX)]:
+            try:
+                print(f"  Sweep: deleting rule-engine variable {var_name}")
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_variable",
+                    "args": {"name": var_name, "confirm": True, "force": True},
+                })
+            except Exception as exc:
+                print(f"  [WARN] Failed to delete rule-engine variable {var_name}: {exc}")
+            if var_name in self.created_variable_names:
+                self.created_variable_names.remove(var_name)
+
     def _restore_permanent_configuration_fixtures(self, stage: str) -> None:
         """Restore the permanent configuration fixtures from any baseline recipe a previous run left
         behind, then make sure every manifest profile sits at its canonical label.
 
-        Runs at suite start and inside cleanup() (post-run and --cleanup-only), so a run that dies
-        mid-matrix is repaired by the NEXT run's pre-sweep or by the post-restore cleanup step --
-        never by the test's own finally (which a kill skips) and never by hand. Best-effort like the
+        Runs at suite start and inside cleanup(), so a run that dies mid-matrix is repaired by the
+        NEXT run's pre-run pass -- never by the test's own finally (which a kill skips) and never by hand. Best-effort like the
         other cleanup layers; every failure is printed loudly and, when a baseline recipe could not
         be applied, recorded in _fixture_reset_failures so a full run fails instead of hiding it."""
         try:
@@ -16195,8 +16212,7 @@ class TestRunner:
         print("\n--- Cleanup ---")
 
         # Layer 0: permanent configuration fixtures back to baseline (from the recipe the matrix
-        # wrote before editing). Runs here so the post-restore --cleanup-only step repairs a run
-        # that was killed mid-matrix, instead of the next run failing on a renamed fixture.
+        # wrote before editing). The next run's pre-run pass repairs a run killed before this point.
         self._restore_permanent_configuration_fixtures("cleanup")
 
         # Layer 1: tracked artifacts
@@ -16220,25 +16236,7 @@ class TestRunner:
                 print(f"  [WARN] Failed to delete device DNI={dni}: {exc}")
         self.created_device_dnis.clear()
 
-        # Legacy rule-engine variables live in app state, out of the restore purge's reach (it deletes
-        # HUB variables only), so they are always swept here by prefix, deferred or not.
-        try:
-            listing = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": {}})
-            rule_vars = [str(v.get("name")) for v in (listing.get("ruleVariables") or []) if isinstance(v, dict)]
-        except Exception as exc:
-            rule_vars = []
-            print(f"  [WARN] rule-engine variable listing failed: {exc}")
-        for var_name in [n for n in rule_vars if n.startswith(PREFIX)]:
-            try:
-                print(f"  Sweep: deleting rule-engine variable {var_name}")
-                self.client.call_tool("hub_manage_variables", {
-                    "tool": "hub_delete_variable",
-                    "args": {"name": var_name, "confirm": True, "force": True},
-                })
-            except Exception as exc:
-                print(f"  [WARN] Failed to delete rule-engine variable {var_name}: {exc}")
-            if var_name in self.created_variable_names:
-                self.created_variable_names.remove(var_name)
+        self._sweep_rule_engine_variables()
 
         for var_name in list(self.created_variable_names) if not self.defer_native_deletes else []:
             try:
@@ -16253,10 +16251,10 @@ class TestRunner:
                 print(f"  [WARN] Failed to delete variable {var_name}: {exc}")
         self.created_variable_names.clear()
 
-        # Under CI the prefix sweeps below belong to the post-restore --cleanup-only step, which runs
-        # them in full (without this flag) and fails closed; repeating them here only delays the gate.
+        # Under CI the prefix sweeps below belong to the teardown's watchdog purge, which also removes
+        # devices, rooms, files and throwaway code; repeating them here only delays the gate.
         if getattr(self, "defer_native_deletes", False):
-            print("--- Cleanup complete (prefix sweeps left to the post-restore --cleanup-only step) ---")
+            print("--- Cleanup complete (prefix sweeps left to the teardown's watchdog purge) ---")
             return
 
         # Layer 2: sweep virtual devices with BAT_E2E_ prefix
@@ -16306,12 +16304,11 @@ class TestRunner:
 
         # Layer 4: native RM rules / classic apps (issue #137). Tracked ids first,
         # then a list-based sweep for anything a failed native_apps test left behind.
-        # When deferral is on, the restore step's fixture purge owns these deletes: one hub-local
-        # sweep of every BAT_E2E_-prefixed app instance, tracked or not, off the test critical path.
-        # The post-restore --cleanup-only step runs WITHOUT the flag, so it's the idempotent backstop.
+        # When deferral is on, the teardown's watchdog purge owns these deletes: one hub-local sweep
+        # of every BAT_E2E_-prefixed app instance, tracked or not, off the test critical path.
         if self.defer_native_deletes:
             print(f"  Layer 4: leaving {len(self.created_native_app_ids)} tracked native-rule delete(s) "
-                  "to the restore step's fixture purge")
+                  "to the teardown's watchdog purge")
         else:
             for app_id in list(self.created_native_app_ids):
                 try:
@@ -16695,6 +16692,8 @@ class TestRunner:
         # A previous run killed mid-matrix leaves the permanent configuration fixtures off
         # baseline; repair them before any test looks them up.
         self._restore_permanent_configuration_fixtures("pre-run")
+        # Rule-engine variables live in the MCP app's state, beyond the watchdog purge: a killed run's go here.
+        self._sweep_rule_engine_variables()
 
         # Group for display
         self._load_diagnostics = True
@@ -17110,12 +17109,10 @@ def main() -> None:
         return
 
     if args.cleanup_only:
-        # The workflow's wait step follows the main restore before this runs (bounded, never fatal),
-        # so the hub is normally back on main by now.
+        # Manual sweep through the MCP app; CI teardown uses the watchdog purge instead.
         refuse_unless_leased_test_hub(client)
         runner.cleanup()
-        # The restore purge is the primary delete for BAT_E2E_ HUB variables; it only warns on a
-        # failure, so retry here and fail closed on anything left, as for native rules below.
+        # Retry BAT_E2E_ HUB variables and fail closed on anything left, as for native rules below.
         try:
             for name in [n for n in runner._hub_variables_by_name() if n.startswith(PREFIX)]:
                 print(f"  Sweep: deleting hub variable the purge left behind: {name}")
@@ -17127,8 +17124,7 @@ def main() -> None:
         if variable_leftovers:
             print(f"ERROR: cleanup-only left {len(variable_leftovers)} BAT_E2E_ hub variable(s): {variable_leftovers}")
             sys.exit(1)
-        # Gating verification: cleanup() and the restore step's fixture purge are otherwise all
-        # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
+        # Gating verification: cleanup() is otherwise best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
         # apps on the SHARED hub behind a green run. This backstop FAILS CLOSED -- re-list and exit
         # nonzero if any BAT_E2E_ native rule survived, or if the hub can't be listed to prove it.
         leftovers = runner.verify_native_rules_clean()
@@ -17235,7 +17231,7 @@ def main() -> None:
     # devices that are NOT children of the MCP app (see _ensure_perm_fixture) instead of creating and
     # deleting an app-owned child per test. The tool guide names this exact case as the reason the
     # toggle exists ("automated whole-hub testing"). Deliberately left ON at the end of the run: the
-    # test hub is dedicated to e2e, and the watchdog restores main's code (not settings) afterwards.
+    # test hub is dedicated to e2e.
     # test_bypass_device_allowlist_reaches_unlisted_device flips it OFF and back around its own
     # assertions, so it still proves the boundary works rather than assuming this baseline.
     _bypass_res = client.call_tool("hub_manage_mcp", {
@@ -17254,9 +17250,7 @@ def main() -> None:
     # concurrency that never existed. Pin it OFF (0 = no cap) for the whole run. The one test that
     # proves it live -- test_write_cap_refuses_a_second_concurrent_write -- sets the cap to 1
     # around its own assertions and restores 0 in a finally. Deliberately left at 0 at the end of
-    # the run, like bypassDeviceAllowlist above: this hub is dedicated to e2e, and the watchdog
-    # restores main's CODE, not its settings. This is post-deploy on purpose -- mcp_setup_env.sh
-    # runs against the PRE-deploy baseline app, which need not know the key at all.
+    # the run, like bypassDeviceAllowlist above: this hub is dedicated to e2e.
     _cap_res = client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",
         "args": {"settings": {"maxConcurrentWrites": 0}, "confirm": True}})

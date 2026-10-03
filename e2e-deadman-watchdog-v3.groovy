@@ -1577,15 +1577,23 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     try { parsed = new groovy.json.JsonSlurper().parseText(raw) }
     catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}", note: noSweep] }
     def targets = []
+    // A Button Controller relabels itself after the device it binds, so a test's controller is
+    // recognised by type plus a fixture-device name; the mcptest throwaway apps never carry the prefix.
+    Set throwawayAppTypes = throwawayCodeClasses("/hub2/userAppTypes")*.name as Set
     def recurse
-    recurse = { Map node ->
+    recurse = { Map node, boolean isChild ->
         def d = node?.data ?: [:]
-        if ((d.name instanceof String) && d.name.startsWith(prefix) && d.id != null) {
-            targets << [id: d.id, name: d.name]
+        // The list carries the display label, which can wrap status markup such as "(Paused)".
+        String name = d.name instanceof String ? d.name.replaceAll(/<[^>]*>/, "").trim() : ""
+        boolean prefixed = name.startsWith(prefix) && !name.startsWith("${prefix}KEEP_")
+        boolean strandedController = isChild && d.type == "Button Controller-5.1" &&
+            (name.contains(prefix) || name.contains("E2E_PERM_"))
+        if (d.id != null && (prefixed || strandedController || d.type in throwawayAppTypes)) {
+            targets << [id: d.id, name: name]
         }
-        node?.children?.each { c -> recurse(c) }
+        node?.children?.each { c -> recurse(c, true) }
     }
-    (parsed?.apps ?: []).each { a -> recurse(a) }
+    (parsed?.apps ?: []).each { a -> recurse(a, false) }
     mcpAdminLog "Purging ${targets.size()} ${prefix}* installed-app instance(s) locally."
     def deleted = []
     def failed = []
@@ -1636,27 +1644,132 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     } catch (Exception e) {
         varsFailed << [name: "*", error: "getAllGlobalVars failed: ${e.message}"]
     }
-    mcpAdminLog "Purge complete: ${deleted.size()} app(s), ${varsDeleted.size()} variable(s) deleted; " +
-                "${failed.size()} app + ${varsFailed.size()} var failure(s)."
+    Map others = purgeOtherFixturesLocked(prefix, claim)
+    mcpAdminLog "Purge complete: ${deleted.size()} app(s), ${varsDeleted.size()} variable(s), " +
+                "${others.deletedCount} other fixture(s) deleted; ${failed.size()} app + " +
+                "${varsFailed.size()} var + ${others.failed.size()} other failure(s)."
     // Runtime-failure contract: a caller must not have to diff two count fields to notice the
     // sweep failed. Aggregate what broke into a top-level error + an actionable note.
     def problems = []
     if (!failed.isEmpty()) problems << "${failed.size()} app(s)"
     if (!varsFailed.isEmpty()) problems << "${varsFailed.size()} variable(s)"
-    def deviceNote = "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); delete ${prefix} devices through the main MCP server."
-    def result = [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
+    if (!others.failed.isEmpty()) problems << "${others.failed.size()} other fixture(s)"
+    def result = [success: problems.isEmpty(), prefix: prefix,
             deletedCount: deleted.size(), failedCount: failed.size(), deleted: deleted, failed: failed,
             variablesDeletedCount: varsDeleted.size(), variablesFailedCount: varsFailed.size(),
             variablesDeleted: varsDeleted, variablesFailed: varsFailed,
-            note: deviceNote]
+            otherDeleted: others.deleted, otherFailed: others.failed]
     if (problems) {
         result.error = "Purge of ${prefix}* completed with failures: ${problems.join(' and ')} could not be removed."
-        result.note = "Inspect the failed / variablesFailed entries for the per-item reason. A variable that will not delete is usually still referenced by a rule -- delete the rule first. Do NOT blind-retry the sweep; re-run it only after addressing the listed items. ${deviceNote}"
+        result.note = "Inspect the failed / variablesFailed / otherFailed entries for the per-item reason. A variable that will not delete is usually still referenced by a rule -- delete the rule first. Do NOT blind-retry the sweep; re-run it only after addressing the listed items."
     }
     // Cache BEFORE returning so a CI retry that lost the response to a relay drop reads the real
     // outcome rather than re-running the sweep.
     try { atomicState.purgeResult = result; atomicState.purgeResultAt = now() } catch (Exception ignore) { }
     return result
+}
+
+// The mcptest throwaway code classes the e2e suite creates ("Deadman Test Target*"), from
+// /hub2/userAppTypes or /hub2/userDeviceTypes. An unreadable list yields none.
+private List throwawayCodeClasses(String path) {
+    def parsed = _parseJsonBody(hubGet(path, [:]))
+    def rows = parsed instanceof List ? parsed : []
+    return rows.findAll { it instanceof Map && it.namespace == "mcptest" && it.id != null &&
+        (it.name instanceof String) && it.name.startsWith("Deadman Test Target") }
+}
+
+// Everything else a run can leave that is not an installed app or a hub variable: devices, rooms,
+// throwaway code classes and bundle, and File Manager litter. Each kind is best effort and reported,
+// so one unreadable listing never hides the rest. BAT_E2E_KEEP_ scaffolds are never touched.
+// Non-private so specs can stand it in (see purgeE2eArtifactsLocked).
+Map purgeOtherFixturesLocked(String prefix, String claim) {
+    String keep = "${prefix}KEEP_".toString()
+    def deleted = []
+    def failed = []
+    def attempt = { String kind, Object id, String name, Closure action ->
+        if (!renewPurgeClaim(claim)) {
+            failed << [kind: kind, id: id, name: name, error: "purge claim lost to a newer sweep -- stopped before this delete"]
+            return
+        }
+        try {
+            String why = action()
+            if (why == null) deleted << [kind: kind, id: id, name: name]
+            else failed << [kind: kind, id: id, name: name, error: why]
+        } catch (Exception e) {
+            failed << [kind: kind, id: id, name: name, error: e.message]
+        }
+    }
+
+    // Devices: virtual devices are children of the MCP app, but the admin force delete removes any device.
+    def tree = _parseJsonBody(hubGet("/hub2/devicesList", [:]))
+    if (!(tree instanceof Map) || !(tree.devices instanceof List)) {
+        failed << [kind: "device", id: "*", error: "could not read /hub2/devicesList, so no devices were purged"]
+    } else {
+        def devices = []
+        def walk
+        walk = { node ->
+            def d = node?.data
+            if (d?.id != null && d.name instanceof String && d.name.startsWith(prefix) && !d.name.startsWith(keep)) {
+                devices << [id: d.id, name: d.name]
+            }
+            node?.children?.each { c -> walk(c) }
+        }
+        tree.devices.each { walk(it) }
+        devices.each { dev ->
+            attempt("device", dev.id, dev.name) {
+                hubGet("/device/forceDelete/${dev.id}/yes".toString(), [:]) != null ? null : "force delete got no response"
+            }
+        }
+    }
+
+    // Rooms.
+    try {
+        (getRooms() ?: []).findAll { r -> r?.name instanceof String && r.name.startsWith(prefix) && !r.name.startsWith(keep) }
+            .each { r ->
+                attempt("room", r.id, r.name) {
+                    def resp = hubPostJson("/room/delete/${r.id}".toString(), groovy.json.JsonOutput.toJson([roomId: r.id as Integer]))
+                    if (resp?.status == null || resp.status >= 300) hubGet("/room/delete/${r.id}".toString(), [:])
+                    getRooms()?.any { it?.id?.toString() == r.id?.toString() } ? "room still listed after delete" : null
+                }
+            }
+    } catch (Exception e) {
+        failed << [kind: "room", id: "*", error: "could not list rooms: ${e.message}"]
+    }
+
+    // Throwaway code classes (their instances went with the app sweep) and the throwaway bundle.
+    throwawayCodeClasses("/hub2/userAppTypes").each { c ->
+        attempt("app code", c.id, c.name) {
+            def r = adminDeleteItem([type: "app", id: c.id, confirm: true])
+            r?.success == true ? null : (r?.error ?: "app code delete failed")
+        }
+    }
+    throwawayCodeClasses("/hub2/userDeviceTypes").each { c ->
+        attempt("driver code", c.id, c.name) {
+            def r = adminDeleteItem([type: "driver", id: c.id, confirm: true])
+            r?.success == true ? null : (r?.error ?: "driver code delete failed")
+        }
+    }
+    (adminListBundles([:])?.bundles ?: []).findAll { it?.namespace == "mcptest" && it.id != null }.each { b ->
+        attempt("bundle", b.id, b.name) {
+            def r = adminDeleteBundle([bundleId: b.id.toString(), confirm: true])
+            r?.success == true ? null : (r?.error ?: "bundle delete failed")
+        }
+    }
+
+    // File Manager: BAT_E2E_ files and the e2e-*_backup_* snapshots of the harness's control files.
+    // mcp-rm-backup-* files are listed in the MCP app's backup index, so the app deletes those itself.
+    def listing = _parseJsonBody(hubGet("/hub/fileManager/json", [:]))
+    def files = listing instanceof List ? listing : (listing instanceof Map && listing.files instanceof List ? listing.files : null)
+    if (files == null) {
+        failed << [kind: "file", id: "*", error: "could not read /hub/fileManager/json, so no files were purged"]
+    } else {
+        files.collect { it instanceof Map ? it.name : it }.findAll { nm ->
+            nm instanceof String && (nm.startsWith(prefix) || (nm.startsWith("e2e-") && nm.contains("_backup_")))
+        }.each { nm ->
+            attempt("file", nm, nm) { deleteHubFile(nm) ? null : "deleteHubFile returned false" }
+        }
+    }
+    return [deleted: deleted, failed: failed, deletedCount: deleted.size()]
 }
 
 def adminSetMcpDeveloperMode(args) {
@@ -2420,7 +2533,7 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. Refuses the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
-        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Refused with busy:true while a different manual write is running, and with the held requestId during a package deployment hold. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
+        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_), plus stranded test Button Controllers and mcptest throwaway app instances; delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API); then devices, rooms, File Manager files and e2e-*_backup_* litter with the prefix, and the mcptest throwaway code classes and bundle. <prefix>KEEP_ scaffolds are never touched. All loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Refused with busy:true while a different manual write is running, and with the held requestId during a package deployment hold. Returns per-class {deleted/failed} counts (otherDeleted/otherFailed for devices, rooms, code and files). confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. Refuses to disable the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],

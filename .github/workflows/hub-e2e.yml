@@ -77,6 +77,10 @@ on:
         description: 'MAINTENANCE ONLY: update the standing watchdog from this ref after all non-E2E CI passes, then verify Developer Mode bootstrap. Runs no E2E tests.'
         required: false
         default: 'false'
+      install_main:
+        description: 'MAINTENANCE ONLY: install main on the test hub through the watchdog (e2e leaves the last PR installed). Runs no E2E tests.'
+        required: false
+        default: 'false'
       pr_number:
         description: 'PR number to test (blank = current ref)'
         required: false
@@ -85,7 +89,7 @@ on:
         required: false
         default: ''
       skip_install:
-        description: 'ONE-OFF: skip installing the PR head — run against whatever is already deployed (usually main). For tests-only changes where the server code is unchanged. Keeps the lease; skips the watchdog prepare/install/restore.'
+        description: 'ONE-OFF: skip installing the PR head — run against whatever is already deployed (the last PR run, or main after install_main). For tests-only changes where the server code is unchanged. Keeps the lease; skips the watchdog prepare/install.'
         required: false
         default: 'false'
       probe_only:
@@ -115,10 +119,10 @@ permissions:
 # each other, and an unapproved fork PR only ever holds ITS OWN branch's group -- never the shared
 # hub or another PR. Cross-PR FIFO serialization is the e2e job's SEPARATE `queue: max` group; the
 # two can't be one block (queue:max + cancel-in-progress:true is an invalid combination).
-# Cancelling mid-run is safe: a cancelled job skips the main restore, releases its deployment hold
-# and purges fixtures instead, and still releases the lease. Either a cancel or a hard kill leaves
-# the hub on PR code (a hard kill possibly with a held deployment) until the next run, whose prepare
-# step releases the hold and whose install replaces the code; the 30-min lease TTL frees the hub.
+# Cancelling mid-run is safe: a cancelled job releases its deployment hold, purges fixtures, and
+# still releases the lease. Every run leaves the hub on its PR's code (a hard kill possibly with a held
+# deployment) until the next run, whose prepare step releases the hold and whose install replaces the
+# code; the 30-min lease TTL frees the hub.
 # group + cancel-in-progress: a run that should SUPERSEDE another -- a commit/reopen/dispatch, the
 # FIRST full-run label promoting a live FOCUSED run to full, OR the e2e:skip label add (which must
 # cancel whatever is in flight and then posts the gate pending) -- shares the per-branch group, so
@@ -292,7 +296,7 @@ jobs:
   fork-bundle:
     needs: [lane-gate, approve]
     if: >-
-      inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && needs.lane-gate.outputs.run == 'true'
+      inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && inputs.install_main != 'true' && needs.lane-gate.outputs.run == 'true'
       && ((github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
       || (github.event_name == 'workflow_dispatch' && inputs.pr_number != ''))
     runs-on: ubuntu-latest
@@ -393,13 +397,49 @@ jobs:
         if: always() && steps.lease.outcome == 'success'
         run: bash .github/scripts/lease_release.sh "ci-run-${{ github.run_id }}"
 
+  # Explicit maintenance only: e2e leaves the last PR's package installed, so this is how the test hub
+  # gets main back (before a watchdog update, or after a PR left a broken server).
+  install-main:
+    needs: [approve]
+    if: >-
+      !cancelled() && needs.approve.result == 'success'
+      && github.event_name == 'workflow_dispatch' && inputs.install_main == 'true' && inputs.watchdog_update != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: hub-e2e-serialized
+      queue: max
+      cancel-in-progress: false
+    env:
+      MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Mask hub tokens
+        run: |
+          for U in "$MCP_URL" "$WATCHDOG_URL"; do
+            TOKEN="$(printf '%s' "$U" | sed -nE 's|.*access_token=(.*)|\1|p')"
+            if [ -n "$TOKEN" ]; then echo "::add-mask::$TOKEN"; fi
+          done
+      - name: Acquire test hub lease
+        id: lease
+        run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
+      - name: Install main through the watchdog
+        run: python3 .github/scripts/watchdog_v3.py install-main
+      - name: Release test hub lease
+        if: always() && steps.lease.outcome == 'success'
+        run: bash .github/scripts/lease_release.sh "ci-run-${{ github.run_id }}"
+
   # Read-only hub inventory dump (dispatch with probe_only=true). Diagnoses test-hub
   # state -- devices, apps, rules, jobs, memory, watchdog state -- without deploying or
   # mutating anything beyond one labeled command round-trip on the BAT scaffold switch.
   # Shares the e2e job's hub-e2e-serialized concurrency group so it never overlaps a live e2e run.
   probe:
     needs: [approve]
-    if: inputs.probe_only == 'true' && inputs.watchdog_update != 'true'
+    if: inputs.probe_only == 'true' && inputs.watchdog_update != 'true' && inputs.install_main != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -481,7 +521,7 @@ jobs:
     # fork-bundle is SKIPPED for same-repo PRs; a skipped need would skip this job under the implicit
     # success(), so the needs are checked explicitly.
     if: >-
-      !cancelled() && inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && needs.lane-gate.outputs.run == 'true'
+      !cancelled() && inputs.probe_only != 'true' && inputs.watchdog_update != 'true' && inputs.install_main != 'true' && needs.lane-gate.outputs.run == 'true'
       && needs.approve.result == 'success'
       && (needs.fork-bundle.result == 'success' || needs.fork-bundle.result == 'skipped')
     runs-on: ubuntu-latest
@@ -519,9 +559,9 @@ jobs:
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
       # The standing watchdog is a SEPARATE on-hub app with its own cloud MCP endpoint (secret
-      # WATCHDOG_MCP_URL). It drives the PR-install / restore-main plumbing over THIS url,
+      # WATCHDOG_MCP_URL). It drives the PR install and the fixture purge over THIS url,
       # independent of the MCP server under test
-      # ($MCP_URL) -- so a deploy that bricks the server under test can still be restored
+      # ($MCP_URL) -- so a deploy that bricks the server under test can still be replaced
       # through the watchdog's own live endpoint.
       WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
 
@@ -651,7 +691,7 @@ jobs:
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog-v3.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/watchdog_v3.py|.github/scripts/e2e_scope.py|libraries/*|bundles/*)
+              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog-v3.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/watchdog_v3.py|.github/scripts/e2e_scope.py|libraries/*|bundles/*)
                 relevant=true ;;
             esac
           done <<< "$files"
@@ -737,7 +777,7 @@ jobs:
       - name: Watchdog health check (HALT if unreachable / not installed)
         if: steps.gate.outputs.available == 'true'
         # The watchdog is a STANDALONE on-hub app reachable on its own cloud MCP endpoint
-        # ($WATCHDOG_URL). Everything below (prepare, PR install, restore main) drives the hub
+        # ($WATCHDOG_URL). Everything below (prepare, PR install, fixture purge) drives the hub
         # THROUGH that endpoint, so if it is unreachable or the watchdog app isn't installed
         # there is no way back and we must HALT before mutating the hub -- never deploy PR code
         # we can't replace. NOT continue-on-error: a dead watchdog endpoint is a hard stop.
@@ -768,21 +808,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}   # lets lease_acquire.sh reclaim a stranded lease whose holding ci-run has finished
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
-
-      - name: Pre-run hub status probe
-        if: steps.gate.outputs.available == 'true'
-        # Standard since the 2026-06-11 LimitExceededException hunt: capture the hub's exact
-        # pre-run state (memory, jobs, error logs, devices, app instances, live command check)
-        # inside our lease window, so a degraded starting state is visible in every run's log.
-        # Diagnostic only -- must never fail the run.
-        continue-on-error: true
-        run: bash .github/scripts/mcp_probe_hub.sh
-
-      - name: Configure test environment (capture pre-state + enable toggles)
-        if: steps.gate.outputs.available == 'true'
-        # Enables Developer Mode through the standing watchdog if needed, verifies it,
-        # captures the legacy engine setting for cleanup, then enables it and gateway mode.
-        run: bash .github/scripts/mcp_setup_env.sh
 
       - name: Compute PR source URL for importUrl deploy
         if: steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
@@ -833,14 +858,6 @@ jobs:
           echo "PR_RAW_BASE=https://raw.githubusercontent.com/$DEFAULT_REPO" >> "$GITHUB_ENV"
           echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
           echo "::notice::importUrl deploy source: $URL"
-          # CANONICAL MAIN: resolve the BASE repo's main-branch HEAD (the known-good baseline the hub
-          # should hold). The restore step re-resolves main at teardown and falls back to this SHA.
-          MAIN_SHA=$(gh api "repos/$DEFAULT_REPO/branches/main" --jq '.commit.sha')
-          if ! printf '%s' "$MAIN_SHA" | grep -qE '^[0-9a-f]{40}$'; then
-            echo "::error::unexpected main-branch SHA shape: $MAIN_SHA"; exit 1
-          fi
-          echo "MAIN_SHA=$MAIN_SHA" >> "$GITHUB_ENV"
-          echo "::notice::canonical main: $MAIN_SHA"
 
       # The watchdog is NOT deployed by e2e: e2e never writes to the watchdog app, it only drives the
       # standing watchdog's endpoint. A PR that changes the watchdog source
@@ -864,13 +881,29 @@ jobs:
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_watchdog_deploy.sh
 
+      # Both talk to the MCP app, so they run only once this run's own code is installed: the app a
+      # previous run left behind may be broken.
+      - name: Pre-run hub status probe
+        if: steps.gate.outputs.available == 'true'
+        # Standard since the 2026-06-11 LimitExceededException hunt: capture the hub's exact
+        # pre-run state (memory, jobs, error logs, devices, app instances, live command check)
+        # inside our lease window, so a degraded starting state is visible in every run's log.
+        # Diagnostic only -- must never fail the run.
+        continue-on-error: true
+        run: bash .github/scripts/mcp_probe_hub.sh
+
+      - name: Configure test environment (enable toggles)
+        if: steps.gate.outputs.available == 'true'
+        # Enables Developer Mode through the standing watchdog if needed, verifies it, then enables
+        # the legacy engine and gateway mode.
+        run: bash .github/scripts/mcp_setup_env.sh
+
       - name: Run E2E tests
         id: run_e2e
         if: steps.gate.outputs.available == 'true'
         env:
-          # Defer per-test native-rule fixture deletes to the restore step's purge (one hub-local
-          # sweep through the watchdog) instead of the test critical path.
-          # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
+          # Defer per-test native-rule fixture deletes to the teardown's watchdog purge (one hub-local
+          # sweep) instead of the test critical path.
           E2E_DEFER_NATIVE_DELETES: '1'
           # 0 = this limiter escalation NEVER reboots the test hub. Keep it that way. (The separate
           # reboot_first dispatch input still reboots on explicit maintainer request.)
@@ -930,8 +963,8 @@ jobs:
       # exists there. Exercise its discovery path live (dryRun: fetch PR source ->
       # parse #includes -> resolve self app-class) with ZERO writes. This is a REAL
       # blocking gate -- e2e passing is what shows the tool works. It runs AFTER the
-      # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
-      # below all use `if: always()`, so the hub is restored regardless. The full
+      # e2e suite so a tool failure can't skip the suite; the purge step below
+      # uses `if: always()`, so fixtures are reaped regardless. The full
       # write path (real library + #include + compile equivalence) is validated by the
       # watchdog PR-install step above plus the hub_list_libraries (McpRoomsLib present)
       # assertions in tests/e2e_test.py.
@@ -1027,46 +1060,20 @@ jobs:
             sleep 5
           done
 
-      # Put canonical main back through watchdog v3: release any hold the PR install left, purge the
-      # BAT_E2E_ fixtures, and submit a deployment of main as it is NOW. Fire and forget: the gate
-      # status is already posted above, and whether main comes back has no bearing on the PR, so
-      # this step neither waits nor fails the run. The script keeps its historical file name.
-      - name: Watchdog - restore main
-        if: always() && !cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
+      # Release the run's hold and purge every BAT_E2E_ fixture in one hub-local watchdog sweep. The PR's
+      # package stays installed: the next run installs over it, and install_main restores main on
+      # demand. Fails the job when the purge reports leftovers (the gate is already posted above).
+      - name: Watchdog - purge fixtures
+        if: always() && !cancelled() && steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_disarm_watchdog.sh
 
-      # A cancelled job gets about five minutes before GitHub ends it, less than a deployment takes,
-      # and a cancel is normally followed by a run that installs its own code. So a cancelled run
-      # only releases its hold and purges, leaving the time for the cleanup steps below.
-      - name: Watchdog - release hold (cancelled run)
-        if: cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
+      # A cancelled job gets about five minutes before GitHub ends it, so this is best effort and
+      # bounded; the next run's prepare step releases anything left.
+      - name: Watchdog - purge fixtures (cancelled run)
+        if: cancelled() && steps.gate.outputs.available == 'true'
         # The lease release below has to fit inside the same cancel window.
         timeout-minutes: 3
         run: bash .github/scripts/mcp_disarm_watchdog.sh --cancelled
-
-      # Bounded wait for the restore submitted above, so the MCP_URL-based cleanup and settings
-      # restore below run against a recompiled main instead of into its compile. It releases the
-      # hold once both endpoints verify. If the PR compiled but broke the main MCP runtime, those
-      # steps would otherwise fail against the broken PR app. Never fails the run.
-      - name: Watchdog - wait for main
-        if: always() && !cancelled() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
-        continue-on-error: true
-        run: python3 .github/scripts/watchdog_v3.py wait-restore
-
-      - name: Cleanup BAT_E2E_ artifacts
-        if: always() && steps.gate.outputs.available == 'true'
-        # Defensive — e2e_test.py cleans up after itself in the happy path,
-        # but a crashed run can strand virtual devices / rules / variables
-        # under the BAT_E2E_ prefix. This sweeps anything left over. Runs after the wait for
-        # main, so it normally operates on restored main over MCP_URL.
-        run: python tests/e2e_test.py --cleanup-only
-
-      - name: Restore test environment (settings back to pre-run state)
-        if: always() && steps.gate.outputs.available == 'true'
-        # Tolerant of missing pre-state file (early-exit no-op) so a setup
-        # failure before capture doesn't propagate here. Runs after the wait for main, so
-        # MCP_URL normally points at restored main, not a possibly-broken PR app.
-        run: bash .github/scripts/mcp_restore_env.sh
 
       - name: Post-run hub status probe
         # Diagnostic-only forensics worth the ~22s ONLY on a red run -- on a green run nobody reads it,
@@ -1074,7 +1081,7 @@ jobs:
         if: always() && steps.gate.outputs.available == 'true' && steps.run_e2e.outcome == 'failure'
         # The pre-run probe's counterpart: capture what the run LEFT BEHIND (stranded artifacts,
         # load-limiter trips in the error log, memory descent, watchdog state) while we still
-        # hold the lease. Runs after the wait for main, so the hub is normally quiet. Diagnostic only -- must never fail the run.
+        # hold the lease. Diagnostic only -- must never fail the run.
         continue-on-error: true
         run: bash .github/scripts/mcp_probe_hub.sh
 
