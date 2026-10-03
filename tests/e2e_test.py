@@ -1263,6 +1263,7 @@ class TestRunner:
         self.virtual_switch_label = f"{PREFIX}Switch_Test_{_run_artifact_suffix()}"
         self._native_rule_fixture_seq = 0
         self.virtual_switch_dni: str | None = None
+        self.virtual_switch_id: str | None = None
         self.created_rule_ids: list[str] = []
         self.created_native_app_ids: list[str] = []
         # Permanent non-child fixture devices (see _ensure_perm_fixture) and the driver-name -> type-id
@@ -1671,6 +1672,7 @@ class TestRunner:
         "contains_msg": ("E2E_PERM_Var_ContainsMsg", "String", "init"),
         "bool_flag": ("E2E_PERM_Var_BoolFlag", "Boolean", "false"),
         "in_use": ("E2E_PERM_Var_InUse", "Number", "0"),
+        "mesh_share": ("E2E_PERM_Var_MeshShare", "String", "share-me"),
     }
 
     def _hub_variables_by_name(self) -> dict[str, dict]:
@@ -3465,7 +3467,7 @@ class TestRunner:
             "probeText": ("text", "original saved text"), "probeEnum": ("enum", "eco"),
             "probeMultiple": ("enum", ["red"]),
         }
-        inventory = self._device_allowlist_inventory(labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
+        inventory = self._device_allowlist_inventory(cached=True, labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
         assert isinstance(inventory.get("devices"), list), f"Configuration fixture inventory failed: {inventory}"
         catalog = self.client.call_tool("hub_read_apps_code", {
             "tool": "hub_list_drivers", "args": {"include": "all"},
@@ -3989,7 +3991,7 @@ class TestRunner:
         """Prove explicit asynchronous HubAction callbacks for the child and standalone dispatch paths."""
         manifest = json.loads((Path(__file__).resolve().parent / "fixtures" /
                                "device-configuration-manifest.json").read_text(encoding="utf-8"))
-        inventory = self._device_allowlist_inventory(labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
+        inventory = self._device_allowlist_inventory(cached=True, labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
         for profile in manifest["profiles"]:
             matches = [row for row in inventory.get("devices", []) if row.get("label") == profile["label"]]
             assert len(matches) == 1 and matches[0].get("mcpAuthorized") is profile["authorized"], (
@@ -4158,16 +4160,19 @@ class TestRunner:
         dev_id = self._create_virtual_switch_device(f"{PREFIX}Tags_Edit")
         assert dev_id, "failed to create the tag-edit throwaway switch"
         # Track the DNI so the cleanup sweep reaps the device even if this test dies early.
-        tags_dni = ""
-        try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}Tags_Edit"})
-            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-                tags_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                if tags_dni:
-                    self.created_device_dnis.append(tags_dni)
-                    break
-        except Exception:
-            pass
+        tags_dni = self._last_created_dni
+        if tags_dni:
+            self.created_device_dnis.append(tags_dni)
+        else:
+            try:
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}Tags_Edit"})
+                for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                    tags_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    if tags_dni:
+                        self.created_device_dnis.append(tags_dni)
+                        break
+            except Exception:
+                pass
 
         def preserved_form_fields():
             result = self.client.call_tool("hub_get_device", {
@@ -4346,6 +4351,7 @@ class TestRunner:
         create_rounds = self.client._last_continuation_rounds
         # The create returns the device under "device"; fall back to a labelFilter lookup.
         dni = (result.get("device") or {}).get("deviceNetworkId") or result.get("deviceNetworkId", result.get("dni", ""))
+        self.virtual_switch_id = str((result.get("device") or {}).get("id") or "") or None
         if dni:
             self.virtual_switch_dni = str(dni)
             self.created_device_dnis.append(self.virtual_switch_dni)
@@ -4373,20 +4379,21 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_command_virtual_switch(self) -> None:
-        # Command round-trips get their OWN throwaway device, created here and
-        # deleted in the finally -- NOT the shared scaffold, which the rest of the
-        # suite references (rule fixtures subscribe to it; poll tests read it) and
-        # whose history is therefore unpredictable. The create/delete cost is
-        # negligible next to a cross-run interference hunt. State-aware on purpose:
-        # read the CURRENT state first, toggle to the opposite, then toggle back, so
-        # each leg observes an actual state CHANGE -- polling for a state the device
-        # is already in would pass without any event processing at all.
-        dev_id = self._create_virtual_switch_device(f"{PREFIX}CmdRoundtrip")
+        # Command round-trips drive a run-unique device -- NOT the shared scaffold, which the rest
+        # of the suite references (rule fixtures subscribe to it; poll tests read it) and whose
+        # history is therefore unpredictable. That is the switch test_create_virtual_switch made
+        # this run (test_delete_virtual_switch deletes it); a focused run creates its own throwaway.
+        # State-aware on purpose: read the CURRENT state first, toggle to the opposite, then toggle
+        # back, so each leg observes an actual state CHANGE -- polling for a state the device is
+        # already in would pass without any event processing at all.
+        reused = bool(self.virtual_switch_id)
+        label_prefix = self.virtual_switch_label if reused else f"{PREFIX}CmdRoundtrip"
+        dev_id = self.virtual_switch_id or self._create_virtual_switch_device(label_prefix)
         assert dev_id, "Failed to create the command round-trip throwaway switch"
-        # Capture the DNI for the inline delete below; also track it so the cleanup
+        # A throwaway's DNI drives the inline delete below; it is also tracked so the cleanup
         # sweep reaps the device if this test dies before its finally.
-        cmd_dni = self._last_created_dni
-        if not cmd_dni:
+        cmd_dni = "" if reused else self._last_created_dni
+        if not cmd_dni and not reused:
             try:
                 vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}CmdRoundtrip"})
                 for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
@@ -4398,7 +4405,7 @@ class TestRunner:
         if cmd_dni:
             self.created_device_dnis.append(cmd_dni)
         own_label = self.client.call_tool("hub_get_device", {"deviceId": dev_id}).get("label")
-        assert isinstance(own_label, str) and own_label.startswith(f"{PREFIX}CmdRoundtrip"), own_label
+        assert isinstance(own_label, str) and own_label.startswith(label_prefix), own_label
 
         # Event processing can lag on a busy hub, so block-poll the attribute instead
         # of the old fixed sleep + single read (which flaked as "Expected switch=on,
@@ -4882,10 +4889,16 @@ class TestRunner:
         owned_labels = [f"{PREFIX}Virtual_Page_{suffix}_{index}" for index in range(4)]
         owned_dnis: list[str] = []
         cleanup_errors: list[str] = []
+        shortfall = 0
         try:
-            # Provision the page prerequisite inside this scenario. A clean hub or a
-            # focused --test run must not depend on ambient MCP child devices.
-            for label in owned_labels:
+            # The persistent scaffold children supply the pages; throwaways cover only a
+            # shortfall, so a clean hub or a focused --test run still has four devices.
+            self.get_test_switch_id()
+            self.get_test_temperature_ids()
+            self.get_test_shade_id()
+            full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+            shortfall = max(0, 4 - len(full.get("devices", [])))
+            for label in owned_labels[:shortfall]:
                 created = self._soft_write(
                     lambda label=label: self.client.call_tool("hub_manage_virtual_device", {
                         "action": "create", "deviceType": "Virtual Switch",
@@ -4907,7 +4920,8 @@ class TestRunner:
                 owned_dnis.append(dni)
                 self.created_device_dnis.append(dni)
 
-            full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+            if shortfall:
+                full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
             full_devices = full.get("devices", [])
             assert len(full_devices) >= 4, \
                 f"virtual pagination fixtures missing, got {len(full_devices)} devices"
@@ -4956,7 +4970,7 @@ class TestRunner:
             # every fixture this scenario can identify. Global cleanup retains the DNIs
             # until each deletion is verified.
             page_label = f"{PREFIX}Virtual_Page_{suffix}_"
-            if len(owned_dnis) < len(owned_labels):
+            if len(owned_dnis) < shortfall:
                 listed = self.client.call_tool("hub_list_devices", {"labelFilter": page_label})
                 for d in listed.get("devices", []) if isinstance(listed, dict) else []:
                     recovered = str(d.get("deviceNetworkId") or "")
@@ -4979,7 +4993,7 @@ class TestRunner:
                 except Exception as exc:
                     cleanup_errors.append(f"{dni}: {exc}")
             # One listing proves every delete landed.
-            remaining = self.client.call_tool("hub_list_devices", {"labelFilter": page_label})
+            remaining = self.client.call_tool("hub_list_devices", {"labelFilter": page_label}) if owned_dnis else {}
             left = {str(d.get("deviceNetworkId") or "") for d in remaining.get("devices", [])}
             for dni in owned_dnis:
                 if dni in left:
@@ -6996,13 +7010,12 @@ class TestRunner:
     def test_button_rule_create_via_controller(self) -> None:
         # A Button Rule is a grandchild of a Button Controller and
         # only renders when created through the controller's add-button flow. Create
-        # a controller + a virtual button device, then create a button rule via the
+        # a controller bound to the permanent button, then create a button rule via the
         # buttonRule param, author an action via hub_set_rule, and clean up.
         # The "Button Controllers" built-in parent app is auto-installed by
         # _discoverParentAppId (via the Add Built-In App / sysApp endpoint) when absent,
         # so this runs on a clean hub (e.g. the CI test hub) that doesn't have it yet.
         controller_id = None
-        button_dni = None
         ctrl_label = f"{PREFIX}BtnCtrl"
         try:
             # This test is a tightly-coupled CHAIN: each step's RESPONSE feeds the next
@@ -7012,16 +7025,9 @@ class TestRunner:
             # remains the backstop for an unexpected transport drop: it
             # adopts the controller by label so cleanup/finally can reap it.
 
-            # Virtual button device for the controller to bind to.
-            dev = self._write_once(None, "hub_manage_virtual_device",
-                {"action": "create", "deviceType": "Virtual Button",
-                 "deviceLabel": f"{PREFIX}BtnDev", "confirm": True},
-                "virtual button create")
-            button_dni = str((dev.get("device") or {}).get("deviceNetworkId") or dev.get("deviceNetworkId") or "")
-            device_id = str((dev.get("device") or {}).get("id") or dev.get("deviceId") or dev.get("id") or "")
-            assert device_id, f"virtual button create did not return a device id: {dev}"
-            if button_dni:
-                self.created_device_dnis.append(button_dni)
+            # The permanent button fixture is the controller's bind target (the subject is the
+            # button rule, not device creation).
+            device_id = self._ensure_perm_fixture("button")
 
             # Button Controller-5.1 instance + assign its button device.
             ctrl = self._write_once("hub_manage_native_rules_and_apps", "hub_set_native_app",
@@ -7112,17 +7118,6 @@ class TestRunner:
                     self._untrack_native_app(controller_id)
                 except (McpToolError, McpError, requests.HTTPError) as exc:
                     print(f"  [WARN] button-rule e2e cleanup: delete controller {controller_id} failed: {exc}")
-            # Delete the virtual button device now (not just via global cleanup) so the hub
-            # stays clean even if a later test fails or the run is interrupted.
-            if button_dni:
-                try:
-                    self.client.call_tool("hub_manage_virtual_device", {
-                        "action": "delete", "deviceNetworkId": button_dni, "confirm": True,
-                    })
-                    if button_dni in self.created_device_dnis:
-                        self.created_device_dnis.remove(button_dni)
-                except (McpToolError, McpError, requests.HTTPError) as exc:
-                    print(f"  [WARN] button-rule e2e cleanup: delete device {button_dni} failed: {exc}")
 
     # ---- shared helpers for the native-authoring coverage below ----
 
@@ -12181,10 +12176,10 @@ class TestRunner:
         # The full share/unshare CYCLE needs Hub Mesh ENABLED, NOT a peer: sharing a hub variable
         # INTO the mesh is a local operation (a peer is required only to LINK one a peer shares).
         # The e2e hub now has Hub Mesh enabled (no peers), so this runs for real -- no SkipTest (a
-        # skip counts as a failure in _print_summary and would fail the whole run). Create a throwaway
-        # hub variable, share it, confirm it lands in hub_get_hub_mesh sharedHubVariables, unshare it,
+        # skip counts as a failure in _print_summary and would fail the whole run). Share a permanent
+        # hub variable, confirm it lands in hub_get_hub_mesh sharedHubVariables, unshare it,
         # confirm it drops off AND the result note carries the stale-copy / unlink-first teardown
-        # caution. Deleted in finally so no standing mesh state is left on the shared hub.
+        # caution. A bailed cycle is unshared in finally so no standing mesh state is left on the hub.
         mesh = self.client.call_tool("hub_get_hub_mesh")
         assert isinstance(mesh, dict) and mesh.get("success") is True, \
             f"hub_get_hub_mesh did not succeed: {mesh}"
@@ -12193,8 +12188,8 @@ class TestRunner:
              f"hubMeshEnabled={mesh.get('hubMeshEnabled')!r}. Enable it (hub_update_hub_mesh(enabled=true) "
              "+ reboot) or this test cannot run.")
 
-        var_name = f"{PREFIX}MeshShareVar_{int(time.time())}"
-        self._create_hub_variable_visible(var_name, "String", "share-me")
+        var_name = self._ensure_perm_variables("mesh_share")["mesh_share"]
+        unshared_ok = False
         try:
             # SHARE into the mesh.
             shared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": True})
@@ -12212,13 +12207,14 @@ class TestRunner:
                 f"unshare note is missing the stale-copy/unlink-first caution: {note!r}"
             assert self._poll_mesh_shared(var_name, want=False), \
                 f"{var_name} still present in hub_get_hub_mesh sharedHubVariables after unsharing"
+            unshared_ok = True
         finally:
-            # Best-effort: never leave the throwaway shared even if an assertion above bailed mid-cycle.
-            try:
-                self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
-            except Exception:
-                pass
-            self._delete_variable_safe(var_name, inline=True)
+            # Best-effort: never leave the permanent variable shared if an assertion above bailed mid-cycle.
+            if not unshared_ok:
+                try:
+                    self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+                except Exception:
+                    pass
 
     @test("devices")
     def test_hub_create_device_mesh_link_validation(self) -> None:
@@ -14708,12 +14704,19 @@ class TestRunner:
             print(f"    [WARN] '{profile['label']}': identity fields {unknown_identity} have no canonical value in the "
                   "manifest (profile.canonical) and were left as found; fill them in once to make the sweep complete")
 
-    def _device_allowlist_inventory(self, **filters) -> dict:
-        """Measure selected/child membership, then restore the suite's effective-access baseline."""
+    def _device_allowlist_inventory(self, *, cached: bool = False, **filters) -> dict:
+        """Measure selected/child membership, then restore the suite's effective-access baseline.
+
+        cached=True reuses this run's earlier read of the same filters (permanent fixtures only)."""
+        key = tuple(sorted(filters.items()))
+        cache = self.__dict__.setdefault("_allowlist_inventory_cache", {})
+        if cached and key in cache:
+            return cache[key]
         try:
             self._set_device_bypass(False)
             result = self.client.call_tool("hub_list_devices", {"scope": "all", **filters})
             assert isinstance(result.get("devices"), list), f"Allowlist inventory unavailable: {result}"
+            cache[key] = result
             return result
         finally:
             self._set_device_bypass(True)
@@ -16355,6 +16358,12 @@ class TestRunner:
             except Exception as exc:
                 print(f"  [WARN] Failed to delete variable {var_name}: {exc}")
         self.created_variable_names.clear()
+
+        # Under CI the prefix sweeps below belong to the post-restore --cleanup-only step, which runs
+        # them in full (without this flag) and fails closed; repeating them here only delays the gate.
+        if getattr(self, "defer_native_deletes", False):
+            print("--- Cleanup complete (prefix sweeps left to the post-restore --cleanup-only step) ---")
+            return
 
         # Layer 2: sweep virtual devices with BAT_E2E_ prefix
         try:
