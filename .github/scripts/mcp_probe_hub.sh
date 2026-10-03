@@ -64,6 +64,7 @@ echo "######## HUB PROBE: read-only inventory ########"
 # The watchdog is a separate app, so its read-only sections run alongside the main-server ones
 # without adding load to the app under test; their output prints in one block at the end.
 WATCHDOG_SECTIONS=$(mktemp)
+trap 'rm -f "$WATCHDOG_SECTIONS"' EXIT
 {
   section "hub_get_jobs via watchdog (uptime / scheduled / RUNNING jobs)" "$WATCHDOG_URL" "$(tool_rpc hub_get_jobs '{}')"
   section "hub_get_metrics via watchdog (free memory + the hub's own health alerts)" "$WATCHDOG_URL" "$(tool_rpc hub_get_metrics '{}')"
@@ -186,9 +187,8 @@ else
 fi
 
 echo "######## Watchdog hub-health sections (run in parallel above) ########"
-wait "$WATCHDOG_PID"
+wait "$WATCHDOG_PID" || echo "(watchdog section block exited non-zero; output below may be partial)"
 cat "$WATCHDOG_SECTIONS"
-rm -f "$WATCHDOG_SECTIONS"
 
 echo "######## Watchdog state ########"
 # hub_get_info on v3 carries the latest package deployment (and its hold) and the wedge counters.

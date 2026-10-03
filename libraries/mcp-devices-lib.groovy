@@ -395,10 +395,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     boolean labelOnlyProjection = fieldSet != null && !useDetailed && fieldSet.contains("label") &&
         fieldSet.every { it in ["id", "mcpManaged", "label"] }
     if (labelOnlyProjection) {
-        // The bulk inventory carries every label, so an id/label page needs no per-device fullJson.
-        def unlabeled = pagedDevices.findAll { it._nativeLoaded != true && !(it._nativeFilterLabel instanceof String && it._nativeFilterLabel) && !it.containsKey("label") }
+        // The bulk inventory carries labels, so an id/label page needs no per-device fullJson; only a
+        // device it lists without one is fetched.
+        def listedLabel = { rec -> [rec.label, rec._nativeFilterLabel].any { it instanceof String && it } }
+        def unlabeled = pagedDevices.findAll { it._nativeLoaded != true && !listedLabel(it) }
         if (unlabeled) _seedNativeInventoryFromTree(unlabeled, inventoryMeta.inventory as Map)
-        _hydrateNativeInventory(unlabeled.findAll { !it.containsKey("label") }, [], true)
+        _hydrateNativeInventory(unlabeled.findAll { !listedLabel(it) }, [], true)
     } else if (fieldSet == null || fieldSet.any { !(it in ["id", "mcpManaged"]) }) {
         if (useDetailed) {
             if (fieldSet == null || fieldSet.contains('capabilities')) requiredCollections << 'capabilities'
@@ -971,7 +973,9 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
             mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
         } catch (Exception e) {
             if (_httpStatusOf(e) == 404) {
-                synchronized (LEGACY_DEVICE_LIST_GONE) { LEGACY_DEVICE_LIST_GONE.add("404") }
+                boolean first
+                synchronized (LEGACY_DEVICE_LIST_GONE) { first = LEGACY_DEVICE_LIST_GONE.add("404") }
+                if (first) mcpLog("info", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered 404; skipping that tier until the app reloads")
             }
             mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
         }

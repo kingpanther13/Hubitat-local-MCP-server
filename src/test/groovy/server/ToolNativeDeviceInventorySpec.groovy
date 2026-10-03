@@ -112,6 +112,44 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         bypass << [false, true]
     }
 
+    def 'an id and label projection fetches only a device the bulk inventory lists without a label'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/listWithCapabilities/json') {
+            JsonOutput.toJson(models.values().collect {
+                [id: it.device.id, label: it.device.id == 2 ? null : it.device.label, capabilities: ['Switch']]
+            })
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, ['id', 'label'])
+
+        then:
+        result.devices*.label == ['Native 1', 'Native 2', 'Native 3']
+        hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path == ['/device/fullJson/2']
+    }
+
+    def 'a non-404 legacy device-list failure is retried on the next read'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/listWithCapabilities/json') { throw new RuntimeException('read timed out') }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..3).collect { [key: "DEV-${it}", data: [id: it, name: "Native ${it}"], children: []] }])
+        }
+        hubGet.register('/hub2/vrb/devices') {
+            JsonOutput.toJson((1..3).collect { [id: it, label: "Native ${it}", capabilities: ['Switch']] })
+        }
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, 'ids')
+        script.toolListDevices(false, 0, 0, null, null, null, 'ids')
+
+        then:
+        hubGet.calls.count { it.path == '/device/listWithCapabilities/json' } == 2
+    }
+
     def 'a filtered bypass list seeds from the inventory read that scoped it'() {
         given:
         nativeFixture()

@@ -652,6 +652,49 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         !sharedAppStub.settingsStore.containsKey('hubSecurityEnabled')
     }
 
+    def "header readability touches state only on a transition and still logs the recovery"() {
+        given:
+        def mcpLogCalls = stubUpdatedDeps()
+
+        when: 'a repeat of the recorded value'
+        script._noteHeadersReadable(true)
+        stateMap.remove('headersReadable')
+        script._noteHeadersReadable(true)
+
+        then: 'state is not read or rewritten'
+        !stateMap.containsKey('headersReadable')
+
+        when: 'readability is lost, then recovers'
+        script._noteHeadersReadable(false)
+        script._noteHeadersReadable(true)
+
+        then:
+        stateMap.headersReadable == true
+        mcpLogCalls.count { it.level == 'error' && it.msg.contains('NOT readable') } == 1
+        mcpLogCalls.count { it.level == 'info' && it.msg.contains('readable again') } == 1
+    }
+
+    def "the latest-version cache fills on first read and only a successful check replaces it"() {
+        given:
+        stubUpdatedDeps()
+
+        expect: 'no check yet'
+        script._latestKnownVersion() == null
+
+        when:
+        script.handleUpdateCheckResponse([status: 200, data: '{"version":"999.0.0"}'], null)
+
+        then:
+        script._latestKnownVersion() == '999.0.0'
+
+        when: 'a later check fails'
+        script.handleUpdateCheckResponse([status: 500, data: ''], null)
+
+        then: 'the known version stands'
+        script._latestKnownVersion() == '999.0.0'
+        stateMap.updateCheck.lastError == 'http 500'
+    }
+
     def "the request hook settles once per class load, but an unreadable firmware keeps retrying"() {
         given: 'a readable firmware below the cutoff'
         sharedLocation.hub = new TestHub(firmwareVersionString: '2.4.9.999')
@@ -673,7 +716,15 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub(firmwareVersionString: '2.5.1.181')
         script._retireHubSecuritySettingsOnce()
 
-        then: 'an unreadable firmware did not settle, so the next request sheds'
+        then: 'an unreadable firmware did not settle; its retry waits out the backoff'
+        sharedAppStub.settingsStore.hubSecurityUser == 'hubadmin'
+        (scriptStaticField('HUB_SECURITY_RETRY_AT') as Map).containsKey(sharedAppStub.id.toString())
+
+        when: 'the backoff has elapsed'
+        (scriptStaticField('HUB_SECURITY_RETRY_AT') as Map).clear()
+        script._retireHubSecuritySettingsOnce()
+
+        then: 'the next request sheds'
         !sharedAppStub.settingsStore.containsKey('hubSecurityUser')
         stateMap.hubSecurityRetired == true
     }

@@ -96,6 +96,7 @@
 // recompilation resets statics without needing updated() or a contributor version bump.
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
 // Background-worker handoff: every continued read/write pays the start delay plus about half a poll.
+// The wait loops poll in-memory records, so the shorter step costs no hub or state reads.
 @groovy.transform.Field static final long WORKER_START_DELAY_MS = 50L
 @groovy.transform.Field static final long WORKER_POLL_MS = 50L
 // Serialize the one-time protected-app default across concurrent endpoint handlers.
@@ -103,13 +104,15 @@
 // Apps whose Hub Security shed is settled (done, or not due on this firmware). A firmware update or
 // redeploy restarts the class, so the check reruns exactly when its answer can change.
 @groovy.transform.Field static final Set HUB_SECURITY_CHECKED = new java.util.HashSet()
+@groovy.transform.Field static final Map HUB_SECURITY_RETRY_AT = new java.util.HashMap()
 // Per-app latest released version, mirrored from state.updateCheck so every result's serverInfo
 // skips the state read; only handleUpdateCheckResponse changes it.
 @groovy.transform.Field static final Map LATEST_VERSION_SEEN = new java.util.HashMap()
 // Per-app last recorded header readability; header lookups touch state only on a transition.
 @groovy.transform.Field static final Map HEADERS_READABLE_SEEN = new java.util.HashMap()
-// Set once /device/listWithCapabilities/json answers 404 (removed in 2.5.1.173); a firmware change
-// reboots the hub and resets it, so inventory reads stop paying for the dead first tier.
+// Hub-wide flag (not per app): non-empty once /device/listWithCapabilities/json answers 404 (removed
+// in 2.5.1.173). A firmware change reboots the hub and clears it, so inventory reads stop paying for
+// the dead first tier.
 @groovy.transform.Field static final Set LEGACY_DEVICE_LIST_GONE = new java.util.HashSet()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
@@ -769,7 +772,7 @@ private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
             // may retain older settings snapshots. Only installed()/updated() publish UI saves.
             atomicState.protectedAppsPolicy = [ids: selected as List]
         } catch (Exception e) {
-            // Keep enforcing the default even if persistence fails; the next request retries.
+            // Keep enforcing the default even if persistence fails; the next caller retries.
             mcpLog('warn', 'server', "Could not save protected-app defaults; protection remains active and initialization will retry: ${e.message}")
         }
         return selected
@@ -6926,14 +6929,32 @@ private boolean _hubSecurityObsolete() {
     return _firmwareAtLeast(fw, hubSecurityRetiredFw())
 }
 
+private boolean _hubFirmwareReadable() {
+    try {
+        return location?.hub?.firmwareVersionString?.toString()?.trim() as boolean
+    } catch (Exception e) {
+        logDebug("Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
+        return false
+    }
+}
+
 // Request-path entry: settles once per class load, so warm requests read neither state nor firmware.
+// An unreadable firmware or a failed shed stays unsettled and is retried at most once a minute.
 private void _retireHubSecuritySettingsOnce() {
     String appKey = _stateOwnerKey()
     synchronized (HUB_SECURITY_CHECKED) {
         if (HUB_SECURITY_CHECKED.contains(appKey)) return
+        def retryAt = HUB_SECURITY_RETRY_AT.get(appKey)
+        if (retryAt != null && (retryAt as Long) > now()) return
     }
-    if (_retireHubSecuritySettings()) {
-        synchronized (HUB_SECURITY_CHECKED) { HUB_SECURITY_CHECKED.add(appKey) }
+    boolean settled = _retireHubSecuritySettings()
+    synchronized (HUB_SECURITY_CHECKED) {
+        if (settled) {
+            HUB_SECURITY_CHECKED.add(appKey)
+            HUB_SECURITY_RETRY_AT.remove(appKey)
+        } else {
+            HUB_SECURITY_RETRY_AT.put(appKey, now() + 60000L)
+        }
     }
 }
 
@@ -6942,11 +6963,9 @@ private void _retireHubSecuritySettingsOnce() {
 // credentials on disk. Returns true once settled: shed, or below the cutoff on a readable firmware.
 private boolean _retireHubSecuritySettings() {
     if (state.hubSecurityRetired == true) return true
-    if (!_hubSecurityObsolete()) {
-        String fw = null
-        try { fw = location?.hub?.firmwareVersionString?.toString()?.trim() } catch (Exception ignored) { }
-        return fw as boolean
-    }
+    // Below the cutoff the answer is final only when the firmware was readable (_hubSecurityObsolete
+    // already announced an unreadable one).
+    if (!_hubSecurityObsolete()) return _hubFirmwareReadable()
     boolean had = (settings.hubSecurityEnabled == true) || settings.hubSecurityUser || settings.hubSecurityPassword
     try {
         // Credentials first: a partial failure then errs toward "secrets gone, toggle still on"

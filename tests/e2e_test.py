@@ -81,7 +81,7 @@ LEGACY_PROTOCOL_VERSION = "2025-06-18"
 
 MRTR_MIN_LOGICAL_SECONDS = 10.0
 MRTR_RELAY_LEG_CEILING_SECONDS = 9.5
-# Pre-send gap for every hub call; caps app 38's short-window duty cycle (see _send).
+# Optional pre-send gap for every hub call, off by default (see _send).
 REQUEST_GAP_SECONDS = float(os.environ.get("E2E_REQUEST_GAP_SECONDS", "0"))
 
 
@@ -674,15 +674,11 @@ class HubitatMcpClient:
         if leaf == "hub_update_mcp_settings":
             replay_safe = True
 
-        # Pace EVERY call with a 0.2s pre-send gap. The gap caps the server app's short-window
-        # duty cycle, which is exactly what the platform's per-app load limiter measures
-        # ("App 38 generates excessive hub load"). Reads were previously exempted as a speedup
-        # on the theory that only confirm-bearing wizard writes carried load -- but the full
-        # 137-test lane proved that wrong: accumulated back-to-back READS pushed app 38's
-        # short-window duty cycle over the limiter, cascading the heaviest group (native_apps
-        # RM wizard) into a wall of 500s. So reads are paced too. Cost is ~0.2s x calls; the
-        # alternative is a flaky full lane. E2E_PACE_SECONDS adds further per-TEST spacing.
-        # E2E_REQUEST_GAP_SECONDS tunes it (0.2s before #463; 0.1s ran clean on a full lane).
+        # Optional pre-send gap (E2E_REQUEST_GAP_SECONDS, default 0). It caps the server app's
+        # short-window duty cycle, which is what the platform's per-app load limiter measures
+        # ("App 38 generates excessive hub load"); a full lane runs clean without it now that
+        # per-call server cost is lower. Set it if the limiter cascades the native_apps RM group
+        # into 500s again. E2E_PACE_SECONDS adds further per-TEST spacing.
         time.sleep(REQUEST_GAP_SECONDS)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
@@ -819,7 +815,7 @@ class HubitatMcpClient:
                 "raw E2E requests may use only 2026-07-28 or an unsupported-version "
                 "negative control; headerless and legacy revisions are forbidden"
             )
-        time.sleep(REQUEST_GAP_SECONDS)   # same per-call duty-cycle pacing as _send (see the limiter note there)
+        time.sleep(REQUEST_GAP_SECONDS)   # same optional pacing as _send (see the limiter note there)
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
@@ -4585,7 +4581,8 @@ class TestRunner:
                     self.client.call_tool("hub_manage_virtual_device", {
                         "action": "delete", "deviceNetworkId": cmd_dni, "confirm": True,
                     })
-                    self.created_device_dnis.remove(cmd_dni)
+                    if cmd_dni in self.created_device_dnis:
+                        self.created_device_dnis.remove(cmd_dni)
                 except Exception as exc:
                     print(f"  [WARN] could not delete the command round-trip switch ({cmd_dni}): {exc}")
 
@@ -4994,14 +4991,19 @@ class TestRunner:
                 except Exception as exc:
                     cleanup_errors.append(f"{dni}: {exc}")
             # One listing proves every delete landed.
-            remaining = self.client.call_tool("hub_list_devices", {"labelFilter": page_label}) if owned_dnis else {}
-            left = {str(d.get("deviceNetworkId") or "") for d in remaining.get("devices", [])}
-            for dni in owned_dnis:
-                if dni in left:
-                    cleanup_errors.append(f"{dni}: remains after successful delete")
-                else:
-                    while dni in self.created_device_dnis:
-                        self.created_device_dnis.remove(dni)
+            if owned_dnis:
+                try:
+                    remaining = self.client.call_tool("hub_list_devices", {"labelFilter": page_label})
+                    rows = remaining.get("devices", []) if isinstance(remaining, dict) else []
+                    left = {str(d.get("deviceNetworkId") or "") for d in rows}
+                    for dni in owned_dnis:
+                        if dni in left:
+                            cleanup_errors.append(f"{dni}: remains after successful delete")
+                        else:
+                            while dni in self.created_device_dnis:
+                                self.created_device_dnis.remove(dni)
+                except Exception as exc:
+                    cleanup_errors.append(f"post-delete listing failed (fixtures stay tracked for the sweep): {exc}")
             assert not cleanup_errors, "Virtual pagination fixture cleanup failed: " + "; ".join(cleanup_errors)
 
     @test("virtual_device_lifecycle")
