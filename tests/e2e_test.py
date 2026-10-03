@@ -11122,78 +11122,6 @@ class TestRunner:
             self._untrack_native_app(app_id)
 
     # -----------------------------------------------------------------------
-    # GROUP 4c: deadman (1 test) -- the issue #243 install-commit fix, the exact
-    # bug the E2E Dead-Man Watchdog tripped on. installAsUserApp must actually
-    # COMMIT the install (submit Done) so initialize() runs and the instance is
-    # live -- the pre-#243 path returned success:true / "installed() fired" yet left
-    # an inert shell (app.installed==false, schedules never registered; the `committed`
-    # field is introduced by this PR). This installs the
-    # throwaway tests/fixtures/deadman-test-target.groovy (so a misfire can't
-    # touch anything real), then asserts BOTH the tool's committed flag AND, via
-    # an independent hub_get_app_config read, app.installed==true -- the shell
-    # would report installed:false, the old silent false-pass.
-    # -----------------------------------------------------------------------
-
-    @test("deadman")
-    def test_install_as_user_app_commits(self) -> None:
-        fixture = (Path(__file__).resolve().parent
-                   / "fixtures" / "deadman-test-target.groovy")
-        source = fixture.read_text(encoding="utf-8")
-
-        code_app_id = None
-        instance_app_id = None
-        try:
-            # 1) Install the throwaway app CODE (inline source) -> code class id.
-            created_code = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_app",
-                "args": {"source": source, "confirm": True},
-            })
-            code_app_id = created_code.get("appId")
-            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created_code}"
-
-            # 2) Create a RUNNING instance from that code -> the #243 commit path.
-            installed = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_app",
-                "args": {"codeAppId": code_app_id, "confirm": True},
-            })
-            instance_app_id = installed.get("instanceAppId")
-            committed = installed.get("committed")
-            assert committed is True, \
-                f"installAsUserApp did not commit (committed={committed!r}) -- the #243 install fix regressed, leaving an inert shell: {installed}"
-            assert instance_app_id, f"installAsUserApp committed but returned no instanceAppId: {installed}"
-
-            # 3) INDEPENDENT verification: hub_get_app_config must report app.installed==true.
-            # A shell (the old false-pass) reads installed:false even though the tool said committed.
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config",
-                "args": {"appId": instance_app_id},
-            })
-            app_obj = (cfg.get("app") or {}) if isinstance(cfg, dict) else {}
-            installed_flag = app_obj.get("installed")
-            assert installed_flag is True, \
-                f"hub_get_app_config reports app.installed={installed_flag!r} -- the instance is an inert shell, not a committed install: {app_obj}"
-
-            print(f"    DEADMAN_INSTALL_COMMIT committed={committed} installed={installed_flag}")
-        finally:
-            # Clean up: delete the running instance first, then the code class.
-            if instance_app_id:
-                try:
-                    self.client.call_tool("hub_manage_native_rules_and_apps", {
-                        "tool": "hub_delete_native_app",
-                        "args": {"appId": instance_app_id, "force": True, "confirm": True},
-                    })
-                except Exception as exc:
-                    print(f"  [WARN] deadman cleanup: delete instance {instance_app_id} failed: {exc}")
-            if code_app_id:
-                try:
-                    self.client.call_tool("hub_manage_code", {
-                        "tool": "hub_delete_item",
-                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
-                    })
-                except Exception as exc:
-                    print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
-
-    # -----------------------------------------------------------------------
     # GROUP 4d: app_code_update -- app lifecycle and library source updates.
     #
     # test_update_app_code_lifecycle: one throwaway code class for update/error/conflict/OAuth:
@@ -11546,6 +11474,13 @@ class TestRunner:
             assert installed.get("committed") is True, \
                 f"could not commit the instance the triggerUpdated leg needs: {installed}"
             assert instance_app_id, f"instance committed but no instanceAppId returned: {installed}"
+            # The issue #243 install-commit proof, read BEFORE any configure write: an uncommitted
+            # installAsUserApp leaves an inert shell that reports app.installed==false.
+            fresh_cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": instance_app_id},
+            })
+            assert ((fresh_cfg.get("app") or {}) if isinstance(fresh_cfg, dict) else {}).get("installed") is True, \
+                f"installAsUserApp committed but the instance is an inert shell (app.installed is not true): {fresh_cfg}"
 
             # CONFIGURE the instance: flip refreshProbe off its false default. This is the
             # precondition for the settings-preservation assertion at the end -- verified here
@@ -16502,8 +16437,7 @@ class TestRunner:
             except Exception as exc:
                 print(f"  [WARN] Button Controller sweep failed: {exc}")
 
-        # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
-        # Target' (instance + code class), the @test("app_code_update") tests create the
+        # Layer 5: stranded mcptest throwaways. The @test("app_code_update") tests create the
         # 'Deadman Test Target Update' code class and the 'Deadman Test Target Trigger' code
         # class + instance, and the @test("driver_code_update") test creates the 'Deadman Test
         # Target Driver' driver code class (all named to ride this same startswith match); none
