@@ -982,7 +982,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a purge landing during an in-flight purge is a no-op, not a second sweep"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         // A sweep that is genuinely running owns all three keys -- the claim is what says someone
         // is still working, and a bare timestamp is the trailing edge of a sweep that has finished.
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 30_000L
@@ -1002,7 +1002,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a STALE purge latch (sweep killed mid-flight) does not block the next purge"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 1_000_000L
         atomicStateMap.purgeClaim = 'purge-killed'
         atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
@@ -1029,7 +1029,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a purge arriving just after one finished is served from cache, not re-run"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeResult = [success: true, prefix: 'BAT_E2E_', deletedCount: 12, failedCount: 0]
         atomicStateMap.purgeResultAt = System.currentTimeMillis() - 10_000L
 
@@ -1045,7 +1045,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a purge cache older than the window re-runs instead of serving a stale result"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeResult = [success: true, prefix: 'BAT_E2E_', deletedCount: 12, failedCount: 0]
         atomicStateMap.purgeResultAt = System.currentTimeMillis() - 400_000L
 
@@ -1411,7 +1411,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a held purge claim makes a second caller yield without sweeping"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 5_000L
         atomicStateMap.purgeClaim = 'purge-someone-else'
 
@@ -1518,7 +1518,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "an in-flight sweep for a DIFFERENT prefix reports busy, never covered"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 10_000L
         atomicStateMap.purgeClaim = 'purge-other'
         atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
