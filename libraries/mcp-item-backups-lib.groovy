@@ -14,6 +14,15 @@ def toolListItemBackups(args = null) {
         if (hb.local != null) hubSections.hubLocalBackups = hb.local
         if (hb.cloud != null) hubSections.hubCloudBackups = hb.cloud
         if (hb.errors) { hubSections.hubBackupErrors = hb.errors; hubSections.partial = true }
+        // Fold the automatic-backup schedule in alongside the hub-DB backups. A failed schedule
+        // read joins the existing hubBackupErrors / partial path rather than failing the listing.
+        def sched = _readHubBackupSchedule()
+        if (sched.ok) {
+            hubSections.schedule = sched.schedule
+        } else {
+            hubSections.hubBackupErrors = (hubSections.hubBackupErrors ?: []) + [sched.error]
+            hubSections.partial = true
+        }
     }
     if (scope == "source") return _listSourceItemBackups(args)
     if (!(scope in ["source", "all"])) {
@@ -747,6 +756,49 @@ private _setHubBackupSchedule(Map schedule) {
     }
 }
 
+private Map _readHubBackupSchedule() {
+    // Read the current automatic-backup schedule from GET /hub2/backup/json -- the same source
+    // _setHubBackupSchedule read-merges before a write. Field names differ from the write endpoint
+    // (read = databaseCleanupTimeHour/databaseCleanupJobMinute; write = hour/minute). The cloud-backup
+    // password (backupPassword) is deliberately NEVER returned -- it is a secret and the hub reads it
+    // back masked anyway. Returns [ok:true, schedule:[...]] on success, or [ok:false, error:...] when
+    // the read OR a non-numeric frequency/time field fails -- so hub_list_backups can fold the schedule
+    // into the hub-DB listing (and route the failure through its existing hubBackupErrors/partial path)
+    // instead of failing the whole call.
+    def cur
+    try {
+        def raw = hubInternalGet("/hub2/backup/json")
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (!(parsed instanceof Map)) {
+            return [ok: false, error: "schedule: the hub did not return a readable backup schedule (/hub2/backup/json)"]
+        }
+        cur = parsed
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "could not read current backup schedule", e)
+        return [ok: false, error: "schedule: could not read the backup schedule (/hub2/backup/json): ${e.message}"]
+    }
+    // Convert the numeric fields inside the error-handled path: a non-numeric value from the hub must
+    // surface as ok:false (-> hubBackupErrors/partial), never throw out and abort the whole listing.
+    try {
+        Integer localFreq = (cur.localBackupFrequency != null) ? (cur.localBackupFrequency as Integer) : null
+        Integer cloudFreq = (cur.cloudBackupFrequency != null) ? (cur.cloudBackupFrequency as Integer) : null
+        return [ok: true, schedule: [
+            localBackupFrequency: localFreq,
+            cloudBackupFrequency: cloudFreq,
+            hour: (cur.databaseCleanupTimeHour != null) ? (cur.databaseCleanupTimeHour as Integer) : null,
+            minute: (cur.databaseCleanupJobMinute != null) ? (cur.databaseCleanupJobMinute as Integer) : null,
+            localBackupEnabled: (localFreq ?: 0) > 0,
+            cloudBackupEnabled: (cloudFreq ?: 0) > 0,
+            hasCloudBackupEntitlements: cur.hasCloudBackupEntitlements,
+            hasCloudRestoreEntitlements: cur.hasCloudRestoreEntitlements,
+            note: "Frequencies are in DAYS (0=off). hour/minute is the daily backup time. The cloud-backup password is never returned. Change the schedule via hub_create_backup(schedule=...)."
+        ]]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "backup schedule has a non-numeric field", e)
+        return [ok: false, error: "schedule: the hub returned a non-numeric schedule field (/hub2/backup/json): ${e.message}"]
+    }
+}
+
 // Fetch + normalize the hub-DB backup lists (GET /hub2/localBackups, /hub2/cloudBackups). Used by
 // toolListItemBackups when scope includes hub-DB. Returns [local: [...], cloud: [...], errors: [...]].
 private _listHubBackups(boolean wantLocal, boolean wantCloud) {
@@ -950,7 +1002,7 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
         [
             name: "hub_create_backup",
-            description: """Create a full hub-database backup (whole-hub .lzf). REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.[[/FLAT_TRIM]]
+            description: """Create a full hub-database backup. REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Whole-hub .lzf. Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.[[/FLAT_TRIM]]
 A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 """,
             inputSchema: [
@@ -972,7 +1024,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_delete_backup",
-            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE — removes a recovery point; tell the user first). Write master + confirm + a recent backup.""",
+            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE; tell the user first). Write master + confirm + a recent backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -987,7 +1039,7 @@ A transport drop can lose the response while the hub still commits this write; v
         // ==================== Source-code item backup tools ====================
         [
             name: "hub_list_backups",
-            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all[[FLAT_TRIM]] (whole-hub DB backups under hubLocalBackups/hubCloudBackups — name/path feed restore+delete)[[/FLAT_TRIM]]. Read-only.",
+            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule`.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup. The `schedule` block carries the frequencies (days) + daily hour/minute; the cloud-backup password is never returned. A failed schedule read joins hubBackupErrors (partial:true), never failing the listing. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1035,7 +1087,7 @@ def _readOnlyToolNames_partItemBackups() {
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
-        // Apps/drivers (read)
+        // Apps/drivers (read); hub_list_backups also folds in the hub-DB schedule read
         "hub_list_backups", "hub_get_backup"
     ]
 }
@@ -1065,7 +1117,7 @@ def _toolDisplayMeta_partItemBackups() {
     return [
         hub_create_backup: [title: "Create Hub Backup", summary: "Create a whole-hub database backup (and optionally set the auto-backup schedule)."],
         hub_delete_backup: [title: "Delete Hub Backup", summary: "Delete a whole-hub database backup (local or cloud)."],
-        hub_list_backups: [title: "List Backups", summary: "List source-code backups and (by scope) whole-hub database backups."],
+        hub_list_backups: [title: "List Backups", summary: "List source-code backups and (by scope) whole-hub database backups plus the auto-backup schedule."],
         hub_get_backup: [title: "Get Code Backup", summary: "Read source code from a backup."],
         hub_restore_backup: [title: "Restore Backup", summary: "Restore a code/rule backup, or (by scope) the whole hub database."]
     ]

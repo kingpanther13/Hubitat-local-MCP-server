@@ -1953,4 +1953,96 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    // ---- Z-Wave manufacturer-id resolution ----------------------------------
+
+    @spock.lang.Unroll
+    def "_zwaveManufacturerName resolves #id -> #expected"() {
+        expect:
+        script._zwaveManufacturerName(id) == expected
+
+        where:
+        id        | expected
+        '634'     | 'Zooz'        // Hubitat decimal wire form (0x027A)
+        '99'      | 'GE/Jasco'    // decimal 0x0063
+        '0x027A'  | 'Zooz'        // canonical hex, 0x-prefixed
+        '027A'    | 'Zooz'        // bare hex (leading zero + hex letter)
+        '0x63'    | 'GE/Jasco'    // hex short form
+        '271'     | 'Fibaro'      // decimal 0x010F
+        '9999'    | null          // unknown numeric id -> no invented name
+        'Zooz'    | null          // already a brand name string -> untouched
+        'Aeotec'  | null
+        ''        | null
+        null      | null
+    }
+
+    def "_withResolvedManufacturer adds manufacturerName beside a numeric id and keeps the raw"() {
+        when:
+        def out = script._withResolvedManufacturer([manufacturer: '634', deviceModel: 'ZEN04'])
+
+        then:
+        out.manufacturer == '634'          // raw preserved for chaining
+        out.manufacturerName == 'Zooz'
+        out.deviceModel == 'ZEN04'
+    }
+
+    def "_withResolvedManufacturer leaves an unknown numeric id without a name"() {
+        expect:
+        def out = script._withResolvedManufacturer([manufacturer: '9999'])
+        out.manufacturer == '9999'
+        !out.containsKey('manufacturerName')
+    }
+
+    def "_withResolvedManufacturer leaves a brand-name manufacturer untouched"() {
+        expect:
+        def out = script._withResolvedManufacturer([manufacturer: 'Zooz'])
+        out.manufacturer == 'Zooz'
+        !out.containsKey('manufacturerName')
+    }
+
+    def "_withResolvedManufacturer never overwrites a manufacturerName already present"() {
+        expect:
+        def out = script._withResolvedManufacturer([manufacturer: '634', manufacturerName: 'Custom'])
+        out.manufacturerName == 'Custom'
+    }
+
+    def "_withResolvedManufacturer passes through maps without a manufacturer and non-maps"() {
+        expect:
+        script._withResolvedManufacturer([firmwareVersion: '2.30']) == [firmwareVersion: '2.30']
+        script._withResolvedManufacturer('scalar') == 'scalar'
+        script._withResolvedManufacturer(null) == null
+    }
+
+    def "toolGetDevice details data section resolves a Z-Wave manufacturer id to a brand name"() {
+        given:
+        def device = new TestDevice(id: 10, deviceNetworkId: 'mcp-10')
+        childDevicesList << device
+        def model = [device: [id: 10, name: 'Zooz Plug', label: 'Zooz Plug',
+            data: [manufacturer: '634', deviceModel: 'ZEN04', firmwareVersion: '2.30']]]
+        hubGet.register('/device/fullJson/10') { JsonOutput.toJson(model) }
+
+        when:
+        def result = script.toolGetDevice('10', 'details', ['data'])
+
+        then:
+        result.sections.data.manufacturer == '634'
+        result.sections.data.manufacturerName == 'Zooz'
+        result.sections.data.deviceModel == 'ZEN04'
+    }
+
+    def "toolGetDevice details data section omits manufacturerName for an unknown id"() {
+        given:
+        def device = new TestDevice(id: 10, deviceNetworkId: 'mcp-10')
+        childDevicesList << device
+        def model = [device: [id: 10, name: 'Odd Device', label: 'Odd Device',
+            data: [manufacturer: '9999']]]
+        hubGet.register('/device/fullJson/10') { JsonOutput.toJson(model) }
+
+        when:
+        def result = script.toolGetDevice('10', 'details', ['data'])
+
+        then:
+        result.sections.data.manufacturer == '9999'
+        !result.sections.data.containsKey('manufacturerName')
+    }
 }

@@ -510,6 +510,16 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Recognizes a network change can disconnect the hub, so it warns the user, ensures a recent backup, and calls `hub_set_system_settings` with `network: {ipMode:"static", address:"192.168.1.50", netmask:"255.255.255.0", gateway:"192.168.1.1"}` and `confirm: true`. Without `confirm` the call is rejected by the destructive gate and nothing changes. On success `applied` includes `network.staticIp`. Other valid network shapes (each its own leg, applied in order, non-atomic): `{ipMode:"dhcp", useDNSFallover:true}` → `network.dhcp`; `{ethernetAutoneg:false}` → `network.ethernetAutoneg`; `{wifiSsid:"Net", wifiPassword:"…"}` → `network.wifi`. A static IP without address/netmask/gateway is rejected with `-32602` before any hub call.
 
+### T14i — read the hub network configuration (hub_get_info includeNetwork)
+
+```json
+{
+  "test_prompt": "What's my hub's current network configuration — is it on DHCP or a static IP, and what's the gateway and DNS?"
+}
+```
+
+**Expected**: Calls `hub_get_info` with `includeNetwork: true` and reads the `network` block. Reports `ipMode` (`dhcp`/`static`, or `unknown` when the hub does not report it), `activeDnsServers`, `staticGateway`/`staticSubnetMask`, Ethernet autoneg, and the joined `wifiSsid`. The current LAN address is NOT in the block — it is the top-level `localIP` field. Read-only — no `confirm`; `includeNetwork` is opt-in, so a plain `hub_get_info` omits the block. The Wi-Fi PASSWORD is never returned (SSID only). On firmware without the endpoint (or an unreadable/empty/non-JSON body) the `network` block is `success:false` with an `error` + `note`, not a throw. The write counterpart is `hub_set_system_settings(network:...)`.
+
 ### T14h — destructive network/cloud ops (⚠️ MANUAL ONLY — disconnects / disables cloud)
 
 > **DO NOT run on the e2e/CI test hub.** `target=network` disconnects a link; `target=cloud` `disable` severs Alexa/Google, cloud dashboards, cloud firmware updates, and subscription features (and the cloud MCP endpoint). Exercise only on a hub you can recover by hand.

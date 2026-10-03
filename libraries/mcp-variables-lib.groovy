@@ -215,11 +215,17 @@ def toolListVariables(args = null) {
     return result
 }
 
-def toolGetVariable(name) {
+def toolGetVariable(args) {
+    // Accept either a bare variable name (direct callers) or the dispatch args map
+    // {name, includeDependents}.
+    String name = (args instanceof Map) ? args.name : args
+    boolean includeDependents = (args instanceof Map) && (args.includeDependents == true)
+
+    def found = null
     try {
         def hubVar = getGlobalVar(name)
         if (hubVar != null) {
-            return [
+            found = [
                 name: name,
                 value: hubVar.value,
                 type: hubVar.type,
@@ -232,12 +238,45 @@ def toolGetVariable(name) {
         logDebug("Hub variable '${name}' lookup threw ${e.class.simpleName}: ${e.message}")
     }
 
-    def ruleVar = state.ruleVariables?.get(name)
-    if (ruleVar != null) {
-        return [name: name, value: ruleVar, source: "rule_engine"]
+    if (found == null) {
+        def ruleVar = state.ruleVariables?.get(name)
+        if (ruleVar != null) found = [name: name, value: ruleVar, source: "rule_engine"]
     }
 
-    throw new IllegalArgumentException("Variable not found: ${name}")
+    if (found == null) throw new IllegalArgumentException("Variable not found: ${name}")
+
+    if (includeDependents) _attachHubVarDependents(found, name)
+    return found
+}
+
+// Opt-in: attach the apps that reference this HUB variable (its in-use registry) to a hub_get_variable
+// response. Opt-in because it CLICKS the Settings > Hub Variables "Show In Use Apps" wizard reveal (a
+// transient UI toggle, dismissed afterward). Reports every failure IN the response -- it must never
+// fail the whole hub_get_variable call. The in-use registry is hub-variable-only, so a rule-engine
+// variable gets an empty list with a note instead.
+private void _attachHubVarDependents(Map found, String name) {
+    found.coverageNote = _hubVarDependentsCoverageNote()
+    if (found.source != "hub") {
+        found.appsUsing = []
+        found.count = 0
+        found.dependentsNote = "Dependent-app tracking applies to hub variables only; '${name}' is a rule-engine variable."
+        return
+    }
+    Integer hubVarsAppId = null
+    try { hubVarsAppId = _findHubVariablesAppId() }
+    catch (Exception e) {
+        found.dependentsError = "Could not resolve the Hub Variables system app: ${e.message}"
+        found.dependentsNote = "Check that Hub Variables is enabled (Settings > Hub Variables), then retry. See hub_get_tool_guide(section='variables')."
+        return
+    }
+    def apps = _hubVarInUseApps(hubVarsAppId, name)
+    if (apps == null) {
+        found.dependentsError = "Could not read the hub's in-use registry for Hub Variable '${name}'."
+        found.dependentsNote = "The Settings > Hub Variables page was unreadable or did not list the variable; verify it exists (hub_list_variables) and retry. See hub_get_tool_guide(section='variables')."
+        return
+    }
+    found.appsUsing = apps
+    found.count = apps.size()
 }
 
 // Hub variable name validation. Hubitat's UI rejects ' " \ ~ [ : ] < > and
@@ -1300,25 +1339,123 @@ String _hubVarDeleteCoverageNote() {
     return "Checked the hub's in-use registry and this server's own rules. Apps that do not register Hub Variable use with the hub, such as webCoRE pistons, are not covered."
 }
 
+String _hubVarDependentsCoverageNote() {
+    return "Lists apps that register Hub Variable use with the hub -- what Settings > Hub Variables shows in orange (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps). Apps that do not register their use, such as webCoRE pistons, are not covered."
+}
+
+// Apps that reference a hub variable, as [[id, label], ...]. Null when the page cannot be
+// read (unknown, not proof of "no consumers"); [] when the variable is registered but has no
+// listed consumers. The wizard renders the consuming apps only after the per-variable "Show
+// In Use Apps" reveal is clicked, so: read the page (the reveal link appears only for an
+// in-use variable), click the reveal, re-fetch, then parse the revealed <a> anchors. The
+// reveal is a transient wizard-UI toggle (like _primeHubVarsWizard), not a data mutation --
+// dismissed with a best-effort cancelDel click so the page returns to its plain table view.
+List _hubVarInUseApps(Integer hubVarsAppId, String varName) {
+    if (hubVarsAppId == null || !varName) return null
+    Boolean inUse = _hubVarPlatformInUse(hubVarsAppId, varName)
+    if (inUse == null) return null   // page unreadable / var not listed -> unknown
+    if (!inUse) return []            // registered but no consumers
+
+    def apps = []
+    boolean revealLoaded = false
+    try {
+        _primeHubVarsWizard(hubVarsAppId, "hub_get_variable includeDependents reveal")
+        _rmClickAppButton(hubVarsAppId, varName, "inUse", "hubVar")
+        // The reveal click lands asynchronously (same behaviour _hubVarsClickAndWait handles): a single
+        // re-fetch right after the click can still return the unrevealed table, which would read as
+        // "no dependents" for a variable that has some. Poll the re-fetch with a bounded retry until
+        // the consumer anchors OR the revealed-panel marker appear; only then is the (possibly empty)
+        // list trustworthy. Still-unconfirmed after the budget -> null (UNKNOWN), not "no dependents".
+        for (int poll = 0; poll < 8 && !revealLoaded; poll++) {
+            if (poll > 0) { try { pauseExecution(250) } catch (Exception ignored) { } }
+            apps = []
+            // Decode the JSON page before scanning. The hub embeds the rendered HTML inside the
+            // configPage JSON, so JSON string escapes (\", \n, ...) would otherwise leak into the
+            // captured labels. Parse first, then regex-scan the real HTML (older firmware / a raw-HTML
+            // body falls back to the raw text).
+            def html = _hubVarRevealHtml(hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString())
+            if (!html) continue
+            // Each consumer renders as <a href='/installedapp/configure/<appId>' target='_blank'
+            // title='Open <label>'><label></a> (captured live off firmware 2.5.1.183). The variable
+            // table itself carries no /installedapp/configure/<id> hrefs, so a whole-page scan matches
+            // only the revealed list.
+            def m = html =~ /<a\s+href='\/installedapp\/configure\/(\d+)'[^>]*>(.*?)<\/a>/
+            while (m.find()) {
+                apps << [id: m.group(1), label: _decodeHubVarAppLabel(m.group(2))]
+            }
+            // The revealed panel announces the consumers ("... is in use by these apps"). Zero matched
+            // anchors with no such marker means the reveal has not rendered yet -- keep polling, then
+            // fall through to UNKNOWN. Mirrors the marker-substring pattern _hubVarPlatformInUse uses.
+            revealLoaded = !apps.isEmpty() || html.contains("is in use by these apps")
+        }
+    } catch (Exception e) {
+        // A failed reveal click or re-fetch is an unreadable-registry condition, not a caller
+        // error -- return null so the fold reports dependentsError with recovery guidance.
+        logDebug("hub_get_variable includeDependents: reveal/parse threw ${e.class.simpleName}: ${e.message}")
+    } finally {
+        try { _rmClickAppButton(hubVarsAppId, "cancelDel", null, "hubVar") }
+        catch (Exception e) {
+            logDebug("hub_get_variable includeDependents: reveal dismiss (cancelDel) failed: ${e.class.simpleName}: ${e.message}")
+        }
+    }
+    return revealLoaded ? apps : null
+}
+
+// Extract the rendered HTML from the Hub Variables configPage JSON so label capture scans true HTML
+// rather than JSON-escaped text. Pulls the body/paragraph descriptions out of
+// {configPage:{sections:[...]}} and joins them; falls back to the raw string when the body is not
+// that JSON shape (older firmware, or a plain-HTML response).
+private String _hubVarRevealHtml(String raw) {
+    if (!raw?.trim()) return null
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw) }
+    catch (Exception e) { return raw }   // not JSON -> scan as-is
+    if (!(parsed instanceof Map) || parsed.configPage == null) return raw
+    def chunks = (parsed.configPage?.sections ?: []).collectMany { sect ->
+        def fromBody = (sect?.body ?: [])
+            .findAll { it instanceof Map && it.description != null }
+            .collect { it.description.toString() }
+        def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
+        fromBody + fromParagraphs
+    }
+    return chunks ? chunks.join("\n") : raw
+}
+
+// Strip any residual tags and decode the HTML entities Hubitat escapes an app label with
+// (mirror of the escaped-name logic near _hubVarPlatformInUse, reversed). &amp; is decoded
+// LAST so a single-encoded "&lt;" resolves correctly.
+private String _decodeHubVarAppLabel(String s) {
+    if (s == null) return null
+    String out = s
+    if (out.contains("<")) out = out.replaceAll(/<[^>]+>/, "")
+    if (out.contains("&")) {
+        out = out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+                 .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
+                 .replace("&amp;", "&")
+    }
+    return out.trim()
+}
+
 def _getAllToolDefinitions_partVariables() {
     return [
         [
             name: "hub_list_variables",
-            description: "List all hub variables (every type, including ones without connectors) and rule-engine variables.",
+            description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
         [
             name: "hub_get_variable",
-            description: "Get one variable's current value by name.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables.[[/FLAT_TRIM]] Use hub_list_variables to enumerate.",
+            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub's in-use registry by clicking the Settings > Hub Variables wizard reveal, returning appsUsing as {id, label} plus coverageNote — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."]
+                    name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."],
+                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote; clicks the Hub Variables wizard reveal, so off by default.[[/FLAT_TRIM]]", default: false]
                 ],
                 required: ["name"]
             ]
@@ -1344,7 +1481,7 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     name: [type: "string", description: "New variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    value: [description: "Initial value, must match the type. DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
+                    value: [description: "Initial value, must match the type.[[FLAT_TRIM]] DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded. Omit when using variables.[[/FLAT_TRIM]]"],
                     mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"],
                     mesh_source_name: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
                     variables: [type: "array", description: "Bulk form: several variables in one call.", items: [
@@ -1381,7 +1518,7 @@ def _getAllToolDefinitions_partVariables() {
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Existing hub-variable name"],
-                    connectorType: [type: "string", description: "Optional connector type for Number/Decimal vars (e.g. 'Dimmer', 'Variable').[[FLAT_TRIM]] Other options: 'Volume', 'ColorTemp', 'Humidity', 'Illuminance'.[[/FLAT_TRIM]] Defaults to 'Variable'. Ignored for vars that don't show a chooser."],
+                    connectorType: [type: "string", description: "Optional connector type for Number/Decimal vars (e.g. 'Dimmer', 'Variable'); defaults to 'Variable'.[[FLAT_TRIM]] Other options: 'Volume', 'ColorTemp', 'Humidity', 'Illuminance'. Ignored for vars that don't show a chooser.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "confirm"]
@@ -1401,11 +1538,11 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_list_variable_changes",
-            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable.[[/FLAT_TRIM]] The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history — an empty or partial result does NOT mean the variable never changed.[[FLAT_TRIM]] For the hub's separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]] Filter by variable name and/or timestamp.",
+            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history — an empty or partial result does NOT mean the variable never changed. For the hub's separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Optional: filter to changes for this variable name only, e.g. \"vacationMode\". Omit to include all variables."],
+                    name: [type: "string", description: "Optional: filter to changes for this variable name only, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit to include all variables.[[/FLAT_TRIM]]"],
                     sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"],
                     limit: [type: "integer", description: "Optional: max entries to return (default 50)"]
                 ]
@@ -1419,7 +1556,7 @@ def _readOnlyToolNames_partVariables() {
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
-        // Variables (reads)
+        // Variables (reads); hub_get_variable folds in the dependents read via includeDependents
         "hub_list_variables", "hub_get_variable", "hub_list_variable_changes"
     ]
 }
@@ -1439,7 +1576,7 @@ def _toolDisplayMeta_partVariables() {
     return [
         // Variables
         hub_list_variables: [title: "List Variables", summary: "List all hub and rule-engine variables."],
-        hub_get_variable: [title: "Get Variable", summary: "Get a variable's value and metadata."],
+        hub_get_variable: [title: "Get Variable", summary: "Get a variable's value and metadata (optionally the apps that reference it)."],
         hub_set_variable: [title: "Set Variable", summary: "Set an existing variable's value."],
         hub_create_variable: [title: "Create Variable", summary: "Create a new hub variable."],
         hub_delete_variable: [title: "Delete Variable", summary: "Permanently delete a hub variable and any connector it has."],
