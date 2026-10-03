@@ -39,7 +39,8 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
             rooms = rooms.findAll { "/room/delete/${it.id}".toString() != path }
             [status: 200, data: '{}']
         }
-        script.metaClass.deleteHubFile = { String name -> deletedFiles << name; true }
+        // The hub reports false for files it did remove; only the re-list proves a delete.
+        script.metaClass.deleteHubFile = { String name -> deletedFiles << name; false }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [[id: 3, name: 'Throwaway', namespace: 'mcptest'],
                                                                                      [id: 4, name: 'Real', namespace: 'someone']]] }
         script.metaClass.adminDeleteBundle = { Map a -> [success: a.bundleId == '3'] }
@@ -50,6 +51,7 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
         script.metaClass.hubGet = { String path, Map q ->
             gets << path
             def body = bodies[path]
+            if (path == '/hub/fileManager/json' && body instanceof List) body = body.findAll { !(it.name in deletedFiles) }
             body == null ? (path.startsWith('/device/forceDelete/') ? 'ok' : null) : groovy.json.JsonOutput.toJson(body)
         }
     }
@@ -99,6 +101,19 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
         and: 'the readable kinds are still swept'
         deletedFiles == ['BAT_E2E_note.txt']
         postedRooms == ['/room/delete/7']
+    }
+
+    def "a file still listed after its delete is a failure"() {
+        given:
+        hub(['/hub/fileManager/json': [[name: 'BAT_E2E_stuck.txt']]])
+        script.metaClass.deleteHubFile = { String name -> true }
+
+        when:
+        def r = script.purgeOtherFixturesLocked('BAT_E2E_', null)
+
+        then:
+        r.failed.find { it.kind == 'file' }?.error == 'still listed after delete'
+        !r.deleted.any { it.kind == 'file' }
     }
 
     def "a room still listed after the delete is a failure, not a success"() {

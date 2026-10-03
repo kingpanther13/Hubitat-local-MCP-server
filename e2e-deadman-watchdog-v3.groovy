@@ -1779,19 +1779,42 @@ Map purgeOtherFixturesLocked(String prefix, String claim) {
 
     // File Manager: BAT_E2E_ files and the e2e-*_backup_* snapshots of the harness's control files.
     // mcp-rm-backup-* files are listed in the MCP app's backup index, so the app deletes those itself.
-    def listing = _parseJsonBody(hubGet("/hub/fileManager/json", [:]))
-    def files = listing instanceof List ? listing : (listing instanceof Map && listing.files instanceof List ? listing.files : null)
+    List files = fileManagerNames()
     if (files == null) {
         failed << [kind: "file", id: "*", error: "could not read /hub/fileManager/json, so no files were purged"]
     } else {
-        files.collect { it instanceof Map ? it.name : it }.findAll { nm ->
+        List doomed = files.findAll { nm ->
             nm instanceof String && !nm.startsWith(keep) &&
                 (nm.startsWith(prefix) || (nm.startsWith("e2e-") && nm.contains("_backup_")))
-        }.each { nm ->
-            attempt("file", nm, nm) { deleteHubFile(nm) ? null : "deleteHubFile returned false" }
+        }
+        List tried = []
+        doomed.each { nm ->
+            if (!renewPurgeClaim(claim)) {
+                failed << [kind: "file", id: nm, name: nm, error: "purge claim lost to a newer sweep -- stopped before this delete"]
+                return
+            }
+            try { deleteHubFile(nm); tried << nm }
+            catch (Exception e) { failed << [kind: "file", id: nm, name: nm, error: e.message] }
+        }
+        // deleteHubFile reports false for files it did remove (seen on the test hub), so a re-list decides.
+        List left = tried ? fileManagerNames() : []
+        if (left == null) {
+            tried.each { nm -> failed << [kind: "file", id: nm, name: nm, error: "could not re-read File Manager to confirm the delete"] }
+        } else {
+            tried.each { nm ->
+                if (left.contains(nm)) failed << [kind: "file", id: nm, name: nm, error: "still listed after delete"]
+                else deleted << [kind: "file", id: nm, name: nm]
+            }
         }
     }
     return [deleted: deleted, failed: failed, deletedCount: deleted.size()]
+}
+
+// File Manager file names, or null when the listing is unreadable.
+private List fileManagerNames() {
+    def listing = _parseJsonBody(hubGet("/hub/fileManager/json", [:]))
+    def files = listing instanceof List ? listing : (listing instanceof Map && listing.files instanceof List ? listing.files : null)
+    return files == null ? null : files.collect { it instanceof Map ? it.name : it }
 }
 
 def adminSetMcpDeveloperMode(args) {
