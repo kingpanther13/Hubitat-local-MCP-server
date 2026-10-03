@@ -10,10 +10,8 @@ import support.ToolSpecBase
  * {@code developerModeEnabled} are present in the {@code getHubInfo()} response
  * (the merged successor to the removed {@code getHubDetails()}).
  *
- * Both fields are read by {@code .github/scripts/mcp_setup_env.sh} to capture
- * pre-run state before enabling toggles. If either field is dropped or renamed,
- * the setup script silently misreads pre-state, enabling unexpected settings
- * permanently on the test hub.
+ * {@code .github/scripts/mcp_setup_env.sh} reads {@code developerModeEnabled}
+ * to decide whether to bootstrap Developer Mode before enabling toggles.
  *
  * Mocking strategy:
  *   - location.hub -> appExecutor.getLocation() returns sharedLocation

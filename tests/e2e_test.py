@@ -47,8 +47,7 @@ PREFIX = "BAT_E2E_"
 # carry this marker so the cleanup sweeps SKIP them by name -- created once and reused across runs,
 # never deleted. Under-test fixtures use the bare PREFIX and are still reaped. A missing KEEP_
 # fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
-# (The watchdog purges apps/vars only, never devices, so this is purely the test-side device sweep;
-# no watchdog change is needed -- the devices are simply named to dodge the sweep.)
+# The watchdog's teardown purge skips the same marker.
 SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
 
 
@@ -81,6 +80,8 @@ LEGACY_PROTOCOL_VERSION = "2025-06-18"
 
 MRTR_MIN_LOGICAL_SECONDS = 10.0
 MRTR_RELAY_LEG_CEILING_SECONDS = 9.5
+# Optional pre-send gap for every hub call, off by default (see _send).
+REQUEST_GAP_SECONDS = float(os.environ.get("E2E_REQUEST_GAP_SECONDS", "0"))
 
 
 def _sandbox_map_key_controls() -> dict:
@@ -672,15 +673,11 @@ class HubitatMcpClient:
         if leaf == "hub_update_mcp_settings":
             replay_safe = True
 
-        # Pace EVERY call with a 0.2s pre-send gap. The gap caps the server app's short-window
-        # duty cycle, which is exactly what the platform's per-app load limiter measures
-        # ("App 38 generates excessive hub load"). Reads were previously exempted as a speedup
-        # on the theory that only confirm-bearing wizard writes carried load -- but the full
-        # 137-test lane proved that wrong: accumulated back-to-back READS pushed app 38's
-        # short-window duty cycle over the limiter, cascading the heaviest group (native_apps
-        # RM wizard) into a wall of 500s. So reads are paced too. Cost is ~0.2s x calls; the
-        # alternative is a flaky full lane. E2E_PACE_SECONDS adds further per-TEST spacing.
-        time.sleep(0.2)
+        # Optional pre-send gap (E2E_REQUEST_GAP_SECONDS, default 0). It caps the server app's
+        # short-window duty cycle, which the platform's per-app load limiter measures ("App <id>
+        # generates excessive hub load"); set it if the limiter cascades the native_apps RM group
+        # into 500s. E2E_PACE_SECONDS adds further per-TEST spacing.
+        time.sleep(REQUEST_GAP_SECONDS)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
         # raise the exact relay-504 error with probability <rate>. This reproduces on demand the
@@ -816,7 +813,7 @@ class HubitatMcpClient:
                 "raw E2E requests may use only 2026-07-28 or an unsupported-version "
                 "negative control; headerless and legacy revisions are forbidden"
             )
-        time.sleep(0.2)   # same per-call duty-cycle pacing as _send (see the limiter note there)
+        time.sleep(REQUEST_GAP_SECONDS)   # same optional pacing as _send (see the limiter note there)
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
@@ -1094,9 +1091,9 @@ class LegacyEraClient:
         """
         method = payload.get("method")
         self._log(f">> {method} {json.dumps(payload.get('params') or {})[:300]}")
-        # Same 0.2s pre-send gap as _send: the pacing caps the server app's short-window
+        # Same pre-send gap as _send: the pacing caps the server app's short-window
         # duty cycle, which is what the platform's per-app load limiter measures.
-        time.sleep(0.2)
+        time.sleep(REQUEST_GAP_SECONDS)
         attempts = 3 if replay_safe else 1
         last_exc: Exception | None = None
         for attempt in range(attempts):
@@ -1260,11 +1257,13 @@ class TestRunner:
         self.virtual_switch_label = f"{PREFIX}Switch_Test_{_run_artifact_suffix()}"
         self._native_rule_fixture_seq = 0
         self.virtual_switch_dni: str | None = None
+        self.virtual_switch_id: str | None = None
         self.created_rule_ids: list[str] = []
         self.created_native_app_ids: list[str] = []
         # Permanent non-child fixture devices (see _ensure_perm_fixture) and the driver-name -> type-id
         # catalog they resolve through. Both are per-run caches only; the DEVICES persist on the hub.
         self._perm_fixture_ids: dict[str, str] = {}
+        self._last_created_dni = ""
         self._driver_type_ids: dict[str, str] = {}
         self._driver_buckets: dict[str, str | None] = {}
         # Permanent fixtures are reset rather than deleted, so a reset that fails leaves cross-run
@@ -1273,13 +1272,16 @@ class TestRunner:
         self._fixture_reset_failures: list[str] = []
         self.created_dashboard_ids: list[str] = []
         # When set (the CI 'Run E2E tests' step only), per-test native-rule fixture deletes are SKIPPED
-        # (see _delete_native + cleanup Layer 4) and the rules are reaped by the restore step's
-        # fixture purge (one hub-local prefix sweep through the watchdog) instead of adding to the test
-        # critical path. Defaults OFF, so local runs + the post-restore --cleanup-only backstop are
-        # unchanged. The lifecycle/delete-assertion tests delete inline (not via _delete_native), so
-        # they are unaffected.
+        # (see _delete_native + cleanup Layer 4) and the rules are reaped by the teardown's watchdog
+        # purge (one hub-local prefix sweep) instead of adding to the test critical path. Defaults OFF,
+        # so local runs and --cleanup-only are unchanged. The lifecycle/delete-assertion tests delete
+        # inline (not via _delete_native), so they are unaffected.
         self.defer_native_deletes = os.environ.get("E2E_DEFER_NATIVE_DELETES") == "1"
         self.created_variable_names: list[str] = []
+        # Fixture variables left for the same purge; a test re-run deletes them first (fixed names).
+        self.deferred_variable_names: list[str] = []
+        # Legacy rule-engine variables live in app state, out of the purge's reach: always deleted inline.
+        self.rule_engine_variable_names: set[str] = set()
 
         # Dispatch-dependent tests may attempt a watchdog disable/enable before
         # one retry. Only the retried operation/readback establishes recovery;
@@ -1571,7 +1573,7 @@ class TestRunner:
 
         # Check if one already exists from a previous test group
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": SCAFFOLD_PREFIX, "fields": ["id", "label"]})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1601,7 +1603,7 @@ class TestRunner:
 
         label = f"{SCAFFOLD_PREFIX}Action_Shade"
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": SCAFFOLD_PREFIX, "fields": ["id", "label"]})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1628,7 +1630,7 @@ class TestRunner:
         dev_id = (dev_obj or {}).get("id") or res_map.get("id", res_map.get("deviceId", ""))
         if not dev_id:
             time.sleep(0.3)
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1653,6 +1655,85 @@ class TestRunner:
         "omni":     ("E2E_PERM_Omni",     "Virtual Omni Sensor"),
     }
 
+    # PERMANENT hub variables for tests that only need a variable to exist (create/delete is not their
+    # subject). Created on a fresh hub, reset to their starting value per use, never deleted; the
+    # E2E_PERM_ prefix keeps them out of the BAT_E2E_ purge. CRUD tests keep their own throwaways.
+    PERM_VARIABLES: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "sv_number": ("E2E_PERM_Var_SvNumber", "Number", "0"),
+        "sv_string": ("E2E_PERM_Var_SvString", "String", "init"),
+        "sv_bool": ("E2E_PERM_Var_SvBool", "Boolean", "false"),
+        "sv_str_src": ("E2E_PERM_Var_SvStrSrc", "String", "copied"),
+        "sv_num_src": ("E2E_PERM_Var_SvNumSrc", "Number", "7"),
+        "contains_msg": ("E2E_PERM_Var_ContainsMsg", "String", "init"),
+        "bool_flag": ("E2E_PERM_Var_BoolFlag", "Boolean", "false"),
+        "in_use": ("E2E_PERM_Var_InUse", "Number", "0"),
+        "mesh_share": ("E2E_PERM_Var_MeshShare", "String", "share-me"),
+        "bps_write": ("E2E_PERM_Var_BpsWrite", "String", "v1"),
+    }
+
+    def _hub_variables_by_name(self) -> dict[str, dict]:
+        rows: dict[str, dict] = {}
+        cursor = None
+        while True:
+            args = {"cursor": cursor} if cursor else {}
+            page = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": args})
+            assert isinstance(page.get("hubVariables"), list), f"hub variable listing failed: {page}"
+            rows.update({str(v.get("name")): v for v in page["hubVariables"] if isinstance(v, dict)})
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return rows
+
+    def _ensure_perm_variables(self, *keys: str) -> dict[str, str]:
+        """Names of the requested permanent variables, created or reset to their starting values."""
+        def same(value, wanted: str) -> bool:
+            try:
+                return float(value) == float(wanted)
+            except (TypeError, ValueError):
+                return str(value).lower() == wanted.lower()
+
+        existing = self._hub_variables_by_name()
+        create, reset = [], []
+        for key in keys:
+            name, var_type, value = self.PERM_VARIABLES[key]
+            row = existing.get(name)
+            if row is not None and str(row.get("type", "")).lower() != var_type.lower():
+                self._delete_variable_safe(name, inline=True)
+                row = None
+            if row is None:
+                create.append({"name": name, "type": var_type, "value": value})
+            elif not same(row.get("value"), value):
+                reset.append((name, value))
+        if create:
+            print(f"    [PERM FIXTURE] creating hub variables {[it['name'] for it in create]} -- reused by later runs")
+            self._create_hub_variables_visible(create)
+        for name, value in reset:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": name, "value": value}})
+        return {key: self.PERM_VARIABLES[key][0] for key in keys}
+
+    def _create_hub_variables_visible(self, items: list[dict]) -> None:
+        """Bulk-create hub variables, then poll the bulk getAllGlobalVars() read until all are listed.
+
+        hub_create_variable has a known post-write visibility race (a commit that lags the bulk
+        read, or a 504 that still committed), so a miss re-issues the whole bulk create."""
+        names = [it["name"] for it in items]
+        for attempt in range(1, 4):
+            try:
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable", "args": {"variables": items, "confirm": True}})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                print(f"    bulk hub_create_variable attempt {attempt}/3 raised ({exc}); the visibility poll is authoritative")
+            deadline = time.time() + 12.0
+            while time.time() < deadline:
+                listed = self._hub_variables_by_name()
+                if all(n in listed for n in names):
+                    return
+                time.sleep(1.0)
+            if attempt < 3:
+                print(f"    not all of {names} visible after attempt {attempt}/3; re-issuing the bulk create")
+                time.sleep(2.0)
+        raise AssertionError(f"hub variables {names} never all appeared in the bulk getAllGlobalVars() read")
+
     def _ensure_perm_fixture(self, key: str) -> str:
         """Device id of a permanent non-child fixture, creating it if this hub has none yet.
 
@@ -1664,7 +1745,8 @@ class TestRunner:
         if cached:
             return cached
 
-        found = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
+        # One lookup resolves every fixture: they share the E2E_PERM_ label prefix.
+        found = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": "E2E_PERM_"})
         # A structured failure ([success:false,...]) carries no isError, so call_tool returns it as an
         # ordinary dict with no "devices" key. Treating that as "absent" would create a duplicate
         # PERMANENT device on every incident, and nothing ever sweeps E2E_PERM_*.
@@ -1672,10 +1754,12 @@ class TestRunner:
             f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
         assert isinstance(found.get("devices"), list), \
             f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
-        for d in found["devices"]:
-            if (d.get("label") or "") == label and d.get("id") is not None:
-                self._perm_fixture_ids[key] = str(d["id"])
-                return self._perm_fixture_ids[key]
+        by_label = {(d.get("label") or ""): str(d["id"]) for d in found["devices"] if d.get("id") is not None}
+        for other, (other_label, _) in self.PERM_FIXTURES.items():
+            if other_label in by_label:
+                self._perm_fixture_ids.setdefault(other, by_label[other_label])
+        if key in self._perm_fixture_ids:
+            return self._perm_fixture_ids[key]
 
         type_id = self._driver_type_id(driver_name)
         created = self.client.call_tool("hub_manage_devices", {
@@ -1746,11 +1830,12 @@ class TestRunner:
         res_map = result if isinstance(result, dict) else {}
         dev_obj = res_map.get("device")
         dev_id = (dev_obj or {}).get("id") or res_map.get("id", res_map.get("deviceId", ""))
+        self._last_created_dni = str((dev_obj or {}).get("deviceNetworkId") or "")
 
         # Response may not include ID directly (or was dropped by a 504) — look it up
         if not dev_id:
             time.sleep(0.3)
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1773,7 +1858,7 @@ class TestRunner:
         labels = [f"{SCAFFOLD_PREFIX}Temp_A", f"{SCAFFOLD_PREFIX}Temp_B"]
         found: dict[str, str] = {}
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": SCAFFOLD_PREFIX, "fields": ["id", "label"]})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1802,7 +1887,7 @@ class TestRunner:
             dev_id = result.get("id", result.get("deviceId", ""))
             if not dev_id:
                 time.sleep(0.3)
-                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": want})
                 dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
                 for d in dev_list:
                     lbl = d.get("label") or d.get("name") or ""
@@ -2001,6 +2086,8 @@ class TestRunner:
         # second transient failure is then an honest red.
         retry_reason = ""
         for attempt in (1, 2):
+            if attempt == 2:
+                self._flush_deferred_variables()
             try:
                 method()
                 elapsed = time.monotonic() - t0
@@ -2151,6 +2238,7 @@ class TestRunner:
         write may have committed; verify by reading it back (a genuine non-commit is
         surfaced, not silently soft-passed)."""
         self.created_variable_names.append(name)
+        self.rule_engine_variable_names.add(name)
         try:
             self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": name, "type": var_type, "value": value},
@@ -2274,7 +2362,27 @@ class TestRunner:
         assert act_field, f"doActPage should reveal an actType.<n> picker: {page}"
         return act_field.split(".", 1)[1]
 
-    def _delete_variable_safe(self, name: str) -> None:
+    def _flush_deferred_variables(self) -> None:
+        """Delete deferred fixture variables now, so a re-run can recreate its fixed names."""
+        deferred = getattr(self, "deferred_variable_names", [])
+        if not deferred:
+            return
+        for name in list(deferred):
+            self._delete_variable_safe(name, inline=True)
+        remaining = set(self._hub_variables_by_name())
+        deferred[:] = [name for name in deferred if name in remaining]
+        if deferred:
+            print(f"    [WARN] deferred variables still present before the re-run: {deferred}")
+
+    def _delete_variable_safe(self, name: str, *, inline: bool = False) -> None:
+        if name in getattr(self, "rule_engine_variable_names", ()):
+            inline = True
+        if getattr(self, "defer_native_deletes", False) and not inline:
+            if name in self.created_variable_names:
+                self.created_variable_names.remove(name)
+            if name not in self.deferred_variable_names:
+                self.deferred_variable_names.append(name)
+            return
         try:
             # confirm=true is required by Hub Admin Write gate; without it the
             # delete is silently skipped (try/except swallows the refusal),
@@ -3386,7 +3494,7 @@ class TestRunner:
 
     @test("devices")
     def test_device_configuration_matrix(self) -> None:
-        """Exercise native transport for provisioned child, selected and bypass ownership separately."""
+        """Exercise native transport for provisioned child and selected fixtures; bypass reachability only."""
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         manifest = json.loads((fixture_dir / "device-configuration-manifest.json").read_text(encoding="utf-8"))
         assert manifest["version"] == 2, "Update the configuration fixture manifest and provisioned drivers together"
@@ -3395,7 +3503,7 @@ class TestRunner:
             "probeText": ("text", "original saved text"), "probeEnum": ("enum", "eco"),
             "probeMultiple": ("enum", ["red"]),
         }
-        inventory = self._device_allowlist_inventory(labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
+        inventory = self._device_allowlist_inventory(cached=True, labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
         assert isinstance(inventory.get("devices"), list), f"Configuration fixture inventory failed: {inventory}"
         catalog = self.client.call_tool("hub_read_apps_code", {
             "tool": "hub_list_drivers", "args": {"include": "all"},
@@ -3429,6 +3537,17 @@ class TestRunner:
         for position, (profile, device_id) in enumerate(profiles):
             observer_id = profiles[(position + 1) % len(profiles)][1]
             assert observer_id != device_id, "Disabling a fixture requires an independent standing observer"
+            if profile["path"] == "standalone-bypass":
+                # Bypass stays on all run and the update/read path never branches on selection, so
+                # the write cycle would repeat standalone-sdk; bypass writes are covered by
+                # test_bypass_device_allowlist_reaches_unlisted_device. Prove reachability only.
+                cfg = self.client.call_tool("hub_read_devices", {
+                    "tool": "hub_get_device", "args": {"deviceId": device_id, "mode": "configuration"},
+                })
+                assert cfg.get("preferenceRead", {}).get("status") == "complete", (
+                    f"Unselected configuration fixture is unreadable through bypass: {cfg}"
+                )
+                continue
             self._device_configuration_profile(profile, device_id, observer_id, manifest, driver_types, expected, room_name)
 
     def _assert_configuration_fixture_parent(self, profile, native):
@@ -3905,15 +4024,17 @@ class TestRunner:
 
     @test("devices")
     def test_configuration_fixture_lan_dispatch(self) -> None:
-        """Prove explicit asynchronous HubAction callbacks separately for each provisioned dispatch path."""
+        """Prove explicit asynchronous HubAction callbacks for the child and standalone dispatch paths."""
         manifest = json.loads((Path(__file__).resolve().parent / "fixtures" /
                                "device-configuration-manifest.json").read_text(encoding="utf-8"))
-        inventory = self._device_allowlist_inventory(labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
+        inventory = self._device_allowlist_inventory(cached=True, labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
         for profile in manifest["profiles"]:
             matches = [row for row in inventory.get("devices", []) if row.get("label") == profile["label"]]
             assert len(matches) == 1 and matches[0].get("mcpAuthorized") is profile["authorized"], (
                 f"Provision the permanent {profile['path']} fixture before E2E: {matches}"
             )
+            if profile["path"] == "standalone-bypass":
+                continue  # same native dispatch as standalone-sdk; bypass access is proven elsewhere
             device_id = str(matches[0]["id"])
             nonce = str(time.time_ns())
             captured = self._write_once(None, "hub_call_device_command", {
@@ -4075,16 +4196,19 @@ class TestRunner:
         dev_id = self._create_virtual_switch_device(f"{PREFIX}Tags_Edit")
         assert dev_id, "failed to create the tag-edit throwaway switch"
         # Track the DNI so the cleanup sweep reaps the device even if this test dies early.
-        tags_dni = ""
-        try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}Tags_Edit"})
-            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-                tags_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                if tags_dni:
-                    self.created_device_dnis.append(tags_dni)
-                    break
-        except Exception:
-            pass
+        tags_dni = self._last_created_dni
+        if tags_dni:
+            self.created_device_dnis.append(tags_dni)
+        else:
+            try:
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}Tags_Edit"})
+                for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                    tags_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    if tags_dni:
+                        self.created_device_dnis.append(tags_dni)
+                        break
+            except Exception:
+                pass
 
         def preserved_form_fields():
             result = self.client.call_tool("hub_get_device", {
@@ -4180,7 +4304,7 @@ class TestRunner:
         finally:
             # Created via the catalog path (a real device, not an MCP child) -- delete by id
             # through hub_delete_device. Best-effort: the confirm gate needs a recent backup,
-            # so a failure here just leaves a labeled artifact for the --cleanup-only backstop.
+            # so a failure here just leaves a labeled artifact for the teardown purge.
             try:
                 self.client.call_tool("hub_manage_destructive_ops", {
                     "tool": "hub_delete_device", "args": {"deviceId": new_id, "confirm": True},
@@ -4211,7 +4335,8 @@ class TestRunner:
     def _find_device_dni_by_label(self, label: str) -> str | None:
         """Look up a virtual device's DNI by exact run-unique label."""
         try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            # Filter on the label itself: a PREFIX filter reads fullJson for every BAT_E2E_ device.
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
         except (McpError, McpToolError, requests.HTTPError) as exc:
             print(f"    [WARN] hub_list_devices lookup for {label!r} failed: {exc}")
             return None
@@ -4224,8 +4349,8 @@ class TestRunner:
                     return found
         return None
 
-    def _device_dni_present(self, dni: str) -> bool:
-        listed = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+    def _device_dni_present(self, dni: str, label: str = PREFIX) -> bool:
+        listed = self.client.call_tool("hub_list_devices", {"labelFilter": label})
         devices = listed if isinstance(listed, list) else listed.get("devices", [])
         return any(
             str(d.get("deviceNetworkId", d.get("dni", ""))) == str(dni)
@@ -4260,9 +4385,9 @@ class TestRunner:
         result = cw["response"]
         # Captured before the labelFilter lookup below, which is itself a tool call.
         create_rounds = self.client._last_continuation_rounds
-        # Response may be {success: true, message: "..."} without device IDs at top level
-        # Track DNI if available, otherwise look it up via hub_list_devices (labelFilter)
-        dni = result.get("deviceNetworkId", result.get("dni", ""))
+        # The create returns the device under "device"; fall back to a labelFilter lookup.
+        dni = (result.get("device") or {}).get("deviceNetworkId") or result.get("deviceNetworkId", result.get("dni", ""))
+        self.virtual_switch_id = str((result.get("device") or {}).get("id") or "") or None
         if dni:
             self.virtual_switch_dni = str(dni)
             self.created_device_dnis.append(self.virtual_switch_dni)
@@ -4290,28 +4415,33 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_command_virtual_switch(self) -> None:
-        # Command round-trips get their OWN throwaway device, created here and
-        # deleted in the finally -- NOT the shared scaffold, which the rest of the
-        # suite references (rule fixtures subscribe to it; poll tests read it) and
-        # whose history is therefore unpredictable. The create/delete cost is
-        # negligible next to a cross-run interference hunt. State-aware on purpose:
-        # read the CURRENT state first, toggle to the opposite, then toggle back, so
-        # each leg observes an actual state CHANGE -- polling for a state the device
-        # is already in would pass without any event processing at all.
-        dev_id = self._create_virtual_switch_device(f"{PREFIX}CmdRoundtrip")
+        # Command round-trips drive a run-unique device -- NOT the shared scaffold, which the rest
+        # of the suite references (rule fixtures subscribe to it; poll tests read it) and whose
+        # history is therefore unpredictable. That is the switch test_create_virtual_switch made
+        # this run (test_delete_virtual_switch deletes it); a focused run creates its own throwaway.
+        # State-aware on purpose: read the CURRENT state first, toggle to the opposite, then toggle
+        # back, so each leg observes an actual state CHANGE -- polling for a state the device is
+        # already in would pass without any event processing at all.
+        reused = bool(self.virtual_switch_id)
+        label_prefix = self.virtual_switch_label if reused else f"{PREFIX}CmdRoundtrip"
+        dev_id = self.virtual_switch_id or self._create_virtual_switch_device(label_prefix)
         assert dev_id, "Failed to create the command round-trip throwaway switch"
-        # Capture the DNI for the inline delete below; also track it so the cleanup
+        # A throwaway's DNI drives the inline delete below; it is also tracked so the cleanup
         # sweep reaps the device if this test dies before its finally.
-        cmd_dni = ""
-        try:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}CmdRoundtrip"})
-            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-                cmd_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                if cmd_dni:
-                    self.created_device_dnis.append(cmd_dni)
-                    break
-        except Exception:
-            pass
+        cmd_dni = "" if reused else self._last_created_dni
+        if not cmd_dni and not reused:
+            try:
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}CmdRoundtrip"})
+                for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                    cmd_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    if cmd_dni:
+                        break
+            except Exception:
+                pass
+        if cmd_dni:
+            self.created_device_dnis.append(cmd_dni)
+        own_label = self.client.call_tool("hub_get_device", {"deviceId": dev_id}).get("label")
+        assert isinstance(own_label, str) and own_label.startswith(label_prefix), own_label
 
         # Event processing can lag on a busy hub, so block-poll the attribute instead
         # of the old fixed sleep + single read (which flaked as "Expected switch=on,
@@ -4392,9 +4522,7 @@ class TestRunner:
             return _poll_switch(value)
 
         def _assert_filtered_switch(value: str) -> None:
-            summary = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
-            label = summary.get("label")
-            assert isinstance(label, str) and label.startswith(f"{PREFIX}CmdRoundtrip"), summary
+            label = own_label
             inventory = self.client.call_tool("hub_list_devices", {
                 "labelFilter": label, "onlyOn": True,
             })
@@ -4469,7 +4597,6 @@ class TestRunner:
             # command-<name> event, so the switch's own state events carry producedBy -- hub HTML
             # that must come back parsed. Command-driven rows name the device itself; the initial
             # state the MCP app set at creation names that app instead.
-            own_label = self.client.call_tool("hub_get_device", {"deviceId": dev_id}).get("label")
             ev = self.client.call_tool("hub_list_device_events", {
                 "deviceId": dev_id, "attribute": "switch", "hoursBack": 1,
             })
@@ -4493,6 +4620,8 @@ class TestRunner:
                     self.client.call_tool("hub_manage_virtual_device", {
                         "action": "delete", "deviceNetworkId": cmd_dni, "confirm": True,
                     })
+                    if cmd_dni in self.created_device_dnis:
+                        self.created_device_dnis.remove(cmd_dni)
                 except Exception as exc:
                     print(f"  [WARN] could not delete the command round-trip switch ({cmd_dni}): {exc}")
 
@@ -4783,7 +4912,7 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
-        result = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+        result = self.client.call_tool("hub_list_devices", {"labelFilter": self.virtual_switch_label})
         dev_list = result if isinstance(result, list) else result.get("devices", [])
         found = any(
             self.virtual_switch_label == (d.get("label") or d.get("name") or "")
@@ -4797,10 +4926,16 @@ class TestRunner:
         owned_labels = [f"{PREFIX}Virtual_Page_{suffix}_{index}" for index in range(4)]
         owned_dnis: list[str] = []
         cleanup_errors: list[str] = []
+        shortfall = 0
         try:
-            # Provision the page prerequisite inside this scenario. A clean hub or a
-            # focused --test run must not depend on ambient MCP child devices.
-            for label in owned_labels:
+            # The persistent scaffold children supply the pages; throwaways cover only a
+            # shortfall, so a clean hub or a focused --test run still has four devices.
+            self.get_test_switch_id()
+            self.get_test_temperature_ids()
+            self.get_test_shade_id()
+            full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+            shortfall = max(0, 4 - len(full.get("devices", [])))
+            for label in owned_labels[:shortfall]:
                 created = self._soft_write(
                     lambda label=label: self.client.call_tool("hub_manage_virtual_device", {
                         "action": "create", "deviceType": "Virtual Switch",
@@ -4822,7 +4957,8 @@ class TestRunner:
                 owned_dnis.append(dni)
                 self.created_device_dnis.append(dni)
 
-            full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+            if shortfall:
+                full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
             full_devices = full.get("devices", [])
             assert len(full_devices) >= 4, \
                 f"virtual pagination fixtures missing, got {len(full_devices)} devices"
@@ -4870,17 +5006,20 @@ class TestRunner:
             # Recover any committed create whose response/DNI lookup failed, then remove
             # every fixture this scenario can identify. Global cleanup retains the DNIs
             # until each deletion is verified.
-            for label in owned_labels:
-                recovered = self._find_device_dni_by_label(label)
-                if recovered and recovered not in owned_dnis:
-                    owned_dnis.append(recovered)
-                    self.created_device_dnis.append(recovered)
+            page_label = f"{PREFIX}Virtual_Page_{suffix}_"
+            if len(owned_dnis) < shortfall:
+                listed = self.client.call_tool("hub_list_devices", {"labelFilter": page_label})
+                for d in listed.get("devices", []) if isinstance(listed, dict) else []:
+                    recovered = str(d.get("deviceNetworkId") or "")
+                    if recovered and recovered not in owned_dnis:
+                        owned_dnis.append(recovered)
+                        self.created_device_dnis.append(recovered)
             for dni in reversed(owned_dnis):
                 try:
                     deleted = self._soft_write(
                         lambda dni=dni: self.client.call_tool("hub_manage_virtual_device", {
                             "action": "delete", "deviceNetworkId": dni, "confirm": True}),
-                        lambda dni=dni: not self._device_dni_present(dni),
+                        lambda dni=dni: not self._device_dni_present(dni, page_label),
                         f"delete virtual pagination fixture {dni}",
                     )
                     if deleted["relayDropped"]:
@@ -4888,22 +5027,32 @@ class TestRunner:
                     else:
                         assert deleted["response"].get("success") is True, \
                             f"pagination fixture delete failed: {deleted['response']}"
-                    assert not self._device_dni_present(dni), \
-                        f"pagination fixture {dni} remains after successful delete"
-                    while dni in self.created_device_dnis:
-                        self.created_device_dnis.remove(dni)
                 except Exception as exc:
                     cleanup_errors.append(f"{dni}: {exc}")
+            # One listing proves every delete landed.
+            if owned_dnis:
+                try:
+                    remaining = self.client.call_tool("hub_list_devices", {"labelFilter": page_label})
+                    rows = remaining.get("devices", []) if isinstance(remaining, dict) else []
+                    left = {str(d.get("deviceNetworkId") or "") for d in rows}
+                    for dni in owned_dnis:
+                        if dni in left:
+                            cleanup_errors.append(f"{dni}: remains after successful delete")
+                        else:
+                            while dni in self.created_device_dnis:
+                                self.created_device_dnis.remove(dni)
+                except Exception as exc:
+                    cleanup_errors.append(f"post-delete listing failed (fixtures stay tracked for the sweep): {exc}")
             assert not cleanup_errors, "Virtual pagination fixture cleanup failed: " + "; ".join(cleanup_errors)
 
     @test("virtual_device_lifecycle")
     def test_delete_virtual_switch(self) -> None:
         # Prefer the exact identity captured from create. The label fallback is only
         # for a response shape that carried no DNI; it is exact + run-unique.
-        vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-        dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
         target_dni = self.virtual_switch_dni
         if not target_dni:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": self.virtual_switch_label})
+            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
                 if self.virtual_switch_label == lbl:
@@ -4919,7 +5068,7 @@ class TestRunner:
                 "action": "delete",
                 "deviceNetworkId": target_dni,
                 "confirm": True}),
-            lambda: not self._device_dni_present(target_dni),
+            lambda: not self._device_dni_present(target_dni, self.virtual_switch_label),
             "delete virtual switch",
         )
         if dw["relayDropped"]:
@@ -4929,7 +5078,7 @@ class TestRunner:
         self.virtual_switch_dni = None
 
         # Verify it is gone
-        vdevs2 = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+        vdevs2 = self.client.call_tool("hub_list_devices", {"labelFilter": self.virtual_switch_label})
         dev_list2 = vdevs2 if isinstance(vdevs2, list) else vdevs2.get("devices", [])
         still_there = any(
             str(d.get("deviceNetworkId", d.get("dni", ""))) == str(target_dni)
@@ -6903,13 +7052,12 @@ class TestRunner:
     def test_button_rule_create_via_controller(self) -> None:
         # A Button Rule is a grandchild of a Button Controller and
         # only renders when created through the controller's add-button flow. Create
-        # a controller + a virtual button device, then create a button rule via the
+        # a controller bound to the permanent button, then create a button rule via the
         # buttonRule param, author an action via hub_set_rule, and clean up.
         # The "Button Controllers" built-in parent app is auto-installed by
         # _discoverParentAppId (via the Add Built-In App / sysApp endpoint) when absent,
         # so this runs on a clean hub (e.g. the CI test hub) that doesn't have it yet.
         controller_id = None
-        button_dni = None
         ctrl_label = f"{PREFIX}BtnCtrl"
         try:
             # This test is a tightly-coupled CHAIN: each step's RESPONSE feeds the next
@@ -6919,16 +7067,9 @@ class TestRunner:
             # remains the backstop for an unexpected transport drop: it
             # adopts the controller by label so cleanup/finally can reap it.
 
-            # Virtual button device for the controller to bind to.
-            dev = self._write_once(None, "hub_manage_virtual_device",
-                {"action": "create", "deviceType": "Virtual Button",
-                 "deviceLabel": f"{PREFIX}BtnDev", "confirm": True},
-                "virtual button create")
-            button_dni = str((dev.get("device") or {}).get("deviceNetworkId") or dev.get("deviceNetworkId") or "")
-            device_id = str((dev.get("device") or {}).get("id") or dev.get("deviceId") or dev.get("id") or "")
-            assert device_id, f"virtual button create did not return a device id: {dev}"
-            if button_dni:
-                self.created_device_dnis.append(button_dni)
+            # The permanent button fixture is the controller's bind target (the subject is the
+            # button rule, not device creation).
+            device_id = self._ensure_perm_fixture("button")
 
             # Button Controller-5.1 instance + assign its button device.
             ctrl = self._write_once("hub_manage_native_rules_and_apps", "hub_set_native_app",
@@ -7019,17 +7160,6 @@ class TestRunner:
                     self._untrack_native_app(controller_id)
                 except (McpToolError, McpError, requests.HTTPError) as exc:
                     print(f"  [WARN] button-rule e2e cleanup: delete controller {controller_id} failed: {exc}")
-            # Delete the virtual button device now (not just via global cleanup) so the hub
-            # stays clean even if a later test fails or the run is interrupted.
-            if button_dni:
-                try:
-                    self.client.call_tool("hub_manage_virtual_device", {
-                        "action": "delete", "deviceNetworkId": button_dni, "confirm": True,
-                    })
-                    if button_dni in self.created_device_dnis:
-                        self.created_device_dnis.remove(button_dni)
-                except (McpToolError, McpError, requests.HTTPError) as exc:
-                    print(f"  [WARN] button-rule e2e cleanup: delete device {button_dni} failed: {exc}")
 
     # ---- shared helpers for the native-authoring coverage below ----
 
@@ -7400,7 +7530,7 @@ class TestRunner:
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
         # Fixture-teardown delete. When deferral is on, skip it (rule stays tracked) so it's reaped by
-        # the restore step's fixture purge, not inline on the test critical path. Tests whose
+        # the teardown's watchdog purge, not inline on the test critical path. Tests whose
         # delete IS the assertion call hub_delete_native_app directly (not this helper), so they keep
         # deleting inline regardless.
         if self.defer_native_deletes:
@@ -7744,12 +7874,13 @@ class TestRunner:
         # authoritative broken:true verdict from /app/ruleBuilderJson. Proves the marquee path live.
         dev_id = self._create_virtual_switch_device(f"{PREFIX}RHBrokenDev")
         assert dev_id, "could not create the trigger device"
-        dni = ""
-        vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-        for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-            if str(d.get("id")) == str(dev_id):
-                dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
-                break
+        dni = self._last_created_dni
+        if not dni:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}RHBrokenDev"})
+            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                if str(d.get("id")) == str(dev_id):
+                    dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
+                    break
         assert dni, f"could not resolve DNI for trigger device {dev_id}"
         self.created_device_dnis.append(dni)  # teardown safety net (harmless if already deleted mid-test)
 
@@ -7766,6 +7897,8 @@ class TestRunner:
             # Break it: delete the trigger device so the trigger reference dangles.
             self.client.call_tool("hub_manage_virtual_device", {
                 "action": "delete", "deviceNetworkId": dni, "confirm": True})
+            if dni in self.created_device_dnis:
+                self.created_device_dnis.remove(dni)
 
             # The compiled `broken` boolean lags the *BROKEN* label until the rule re-validates;
             # rendering the config page forces that re-validation.
@@ -8620,12 +8753,8 @@ class TestRunner:
         # a String variable Required Expression with comparator '*contains*' writes the
         # comparator VERBATIM (asterisks kept, not stripped or mapped to a glyph). A non-empty
         # initial value avoids the empty-String-var-never-persists bug.
-        str_var = f"{PREFIX}contains_msg"
-        # A Variable condition's xVar picker lists HUB variables, so this must be a real hub var
-        # via hub_create_variable -- hub_set_variable (the _create_variable helper) falls back to
-        # the rule_engine namespace for a missing name and never appears in the picker. Poll for
-        # the known create_variable post-write visibility race before the condition write.
-        self._create_hub_variable_visible(str_var, "String", "init")
+        str_var = self._ensure_perm_variables("contains_msg")["contains_msg"]
+        # A Variable condition's xVar picker lists HUB variables only, hence a permanent hub variable.
         contains_spec = {"conditions": [
             {"capability": "Variable", "variable": str_var,
              "comparator": "*contains*", "value": "error"}]}
@@ -8649,8 +8778,7 @@ class TestRunner:
         # A Boolean variable has no comparator field: both the Required Expression (STPage) and an
         # IF action (doActPage) write its true/false value directly. A second small rule keeps the
         # String fixture above untouched.
-        bool_var = f"{PREFIX}bool_flag"
-        self._create_hub_variable_visible(bool_var, "Boolean", "false")
+        bool_var = self._ensure_perm_variables("bool_flag")["bool_flag"]
         bool_app, bool_created = self._create_native_rule("BoolVarCond", {
             "addRequiredExpression": {"conditions": [{"capability": "Variable", "variable": bool_var, "value": True}]},
             "addActions": [
@@ -8918,438 +9046,381 @@ class TestRunner:
         # negative case, Rule D). Use a virtual temperature sensor for the numeric happy path.
         temp_id = int(self.get_test_temperature_ids()[0])
         switch_id = int(self.get_test_switch_id())
-        var_name = f"{PREFIX}sv_modes"          # Number target
-        str_var_name = f"{PREFIX}sv_str"        # String target (numeric-target-only reject)
-        bool_var_name = f"{PREFIX}sv_bool"      # Boolean target (numeric-target-only reject)
-        str_src_name = f"{PREFIX}sv_str_src"    # String copy source
-        num_src_name = f"{PREFIX}sv_num_src"    # Number copy source (Rule D runs the copy)
+        # Permanent variables, reset to their starting values: Number target, String and Boolean
+        # targets (numeric-target-only rejects), String copy source, Number copy source (Rule D).
+        perm = self._ensure_perm_variables("sv_number", "sv_string", "sv_bool", "sv_str_src", "sv_num_src")
+        var_name, str_var_name, bool_var_name = perm["sv_number"], perm["sv_string"], perm["sv_bool"]
+        str_src_name, num_src_name = perm["sv_str_src"], perm["sv_num_src"]
 
-        # Create a var via hub_create_variable (guaranteed to CREATE a missing var in the hub
-        # namespace, unlike hub_set_variable whose missing-var semantics are ambiguous), then wait
-        # for it to become visible to the BULK getAllGlobalVars() read. The setVariable handler
-        # validates the target against getAllGlobalVars(), and hub_list_variables reads that SAME
-        # surface -- so polling it is an exact proxy for what the validator sees.
-        #
-        # hub_create_variable has a known intermittent post-write visibility race: it spuriously
-        # errors ("wizard completed but not visible via getGlobalVar") or commits but the var does
-        # not appear in the bulk read for a beat -- and a fresh CREATE settles it. So each attempt
-        # is create-then-poll, and on a race (create error OR poll-miss) the WHOLE create is
-        # re-issued, up to a few times with short backoff. Only an exhausted retry budget fails.
-        def _create_vars_and_wait(items: list[dict]) -> None:
-            # Bulk-create ALL targets in ONE hub_create_variable call, then ONE shared poll until they
-            # are all visible in the bulk getAllGlobalVars() surface the setVariable validator consults.
-            # On the documented post-write visibility race (a commit that lags the bulk read, or a 504
-            # that still committed), re-issue the whole bulk create. Only an exhausted budget fails.
-            names = [it["name"] for it in items]
-            for n in names:
-                self.created_variable_names.append(n)
-            max_attempts = 3
-            poll_secs = 12.0
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_create_variable", "args": {"variables": items, "confirm": True}})
-                except (McpError, McpToolError, requests.HTTPError) as exc:
-                    print(f"    bulk hub_create_variable attempt {attempt}/{max_attempts} raised "
-                          f"({exc}); the visibility poll is authoritative")
-                deadline = time.time() + poll_secs
-                while time.time() < deadline:
-                    if all(self._hub_variable_visible_in_bulk(n) for n in names):
-                        return
-                    time.sleep(1.0)
-                if attempt < max_attempts:
-                    print(f"    not all of {names} visible after attempt {attempt}/{max_attempts} "
-                          "(create_variable post-write visibility race); re-issuing the bulk create")
-                    time.sleep(2.0)
-            raise AssertionError(
-                f"hub variables {names} never all appeared in the bulk getAllGlobalVars() read after "
-                f"{max_attempts} bulk-create attempts -- setVariable validation cannot proceed")
-
-        # A String var MUST get a NON-EMPTY value (an empty string does not persist -- the wizard reports
-        # complete but nothing lands). Numeric -> "0", Boolean -> "false", String -> a non-empty placeholder.
-        _create_vars_and_wait([
-            {"name": var_name, "type": "Number", "value": "0"},
-            {"name": str_var_name, "type": "String", "value": "init"},
-            {"name": bool_var_name, "type": "Boolean", "value": "false"},
-            {"name": str_src_name, "type": "String", "value": "copied"},
-            {"name": num_src_name, "type": "Number", "value": "7"},
-        ])
         # The matrix is split across SMALL rules (<=3 setVariable actions each): the classic wizard
         # re-POSTs the FULL rule page per submitOnChange, so piling many actions into one rule trips
         # the hub's per-app load limiter (a 5th action lands numOp.<N> as not_in_schema). Each rule
-        # below is pristine (created + deleted in its own try/finally); the three shared vars are
-        # created once up front (they do not conflict) and deleted at the very end.
+        # below is pristine (created + deleted in its own try/finally); the shared variables are
+        # permanent fixtures reset above.
+        # Rule A: fromDevice (temperature -> Number var) + value read-back.
+        from_device_spec = {"capability": "setVariable", "variable": var_name,
+                            "fromDevice": {"deviceId": temp_id, "attribute": "temperature"}}
+        app_a, created_a = self._create_native_rule("SetVarFromDev", {
+            "addActions": [from_device_spec],
+        }, return_result=True)
         try:
-            # Rule A: fromDevice (temperature -> Number var) + value read-back.
-            from_device_spec = {"capability": "setVariable", "variable": var_name,
-                                "fromDevice": {"deviceId": temp_id, "attribute": "temperature"}}
-            app_a, created_a = self._create_native_rule("SetVarFromDev", {
-                "addActions": [from_device_spec],
-            }, return_result=True)
-            try:
-                fd = ((created_a or {}).get("actions") or [{}])[0]
-                assert fd.get("success") is not False, \
-                    f"setVariable fromDevice hard-errored: {fd}"
-                fd_applied = fd.get("settingsApplied") or []
-                # Value read-back: assert the actual VALUE that landed, not just key presence -- a
-                # wrong-value write that still lands the key would pass a key-prefix-only check.
-                # The tCustomAttr key is namespaced by the RM-assigned action index.
-                settings_a = (self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config", "args": {"appId": app_a, "includeSettings": True}}).get("settings") or {})
-                fd_idx = fd.get("actionIndex") or next((str(k).split(".", 1)[1]
-                    for k, value in settings_a.items()
-                    if str(k).startswith("tCustomAttr.") and value == "temperature"), None)
-                assert fd_idx is not None, f"fromDevice action index was not returned or persisted: {settings_a}"
-                if created_a is not None:
-                    assert any(str(k).startswith("customDev.") for k in fd_applied), \
-                        f"fromDevice device picker (customDev.<N>) did not land; settingsApplied={fd_applied}"
-                    assert any(str(k).startswith("tCustomAttr.") for k in fd_applied), \
-                        f"fromDevice attribute enum (tCustomAttr.<N>) did not land; settingsApplied={fd_applied}"
-                    assert not fd.get("partial"), f"fromDevice action falsely flagged partial: {fd}"
-                assert settings_a.get(f"tCustomAttr.{fd_idx}") == "temperature", \
-                    f"fromDevice attribute persisted with the wrong value; settings={settings_a}"
-                # Read back the device-id VALUE too (customDev stores the selected device id), not
-                # just key presence -- a wrong device would still land the key. RM may serialize the
-                # capability picker as a bare id or an id-keyed map, so assert the id appears in the
-                # persisted value's string form rather than pinning one serialization.
-                customdev_val = str(settings_a.get(f"customDev.{fd_idx}"))
-                assert str(temp_id) in customdev_val, \
-                    f"fromDevice device id {temp_id} not in persisted customDev value {customdev_val!r}; settings={settings_a}"
-                self._assert_rule_healthy(app_a)
-            finally:
-                self._delete_native(app_a)
-
-            # Rule B: math binary '+' (constant second operand) + math var-minus-var (xVar4=varname)
-            # + value read-backs.
-            math_specs = [
-                {"capability": "setVariable", "variable": var_name,
-                 "math": {"left": var_name, "op": "+", "right": 10}},
-                {"capability": "setVariable", "variable": var_name,
-                 "math": {"left": var_name, "op": "-", "right": var_name}},
-                {"capability": "setVariable", "variable": var_name,
-                 "math": {"left": var_name, "op": "+", "right": 5.5}},
-            ]
-            # Use the real client continuation loop, without the fixture helper's early
-            # adopt-by-label fallback. A visible shell is not a completed multi-action write.
-            self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
-            math_label = (f"{PREFIX}SetVarMathBin_{_run_artifact_suffix()}_"
-                          f"{self._native_rule_fixture_seq}")
-            app_b, created_b = None, None
-            math_write_terminal = False
-            try:
-                try:
-                    created_b = self.client.call_tool("hub_set_rule", {
-                        "name": math_label, "confirm": True, "addActions": math_specs,
-                    })
-                    app_b = created_b.get("appId")
-                    math_write_terminal = True
-                    if app_b:
-                        self.created_native_app_ids.append(str(app_b))
-                    assert app_b, f"math create returned no appId: {created_b}"
-                    assert created_b.get("ruleId") == app_b, \
-                        f"math create returned a different ruleId: {created_b}"
-                    assert created_b.get("success") is True and not created_b.get("partial"), \
-                        f"math create did not fully commit: {created_b}"
-                except RelayLostResponseError:
-                    # The initial relay response can disappear before requestState arrives.
-                    # Follow the server's client-error instructions: wait about 15 seconds,
-                    # inspect recentWrites, then read the target. Do not resend the create.
-                    print("    math create response lost -- waiting for server write status")
-                    deadline = time.monotonic() + 120.0
-                    time.sleep(15.0)
-                    recent = []
-                    while time.monotonic() < deadline:
-                        info = self.client.call_tool("hub_get_info", {})
-                        recent = [row for row in info.get("recentWrites", [])
-                                  if row.get("tool") == "hub_set_rule"]
-                        if app_b is None:
-                            listed = self.client.call_tool("hub_list_rules", {})
-                            matches = [rule for rule in listed.get("rules", [])
-                                       if rule.get("label") == math_label or rule.get("name") == math_label]
-                            assert len(matches) <= 1, f"ambiguous math rule label: {matches}"
-                            if matches:
-                                app_b = matches[0].get("id")
-                                assert app_b, f"math rule has no id: {matches[0]}"
-                                self.created_native_app_ids.append(str(app_b))
-                        # Active records have no target id. Only a terminal record for THIS
-                        # app proves that configuration readback can begin. Other writes,
-                        # missing/evicted records, and a visible shell cannot prove completion.
-                        terminal = next((row for row in recent
-                                         if app_b is not None and str(row.get("appId")) == str(app_b)
-                                         and row.get("status") in ("finished", "finished_with_error")), None)
-                        if terminal is not None:
-                            math_write_terminal = True
-                            assert terminal.get("status") == "finished" and terminal.get("success") is True, \
-                                f"math create finished with an error: {terminal}"
-                            break
-                        time.sleep(5.0)
-                    else:
-                        raise AssertionError(
-                            f"math create completion unresolved for {math_label!r}, appId={app_b}; "
-                            f"recentWrites={recent}")
-                settings_b = (self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config",
-                    "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
-                if created_b is not None:
-                    math_entries = created_b.get("actions") or []
-                    assert len(math_entries) == 3, \
-                        f"math create results were incomplete: {created_b}"
-                    mb, mb2, md = math_entries
-                    mb_idx = mb.get("actionIndex")
-                    mb2_idx = mb2.get("actionIndex")
-                    md_idx = md.get("actionIndex")
-                else:
-                    def _math_index(op: str, *, constant: str | None = None,
-                                    right_variable: bool = False) -> str:
-                        matches = []
-                        for key, value in settings_b.items():
-                            if not str(key).startswith("valMathOp.") or str(value) != op:
-                                continue
-                            idx = str(key).split(".", 1)[1]
-                            if settings_b.get(f"xVar3.{idx}") != var_name:
-                                continue
-                            if constant is not None \
-                                    and str(settings_b.get(f"valConst2.{idx}")) != constant:
-                                continue
-                            if right_variable and settings_b.get(f"xVar4.{idx}") != var_name:
-                                continue
-                            matches.append(idx)
-                        assert len(matches) == 1, \
-                            f"completed math create did not persist one exact {op!r} action: {settings_b}"
-                        return matches[0]
-
-                    mb_idx = _math_index("+", constant="10")
-                    mb2_idx = _math_index("-", right_variable=True)
-                    md_idx = _math_index("+", constant="5.5")
-                # math binary: variable + 10 (numeric right operand becomes (constant)+valConst2).
-                if created_b is not None:
-                    assert mb.get("success") is not False, f"setVariable math binary hard-errored: {mb}"
-                    mb_applied = mb.get("settingsApplied") or []
-                    assert any(str(k).startswith("valMathOp.") for k in mb_applied), \
-                        f"math operator (valMathOp.<N>) did not land; settingsApplied={mb_applied}"
-                    assert any(str(k).startswith("valConst2.") for k in mb_applied), \
-                        f"math binary second constant (valConst2.<N>) did not land; settingsApplied={mb_applied}"
-                    assert not mb.get("partial"), f"math binary action falsely flagged partial: {mb}"
-
-                # math binary, second operator + var-operand combo: var - var (exercises a binary op
-                # OTHER than '+', and an xVar4=<varname> second operand instead of a (constant)).
-                if created_b is not None:
-                    assert mb2.get("success") is not False, f"setVariable math var-minus-var hard-errored: {mb2}"
-                    mb2_applied = mb2.get("settingsApplied") or []
-                    assert any(str(k).startswith("xVar4.") for k in mb2_applied), \
-                        f"var second operand (xVar4.<N>) did not land; settingsApplied={mb2_applied}"
-                    assert not any(str(k).startswith("valConst2.") for k in mb2_applied), \
-                        f"a var second operand must NOT write a constant slot; settingsApplied={mb2_applied}"
-                    assert not mb2.get("partial"), f"math var-minus-var action falsely flagged partial: {mb2}"
-
-                # math binary with a DECIMAL constant operand (var + 5.5): proves decimal-constant
-                # serialization end-to-end -- the constant must persist verbatim as "5.5", never
-                # integer-stripped (which would corrupt the intended value).
-                if created_b is not None:
-                    assert md.get("success") is not False, f"setVariable math decimal-constant hard-errored: {md}"
-                    assert not md.get("partial"), f"math decimal-constant action falsely flagged partial: {md}"
-                assert len({str(mb_idx), str(mb2_idx), str(md_idx)}) == 3, \
-                    f"math actions must persist under three distinct indices: {settings_b}"
-                assert settings_b.get(f"xVar3.{mb_idx}") == var_name, \
-                    f"math first-operand variable persisted with the wrong value; settings={settings_b}"
-                assert settings_b.get(f"valMathOp.{mb_idx}") == "+", \
-                    f"math binary operator persisted with the wrong value; settings={settings_b}"
-                assert str(settings_b.get(f"valConst2.{mb_idx}")) == "10", \
-                    f"math binary constant operand persisted with the wrong value; settings={settings_b}"
-                assert settings_b.get(f"valMathOp.{mb2_idx}") == "-", \
-                    f"math var-minus-var operator persisted with the wrong value; settings={settings_b}"
-                assert settings_b.get(f"xVar4.{mb2_idx}") == var_name, \
-                    f"math var second operand persisted with the wrong value; settings={settings_b}"
-                # The decimal constant must persist verbatim -- "5.5", not "5" or "6".
-                assert str(settings_b.get(f"valConst2.{md_idx}")) == "5.5", \
-                    f"math decimal constant persisted with the wrong value (expected 5.5); settings={settings_b}"
-                self._assert_rule_healthy(app_b)
-            finally:
-                # Do not race an unresolved server write with deletion; suite teardown
-                # retains the tracked id and run prefix for later cleanup.
-                if app_b is not None and math_write_terminal:
-                    self._delete_native(app_b)
-
-            # Rule C: math unary (no second operand) plus the three pre-write type-filter
-            # refusals. Refusals do not add action rows, so this stays a one-action rule.
-            unary_spec = {"capability": "setVariable", "variable": var_name,
-                          "math": {"left": var_name, "op": "absolute"}}
-            app_c, created_c = self._create_native_rule(
-                "SetVarMathUnaryStr", {"addActions": [unary_spec]}, return_result=True)
-            try:
-                unary_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
-                if created_c is not None:
-                    unary_actions = created_c.get("actions") or []
-                    assert len(unary_actions) == 1, \
-                        f"unary create result was incomplete: {created_c}"
-                    mu = unary_actions[0]
-                    mu_idx = mu.get("actionIndex")
-                    assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
-                    mu_applied = mu.get("settingsApplied") or []
-                    assert any(str(k).startswith("valMathOp.") for k in mu_applied), \
-                        f"math unary operator (valMathOp.<N>) did not land; settingsApplied={mu_applied}"
-                    assert not any(str(k).startswith("xVar4.") or str(k).startswith("valConst2.")
-                                   for k in mu_applied), \
-                        f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
-                    assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
-                else:
-                    unary_indices = [str(key).split(".", 1)[1]
-                                     for key, value in unary_settings.items()
-                                     if str(key).startswith("valMathOp.") and value == "absolute"]
-                    assert len(unary_indices) == 1, \
-                        f"relay-adopted unary create did not persist one absolute action: {unary_settings}"
-                    mu_idx = unary_indices[0]
-
-                # One batch per refusal: the first refused op stops a patches batch.
-                c_entries = []
-                for target in (str_var_name, bool_var_name, var_name):
-                    c_entries += self._patch_rule(app_c, [
-                        {"addAction": {"capability": "setVariable", "variable": target,
-                                       "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
-                    ], expected_refusals=1)
-                assert len(c_entries) == 3, f"rejection patches were incomplete: {c_entries}"
-                str_reject, bool_reject, neg = c_entries
-                assert mu_idx is not None, f"math unary action index was not returned or persisted: {unary_settings}"
-                assert unary_settings.get(f"xVarV.{mu_idx}") == var_name \
-                    and unary_settings.get(f"valMathOp.{mu_idx}") == "absolute", \
-                    f"math unary target/operator did not persist: {unary_settings}"
-                assert f"xVar4.{mu_idx}" not in unary_settings \
-                    and f"valConst2.{mu_idx}" not in unary_settings, \
-                    f"math unary persisted an illegal second operand: {unary_settings}"
-
-                # String-TARGET rejection: the device-attribute (fromDevice) and variable-math (math)
-                # source modes are Number/Decimal-target-only -- RM renders the numOp source-mode
-                # picker only for a numeric target var, so fromDevice/math into a String var is not an
-                # RM-supported operation and is rejected up-front (success=false) with the clear
-                # numeric-target requirement, NOT the cryptic deep not-in-schema reveal failure.
-                # (The "filter INCLUDES valid attributes" point is already proven by the Rule A
-                # happy-path fd: Number var + temperature -> tCustomAttr offered and lands.)
-                assert str_reject.get("success") is False, \
-                    f"fromDevice into a String var should be rejected (numeric-target-only mode), got: {str_reject}"
-                assert "requires a Number or Decimal target variable" in (str_reject.get("error") or ""), \
-                    f"String-target rejection did not name the Number/Decimal requirement: {str_reject}"
-                assert bool_reject.get("success") is False \
-                    and "requires a Number or Decimal target variable" in (bool_reject.get("error") or ""), \
-                    f"Boolean-target rejection did not name the Number/Decimal requirement: {bool_reject}"
-                assert neg.get("success") is False, \
-                    f"numeric var + enum 'switch' attribute should fail the type filter, got: {neg}"
-                neg_err = neg.get("error") or ""
-                # The type filter rejects 'switch' for a numeric var one of two ways, depending on
-                # whether the device exposes ANY numeric attribute: if some remain, 'switch' is "not
-                # in the device's attribute enum" (with the available list); if none do, the filtered
-                # enum is empty ("no enumerable options"). Both are the correct fail-loud verdict for
-                # the excluded attribute -- accept either, and confirm the requested attribute is named.
-                assert ("not in the device's attribute enum" in neg_err
-                        or "no enumerable options" in neg_err), \
-                    f"negative type-filter rejection did not name a filtered-attribute-enum frame: {neg}"
-                assert "tCustomAttr" in neg_err or "switch" in neg_err, \
-                    f"negative rejection should name the attribute field or the requested attribute; error={neg_err}"
-
-                # sourceVariable into a String target: a String var renders no numOp, so the copy
-                # goes through valStringOp="Copy variable", which reveals xVar3.<N>. The persisted
-                # settings are the proof, not the envelope.
-                copy_entry = self._patch_rule(app_c, [
-                    {"addAction": {"capability": "setVariable", "variable": str_var_name,
-                                   "sourceVariable": str_src_name}},
-                ])[0]
-                assert copy_entry.get("success") is not False, \
-                    f"String-target sourceVariable copy failed: {copy_entry}"
-                copy_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
-                copy_idx = copy_entry.get("actionIndex") or next(
-                    (str(k).split(".", 1)[1] for k, v in copy_settings.items()
-                     if str(k).startswith("valStringOp.") and v == "Copy variable"), None)
-                assert copy_idx is not None, \
-                    f"no valStringOp.<N>='Copy variable' persisted for the String copy: {copy_settings}"
-                assert copy_settings.get(f"valStringOp.{copy_idx}") == "Copy variable" \
-                    and copy_settings.get(f"xVarV.{copy_idx}") == str_var_name \
-                    and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
-                    f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
-                # The refused numeric-target fromDevice case above (the switch attribute) opened a
-                # row and wrote numOp/customDev before refusing; its actionCancel drops that row
-                # and consumes its index, so the copy must carry none of those leftovers.
-                copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
-                assert not any(k.startswith("numOp.") for k in copy_applied), \
-                    f"String copy wrote a numOp field: settingsApplied={copy_applied}"
-                stale = [k for k in (f"numOp.{copy_idx}", f"customDev.{copy_idx}") if k in copy_settings]
-                assert not stale, \
-                    f"String copy at index {copy_idx} inherited the refused add's fields {stale}: {copy_settings}"
-                # The cancelled rows themselves must be GONE: a refusal that left its actType
-                # behind would show up as an orphaned settings row in rule health, and its mode
-                # fields (numOp/customDev) must not linger at any index outside the rule's two
-                # real actions (the math unary owns its numOp; the String copy owns neither).
-                health_c = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_get_rule_health", "args": {"appId": app_c}})
-                assert not health_c.get("orphanedActionRows"), \
-                    f"refused adds left orphaned action rows behind: {health_c.get('orphanedActionRows')}"
-                known_c = {str(mu_idx), str(copy_idx)}
-                stray_c = [k for k in copy_settings
-                           if str(k).startswith(("numOp.", "customDev."))
-                           and str(k).split(".", 1)[1] not in known_c]
-                assert not stray_c, \
-                    f"refused adds left stale mode fields outside the real actions {known_c}: {stray_c}"
-                # A Boolean target's copy picker is uncaptured, so it is refused before any write.
-                bool_copy = self._patch_rule(app_c, [
-                    {"addAction": {"capability": "setVariable", "variable": bool_var_name,
-                                   "sourceVariable": bool_var_name}},
-                ], expected_refusals=1)[0]
-                assert "not supported yet" in (bool_copy.get("error") or ""), \
-                    f"Boolean-target copy should be refused by name, got: {bool_copy}"
-                self._assert_rule_healthy(app_c)
-            finally:
-                self._delete_native(app_c)
-
-            # Rule D: Number copy, then numOp "add number", then RUN the actions. The persisted
-            # settings alone do not prove it: without valOffset.<N> RM throws "Ambiguous method
-            # overloading ... Long#plus" at run time and leaves the target unchanged, although the
-            # rule saves and reads healthy. The run lands 7 + 3 = 10 only if both actions execute.
-            self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_set_variable", "args": {"name": var_name, "value": 0}})
-            copy_spec = {"capability": "setVariable", "variable": var_name,
-                         "sourceVariable": num_src_name}
-            add_spec = {"capability": "setVariable", "variable": var_name,
-                        "numOp": "add number", "value": 3}
-            app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec, add_spec]})
-            try:
-                d_settings = self._get_persisted_rule_config(app_d).get("settings") or {}
-                d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
-                              if str(k).startswith("numOp.") and v == "variable"), None)
-                assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
-                assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
-                add_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
-                                if str(k).startswith("numOp.") and v == "add number"), None)
-                assert add_idx is not None, f"no numOp.<N>='add number' persisted: {d_settings}"
-                assert str(d_settings.get(f"valNumber.{add_idx}")) in ("3", "3.0"), \
-                    f"add-number constant did not persist on index {add_idx}: {d_settings}"
-                self._assert_rule_healthy(app_d)
-                run, limited = self._call_with_limiter_bounce(
-                    "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_d, "action": "actions"},
-                    "hub_call_rule(action=actions)")
-                got = None
-                deadline = time.time() + 15.0
-                while time.time() < deadline:
-                    got = self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_get_variable", "args": {"name": var_name}}).get("value")
-                    if str(got) in ("10", "10.0"):
-                        break
-                    time.sleep(1.0)
-                # The limiter can abort the reply to a run that already happened, so the variable
-                # read above is the verdict; the run's own outcome explains a miss.
-                if str(got) not in ("10", "10.0"):
-                    assert not limited, (
-                        f"hub_call_rule(action=actions) stayed blocked by the platform load limiter "
-                        f"and {var_name} never reached 10 (got {got!r}): {limited}")
-                    assert not (isinstance(run, dict) and run.get("success") is False), \
-                        f"hub_call_rule(action=actions) reported failure and {var_name} is {got!r}: {run}"
-                assert str(got) in ("10", "10.0"), \
-                    f"running copy (7) then add number (3) did not set {var_name} to 10 (got {got!r}; run result {run})"
-            finally:
-                self._delete_native(app_d)
+            fd = ((created_a or {}).get("actions") or [{}])[0]
+            assert fd.get("success") is not False, \
+                f"setVariable fromDevice hard-errored: {fd}"
+            fd_applied = fd.get("settingsApplied") or []
+            # Value read-back: assert the actual VALUE that landed, not just key presence -- a
+            # wrong-value write that still lands the key would pass a key-prefix-only check.
+            # The tCustomAttr key is namespaced by the RM-assigned action index.
+            settings_a = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_a, "includeSettings": True}}).get("settings") or {})
+            fd_idx = fd.get("actionIndex") or next((str(k).split(".", 1)[1]
+                for k, value in settings_a.items()
+                if str(k).startswith("tCustomAttr.") and value == "temperature"), None)
+            assert fd_idx is not None, f"fromDevice action index was not returned or persisted: {settings_a}"
+            if created_a is not None:
+                assert any(str(k).startswith("customDev.") for k in fd_applied), \
+                    f"fromDevice device picker (customDev.<N>) did not land; settingsApplied={fd_applied}"
+                assert any(str(k).startswith("tCustomAttr.") for k in fd_applied), \
+                    f"fromDevice attribute enum (tCustomAttr.<N>) did not land; settingsApplied={fd_applied}"
+                assert not fd.get("partial"), f"fromDevice action falsely flagged partial: {fd}"
+            assert settings_a.get(f"tCustomAttr.{fd_idx}") == "temperature", \
+                f"fromDevice attribute persisted with the wrong value; settings={settings_a}"
+            # Read back the device-id VALUE too (customDev stores the selected device id), not
+            # just key presence -- a wrong device would still land the key. RM may serialize the
+            # capability picker as a bare id or an id-keyed map, so assert the id appears in the
+            # persisted value's string form rather than pinning one serialization.
+            customdev_val = str(settings_a.get(f"customDev.{fd_idx}"))
+            assert str(temp_id) in customdev_val, \
+                f"fromDevice device id {temp_id} not in persisted customDev value {customdev_val!r}; settings={settings_a}"
+            self._assert_rule_healthy(app_a)
         finally:
-            self._delete_variable_safe(var_name)
-            self._delete_variable_safe(str_var_name)
-            self._delete_variable_safe(bool_var_name)
-            self._delete_variable_safe(str_src_name)
-            self._delete_variable_safe(num_src_name)
+            self._delete_native(app_a)
+
+        # Rule B: math binary '+' (constant second operand) + math var-minus-var (xVar4=varname)
+        # + value read-backs.
+        math_specs = [
+            {"capability": "setVariable", "variable": var_name,
+             "math": {"left": var_name, "op": "+", "right": 10}},
+            {"capability": "setVariable", "variable": var_name,
+             "math": {"left": var_name, "op": "-", "right": var_name}},
+            {"capability": "setVariable", "variable": var_name,
+             "math": {"left": var_name, "op": "+", "right": 5.5}},
+        ]
+        # Use the real client continuation loop, without the fixture helper's early
+        # adopt-by-label fallback. A visible shell is not a completed multi-action write.
+        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
+        math_label = (f"{PREFIX}SetVarMathBin_{_run_artifact_suffix()}_"
+                      f"{self._native_rule_fixture_seq}")
+        app_b, created_b = None, None
+        math_write_terminal = False
+        try:
+            try:
+                created_b = self.client.call_tool("hub_set_rule", {
+                    "name": math_label, "confirm": True, "addActions": math_specs,
+                })
+                app_b = created_b.get("appId")
+                math_write_terminal = True
+                if app_b:
+                    self.created_native_app_ids.append(str(app_b))
+                assert app_b, f"math create returned no appId: {created_b}"
+                assert created_b.get("ruleId") == app_b, \
+                    f"math create returned a different ruleId: {created_b}"
+                assert created_b.get("success") is True and not created_b.get("partial"), \
+                    f"math create did not fully commit: {created_b}"
+            except RelayLostResponseError:
+                # The initial relay response can disappear before requestState arrives.
+                # Follow the server's client-error instructions: wait about 15 seconds,
+                # inspect recentWrites, then read the target. Do not resend the create.
+                print("    math create response lost -- waiting for server write status")
+                deadline = time.monotonic() + 120.0
+                time.sleep(15.0)
+                recent = []
+                while time.monotonic() < deadline:
+                    info = self.client.call_tool("hub_get_info", {})
+                    recent = [row for row in info.get("recentWrites", [])
+                              if row.get("tool") == "hub_set_rule"]
+                    if app_b is None:
+                        listed = self.client.call_tool("hub_list_rules", {})
+                        matches = [rule for rule in listed.get("rules", [])
+                                   if rule.get("label") == math_label or rule.get("name") == math_label]
+                        assert len(matches) <= 1, f"ambiguous math rule label: {matches}"
+                        if matches:
+                            app_b = matches[0].get("id")
+                            assert app_b, f"math rule has no id: {matches[0]}"
+                            self.created_native_app_ids.append(str(app_b))
+                    # Active records have no target id. Only a terminal record for THIS
+                    # app proves that configuration readback can begin. Other writes,
+                    # missing/evicted records, and a visible shell cannot prove completion.
+                    terminal = next((row for row in recent
+                                     if app_b is not None and str(row.get("appId")) == str(app_b)
+                                     and row.get("status") in ("finished", "finished_with_error")), None)
+                    if terminal is not None:
+                        math_write_terminal = True
+                        assert terminal.get("status") == "finished" and terminal.get("success") is True, \
+                            f"math create finished with an error: {terminal}"
+                        break
+                    time.sleep(5.0)
+                else:
+                    raise AssertionError(
+                        f"math create completion unresolved for {math_label!r}, appId={app_b}; "
+                        f"recentWrites={recent}")
+            settings_b = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
+            if created_b is not None:
+                math_entries = created_b.get("actions") or []
+                assert len(math_entries) == 3, \
+                    f"math create results were incomplete: {created_b}"
+                mb, mb2, md = math_entries
+                mb_idx = mb.get("actionIndex")
+                mb2_idx = mb2.get("actionIndex")
+                md_idx = md.get("actionIndex")
+            else:
+                def _math_index(op: str, *, constant: str | None = None,
+                                right_variable: bool = False) -> str:
+                    matches = []
+                    for key, value in settings_b.items():
+                        if not str(key).startswith("valMathOp.") or str(value) != op:
+                            continue
+                        idx = str(key).split(".", 1)[1]
+                        if settings_b.get(f"xVar3.{idx}") != var_name:
+                            continue
+                        if constant is not None \
+                                and str(settings_b.get(f"valConst2.{idx}")) != constant:
+                            continue
+                        if right_variable and settings_b.get(f"xVar4.{idx}") != var_name:
+                            continue
+                        matches.append(idx)
+                    assert len(matches) == 1, \
+                        f"completed math create did not persist one exact {op!r} action: {settings_b}"
+                    return matches[0]
+
+                mb_idx = _math_index("+", constant="10")
+                mb2_idx = _math_index("-", right_variable=True)
+                md_idx = _math_index("+", constant="5.5")
+            # math binary: variable + 10 (numeric right operand becomes (constant)+valConst2).
+            if created_b is not None:
+                assert mb.get("success") is not False, f"setVariable math binary hard-errored: {mb}"
+                mb_applied = mb.get("settingsApplied") or []
+                assert any(str(k).startswith("valMathOp.") for k in mb_applied), \
+                    f"math operator (valMathOp.<N>) did not land; settingsApplied={mb_applied}"
+                assert any(str(k).startswith("valConst2.") for k in mb_applied), \
+                    f"math binary second constant (valConst2.<N>) did not land; settingsApplied={mb_applied}"
+                assert not mb.get("partial"), f"math binary action falsely flagged partial: {mb}"
+
+            # math binary, second operator + var-operand combo: var - var (exercises a binary op
+            # OTHER than '+', and an xVar4=<varname> second operand instead of a (constant)).
+            if created_b is not None:
+                assert mb2.get("success") is not False, f"setVariable math var-minus-var hard-errored: {mb2}"
+                mb2_applied = mb2.get("settingsApplied") or []
+                assert any(str(k).startswith("xVar4.") for k in mb2_applied), \
+                    f"var second operand (xVar4.<N>) did not land; settingsApplied={mb2_applied}"
+                assert not any(str(k).startswith("valConst2.") for k in mb2_applied), \
+                    f"a var second operand must NOT write a constant slot; settingsApplied={mb2_applied}"
+                assert not mb2.get("partial"), f"math var-minus-var action falsely flagged partial: {mb2}"
+
+            # math binary with a DECIMAL constant operand (var + 5.5): proves decimal-constant
+            # serialization end-to-end -- the constant must persist verbatim as "5.5", never
+            # integer-stripped (which would corrupt the intended value).
+            if created_b is not None:
+                assert md.get("success") is not False, f"setVariable math decimal-constant hard-errored: {md}"
+                assert not md.get("partial"), f"math decimal-constant action falsely flagged partial: {md}"
+            assert len({str(mb_idx), str(mb2_idx), str(md_idx)}) == 3, \
+                f"math actions must persist under three distinct indices: {settings_b}"
+            assert settings_b.get(f"xVar3.{mb_idx}") == var_name, \
+                f"math first-operand variable persisted with the wrong value; settings={settings_b}"
+            assert settings_b.get(f"valMathOp.{mb_idx}") == "+", \
+                f"math binary operator persisted with the wrong value; settings={settings_b}"
+            assert str(settings_b.get(f"valConst2.{mb_idx}")) == "10", \
+                f"math binary constant operand persisted with the wrong value; settings={settings_b}"
+            assert settings_b.get(f"valMathOp.{mb2_idx}") == "-", \
+                f"math var-minus-var operator persisted with the wrong value; settings={settings_b}"
+            assert settings_b.get(f"xVar4.{mb2_idx}") == var_name, \
+                f"math var second operand persisted with the wrong value; settings={settings_b}"
+            # The decimal constant must persist verbatim -- "5.5", not "5" or "6".
+            assert str(settings_b.get(f"valConst2.{md_idx}")) == "5.5", \
+                f"math decimal constant persisted with the wrong value (expected 5.5); settings={settings_b}"
+            self._assert_rule_healthy(app_b)
+        finally:
+            # Do not race an unresolved server write with deletion; suite teardown
+            # retains the tracked id and run prefix for later cleanup.
+            if app_b is not None and math_write_terminal:
+                self._delete_native(app_b)
+
+        # Rule C: math unary (no second operand) plus the three pre-write type-filter
+        # refusals. Refusals do not add action rows, so this stays a one-action rule.
+        unary_spec = {"capability": "setVariable", "variable": var_name,
+                      "math": {"left": var_name, "op": "absolute"}}
+        app_c, created_c = self._create_native_rule(
+            "SetVarMathUnaryStr", {"addActions": [unary_spec]}, return_result=True)
+        try:
+            unary_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
+            if created_c is not None:
+                unary_actions = created_c.get("actions") or []
+                assert len(unary_actions) == 1, \
+                    f"unary create result was incomplete: {created_c}"
+                mu = unary_actions[0]
+                mu_idx = mu.get("actionIndex")
+                assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
+                mu_applied = mu.get("settingsApplied") or []
+                assert any(str(k).startswith("valMathOp.") for k in mu_applied), \
+                    f"math unary operator (valMathOp.<N>) did not land; settingsApplied={mu_applied}"
+                assert not any(str(k).startswith("xVar4.") or str(k).startswith("valConst2.")
+                               for k in mu_applied), \
+                    f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
+                assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
+            else:
+                unary_indices = [str(key).split(".", 1)[1]
+                                 for key, value in unary_settings.items()
+                                 if str(key).startswith("valMathOp.") and value == "absolute"]
+                assert len(unary_indices) == 1, \
+                    f"relay-adopted unary create did not persist one absolute action: {unary_settings}"
+                mu_idx = unary_indices[0]
+
+            # One batch per refusal: the first refused op stops a patches batch.
+            c_entries = []
+            for target in (str_var_name, bool_var_name, var_name):
+                c_entries += self._patch_rule(app_c, [
+                    {"addAction": {"capability": "setVariable", "variable": target,
+                                   "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
+                ], expected_refusals=1)
+            assert len(c_entries) == 3, f"rejection patches were incomplete: {c_entries}"
+            str_reject, bool_reject, neg = c_entries
+            assert mu_idx is not None, f"math unary action index was not returned or persisted: {unary_settings}"
+            assert unary_settings.get(f"xVarV.{mu_idx}") == var_name \
+                and unary_settings.get(f"valMathOp.{mu_idx}") == "absolute", \
+                f"math unary target/operator did not persist: {unary_settings}"
+            assert f"xVar4.{mu_idx}" not in unary_settings \
+                and f"valConst2.{mu_idx}" not in unary_settings, \
+                f"math unary persisted an illegal second operand: {unary_settings}"
+
+            # String-TARGET rejection: the device-attribute (fromDevice) and variable-math (math)
+            # source modes are Number/Decimal-target-only -- RM renders the numOp source-mode
+            # picker only for a numeric target var, so fromDevice/math into a String var is not an
+            # RM-supported operation and is rejected up-front (success=false) with the clear
+            # numeric-target requirement, NOT the cryptic deep not-in-schema reveal failure.
+            # (The "filter INCLUDES valid attributes" point is already proven by the Rule A
+            # happy-path fd: Number var + temperature -> tCustomAttr offered and lands.)
+            assert str_reject.get("success") is False, \
+                f"fromDevice into a String var should be rejected (numeric-target-only mode), got: {str_reject}"
+            assert "requires a Number or Decimal target variable" in (str_reject.get("error") or ""), \
+                f"String-target rejection did not name the Number/Decimal requirement: {str_reject}"
+            assert bool_reject.get("success") is False \
+                and "requires a Number or Decimal target variable" in (bool_reject.get("error") or ""), \
+                f"Boolean-target rejection did not name the Number/Decimal requirement: {bool_reject}"
+            assert neg.get("success") is False, \
+                f"numeric var + enum 'switch' attribute should fail the type filter, got: {neg}"
+            neg_err = neg.get("error") or ""
+            # The type filter rejects 'switch' for a numeric var one of two ways, depending on
+            # whether the device exposes ANY numeric attribute: if some remain, 'switch' is "not
+            # in the device's attribute enum" (with the available list); if none do, the filtered
+            # enum is empty ("no enumerable options"). Both are the correct fail-loud verdict for
+            # the excluded attribute -- accept either, and confirm the requested attribute is named.
+            assert ("not in the device's attribute enum" in neg_err
+                    or "no enumerable options" in neg_err), \
+                f"negative type-filter rejection did not name a filtered-attribute-enum frame: {neg}"
+            assert "tCustomAttr" in neg_err or "switch" in neg_err, \
+                f"negative rejection should name the attribute field or the requested attribute; error={neg_err}"
+
+            # sourceVariable into a String target: a String var renders no numOp, so the copy
+            # goes through valStringOp="Copy variable", which reveals xVar3.<N>. The persisted
+            # settings are the proof, not the envelope.
+            copy_entry = self._patch_rule(app_c, [
+                {"addAction": {"capability": "setVariable", "variable": str_var_name,
+                               "sourceVariable": str_src_name}},
+            ])[0]
+            assert copy_entry.get("success") is not False, \
+                f"String-target sourceVariable copy failed: {copy_entry}"
+            copy_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
+            copy_idx = copy_entry.get("actionIndex") or next(
+                (str(k).split(".", 1)[1] for k, v in copy_settings.items()
+                 if str(k).startswith("valStringOp.") and v == "Copy variable"), None)
+            assert copy_idx is not None, \
+                f"no valStringOp.<N>='Copy variable' persisted for the String copy: {copy_settings}"
+            assert copy_settings.get(f"valStringOp.{copy_idx}") == "Copy variable" \
+                and copy_settings.get(f"xVarV.{copy_idx}") == str_var_name \
+                and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
+                f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
+            # The refused numeric-target fromDevice case above (the switch attribute) opened a
+            # row and wrote numOp/customDev before refusing; its actionCancel drops that row
+            # and consumes its index, so the copy must carry none of those leftovers.
+            copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
+            assert not any(k.startswith("numOp.") for k in copy_applied), \
+                f"String copy wrote a numOp field: settingsApplied={copy_applied}"
+            stale = [k for k in (f"numOp.{copy_idx}", f"customDev.{copy_idx}") if k in copy_settings]
+            assert not stale, \
+                f"String copy at index {copy_idx} inherited the refused add's fields {stale}: {copy_settings}"
+            # The cancelled rows themselves must be GONE: a refusal that left its actType
+            # behind would show up as an orphaned settings row in rule health, and its mode
+            # fields (numOp/customDev) must not linger at any index outside the rule's two
+            # real actions (the math unary owns its numOp; the String copy owns neither).
+            health_c = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_c}})
+            assert not health_c.get("orphanedActionRows"), \
+                f"refused adds left orphaned action rows behind: {health_c.get('orphanedActionRows')}"
+            known_c = {str(mu_idx), str(copy_idx)}
+            stray_c = [k for k in copy_settings
+                       if str(k).startswith(("numOp.", "customDev."))
+                       and str(k).split(".", 1)[1] not in known_c]
+            assert not stray_c, \
+                f"refused adds left stale mode fields outside the real actions {known_c}: {stray_c}"
+            # A Boolean target's copy picker is uncaptured, so it is refused before any write.
+            bool_copy = self._patch_rule(app_c, [
+                {"addAction": {"capability": "setVariable", "variable": bool_var_name,
+                               "sourceVariable": bool_var_name}},
+            ], expected_refusals=1)[0]
+            assert "not supported yet" in (bool_copy.get("error") or ""), \
+                f"Boolean-target copy should be refused by name, got: {bool_copy}"
+            self._assert_rule_healthy(app_c)
+        finally:
+            self._delete_native(app_c)
+
+        # Rule D: Number copy, then numOp "add number", then RUN the actions. The persisted
+        # settings alone do not prove it: without valOffset.<N> RM throws "Ambiguous method
+        # overloading ... Long#plus" at run time and leaves the target unchanged, although the
+        # rule saves and reads healthy. The run lands 7 + 3 = 10 only if both actions execute.
+        self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_set_variable", "args": {"name": var_name, "value": 0}})
+        copy_spec = {"capability": "setVariable", "variable": var_name,
+                     "sourceVariable": num_src_name}
+        add_spec = {"capability": "setVariable", "variable": var_name,
+                    "numOp": "add number", "value": 3}
+        app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec, add_spec]})
+        try:
+            d_settings = self._get_persisted_rule_config(app_d).get("settings") or {}
+            d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
+                          if str(k).startswith("numOp.") and v == "variable"), None)
+            assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
+            assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
+            add_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
+                            if str(k).startswith("numOp.") and v == "add number"), None)
+            assert add_idx is not None, f"no numOp.<N>='add number' persisted: {d_settings}"
+            assert str(d_settings.get(f"valNumber.{add_idx}")) in ("3", "3.0"), \
+                f"add-number constant did not persist on index {add_idx}: {d_settings}"
+            self._assert_rule_healthy(app_d)
+            run, limited = self._call_with_limiter_bounce(
+                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_d, "action": "actions"},
+                "hub_call_rule(action=actions)")
+            got = None
+            deadline = time.time() + 15.0
+            while time.time() < deadline:
+                got = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": var_name}}).get("value")
+                if str(got) in ("10", "10.0"):
+                    break
+                time.sleep(1.0)
+            # The limiter can abort the reply to a run that already happened, so the variable
+            # read above is the verdict; the run's own outcome explains a miss.
+            if str(got) not in ("10", "10.0"):
+                assert not limited, (
+                    f"hub_call_rule(action=actions) stayed blocked by the platform load limiter "
+                    f"and {var_name} never reached 10 (got {got!r}): {limited}")
+                assert not (isinstance(run, dict) and run.get("success") is False), \
+                    f"hub_call_rule(action=actions) reported failure and {var_name} is {got!r}: {run}"
+            assert str(got) in ("10", "10.0"), \
+                f"running copy (7) then add number (3) did not set {var_name} to 10 (got {got!r}; run result {run})"
+        finally:
+            self._delete_native(app_d)
 
     @test("native_apps")
     def test_set_rule_walker_enum_required_expression(self) -> None:
@@ -9972,59 +10043,11 @@ class TestRunner:
     # ---- tests that keep their OWN rule (create/delete/lifecycle contracts) ----
 
     @test("native_apps")
-    def test_set_rule_create_with_required_expression(self) -> None:
-        # hub_set_rule CREATE (no appId) bundling addRequiredExpression. Pre-fix the
-        # create arm read only addTriggers/addActions, so a bundled RE was silently
-        # dropped and the call returned success=True on an empty shell. The fix honors
-        # addRequiredExpression on create (runs the RE walk post-create) and surfaces
-        # its outcome under result.requiredExpression. This pins create-with-RE
-        # end-to-end: the RE field is present (NOT dropped), the RE actually lands on
-        # the rule, and the rule is healthy.
+    def test_set_rule_create_refusal_and_fail_closed_stop(self) -> None:
+        # hub_set_rule CREATE argument handling. The bundled-Required-Expression create itself
+        # (requiredExpression result, conditionIndices, health) is proven by
+        # test_set_rule_required_expression_multi_condition's create.
         sw = int(self.get_test_switch_id())
-        create_label = f"{PREFIX}CreateRE"
-        cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {
-                    "name": create_label,
-                    "addRequiredExpression": {"conditions": [
-                        {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-                    "confirm": True,
-                }}),
-            lambda: self._find_app_id_by_label(create_label),
-            "create-with-RE",
-        )
-        if cw["relayDropped"]:
-            assert cw["committed"], f"create-with-RE lost to relay 504 and never committed ({create_label})"
-            app_id = cw["evidence"]
-            created = None
-        else:
-            created = cw["response"]
-            app_id = created.get("appId")
-            assert app_id, f"create-with-RE did not return appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
-        try:
-            if created is None:
-                # The bundled-RE response (requiredExpression/conditionIndices) is gone
-                # to the 504; the recoverable evidence is the rule rendering healthy
-                # (an unhealthy/broken RE would fail this). Skip the response-shape
-                # assertions with a printed line rather than soft-passing them.
-                print("    create-with-RE: requiredExpression response-field assertions skipped "
-                      "(relay 504); verifying rule health instead")
-                self._assert_rule_healthy(app_id)
-            else:
-                # The whole point: the bundled RE was honored, not silently dropped.
-                re_result = created.get("requiredExpression")
-                assert re_result is not None, \
-                    f"addRequiredExpression was silently dropped on create (no requiredExpression in result): {created}"
-                assert re_result.get("success") is not False, \
-                    f"bundled addRequiredExpression failed on create: {re_result}"
-                # The RE actually landed: a condition index was returned by the walk.
-                assert re_result.get("conditionIndices"), \
-                    f"create-with-RE produced no conditionIndices -- the expression did not land: {re_result}"
-                self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
 
         # An argument the checks can refuse up front is refused BEFORE the rule is created: no rule
         # with the label may exist afterwards.
@@ -11095,78 +11118,6 @@ class TestRunner:
             self._untrack_native_app(app_id)
 
     # -----------------------------------------------------------------------
-    # GROUP 4c: deadman (1 test) -- the issue #243 install-commit fix, the exact
-    # bug the E2E Dead-Man Watchdog tripped on. installAsUserApp must actually
-    # COMMIT the install (submit Done) so initialize() runs and the instance is
-    # live -- the pre-#243 path returned success:true / "installed() fired" yet left
-    # an inert shell (app.installed==false, schedules never registered; the `committed`
-    # field is introduced by this PR). This installs the
-    # throwaway tests/fixtures/deadman-test-target.groovy (so a misfire can't
-    # touch anything real), then asserts BOTH the tool's committed flag AND, via
-    # an independent hub_get_app_config read, app.installed==true -- the shell
-    # would report installed:false, the old silent false-pass.
-    # -----------------------------------------------------------------------
-
-    @test("deadman")
-    def test_install_as_user_app_commits(self) -> None:
-        fixture = (Path(__file__).resolve().parent
-                   / "fixtures" / "deadman-test-target.groovy")
-        source = fixture.read_text(encoding="utf-8")
-
-        code_app_id = None
-        instance_app_id = None
-        try:
-            # 1) Install the throwaway app CODE (inline source) -> code class id.
-            created_code = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_app",
-                "args": {"source": source, "confirm": True},
-            })
-            code_app_id = created_code.get("appId")
-            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created_code}"
-
-            # 2) Create a RUNNING instance from that code -> the #243 commit path.
-            installed = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_app",
-                "args": {"codeAppId": code_app_id, "confirm": True},
-            })
-            instance_app_id = installed.get("instanceAppId")
-            committed = installed.get("committed")
-            assert committed is True, \
-                f"installAsUserApp did not commit (committed={committed!r}) -- the #243 install fix regressed, leaving an inert shell: {installed}"
-            assert instance_app_id, f"installAsUserApp committed but returned no instanceAppId: {installed}"
-
-            # 3) INDEPENDENT verification: hub_get_app_config must report app.installed==true.
-            # A shell (the old false-pass) reads installed:false even though the tool said committed.
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config",
-                "args": {"appId": instance_app_id},
-            })
-            app_obj = (cfg.get("app") or {}) if isinstance(cfg, dict) else {}
-            installed_flag = app_obj.get("installed")
-            assert installed_flag is True, \
-                f"hub_get_app_config reports app.installed={installed_flag!r} -- the instance is an inert shell, not a committed install: {app_obj}"
-
-            print(f"    DEADMAN_INSTALL_COMMIT committed={committed} installed={installed_flag}")
-        finally:
-            # Clean up: delete the running instance first, then the code class.
-            if instance_app_id:
-                try:
-                    self.client.call_tool("hub_manage_native_rules_and_apps", {
-                        "tool": "hub_delete_native_app",
-                        "args": {"appId": instance_app_id, "force": True, "confirm": True},
-                    })
-                except Exception as exc:
-                    print(f"  [WARN] deadman cleanup: delete instance {instance_app_id} failed: {exc}")
-            if code_app_id:
-                try:
-                    self.client.call_tool("hub_manage_code", {
-                        "tool": "hub_delete_item",
-                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
-                    })
-                except Exception as exc:
-                    print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
-
-    # -----------------------------------------------------------------------
     # GROUP 4d: app_code_update -- app lifecycle and library source updates.
     #
     # test_update_app_code_lifecycle: one throwaway code class for update/error/conflict/OAuth:
@@ -11519,6 +11470,13 @@ class TestRunner:
             assert installed.get("committed") is True, \
                 f"could not commit the instance the triggerUpdated leg needs: {installed}"
             assert instance_app_id, f"instance committed but no instanceAppId returned: {installed}"
+            # The issue #243 install-commit proof, read BEFORE any configure write: an uncommitted
+            # installAsUserApp leaves an inert shell that reports app.installed==false.
+            fresh_cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": instance_app_id},
+            })
+            assert ((fresh_cfg.get("app") or {}) if isinstance(fresh_cfg, dict) else {}).get("installed") is True, \
+                f"installAsUserApp committed but the instance is an inert shell (app.installed is not true): {fresh_cfg}"
 
             # CONFIGURE the instance: flip refreshProbe off its false default. This is the
             # precondition for the settings-preservation assertion at the end -- verified here
@@ -11832,12 +11790,13 @@ class TestRunner:
             "deviceLabel": label,
             "confirm": True,
         })
-        dev_id = str(result.get("id", result.get("deviceId", "")) or "")
-        dni = str(result.get("deviceNetworkId", result.get("dni", "")) or "")
+        device = result.get("device") or {}
+        dev_id = str(device.get("id") or result.get("id", result.get("deviceId", "")) or "")
+        dni = str(device.get("deviceNetworkId") or result.get("deviceNetworkId", result.get("dni", "")) or "")
         if not dev_id or not dni:
             # Response may not carry the ids -- look the device up by label.
             time.sleep(0.3)
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
             devices_list = vdevs if isinstance(vdevs, list) else (vdevs.get("devices", []) if isinstance(vdevs, dict) else [])
             for d in devices_list:
                 if label in (d.get("label") or d.get("name") or ""):
@@ -11924,36 +11883,27 @@ class TestRunner:
         # apply round-trip is BAT/manual-only (tests/BAT-v2.md T703). This scenario
         # exercises the safe read-only leg live: list_options drives
         # GET /device/getReplacementOptions/<id> and returns the structured candidate
-        # array without mutating anything.
-        dev_id, dni = self._create_swap_switch(f"{PREFIX}Replace_A")
-        try:
-            result = self.client.call_tool("hub_manage_devices", {
-                "tool": "hub_call_device_replace",
-                "args": {"old_device_id": dev_id, "list_options": True},
-            })
-            assert isinstance(result, dict), f"hub_call_device_replace(list_options) returned non-dict: {result}"
-            # Read leg: success with an options array (a virtual fixture usually has no
-            # compatible replacement -> empty list), or a structured failure -- never a
-            # silent mutation. Assert the structured contract either way.
-            if result.get("success") is True:
-                assert result.get("listOptions") is True, f"list_options read missing listOptions flag: {result}"
-                assert isinstance(result.get("options"), list), f"options is not a list: {result}"
-                opt_count = result.get("optionCount")
-                assert isinstance(opt_count, int) and opt_count == len(result["options"]), \
-                    f"optionCount does not match options length: {result}"
-                print(f"    DEVICE_REPLACE ok -- list_options read {opt_count} compatible candidate(s) for {dev_id}, no mutation")
-            else:
-                assert result.get("error"), f"list_options failure without a structured error: {result}"
-                print(f"    DEVICE_REPLACE ok -- list_options returned a structured failure (no mutation): {result.get('error')}")
-        finally:
-            try:
-                self.client.call_tool("hub_manage_virtual_device", {
-                    "action": "delete", "deviceNetworkId": dni, "confirm": True,
-                })
-                if dni in self.created_device_dnis:
-                    self.created_device_dnis.remove(dni)
-            except Exception as exc:
-                print(f"  [WARN] device-replace cleanup: delete device DNI={dni} failed: {exc}")
+        # array without mutating anything, so the persistent scaffold switch (an MCP child
+        # device, like any fixture this suite can create) serves.
+        dev_id = self.get_test_switch_id()
+        result = self.client.call_tool("hub_manage_devices", {
+            "tool": "hub_call_device_replace",
+            "args": {"old_device_id": dev_id, "list_options": True},
+        })
+        assert isinstance(result, dict), f"hub_call_device_replace(list_options) returned non-dict: {result}"
+        # Read leg: success with an options array (a virtual fixture usually has no
+        # compatible replacement -> empty list), or a structured failure -- never a
+        # silent mutation. Assert the structured contract either way.
+        if result.get("success") is True:
+            assert result.get("listOptions") is True, f"list_options read missing listOptions flag: {result}"
+            assert isinstance(result.get("options"), list), f"options is not a list: {result}"
+            opt_count = result.get("optionCount")
+            assert isinstance(opt_count, int) and opt_count == len(result["options"]), \
+                f"optionCount does not match options length: {result}"
+            print(f"    DEVICE_REPLACE ok -- list_options read {opt_count} compatible candidate(s) for {dev_id}, no mutation")
+        else:
+            assert result.get("error"), f"list_options failure without a structured error: {result}"
+            print(f"    DEVICE_REPLACE ok -- list_options returned a structured failure (no mutation): {result.get('error')}")
 
     # -----------------------------------------------------------------------
     # GROUP 4h: hub_variables (1 test) -- hub-NAMESPACE variable lifecycle
@@ -11966,7 +11916,7 @@ class TestRunner:
         # resolved via the direct-alias redirect); get reads back through getGlobalVar,
         # so a green round-trip proves the wizard writes landed in the real namespace.
         var_name = f"{PREFIX}HubVar_RT"
-        # Track BEFORE creating: there is no prefix sweep for variables, so a crash
+        # Track BEFORE creating: only the CI purge prefix-sweeps variables, so locally a crash
         # between the create landing and a later append would strand it.
         self.created_variable_names.append(var_name)
         # CREATE -- the read-back below binds source/value/type, so a relay 504 only
@@ -12081,7 +12031,7 @@ class TestRunner:
             {"name": names[1], "type": "String", "value": "two"},
             {"name": names[2], "type": "Boolean", "value": True},
         ]
-        # Track BEFORE creating -- no prefix sweep for variables, so a crash between the
+        # Track BEFORE creating -- only the CI purge prefix-sweeps variables, so a crash between the
         # create landing and a later append would strand the entities.
         for n in names:
             self.created_variable_names.append(n)
@@ -12131,8 +12081,7 @@ class TestRunner:
     def test_hub_variable_delete_refuses_rule_machine_consumer(self) -> None:
         # A Rule Machine rule is not a child of this server, so only the hub's own in-use
         # registry can see it. Without force the delete must refuse and leave both intact.
-        var_name = f"{PREFIX}InUseVar"
-        self._create_hub_variable_visible(var_name, "Number", "0")
+        var_name = self._ensure_perm_variables("in_use")["in_use"]
         app_id = self._create_native_rule("VarConsumer", {
             "addActions": [{"capability": "setVariable", "variable": var_name, "value": 5}]})
         try:
@@ -12150,7 +12099,6 @@ class TestRunner:
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
-            self._delete_variable_safe(var_name)
 
     @test("hub_variables")
     def test_hub_get_variable_dependents_round_trip(self) -> None:
@@ -12254,10 +12202,10 @@ class TestRunner:
         # The full share/unshare CYCLE needs Hub Mesh ENABLED, NOT a peer: sharing a hub variable
         # INTO the mesh is a local operation (a peer is required only to LINK one a peer shares).
         # The e2e hub now has Hub Mesh enabled (no peers), so this runs for real -- no SkipTest (a
-        # skip counts as a failure in _print_summary and would fail the whole run). Create a throwaway
-        # hub variable, share it, confirm it lands in hub_get_hub_mesh sharedHubVariables, unshare it,
+        # skip counts as a failure in _print_summary and would fail the whole run). Share a permanent
+        # hub variable, confirm it lands in hub_get_hub_mesh sharedHubVariables, unshare it,
         # confirm it drops off AND the result note carries the stale-copy / unlink-first teardown
-        # caution. Deleted in finally so no standing mesh state is left on the shared hub.
+        # caution. A bailed cycle is unshared in finally so no standing mesh state is left on the hub.
         mesh = self.client.call_tool("hub_get_hub_mesh")
         assert isinstance(mesh, dict) and mesh.get("success") is True, \
             f"hub_get_hub_mesh did not succeed: {mesh}"
@@ -12266,8 +12214,8 @@ class TestRunner:
              f"hubMeshEnabled={mesh.get('hubMeshEnabled')!r}. Enable it (hub_update_hub_mesh(enabled=true) "
              "+ reboot) or this test cannot run.")
 
-        var_name = f"{PREFIX}MeshShareVar_{int(time.time())}"
-        self._create_hub_variable_visible(var_name, "String", "share-me")
+        var_name = self._ensure_perm_variables("mesh_share")["mesh_share"]
+        unshared_ok = False
         try:
             # SHARE into the mesh.
             shared = self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": True})
@@ -12285,13 +12233,14 @@ class TestRunner:
                 f"unshare note is missing the stale-copy/unlink-first caution: {note!r}"
             assert self._poll_mesh_shared(var_name, want=False), \
                 f"{var_name} still present in hub_get_hub_mesh sharedHubVariables after unsharing"
+            unshared_ok = True
         finally:
-            # Best-effort: never leave the throwaway shared even if an assertion above bailed mid-cycle.
-            try:
-                self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
-            except Exception:
-                pass
-            self._delete_variable_safe(var_name)
+            # Best-effort: never leave the permanent variable shared if an assertion above bailed mid-cycle.
+            if not unshared_ok:
+                try:
+                    self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
+                except Exception:
+                    pass
 
     @test("devices")
     def test_hub_create_device_mesh_link_validation(self) -> None:
@@ -12757,6 +12706,7 @@ class TestRunner:
         original_mode = before.get("currentMode") if isinstance(before, dict) else None
         original_mgr = (before.get("modeManager") or {}).get("selected") if isinstance(before, dict) else None
         created_id = None
+        mode_deleted = False
         try:
             # PORTION 1 -- create WITH icon, then read it back (name + icon round-trip via /modes/json)
             print("    [MODE PORTION 1] create + icon round-trip read-back")
@@ -12849,7 +12799,8 @@ class TestRunner:
             assert str(dl.get("deletedModeId")) == created_id, f"deletedModeId mismatch: {dl} (expected {created_id})"
             _time.sleep(STEP)
             assert renamed2 not in _mode_names(), "mode still present after a confirmed delete"
-            created_id = None  # deleted -- the finally sweep has nothing to do
+            created_id = None
+            mode_deleted = True  # the finally sweep has nothing to do
 
             print(f"    MODE_LIFECYCLE ok -- full surface proven by e2e: icons, id+name(+case) resolution, "
                   f"confirm gate both ways, manager+conditions in one call (manager was: {original_mgr})")
@@ -12866,7 +12817,7 @@ class TestRunner:
                     _mode_call("hub_manage_mode", {"action": "activate", "mode": original_mode}, "restore active mode (finally)")
                 except Exception:
                     pass
-            for nm in (renamed2, renamed, mode_name):
+            for nm in (renamed2, renamed, mode_name) if not mode_deleted else ():
                 try:
                     dl = _mode_call("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True}, f"cleanup delete {nm}")
                     if isinstance(dl, dict) and dl.get("success"):
@@ -14127,7 +14078,7 @@ class TestRunner:
         bg._read_only_catalog_tools = self.client._read_only_catalog_tools
         bg._active_test = self.client._active_test
 
-        # Track before creating -- there is no prefix sweep for variables, so a crash between
+        # Track before creating -- only the CI purge prefix-sweeps variables, so a crash between
         # a create landing and a later append would strand them on the hub.
         self.created_variable_names.extend(slow_names)
 
@@ -14504,6 +14455,13 @@ class TestRunner:
             "args": {"name": var_name, "value": "safe"},
         })
         self.created_variable_names.append(var_name)
+        self.rule_engine_variable_names.add(var_name)
+        try:
+            self._t226_refusal_checks(var_name)
+        finally:
+            self._delete_variable_safe(var_name)
+
+    def _t226_refusal_checks(self, var_name: str) -> None:
 
         refused = False
         detail = None
@@ -14648,13 +14606,32 @@ class TestRunner:
         except Exception as exc:
             print(f"    [WARN] could not discard the configuration baseline for {path}: {exc}")
 
+    def _sweep_rule_engine_variables(self) -> None:
+        """Delete BAT_E2E_ legacy rule-engine variables, which only the MCP app can reach."""
+        try:
+            listing = self.client.call_tool("hub_manage_variables", {"tool": "hub_list_variables", "args": {}})
+            rule_vars = [str(v.get("name")) for v in (listing.get("ruleVariables") or []) if isinstance(v, dict)]
+        except Exception as exc:
+            rule_vars = []
+            print(f"  [WARN] rule-engine variable listing failed: {exc}")
+        for var_name in [n for n in rule_vars if n.startswith(PREFIX)]:
+            try:
+                print(f"  Sweep: deleting rule-engine variable {var_name}")
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_variable",
+                    "args": {"name": var_name, "confirm": True, "force": True},
+                })
+            except Exception as exc:
+                print(f"  [WARN] Failed to delete rule-engine variable {var_name}: {exc}")
+            if var_name in self.created_variable_names:
+                self.created_variable_names.remove(var_name)
+
     def _restore_permanent_configuration_fixtures(self, stage: str) -> None:
         """Restore the permanent configuration fixtures from any baseline recipe a previous run left
         behind, then make sure every manifest profile sits at its canonical label.
 
-        Runs at suite start and inside cleanup() (post-run and --cleanup-only), so a run that dies
-        mid-matrix is repaired by the NEXT run's pre-sweep or by the post-restore cleanup step --
-        never by the test's own finally (which a kill skips) and never by hand. Best-effort like the
+        Runs at suite start and inside cleanup(), so a run that dies mid-matrix is repaired by the
+        NEXT run's pre-run pass -- never by the test's own finally (which a kill skips) and never by hand. Best-effort like the
         other cleanup layers; every failure is printed loudly and, when a baseline recipe could not
         be applied, recorded in _fixture_reset_failures so a full run fails instead of hiding it."""
         try:
@@ -14840,12 +14817,19 @@ class TestRunner:
             print(f"    [WARN] '{profile['label']}': identity fields {unknown_identity} have no canonical value in the "
                   "manifest (profile.canonical) and were left as found; fill them in once to make the sweep complete")
 
-    def _device_allowlist_inventory(self, **filters) -> dict:
-        """Measure selected/child membership, then restore the suite's effective-access baseline."""
+    def _device_allowlist_inventory(self, *, cached: bool = False, **filters) -> dict:
+        """Measure selected/child membership, then restore the suite's effective-access baseline.
+
+        cached=True reuses this run's earlier read of the same filters (permanent fixtures only)."""
+        key = tuple(sorted(filters.items()))
+        cache = self.__dict__.setdefault("_allowlist_inventory_cache", {})
+        if cached and key in cache:
+            return cache[key]
         try:
             self._set_device_bypass(False)
             result = self.client.call_tool("hub_list_devices", {"scope": "all", **filters})
             assert isinstance(result.get("devices"), list), f"Allowlist inventory unavailable: {result}"
+            cache[key] = result
             return result
         finally:
             self._set_device_bypass(True)
@@ -14860,12 +14844,9 @@ class TestRunner:
         a self-admin write the Spock harness cannot exercise. The remove runs in a finally so a
         mid-test failure never leaves the device authorized.
         """
-        def _authorized_ids() -> set[str]:
-            r = self._device_allowlist_inventory()
-            return {str(d["id"]) for d in (r.get("devices") or []) if d.get("mcpAuthorized")}
-        def _all_devices() -> list[dict]:
-            r = self._device_allowlist_inventory()
-            return r.get("devices") or []
+        def _authorized_ids(devices: list[dict] | None = None) -> set[str]:
+            rows = devices if devices is not None else (self._device_allowlist_inventory().get("devices") or [])
+            return {str(d["id"]) for d in rows if d.get("mcpAuthorized")}
         def _scope(mode: str, ids: list[str]) -> dict:
             return self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
@@ -14873,11 +14854,12 @@ class TestRunner:
                          "confirm": True},
             })
 
-        original = _authorized_ids()
+        all_devices = self._device_allowlist_inventory().get("devices") or []
+        original = _authorized_ids(all_devices)
         # Pick a device that is NOT currently authorized so add+remove nets to no change. Permanent
         # fixtures are unauthorized by construction -- exclude them so this never mutates one.
         _perm_labels = {lbl for lbl, _ in self.PERM_FIXTURES.values()}
-        unauth = next((str(d["id"]) for d in _all_devices()
+        unauth = next((str(d["id"]) for d in all_devices
                        if not d.get("mcpAuthorized") and d.get("id") is not None
                        and (d.get("label") or "") not in _perm_labels
                        and not (d.get("label") or "").startswith(SCAFFOLD_PREFIX)), None)
@@ -14971,24 +14953,8 @@ class TestRunner:
             auth = str(children[0]["id"])
             self._device_replace_boundary_checks(unauth, auth)
             self._bypass_boundary_checks(unauth, self._set_device_bypass)
-
-            # Retain the selected-child enabled readback scenario using its raw native value.
-            original = self.client.call_tool("hub_get_device", {
-                "deviceId": auth, "mode": "configuration", "fields": ["enabled"],
-            })
-            enabled = next(row["value"] for row in original["editableFields"] if row["name"] == "enabled")
-            assert type(enabled) is bool, f"Child enabled state is not restorable: {original}"
-            try:
-                flipped = self.client.call_tool("hub_update_device", {"deviceId": auth, "enabled": not enabled})
-                assert flipped.get("success") is True, f"Native child enabled flip failed: {flipped}"
-                assert any(row.get("property") == "enabled" for row in flipped.get("changes", [])), flipped
-            finally:
-                restored = self.client.call_tool("hub_update_device", {"deviceId": auth, "enabled": enabled})
-                assert restored.get("success") is True, f"Child enabled restoration failed: {restored}"
-                readback = self.client.call_tool("hub_get_device", {
-                    "deviceId": auth, "mode": "configuration", "fields": ["enabled"],
-                })
-                assert next(row["value"] for row in readback["editableFields"] if row["name"] == "enabled") is enabled
+            # The child enabled flip and readback live in test_device_configuration_matrix's child
+            # profile, which verifies it through an independent observer.
             after = self.client.call_tool("hub_list_devices", {
                 "scope": "all", "labelFilter": f"{SCAFFOLD_PREFIX}Configuration",
             })
@@ -15319,21 +15285,6 @@ class TestRunner:
             self._set_bps(enableMandatoryBPS=False, mcpLogLevel="error")
 
     @test("best_practice_gating")
-    def test_bps_gate_disabled_allows_keyless_write(self) -> None:
-        """Gate explicitly OFF -> a write WITHOUT any key succeeds (the toggle genuinely disables it)."""
-        var_name = f"{PREFIX}BPS_Off"
-        self._set_bps(enableMandatoryBPS=False)
-        self.created_variable_names.append(var_name)
-        created = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_create_variable",
-            "args": {"name": var_name, "type": "String", "value": "v1", "confirm": True}})
-        assert created.get("success") is True, f"gate OFF but a keyless write failed: {created}"
-        self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
-        if var_name in self.created_variable_names:
-            self.created_variable_names.remove(var_name)
-
-    @test("best_practice_gating")
     def test_bps_gate_guide_reachable_when_gate_on(self) -> None:
         """Gate ON -> hub_get_tool_guide stays reachable (the read escape hatch) and the section
         actually carries the key, so the AI can always discover it. No lockout."""
@@ -15350,21 +15301,16 @@ class TestRunner:
     @test("best_practice_gating")
     def test_bps_gate_self_disable_escape_hatch(self) -> None:
         """Gate ON -> hub_update_mcp_settings can turn the gate OFF WITHOUT the key (the toggle-off
-        escape hatch). After that, a keyless write succeeds again."""
-        var_name = f"{PREFIX}BPS_SelfDisable"
+        escape hatch). After that, a keyless write succeeds again -- which also proves an OFF gate
+        genuinely stops gating."""
+        var_name = self._ensure_perm_variables("bps_write")["bps_write"]
         self._set_bps(enableMandatoryBPS=True)
         try:
             # Disable the gate WITHOUT supplying the key -- proves the settings tool is exempt.
             self._set_bps(enableMandatoryBPS=False)
-            self.created_variable_names.append(var_name)
-            created = self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_create_variable",
-                "args": {"name": var_name, "type": "String", "value": "v1", "confirm": True}})
-            assert created.get("success") is True, f"keyless write failed after self-disable: {created}"
-            self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
-            if var_name in self.created_variable_names:
-                self.created_variable_names.remove(var_name)
+            written = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": var_name, "value": "v2"}})
+            assert written.get("success") is True, f"keyless write failed after self-disable: {written}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -16386,7 +16332,7 @@ class TestRunner:
                 return None
             return got.get("value") if isinstance(got, dict) else None
 
-        # Track BEFORE creating: there is no prefix sweep for variables, so a crash between
+        # Track BEFORE creating: only the CI purge prefix-sweeps variables, so locally a crash between
         # the write landing and a later append would strand it on the hub.
         self.created_variable_names.append(var_name)
         try:
@@ -16468,8 +16414,7 @@ class TestRunner:
         print("\n--- Cleanup ---")
 
         # Layer 0: permanent configuration fixtures back to baseline (from the recipe the matrix
-        # wrote before editing). Runs here so the post-restore --cleanup-only step repairs a run
-        # that was killed mid-matrix, instead of the next run failing on a renamed fixture.
+        # wrote before editing). The next run's pre-run pass repairs a run killed before this point.
         self._restore_permanent_configuration_fixtures("cleanup")
 
         # Layer 1: tracked artifacts
@@ -16493,7 +16438,9 @@ class TestRunner:
                 print(f"  [WARN] Failed to delete device DNI={dni}: {exc}")
         self.created_device_dnis.clear()
 
-        for var_name in list(self.created_variable_names):
+        self._sweep_rule_engine_variables()
+
+        for var_name in list(self.created_variable_names) if not self.defer_native_deletes else []:
             try:
                 print(f"  Deleting tracked variable {var_name}")
                 # force: teardown must not be stopped by the in-use refusal, which can still
@@ -16505,6 +16452,12 @@ class TestRunner:
             except Exception as exc:
                 print(f"  [WARN] Failed to delete variable {var_name}: {exc}")
         self.created_variable_names.clear()
+
+        # Under CI the prefix sweeps below belong to the teardown's watchdog purge, which also removes
+        # devices, rooms, files and throwaway code; repeating them here only delays the gate.
+        if getattr(self, "defer_native_deletes", False):
+            print("--- Cleanup complete (prefix sweeps left to the teardown's watchdog purge) ---")
+            return
 
         # Layer 2: sweep virtual devices with BAT_E2E_ prefix
         try:
@@ -16553,12 +16506,11 @@ class TestRunner:
 
         # Layer 4: native RM rules / classic apps (issue #137). Tracked ids first,
         # then a list-based sweep for anything a failed native_apps test left behind.
-        # When deferral is on, the restore step's fixture purge owns these deletes: one hub-local
-        # sweep of every BAT_E2E_-prefixed app instance, tracked or not, off the test critical path.
-        # The post-restore --cleanup-only step runs WITHOUT the flag, so it's the idempotent backstop.
+        # When deferral is on, the teardown's watchdog purge owns these deletes: one hub-local sweep
+        # of every BAT_E2E_-prefixed app instance, tracked or not, off the test critical path.
         if self.defer_native_deletes:
             print(f"  Layer 4: leaving {len(self.created_native_app_ids)} tracked native-rule delete(s) "
-                  "to the restore step's fixture purge")
+                  "to the teardown's watchdog purge")
         else:
             for app_id in list(self.created_native_app_ids):
                 try:
@@ -16643,8 +16595,7 @@ class TestRunner:
             except Exception as exc:
                 print(f"  [WARN] Button Controller sweep failed: {exc}")
 
-        # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
-        # Target' (instance + code class), the @test("app_code_update") tests create the
+        # Layer 5: stranded mcptest throwaways. The @test("app_code_update") tests create the
         # 'Deadman Test Target Update' code class and the 'Deadman Test Target Trigger' code
         # class + instance, and the @test("driver_code_update") test creates the 'Deadman Test
         # Target Driver' driver code class (all named to ride this same startswith match); none
@@ -16943,6 +16894,8 @@ class TestRunner:
         # A previous run killed mid-matrix leaves the permanent configuration fixtures off
         # baseline; repair them before any test looks them up.
         self._restore_permanent_configuration_fixtures("pre-run")
+        # Rule-engine variables live in the MCP app's state, beyond the watchdog purge: a killed run's go here.
+        self._sweep_rule_engine_variables()
 
         # Group for display
         self._load_diagnostics = True
@@ -17358,12 +17311,22 @@ def main() -> None:
         return
 
     if args.cleanup_only:
-        # The workflow's wait step follows the main restore before this runs (bounded, never fatal),
-        # so the hub is normally back on main by now.
+        # Manual sweep through the MCP app; CI teardown uses the watchdog purge instead.
         refuse_unless_leased_test_hub(client)
         runner.cleanup()
-        # Gating verification: cleanup() and the restore step's fixture purge are otherwise all
-        # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
+        # Retry BAT_E2E_ HUB variables and fail closed on anything left, as for native rules below.
+        try:
+            for name in [n for n in runner._hub_variables_by_name() if n.startswith(PREFIX)]:
+                print(f"  Sweep: deleting hub variable the purge left behind: {name}")
+                runner._delete_variable_safe(name, inline=True)
+            variable_leftovers = [n for n in runner._hub_variables_by_name() if n.startswith(PREFIX)]
+        except Exception as exc:
+            print(f"ERROR: cleanup-only could not list hub variables to verify cleanup -- failing closed: {exc}")
+            sys.exit(1)
+        if variable_leftovers:
+            print(f"ERROR: cleanup-only left {len(variable_leftovers)} BAT_E2E_ hub variable(s): {variable_leftovers}")
+            sys.exit(1)
+        # Gating verification: cleanup() is otherwise best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
         # apps on the SHARED hub behind a green run. This backstop FAILS CLOSED -- re-list and exit
         # nonzero if any BAT_E2E_ native rule survived, or if the hub can't be listed to prove it.
         leftovers = runner.verify_native_rules_clean()
@@ -17375,7 +17338,7 @@ def main() -> None:
             print(f"ERROR: cleanup-only left {len(leftovers)} BAT_E2E_ native rule(s) on the hub: "
                   f"{leftovers}")
             sys.exit(1)
-        print("Cleanup-only mode complete; verified no BAT_E2E_ native rules remain.")
+        print("Cleanup-only mode complete; verified no BAT_E2E_ native rules or hub variables remain.")
         sys.exit(0)
 
     # Verify connectivity before running tests
@@ -17470,7 +17433,7 @@ def main() -> None:
     # devices that are NOT children of the MCP app (see _ensure_perm_fixture) instead of creating and
     # deleting an app-owned child per test. The tool guide names this exact case as the reason the
     # toggle exists ("automated whole-hub testing"). Deliberately left ON at the end of the run: the
-    # test hub is dedicated to e2e, and the watchdog restores main's code (not settings) afterwards.
+    # test hub is dedicated to e2e.
     # test_bypass_device_allowlist_reaches_unlisted_device flips it OFF and back around its own
     # assertions, so it still proves the boundary works rather than assuming this baseline.
     _bypass_res = client.call_tool("hub_manage_mcp", {
@@ -17489,9 +17452,7 @@ def main() -> None:
     # concurrency that never existed. Pin it OFF (0 = no cap) for the whole run. The one test that
     # proves it live -- test_write_cap_refuses_a_second_concurrent_write -- sets the cap to 1
     # around its own assertions and restores 0 in a finally. Deliberately left at 0 at the end of
-    # the run, like bypassDeviceAllowlist above: this hub is dedicated to e2e, and the watchdog
-    # restores main's CODE, not its settings. This is post-deploy on purpose -- mcp_setup_env.sh
-    # runs against the PRE-deploy baseline app, which need not know the key at all.
+    # the run, like bypassDeviceAllowlist above: this hub is dedicated to e2e.
     _cap_res = client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",
         "args": {"settings": {"maxConcurrentWrites": 0}, "confirm": True}})

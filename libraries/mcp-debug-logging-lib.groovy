@@ -115,7 +115,7 @@ def toolGetLoggingStatus(args) {
         newestEntry: entries.size() > 0 ? formatTimestamp(entries.last().timestamp) : null
     ]
     if (appUpdateAvailable()) {
-        result.updateAvailable = state.updateCheck.latestVersion
+        result.updateAvailable = _latestKnownVersion()
     }
     return result
 }
@@ -252,7 +252,7 @@ def toolGenerateBugReport(args) {
         result.logs.hint = "Pass includeUnrelatedRecentLogs=true to include the ${scopedLogs.otherCount} omitted recent log entr${scopedLogs.otherCount == 1 ? 'y' : 'ies'}."
     }
     if (appUpdateAvailable()) {
-        result.updateAvailable = state.updateCheck.latestVersion
+        result.updateAvailable = _latestKnownVersion()
     }
     return result
 }

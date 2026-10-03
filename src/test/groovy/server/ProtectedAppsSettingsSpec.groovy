@@ -42,6 +42,18 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
         instanceId << [194L, 902L]
     }
 
+    def "a guard protects the instance with no earlier request-path or lifecycle initialization"() {
+        given: 'no policy has been published yet'
+        settingsMap.protectedAppIds = null
+
+        when:
+        script._requireUnprotectedAppMutation(194, 'edit')
+
+        then:
+        thrown(IllegalArgumentException)
+        atomicStateMap.protectedAppsPolicy == [ids: ['194']]
+    }
+
     def "a delayed settings snapshot cannot leave the first request unprotected"() {
         given:
         ownApp.publishUpdates = false

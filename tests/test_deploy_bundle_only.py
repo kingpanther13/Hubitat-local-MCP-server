@@ -53,7 +53,7 @@ def test_deploy_builds_the_bundle_in_ci_instead_of_trusting_a_committed_zip():
     )
 
 
-def test_the_prepare_and_restore_steps_keep_the_names_the_workflow_on_main_calls():
+def test_the_prepare_and_teardown_steps_keep_the_names_the_workflow_on_main_calls():
     """hub-e2e.yml on main drives every open PR's scripts by these file names."""
     assert 'watchdog_v3.py" prepare' in (SCRIPTS / "mcp_arm_watchdog.sh").read_text()
-    assert 'watchdog_v3.py" restore-main' in (SCRIPTS / "mcp_disarm_watchdog.sh").read_text()
+    assert 'watchdog_v3.py" teardown' in (SCRIPTS / "mcp_disarm_watchdog.sh").read_text()

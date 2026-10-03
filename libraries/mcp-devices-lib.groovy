@@ -153,7 +153,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     boolean labelOnly = labelFilter && !filterType && !capabilityFilter && !roomFilter && onlyOn != true && changedSinceDate == null
     if (filterType || labelFilter || capabilityFilter || roomFilter || onlyOn == true || changedSinceDate != null) {
         def required = (onlyOn == true ? ['currentStates'] : []) + (capabilityFilter ? ['capabilities'] : [])
-        _seedNativeInventoryFromTree(allDevices)
+        _seedNativeInventoryFromTree(allDevices, inventoryMeta.inventory as Map)
         def needFull = allDevices.findAll { rec ->
             if (rec._nativeLoaded == true) return false
             if (labelOnly && rec._nativeFilterLabel instanceof String && rec._nativeFilterLabel) return false
@@ -392,7 +392,16 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // (id + metadataUnavailable) so the caller can enumerate around it, and the response says
     // partial. Failing the whole page for one device would hide every other device with it.
     def requiredCollections = []
-    if (fieldSet == null || fieldSet.any { !(it in ["id", "mcpManaged"]) }) {
+    boolean labelOnlyProjection = fieldSet != null && !useDetailed && fieldSet.contains("label") &&
+        fieldSet.every { it in ["id", "mcpManaged", "label"] }
+    if (labelOnlyProjection) {
+        // The bulk inventory carries labels, so an id/label page needs no per-device fullJson; only a
+        // device it lists without one is fetched.
+        def listedLabel = { rec -> [rec.label, rec._nativeFilterLabel].any { it instanceof String && it } }
+        def unlabeled = pagedDevices.findAll { it._nativeLoaded != true && !listedLabel(it) }
+        if (unlabeled) _seedNativeInventoryFromTree(unlabeled, inventoryMeta.inventory as Map)
+        _hydrateNativeInventory(unlabeled.findAll { !listedLabel(it) }, [], true)
+    } else if (fieldSet == null || fieldSet.any { !(it in ["id", "mcpManaged"]) }) {
         if (useDetailed) {
             if (fieldSet == null || fieldSet.contains('capabilities')) requiredCollections << 'capabilities'
             if (fieldSet == null || fieldSet.contains('commands')) requiredCollections << 'commands'
@@ -411,7 +420,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 
         info.id = deviceIdStr
         if (fieldSet == null || fieldSet.contains("name")) info.name = device.name
-        if (fieldSet == null || fieldSet.contains("label")) info.label = device.label ?: device.name
+        if (fieldSet == null || fieldSet.contains("label")) info.label = device.label ?: device._nativeFilterLabel ?: device.name
         if (fieldSet == null || fieldSet.contains("room")) info.room = device.roomName
         if (fieldSet == null || fieldSet.contains("disabled")) info.disabled = isDeviceDisabled(device)
         if (fieldSet == null || fieldSet.contains("deviceNetworkId")) info.deviceNetworkId = safeDni(device)
@@ -631,6 +640,8 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
             meta.idsComplete = false
             meta.partialNote = inventory.partialNote
         }
+        // Lets the caller seed from this same read instead of fetching the inventory again.
+        if (meta != null) meta.inventory = inventory
         def byId = [:]
         inventory.records.each { d -> byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) }
         return byId.values() as List
@@ -686,8 +697,8 @@ private void _hydrateNativeInventory(List records, List requiredCollections, boo
 // tree does not list are left unseeded (the caller decides whether to fetch them one by one).
 // Returns false when the bulk read itself failed -- nothing was seeded and the caller must
 // fall back or report.
-private boolean _seedNativeInventoryFromTree(List records) {
-    def inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
+private boolean _seedNativeInventoryFromTree(List records, Map inventory = null) {
+    if (inventory == null) inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
     if (inventory?.failure || !(inventory?.records instanceof List)) return false
     def byId = [:]
     inventory.records.each { r -> if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) }
@@ -743,8 +754,8 @@ def _contextResourcePerDeviceFetchCap() { 20 }
 // Load the whole MCP-visible population for a context resource: the bulk tree seeds every
 // device it lists; the remainder (or everything, when the bulk read failed) is fetched one by
 // one up to the cap. Returns the number of devices left unread.
-private int _loadContextResourcePopulation(List records) {
-    _seedNativeInventoryFromTree(records)
+private int _loadContextResourcePopulation(List records, Map inventory = null) {
+    _seedNativeInventoryFromTree(records, inventory)
     int fetched = 0
     int unread = 0
     records.each { record ->
@@ -778,7 +789,7 @@ def _buildContextSummaryText() {
     def meta = [:]
     try { records = _mcpVisibleDevices(null, meta) }
     catch (IllegalStateException e) { return "Context unavailable: ${e.message}".toString() }
-    _loadContextResourcePopulation(records)
+    _loadContextResourcePopulation(records, meta.inventory as Map)
     def attrNames = _contextAttributeNames()
     def lines = []
     int used = 0
@@ -832,7 +843,7 @@ def _buildContextJson() {
     catch (IllegalStateException e) { return [success: false, isError: true, error: e.message] }
     // One bulk read seeds room membership AND state for the whole population, so the rooms
     // index and the per-device room come from the same record and cannot disagree.
-    _loadContextResourcePopulation(allDevices)
+    _loadContextResourcePopulation(allDevices, meta.inventory as Map)
     allDevices.each { d -> if (d._nativeReadError) d._nativeRoomUnavailable = true }
     def contextAttrs = _contextAttributeNames() as Set
     int roomUnavailableCount = allDevices.count { it._nativeRoomUnavailable == true }
@@ -948,17 +959,26 @@ def _buildContextJson() {
 // On failure records is null and `failure` is "fetch" (with fetchError) or "shape" -- a missing
 // body, a missing `devices` key or a malformed node. The caller owns the wording.
 private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
-    try {
-        def txt = hubInternalGet("/device/listWithCapabilities/json")
-        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
-        // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
-        if (txt && parsed instanceof List && !parsed.isEmpty()) {
-            return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
+    boolean legacyGone
+    synchronized (LEGACY_DEVICE_LIST_GONE) { legacyGone = !LEGACY_DEVICE_LIST_GONE.isEmpty() }
+    if (!legacyGone) {
+        try {
+            def txt = hubInternalGet("/device/listWithCapabilities/json")
+            def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+            // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
+            if (txt && parsed instanceof List && !parsed.isEmpty()) {
+                return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
+            }
+            // A 200 that is not a device list is contract drift; say so rather than fall through silently.
+            mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
+        } catch (Exception e) {
+            if (_httpStatusOf(e) == 404) {
+                boolean first
+                synchronized (LEGACY_DEVICE_LIST_GONE) { first = LEGACY_DEVICE_LIST_GONE.add("404") }
+                if (first) mcpLog("info", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered 404; skipping that tier until the app reloads")
+            }
+            mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
         }
-        // A 200 that is not a device list is contract drift; say so rather than fall through silently.
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
-    } catch (Exception e) {
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
     }
 
     // The spine. Its failure modes are the caller's failure modes -- unless the feed can stand in.

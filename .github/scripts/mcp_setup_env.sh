@@ -1,37 +1,25 @@
 #!/usr/bin/env bash
 # Configure the test hub for E2E by enabling the toggles tests/e2e_test.py
-# depends on. Captures pre-run state to a file so mcp_restore_env.sh can
-# put things back the way they were.
+# depends on. Nothing restores them afterwards: the hub is dedicated to e2e.
 #
 # Usage:  mcp_setup_env.sh
 # Env:    MCP_URL — full cloud OAuth URL with access_token
 #         WATCHDOG_URL / HUBITAT_APP_ID — watchdog endpoint and MCP instance ID (bootstrap)
-#         RUNNER_TEMP — GHA-provided temp dir; falls back to /tmp
 #
-# IMPORTANT: this script runs BEFORE the PR source is deployed (see hub-e2e.yml:
-# setup -> deploy -> tests -> restore), so it talks to the PRE-DEPLOY baseline app.
-# It uses baseline-compatible settings. Developer Mode is a standing test-hub
-# prerequisite: enable it through the independent watchdog when necessary, then
+# Runs AFTER the watchdog installs the PR (hub-e2e.yml: install -> setup -> tests -> purge), so it
+# talks to the app under test, never a previous run's possibly broken one. Developer Mode is a
+# standing test-hub prerequisite: enable it through the independent watchdog when necessary, then
 # verify it through the main server before configuring the remaining toggles.
-#
-# Gateway mode and the legacy custom engine are enabled for the full suite.
-# Capture the custom engine setting so cleanup restores its pre-run value.
 #
 # Not touched here:
 #   - Read / Write access — under the universal Read/Write masters (PR #113) both
 #     default ON in the deployed app, so read- and write-bearing tests pass without
-#     any setup. (Under older server versions the equivalent Hub Admin / Built-in App
-#     toggles are likewise irrelevant to this pre-deploy step.)
-#   - maxConcurrentWrites — the run pins the global write cap OFF (0), but POST-deploy, in
-#     tests/e2e_test.py main(). Not here: this step talks to the PRE-deploy baseline app,
-#     whose update_mcp_settings allowlist need not carry the key at all, and mcp_restore_env.sh
-#     replays whatever it captured AFTER the watchdog has restored main — at that same app.
-#     A key that is new in the PR under test cannot survive that round trip.
+#     any setup.
+#   - maxConcurrentWrites and the #299 gate — tests/e2e_test.py main() pins those for the run.
 
 set -euo pipefail
 
 : "${MCP_URL:?MCP_URL env var required (full cloud OAuth URL with access_token)}"
-PRE_STATE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_state.json"
 
 mcp_call() {
   local tool_name="$2"
@@ -80,8 +68,6 @@ if [ "$DEV_MODE" != "true" ]; then
   echo "Developer Mode verified ON (retained as a standing E2E prerequisite)."
 fi
 
-PRE_RULE_ENGINE="$(echo "$PRE_INFO_JSON"  | jq -r '.customRuleEngineEnabled // false')"
-
 # Record what hardware/firmware/server version this e2e run actually exercised.
 # Different firmware can react differently to the same tool call, so every run
 # stamps this into the log. Reads the already-fetched PRE_INFO_JSON (no extra hub
@@ -91,21 +77,13 @@ HUB_MODEL="$(echo "$PRE_INFO_JSON"  | jq -r '.model // "unknown"')"
 MCP_VER="$(echo "$PRE_INFO_JSON"    | jq -r '.mcpServerVersion // "unknown"')"
 echo "::notice::E2E hub firmware=${FW_VERSION} model=${HUB_MODEL} mcpServerVersion=${MCP_VER}"
 
-jq -nc \
-  --argjson re  "$PRE_RULE_ENGINE" \
-  '{enableCustomRuleEngine: $re}' \
-  > "$PRE_STATE_FILE"
-
-echo "Captured pre-run state -> $PRE_STATE_FILE"
-cat "$PRE_STATE_FILE"
-
 # Stamp a hub backup FIRST. The hub_update_mcp_settings call below is destructive-confirm-gated
 # (confirm:true requires a hub backup within the last 24h). tests/e2e_test.py stamps a mock backup
 # too, but only LATER in the run (after this configure step), so a >24h gap since the previous e2e
 # run leaves the gate unsatisfied and configure fails ("BACKUP REQUIRED: No hub backup found within
 # the last 24 hours") before the test run ever gets to stamp it. Stamping here makes configure
-# self-sufficient regardless of the gap. Prefer the MOCK backup (stamps only the 24h gate record, no
-# real backupDB write); fall back to a real backup on an older server that lacks mock support.
+# self-sufficient regardless of the gap. The MOCK backup stamps only the 24h gate record, no real
+# backupDB write; a real backup is the fallback when the mock is refused.
 echo "Stamping a backup to satisfy the destructive-confirm 24h gate before enabling toggles..."
 # bestPracticeKey on both: hub_create_backup is a WRITE, and the #299 gate ships ON. The runner
 # pins it off, but only AFTER this step -- so a run that died between the test that re-enables the
@@ -115,7 +93,7 @@ BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":
 if printf '%s' "$BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
   echo "  Backup gate stamped (MOCK -- no real backupDB write)."
 else
-  echo "::notice::Mock backup unsupported/failed on the baseline app -- falling back to a real backup."
+  echo "::notice::Mock backup refused -- falling back to a real backup."
   REAL_BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}' hub_create_backup 2>/dev/null || true)"
   if ! printf '%s' "$REAL_BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
     RB_ERR="$(printf '%s' "$REAL_BACKUP_RESP" | jq -r '
@@ -136,9 +114,7 @@ fi
 # useGateways pins GATEWAY MODE ON for the
 # e2e hub: the suite is meant to exercise the production gateway-routed surface (the catalog real
 # clients see), so we set it explicitly rather than relying on the null->on default in case a prior
-# run left it off. Both settings persist through the source swap into the PR app.
-# (The issue #299 best-practice gate ships ON by default; it is pinned OFF POST-deploy by the e2e
-# runner -- this pre-deploy step runs against main, which does not know that key.)
+# run left it off.
 mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' hub_manage_mcp \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 

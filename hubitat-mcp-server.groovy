@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.4.7 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.4.8 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -95,8 +95,26 @@
 // Code-derived metadata is valid for one compiled class, including same-version deploys:
 // recompilation resets statics without needing updated() or a contributor version bump.
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
+// Background-worker handoff: every continued read/write pays the start delay plus about half a poll.
+// Wait loops poll in-memory records only, so a short step adds no hub or state reads; keep any new
+// poll in-memory too.
+@groovy.transform.Field static final long WORKER_START_DELAY_MS = 50L
+@groovy.transform.Field static final long WORKER_POLL_MS = 50L
 // Serialize the one-time protected-app default across concurrent endpoint handlers.
 @groovy.transform.Field static final Map PROTECTED_APPS_LOCK = new java.util.HashMap()
+// Apps whose Hub Security shed is settled (done, or not due on this firmware). A firmware update or
+// redeploy restarts the class, so the check reruns exactly when its answer can change.
+@groovy.transform.Field static final Set HUB_SECURITY_CHECKED = new java.util.HashSet()
+@groovy.transform.Field static final Map HUB_SECURITY_RETRY_AT = new java.util.HashMap()
+// Per-app latest released version, mirrored from state.updateCheck so every result's serverInfo
+// skips the state read; filled on first read, then replaced only by handleUpdateCheckResponse.
+@groovy.transform.Field static final Map LATEST_VERSION_SEEN = new java.util.HashMap()
+// Per-app last recorded header readability; header lookups touch state only on a transition.
+@groovy.transform.Field static final Map HEADERS_READABLE_SEEN = new java.util.HashMap()
+// Hub-wide flag (not per app): non-empty once /device/listWithCapabilities/json answers 404 (removed
+// in 2.5.1.173). A firmware change reboots the hub and clears it, so inventory reads stop paying for
+// the dead first tier.
+@groovy.transform.Field static final Set LEGACY_DEVICE_LIST_GONE = new java.util.HashSet()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
@@ -228,7 +246,7 @@ def mainPage() {
                 paragraph "<b>App ID:</b> ${app.id}"
                 paragraph "<b>Version:</b> ${currentVersion()}"
                 if (appUpdateAvailable()) {
-                    paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v${currentVersion()}). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
+                    paragraph "<b style='color: orange;'>&#9888; Update available: v${_latestKnownVersion()}</b> (you have v${currentVersion()}). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
                 href name: "regenerateToken", page: "confirmRegenerateTokenPage",
                      title: "Regenerate access token",
@@ -755,7 +773,7 @@ private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
             // may retain older settings snapshots. Only installed()/updated() publish UI saves.
             atomicState.protectedAppsPolicy = [ids: selected as List]
         } catch (Exception e) {
-            // Keep enforcing the default even if persistence fails; the next request retries.
+            // Keep enforcing the default even if persistence fails; the next caller retries.
             mcpLog('warn', 'server', "Could not save protected-app defaults; protection remains active and initialization will retry: ${e.message}")
         }
         return selected
@@ -1000,9 +1018,8 @@ def handleMcpRequest() {
     }
 
     _cleanupRetiredToolState()
-    _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
+    _retireHubSecuritySettingsOnce()   // updated() alone would never fire for a user who does not open the app page
     _refreshSetupAfterUpdate()
-    _protectedAppIds()
     _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
@@ -1178,10 +1195,15 @@ def _requestHeader(String name) {
 // (headerValidation) so a support read shows it without needing the log, and the transition logs at
 // error level once per state change rather than per request.
 def _noteHeadersReadable(boolean readable) {
+    String appKey = _stateOwnerKey()
+    synchronized (HEADERS_READABLE_SEEN) {
+        if (HEADERS_READABLE_SEEN.get(appKey) == readable) return
+    }
     try {
         def prev = state.headersReadable
+        if (prev != readable) state.headersReadable = readable
+        synchronized (HEADERS_READABLE_SEEN) { HEADERS_READABLE_SEEN.put(appKey, readable) }
         if (prev == readable) return
-        state.headersReadable = readable
         if (readable) {
             // ONLY on recovery. The first-ever null->true transition is the normal healthy case, and
             // logging it wrote a line into every install's debug buffer on the first request -- which
@@ -1660,7 +1682,7 @@ def serverIdentity() {
         version: currentVersion()
     ]
     if (appUpdateAvailable()) {
-        info.updateAvailable = state.updateCheck.latestVersion
+        info.updateAvailable = _latestKnownVersion()
     }
     return info
 }
@@ -3237,7 +3259,7 @@ private Map _mrtrClaimWithWait(String stateId, outerTool, leafTool, Map binding,
     while (claim.outcome == "in_progress") {
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
         if (remaining <= 0L) break
-        long sleepMs = Math.min(250L, remaining)
+        long sleepMs = Math.min(WORKER_POLL_MS, remaining)
         try {
             pauseExecution(sleepMs as Long)
         } catch (Exception waitErr) {
@@ -3283,7 +3305,7 @@ private Map _mrtrObserveScheduled(String stateId, Map claim, long requestStarted
         if (observed.outcome != "in_progress") return observed
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
         if (remaining <= 0L) return observed
-        long sleepMs = Math.min(250L, remaining)
+        long sleepMs = Math.min(WORKER_POLL_MS, remaining)
         try {
             pauseExecution(sleepMs as Long)
             remainingBudget -= sleepMs
@@ -3768,7 +3790,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         ])
     }
     try {
-        runInMillis(200, "runMrtrSlice", [overwrite: false,
+        runInMillis(WORKER_START_DELAY_MS, "runMrtrSlice", [overwrite: false,
             data: [stateId: stateId, claimId: claimId, generation: generation]])
         // Queued work is protected by the persisted claim + TTL. Mark it JVM-live
         // only while the worker is actually executing, so a scheduler/JVM loss can
@@ -6908,13 +6930,43 @@ private boolean _hubSecurityObsolete() {
     return _firmwareAtLeast(fw, hubSecurityRetiredFw())
 }
 
-// Also called from every MCP request, not only updated(): updated() fires on a manual save, so a
-// hub whose package or firmware crossed the cutoff and whose page is never opened would keep the
-// dead credentials on disk. state.hubSecurityRetired makes it one-shot on a retired hub; below the
-// cutoff the marker is never stamped, so each request re-reads the firmware string.
-private void _retireHubSecuritySettings() {
-    if (state.hubSecurityRetired == true) return
-    if (!_hubSecurityObsolete()) return
+private boolean _hubFirmwareReadable() {
+    try {
+        return location?.hub?.firmwareVersionString?.toString()?.trim() as boolean
+    } catch (Exception e) {
+        logDebug("Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
+        return false
+    }
+}
+
+// Request-path entry: settles once per class load, so warm requests read neither state nor firmware.
+// An unreadable firmware or a failed shed stays unsettled and is retried at most once a minute.
+private void _retireHubSecuritySettingsOnce() {
+    String appKey = _stateOwnerKey()
+    synchronized (HUB_SECURITY_CHECKED) {
+        if (HUB_SECURITY_CHECKED.contains(appKey)) return
+        def retryAt = HUB_SECURITY_RETRY_AT.get(appKey)
+        if (retryAt != null && (retryAt as Long) > now()) return
+    }
+    boolean settled = _retireHubSecuritySettings()
+    synchronized (HUB_SECURITY_CHECKED) {
+        if (settled) {
+            HUB_SECURITY_CHECKED.add(appKey)
+            HUB_SECURITY_RETRY_AT.remove(appKey)
+        } else {
+            HUB_SECURITY_RETRY_AT.put(appKey, now() + 60000L)
+        }
+    }
+}
+
+// Also reached from MCP requests, not only updated(): updated() fires on a manual save, so a hub
+// whose package or firmware crossed the cutoff and whose page is never opened would keep the dead
+// credentials on disk. Returns true once settled: shed, or below the cutoff on a readable firmware.
+private boolean _retireHubSecuritySettings() {
+    if (state.hubSecurityRetired == true) return true
+    // Below the cutoff the answer is final only when the firmware was readable (_hubSecurityObsolete
+    // already announced an unreadable one).
+    if (!_hubSecurityObsolete()) return _hubFirmwareReadable()
     boolean had = (settings.hubSecurityEnabled == true) || settings.hubSecurityUser || settings.hubSecurityPassword
     try {
         // Credentials first: a partial failure then errs toward "secrets gone, toggle still on"
@@ -6928,7 +6980,7 @@ private void _retireHubSecuritySettings() {
     } catch (Exception e) {
         // This rides the request path; a cosmetic shed must never fail the request it arrived on.
         _cleanupError("hub-admin", "Hub Security credential shed failed; stored credentials may remain on disk (they are inert on firmware ${hubSecurityRetiredFw()}+): ${_cleanupFailureDetail(e)}")
-        return
+        return false
     }
     if (had) {
         // warn, not info: an irreversible deletion the user did not ask for. The default log level
@@ -6936,6 +6988,7 @@ private void _retireHubSecuritySettings() {
         // bug report carry the durable, level-independent record.
         mcpLog("warn", "hub-admin", "Hub Security credentials retired on firmware ${hubSecurityRetiredFw()}+ (an app's loopback requests are exempt from hub login; the stored credentials were unused)")
     }
+    return true
 }
 
 // Returns null on retired firmware, when Hub Security is off, or when credentials are not
@@ -6985,9 +7038,8 @@ def getHubSecurityCookie() {
 /**
  * HTTP status carried by an HTTPBuilder error, or null when it carries none. Duck-typed
  * (e.response.status) rather than naming HttpResponseException, which NCDFEs at parse
- * time on the test classpath. One caller today (shouldRetryWithFreshCookie); kept separate
- * because reading a status off an exception is the fiddly part and any future exception-path
- * status check belongs here rather than re-deriving it.
+ * time on the test classpath. Kept separate because reading a status off an exception is the
+ * fiddly part and any exception-path status check belongs here rather than re-deriving it.
  */
 private Integer _httpStatusOf(Exception e) {
     def resp = null
@@ -7985,7 +8037,7 @@ private Map _getDebugLogHistoryResult(Map args = [:]) {
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
         if (remaining <= 0L) return [status: "in_progress", retryable: true,
             note: "Native log history is loading. Continue with requestState when supplied, otherwise repeat the same call."]
-        long waitMs = Math.min(250L, remaining)
+        long waitMs = Math.min(WORKER_POLL_MS, remaining)
         pauseExecution(waitMs)
         remainingBudget -= waitMs
     }
@@ -8010,7 +8062,7 @@ private void _scheduleDebugLogHistory(Map buffer) {
         buffer.fetchStartedAt = now()
     }
     try {
-        runInMillis(200, "runDebugLogHistoryFetch", [overwrite: false,
+        runInMillis(WORKER_START_DELAY_MS, "runDebugLogHistoryFetch", [overwrite: false,
             data: [appId: buffer.appId, generation: generation, fetchId: fetchId]])
     } catch (Exception e) {
         synchronized (buffer) {
@@ -9871,7 +9923,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.4.7"
+    return "4.4.8"
 }
 
 

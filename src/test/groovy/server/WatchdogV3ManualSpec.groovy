@@ -36,6 +36,9 @@ class WatchdogV3ManualSpec extends Specification {
                 Flags.DontRunScript
             ])
         )
+        // The device/room/code/file leg has its own spec (WatchdogV3PurgeFixturesSpec).
+        script.metaClass.purgeOtherFixturesLocked = { String prefix, String claim -> [deleted: [], failed: [], deletedCount: 0] }
+        script.metaClass.throwawayCodeClasses = { String path -> [] }
     }
 
     /** An atomicState whose writes of ONE key vanish -- a hub dropping state writes under load. */
@@ -219,6 +222,35 @@ class WatchdogV3ManualSpec extends Specification {
         cleanup:
         pool.shutdownNow()
         pool.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
+    def "a watchdog that has never had a successful loopback call can still detect a wedge"() {
+        given: "no lastOkAt at all -- the hub was wedged before this code loaded"
+        script.LOOPBACK.failStreak = 12
+        script.LOOPBACK.lastOkAt = null
+        script.LOOPBACK.streakStartedAt = System.currentTimeMillis() - 300_000L
+        String posted = null
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+
+        when:
+        script.checkHubHealth()
+
+        then: "the streak-start timestamp is the baseline, so the escape still fires"
+        posted == '/hub/reboot'
+    }
+
+    def "every tick probes the loopback before the wedge decision, wedged or not"() {
+        given: "healthy counters -- nothing below the probe would run on its own"
+        int probes = 0
+        script.metaClass.probeLoopbackAlive = { -> probes++; true }
+        script.LOOPBACK.failStreak = 0
+
+        when:
+        script.checkHubHealth()
+
+        then: "the probe ran once on an idle tick, so a latched streak can clear without watchdog traffic"
+        probes == 1
     }
 
     def "an auto-reboot is vetoed under the lock when a concurrent probe cleared the streak"() {
@@ -581,7 +613,8 @@ class WatchdogV3ManualSpec extends Specification {
             if (path == "/installedapp/btn" && b.stateAttribute == "deleteGV") { deleteClicks << b.name }
             [status: 200, data: 'ok']
         }
-        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: "string"], RealVar: [type: "string"], BAT_E2E_v2: [type: "integer"]] }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: "string"], RealVar: [type: "string"], BAT_E2E_v2: [type: "integer"],
+                                                  BAT_E2E_KEEP_v: [type: "string"]] }
         script.metaClass.getGlobalVar = { String n -> null }   // gone after the wizard commits
 
         when:
@@ -951,7 +984,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a purge landing during an in-flight purge is a no-op, not a second sweep"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         // A sweep that is genuinely running owns all three keys -- the claim is what says someone
         // is still working, and a bare timestamp is the trailing edge of a sweep that has finished.
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 30_000L
@@ -971,7 +1004,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a STALE purge latch (sweep killed mid-flight) does not block the next purge"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 1_000_000L
         atomicStateMap.purgeClaim = 'purge-killed'
         atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
@@ -998,7 +1031,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a purge arriving just after one finished is served from cache, not re-run"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeResult = [success: true, prefix: 'BAT_E2E_', deletedCount: 12, failedCount: 0]
         atomicStateMap.purgeResultAt = System.currentTimeMillis() - 10_000L
 
@@ -1014,7 +1047,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a purge cache older than the window re-runs instead of serving a stale result"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeResult = [success: true, prefix: 'BAT_E2E_', deletedCount: 12, failedCount: 0]
         atomicStateMap.purgeResultAt = System.currentTimeMillis() - 400_000L
 
@@ -1190,6 +1223,16 @@ class WatchdogV3ManualSpec extends Specification {
     }
 
     // ---- annotation completeness ------------------------------------------------------------
+
+    def "the tools that reach the open internet are the ones that fetch by URL"() {
+        given: "openWorldHint is an accuracy statement: the hub is the closed-world system"
+        def defs = script.getAdminToolDefinitions()
+
+        expect: "only the importUrl/zip-fetch/platform-download tools leave the hub"
+        (defs.findAll { it.annotations?.openWorldHint == true }*.name as Set) ==
+            ['hub_update_package', 'hub_update_app', 'hub_create_library', 'hub_update_library',
+             'hub_update_platform', 'hub_install_bundle'] as Set
+    }
 
     def "every watchdog tool definition carries explicit annotation hints"() {
         given: "tools/list returns getAdminToolDefinitions() directly, so these reach the wire"
@@ -1370,7 +1413,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "a held purge claim makes a second caller yield without sweeping"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 5_000L
         atomicStateMap.purgeClaim = 'purge-someone-else'
 
@@ -1477,7 +1520,7 @@ class WatchdogV3ManualSpec extends Specification {
     def "an in-flight sweep for a DIFFERENT prefix reports busy, never covered"() {
         given:
         int enumerations = 0
-        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        script.metaClass.hubGet = { String p, Map q -> if (p == '/hub2/appsList') enumerations++; '{"apps":[]}' }
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 10_000L
         atomicStateMap.purgeClaim = 'purge-other'
         atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'

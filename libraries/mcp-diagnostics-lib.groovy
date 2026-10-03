@@ -428,7 +428,7 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
 private Map _observeHubReadSnapshot(String key, String fetchId, Map job, Map args) {
     if (job != null) {
         try {
-            runInMillis(200, "runNativeLogFetch", [overwrite: false, data: job])
+            runInMillis(WORKER_START_DELAY_MS, "runNativeLogFetch", [overwrite: false, data: job])
         } catch (Exception scheduleError) {
             synchronized (NATIVE_LOG_SNAPSHOTS) {
                 if (NATIVE_LOG_SNAPSHOTS[key]?.fetchId == job.fetchId) NATIVE_LOG_SNAPSHOTS.remove(key)
@@ -460,7 +460,7 @@ private Map _observeHubReadSnapshot(String key, String fetchId, Map job, Map arg
                 return [state: "pending"]
             }
         }
-        long waitMs = Math.min(250L, remaining)
+        long waitMs = Math.min(WORKER_POLL_MS, remaining)
         pauseExecution(waitMs)
         remainingBudget -= waitMs
     }
@@ -1073,7 +1073,7 @@ private void _logsJsonEnsureFetchScheduled() {
         LOGS_JSON_SNAPSHOT.fetchStartedAt = now()
     }
     try {
-        runInMillis(200, "runLogsJsonFetch", [overwrite: false, data: [fetchId: fetchId]])
+        runInMillis(WORKER_START_DELAY_MS, "runLogsJsonFetch", [overwrite: false, data: [fetchId: fetchId]])
     } catch (Exception scheduleErr) {
         synchronized (LOGS_JSON_SNAPSHOT) {
             if (LOGS_JSON_SNAPSHOT.fetchId == fetchId) LOGS_JSON_SNAPSHOT.remove("fetchStartedAt")
@@ -1143,7 +1143,7 @@ def _logsJsonSnapshot(Map args) {
         if (failure != null) return [state: "failed", error: failure.message]
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
         if (remaining <= 0L) return [state: "pending"]
-        long sleepMs = Math.min(250L, remaining)
+        long sleepMs = Math.min(WORKER_POLL_MS, remaining)
         try {
             pauseExecution(sleepMs as Long)
         } catch (Exception waitErr) {

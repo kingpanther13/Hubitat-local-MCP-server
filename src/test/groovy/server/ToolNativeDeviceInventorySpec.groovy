@@ -95,6 +95,101 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
     }
 
+    @Unroll
+    def 'an id and label projection reads labels from the bulk inventory with bypass #bypass'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = bypass
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, ['id', 'label'])
+
+        then:
+        result.devices*.label == (bypass ? ['Native 1', 'Native 2', 'Native 3'] : ['Native 1', 'Native 2'])
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') }
+
+        where:
+        bypass << [false, true]
+    }
+
+    def 'an id and label projection fetches only a device the bulk inventory lists without a label'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/listWithCapabilities/json') {
+            JsonOutput.toJson(models.values().collect {
+                [id: it.device.id, label: it.device.id == 2 ? null : it.device.label, capabilities: ['Switch']]
+            })
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, ['id', 'label'])
+
+        then:
+        result.devices*.label == ['Native 1', 'Native 2', 'Native 3']
+        hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path == ['/device/fullJson/2']
+    }
+
+    def 'a non-404 legacy device-list failure is retried on the next read'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/listWithCapabilities/json') { throw new RuntimeException('read timed out') }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..3).collect { [key: "DEV-${it}", data: [id: it, name: "Native ${it}"], children: []] }])
+        }
+        hubGet.register('/hub2/vrb/devices') {
+            JsonOutput.toJson((1..3).collect { [id: it, label: "Native ${it}", capabilities: ['Switch']] })
+        }
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, 'ids')
+        script.toolListDevices(false, 0, 0, null, null, null, 'ids')
+
+        then:
+        hubGet.calls.count { it.path == '/device/listWithCapabilities/json' } == 2
+    }
+
+    def 'a filtered bypass list seeds from the inventory read that scoped it'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, 'Native 2')
+
+        then:
+        result.devices*.id == ['2']
+        hubGet.calls.count { it.path == '/device/listWithCapabilities/json' } == 1
+    }
+
+    def 'a 404 from the removed legacy device list is not requested again'() {
+        given:
+        nativeFixture()
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/listWithCapabilities/json') { throw new Http404() }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..3).collect { [key: "DEV-${it}", data: [id: it, name: "Native ${it}"], children: []] }])
+        }
+        hubGet.register('/hub2/vrb/devices') {
+            JsonOutput.toJson((1..3).collect { [id: it, label: "Native ${it}", capabilities: ['Switch']] })
+        }
+
+        when:
+        def first = script.toolListDevices(false, 0, 0, null, null, null, 'ids')
+        def second = script.toolListDevices(false, 0, 0, null, null, null, 'ids')
+
+        then:
+        first.deviceIds == [1, 2, 3]
+        second.deviceIds == [1, 2, 3]
+        hubGet.calls.count { it.path == '/device/listWithCapabilities/json' } == 1
+    }
+
+    static class Http404 extends RuntimeException {
+        Map response = [status: 404]
+        Http404() { super('status code: 404') }
+    }
+
     def 'native fullJson outage lists that device as metadata unavailable and keeps the rest'() {
         given:
         nativeFixture()

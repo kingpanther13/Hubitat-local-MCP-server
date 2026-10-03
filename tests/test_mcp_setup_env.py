@@ -93,15 +93,11 @@ def test_setup_bootstraps_only_verified_off_state(tmp_path, scenario, succeeds, 
     assert names.count("hub_set_mcp_developer_mode") == int(bootstrap)
     if succeeds:
         assert names[-2:] == ["hub_create_backup", "hub_manage_mcp"]
-        assert json.loads((tmp_path / "mcp_pre_state.json").read_text()) == {
-            "enableCustomRuleEngine": False,
-        }
         if bootstrap:
             assert names[:3] == ["hub_get_info", "hub_set_mcp_developer_mode", "hub_get_info"]
     else:
         assert "hub_create_backup" not in names
         assert "hub_manage_mcp" not in names
-        assert not (tmp_path / "mcp_pre_state.json").exists()
 
 
 WORKFLOWS = [
@@ -177,8 +173,9 @@ def test_watchdog_maintenance_is_exclusive_and_never_called_by_e2e():
         # Split at the next two-space job key, not the indented body.
         body = re.split(r"\n  [a-z][\w-]*:\n", source.split(f"\n  {job}:\n", 1)[1])[0]
         assert "inputs.watchdog_update != 'true'" in body
+        assert "inputs.install_main != 'true'" in body
         assert "watchdog_maintenance.sh" not in body
-    maintenance = source.split("\n  watchdog-maintenance:\n", 1)[1].split("\n  probe:\n", 1)[0]
+    maintenance = source.split("\n  watchdog-maintenance:\n", 1)[1].split("\n  install-main:\n", 1)[0]
     assert "github.event_name == 'workflow_dispatch' && inputs.watchdog_update == 'true'" in maintenance
     assert "!cancelled() && needs.approve.result == 'success'" in maintenance
     assert "group: hub-e2e-serialized" in maintenance
@@ -190,7 +187,7 @@ def test_watchdog_maintenance_is_exclusive_and_never_called_by_e2e():
 
 def test_watchdog_backup_is_durable_before_deploy():
     source = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
-    maintenance = source.split("\n  watchdog-maintenance:\n", 1)[1].split("\n  probe:\n", 1)[0]
+    maintenance = source.split("\n  watchdog-maintenance:\n", 1)[1].split("\n  install-main:\n", 1)[0]
     prepare = maintenance.index("watchdog_maintenance.sh prepare")
     upload = maintenance.index("uses: actions/upload-artifact@")
     download = maintenance.index('gh run download "$GITHUB_RUN_ID"')
@@ -198,3 +195,12 @@ def test_watchdog_backup_is_durable_before_deploy():
     assert prepare < upload < download < deploy
     assert "if-no-files-found: error" in maintenance
     assert "if: always()" not in maintenance[prepare:deploy]
+
+
+def test_install_main_is_exclusive_leased_and_runs_no_tests():
+    source = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
+    job = source.split("\n  install-main:\n", 1)[1].split("\n  probe:\n", 1)[0]
+    assert "github.event_name == 'workflow_dispatch' && inputs.install_main == 'true'" in job
+    assert "group: hub-e2e-serialized" in job
+    assert job.index("lease_acquire.sh") < job.index("watchdog_v3.py install-main") < job.index("lease_release.sh")
+    assert "tests/e2e_test.py" not in job

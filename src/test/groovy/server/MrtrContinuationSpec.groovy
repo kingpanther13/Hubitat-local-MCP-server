@@ -256,7 +256,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         requestState instanceof String
         atomicStateMap.mrtrRequests[requestState].leafTool == leaf
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
+        runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
 
         where:
         caseName                  | useGateways | outer                     | leaf           | editShape
@@ -517,7 +517,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         observedWaitMs.get() ==
             (script._mrtrScheduleObserveWaitMs('hub_set_rule') as Long) - schedulerElapsedMs
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
+        runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
         runInMillisCalls[0][2].overwrite == false
         runInMillisCalls[0][2].data.stateId == stateId
         runInMillisCalls[0][2].data.claimId instanceof String
@@ -613,7 +613,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         mcpDriver.parseInner(replay).settingsApplied == true
         leafCalls.get() == 1
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
+        runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
         runInMillisCalls[0][2].overwrite == false
         runInMillisCalls[0][2].data.keySet() == ['stateId', 'claimId', 'generation'] as Set
     }
@@ -1162,7 +1162,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         then:
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
+        runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
         seen == [[appId: 654, confirm: true, settings: [description: 'gateway worker']]]
         complete.result.resultType == 'complete'
         complete.result.isError != true
@@ -1198,7 +1198,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         first.result.requestState instanceof String
         dispatched.isEmpty()
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
+        runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
 
         where:
         leaf                | leafArgs
@@ -1260,7 +1260,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         scheduled.result.requestState == stateId
         dispatched.isEmpty()
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
+        runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
 
         when: 'another slow code write arrives while the worker is queued'
         def capped = modernCall(gateway, [tool: 'hub_create_driver', args: [
@@ -2535,7 +2535,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         !first.result.containsKey('content')
         fetches.get() == 0
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
+        runInMillisCalls[0][0..1] == [50, 'runLogsJsonFetch']
         script._activeWrites().isEmpty()
 
         when: 'the client echoes its original arguments while the fetch remains queued'
@@ -2625,7 +2625,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         stateId?.startsWith('mrtr-')
         fetches.get() == 0
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
+        runInMillisCalls[0][0..1] == [50, 'runLogsJsonFetch']
         script._activeWrites()*.tool == ['hub_set_rule']
 
         when: 'the client continues while the worker is still queued'

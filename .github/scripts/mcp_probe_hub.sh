@@ -61,23 +61,31 @@ echo "######## HUB PROBE: read-only inventory ########"
 # throttled (these sections used to 504 against a busy main app). Sections that are main-DOMAIN
 # (devices, RM/VRB rules, variables, files) or that deliberately exercise the main app (the live
 # wedge matrix) stay on MCP_URL.
+# The watchdog is a separate app, so its read-only sections run alongside the main-server ones
+# without adding load to the app under test; their output prints in one block at the end.
+WATCHDOG_SECTIONS=$(mktemp)
+trap 'rm -f "$WATCHDOG_SECTIONS"' EXIT
+{
+  section "hub_get_jobs via watchdog (uptime / scheduled / RUNNING jobs)" "$WATCHDOG_URL" "$(tool_rpc hub_get_jobs '{}')"
+  section "hub_get_metrics via watchdog (free memory + the hub's own health alerts)" "$WATCHDOG_URL" "$(tool_rpc hub_get_metrics '{}')"
+  section "hub_get_memory_history via watchdog (last 60 entries)" "$WATCHDOG_URL" "$(tool_rpc hub_get_memory_history '{"limit":60}')"
+  section "hub system logs via watchdog: ERRORS (newest 60)" "$WATCHDOG_URL" "$(tool_rpc hub_get_hub_logs '{"level":"error","limit":60}')"
+  section "hub system logs via watchdog: WARNINGS (newest 40)" "$WATCHDOG_URL" "$(tool_rpc hub_get_hub_logs '{"level":"warn","limit":40}')"
+  section "hub_list_app_instances via watchdog (ALL running app instances)" "$WATCHDOG_URL" "$(tool_rpc hub_list_app_instances '{}')"
+  section "hub_list_libraries via watchdog (duplicate name+namespace = the #include hazard)" "$WATCHDOG_URL" "$(tool_rpc hub_list_libraries '{}')"
+  section "hub_list_bundles via watchdog (stale bundle containers)" "$WATCHDOG_URL" "$(tool_rpc hub_list_bundles '{}')"
+} > "$WATCHDOG_SECTIONS" 2>&1 &
+WATCHDOG_PID=$!
 section "hub_get_info (MAIN server -- also proves the app under test answers)" "$MCP_URL" "$(tool_rpc hub_get_info '{}')"
-section "hub_get_jobs via watchdog (uptime / scheduled / RUNNING jobs)" "$WATCHDOG_URL" "$(tool_rpc hub_get_jobs '{}')"
-section "hub_get_metrics via watchdog (free memory + the hub's own health alerts)" "$WATCHDOG_URL" "$(tool_rpc hub_get_metrics '{}')"
-section "hub_get_memory_history via watchdog (last 60 entries)" "$WATCHDOG_URL" "$(tool_rpc hub_get_memory_history '{"limit":60}')"
-section "hub system logs via watchdog: ERRORS (newest 60)" "$WATCHDOG_URL" "$(tool_rpc hub_get_hub_logs '{"level":"error","limit":60}')"
-section "hub system logs via watchdog: WARNINGS (newest 40)" "$WATCHDOG_URL" "$(tool_rpc hub_get_hub_logs '{"level":"warn","limit":40}')"
-section "hub_list_app_instances via watchdog (ALL running app instances)" "$WATCHDOG_URL" "$(tool_rpc hub_list_app_instances '{}')"
-section "hub_list_libraries via watchdog (duplicate name+namespace = the #include hazard)" "$WATCHDOG_URL" "$(tool_rpc hub_list_libraries '{}')"
-section "hub_list_bundles via watchdog (stale bundle containers)" "$WATCHDOG_URL" "$(tool_rpc hub_list_bundles '{}')"
 
-# Device list, paginated via hasMore/nextOffset so NOTHING is silently dropped. Also
+# Device list (id/label/mcpManaged: one bulk read, no per-device fetch that can outlast the relay),
+# paginated via hasMore/nextOffset so NOTHING is silently dropped. Also
 # kept in $ALL_DEVICES for the BAT deep-dive + scaffold lookup below.
 echo "=== hub_list_devices (ALL devices, paginated) ==="
 ALL_DEVICES="[]"
 OFFSET=0
 for page in 1 2 3 4 5 6 7 8 9 10; do
-  PAGE_TEXT=$(mcp_text "$MCP_URL" "$(tool_rpc hub_list_devices "{\"limit\":200,\"offset\":${OFFSET}}")") || break
+  PAGE_TEXT=$(mcp_text "$MCP_URL" "$(tool_rpc hub_list_devices "{\"limit\":200,\"offset\":${OFFSET},\"fields\":[\"id\",\"label\",\"mcpManaged\"]}")") || break
   printf '%s\n' "$PAGE_TEXT"
   ALL_DEVICES=$(jq -nc --argjson acc "$ALL_DEVICES" --argjson page "$(printf '%s' "$PAGE_TEXT" | jq -c '.devices // .')" '$acc + $page' 2>/dev/null || printf '%s' "$ALL_DEVICES")
   HAS_MORE=$(printf '%s' "$PAGE_TEXT" | jq -r '.hasMore // false' 2>/dev/null)
@@ -177,6 +185,10 @@ if [ -n "$FRESH_ID" ]; then
 else
   echo "(D: fresh-device create did not return an id: $(printf '%s' "$FRESH" | head -c 300))"
 fi
+
+echo "######## Watchdog hub-health sections (run in parallel above) ########"
+wait "$WATCHDOG_PID" || echo "(watchdog section block exited non-zero; output below may be partial)"
+cat "$WATCHDOG_SECTIONS"
 
 echo "######## Watchdog state ########"
 # hub_get_info on v3 carries the latest package deployment (and its hold) and the wedge counters.

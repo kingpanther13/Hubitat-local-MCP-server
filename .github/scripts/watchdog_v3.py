@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the E2E hub through watchdog v3: prepare a run, install a commit, restore main.
+"""Drive the E2E hub through watchdog v3: prepare a run, install a commit, purge its fixtures.
 
 V3 never restores anything by itself, so every step here is explicit. A hub write is
 submitted once; a lost response is followed by reading status, never by a resubmission.
@@ -44,12 +44,18 @@ class Unreadable(OSError):
 class Transport:
     def __init__(self, timeout=60):
         self.timeout = timeout
+        self.deadline = None  # time.monotonic() after which every call fails as a lost response
 
     def rpc(self, url, method, params):
+        timeout = self.timeout
+        if self.deadline is not None:
+            timeout = min(timeout, self.deadline - time.monotonic())
+            if timeout <= 0:
+                raise OSError("The time budget for this step is spent")
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
         request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.load(response)
         except (OSError, ValueError, http.client.HTTPException):
             # A body cut off mid-read is an HTTPException, not an OSError; it is a lost response too.
@@ -445,6 +451,53 @@ def command_deploy_pr(args):
     log(f"Installed {sha}: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
 
 
+def purge_fixtures(transport, v3, *, interval=15, attempts=60):
+    """Run the hub-local BAT_E2E_ sweep and return its finished result. A lost response or an
+    in-flight marker is followed by asking again: v3 never starts a second sweep for the same
+    prefix and serves a finished one from its cache."""
+    for attempt in range(attempts):
+        try:
+            purged = transport.call(v3, "hub_purge_e2e_artifacts", {"confirm": True})
+        except OSError:
+            # The sweep outlives the relay timeout and keeps running on the hub.
+            purged = None
+        if purged is not None and not purged.get("inFlight") and not purged.get("busy"):
+            log("Fixture purge: " + json.dumps({k: purged.get(k) for k in (
+                "success", "cached", "deletedCount", "failedCount", "variablesDeletedCount",
+                "variablesFailedCount", "otherDeleted", "otherFailed", "error")}))
+            return purged
+        if attempt + 1 < attempts:
+            time.sleep(interval)
+    raise HubError("The fixture purge did not report a finished sweep in time")
+
+
+def command_teardown(args):
+    """Release the run's hold and purge its fixtures. The PR's package stays installed: the next
+    run installs over it, and install-main restores main on demand."""
+    transport, v3, _mcp = endpoints()
+    if args.cancelled:
+        # GitHub ends a cancelled job after about five minutes and the lease release still has to
+        # fit, so be quick and leave anything unfinished to the next run's prepare step.
+        transport.timeout = 20
+        # Calls stop at 110 s; with the sleeps below the worst case stays under the step's 3-minute
+        # timeout, so the warning always prints.
+        transport.deadline = time.monotonic() + 110
+        try:
+            clear_hold(transport, v3, interval=5, attempts=3,
+                       settle=lambda t, url: wait_until_settled(t, url, interval=5, attempts=4))
+            if purge_fixtures(transport, v3, interval=5, attempts=4).get("success") is not True:
+                log("::warning::The purge reported failures; the fixtures were left for the next run.")
+        except (HubError, ToolError, Unreadable) as error:
+            log(f"::warning::The hold or the fixtures were left for the next run: {error}")
+        except OSError:
+            log("::warning::The watchdog did not answer; the hold and the fixtures were left for the next run.")
+        return
+    clear_hold(transport, v3)
+    purged = purge_fixtures(transport, v3)
+    if purged.get("success") is not True:
+        raise HubError(purged.get("error") or "The fixture purge reported failures")
+
+
 def current_main_sha(repository):
     try:
         listing = subprocess.run(["git", "ls-remote", f"https://github.com/{repository}.git", "refs/heads/main"],
@@ -452,112 +505,24 @@ def current_main_sha(repository):
     except (OSError, subprocess.SubprocessError):
         listing = ""
     sha = listing.split()[0] if listing.split() else ""
-    if re.fullmatch(r"[0-9a-f]{40}", sha):
-        return sha
-    log("::warning::Could not resolve main's current SHA; using the run's starting main instead.")
-    return None
+    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
 
 
-def purge_fixtures(transport, v3):
-    try:
-        purged = transport.call(v3, "hub_purge_e2e_artifacts", {"confirm": True})
-        log("Fixture purge: " + json.dumps({k: purged.get(k) for k in (
-            "success", "inFlight", "cached", "deletedCount", "failedCount",
-            "variablesDeletedCount", "variablesFailedCount", "error")}))
-        if purged.get("success") is not True or purged.get("failedCount") or purged.get("variablesFailedCount"):
-            # Not fatal here: the --cleanup-only step sweeps again and fails closed on leftovers.
-            log("::warning::The fixture purge reported failures; the cleanup step is the backstop.")
-    except OSError:
-        # The sweep outlives the relay timeout and keeps running on the hub.
-        log("::warning::The fixture purge returned no response; it may still be running on the hub.")
-
-
-def command_restore_main(args):
-    """Fire and forget. Whether main comes back has no bearing on the PR, so nothing here fails a run."""
-    try:
-        if args.cancelled:
-            release_cancelled()
-        else:
-            submit_restore()
-    except (HubError, ToolError, Unreadable) as error:
-        not_restored(str(error))
-    except Exception:
-        # Never print it: it can carry an endpoint URL and its token.
-        not_restored("an endpoint or input was unavailable")
-
-
-def release_cancelled():
-    """GitHub ends a cancelled job after about five minutes, less than a deployment takes, and a
-    cancel is normally followed by a run that installs its own code. So leave the package as it
-    is, and be quick: the lease release still has to run inside that window."""
-    transport, v3, _mcp = endpoints()
-    transport.timeout = 20
-    try:
-        clear_hold(transport, v3, attempts=3, settle=lambda t, url: wait_until_settled(t, url, attempts=6))
-        purge_fixtures(transport, v3)
-    except (HubError, ToolError, Unreadable) as error:
-        # Usually a cancel mid-install: the worker is still saving, and v3 refuses a purge under a hold.
-        log(f"::warning::The hold and the fixtures were left for the next run's prepare and restore steps: {error}")
-    except OSError:
-        log("::warning::The watchdog did not answer; the hold and the fixtures were left for the next run.")
-    log("Run cancelled: main was NOT restored. The next run's install replaces the package.")
-
-
-def submit_restore():
-    transport, v3, _mcp = endpoints()
+def command_install_main(_args):
+    """Install main as it is now, for maintenance or to recover from a broken PR install."""
+    transport, v3, mcp = endpoints()
     repository = os.environ["GITHUB_REPOSITORY"]
     base = f"https://raw.githubusercontent.com/{repository}"
-    # Main can move while a run is in flight; restore what main is now, not what it was at the start.
-    candidates = list(dict.fromkeys(
-        sha for sha in (current_main_sha(repository), os.environ.get("MAIN_SHA")) if sha))
-    for position, sha in enumerate(candidates, start=1):
-        bundle = fetch(artifact_url(base, sha))
-        if bundle is not None:
-            break
-        more = "; trying the run's starting main" if position < len(candidates) else ""
-        log(f"::warning::No bundle-artifacts entry for main at {sha}{more}.")
-    else:
-        raise HubError("No published bundle for main")
-    # A failed PR install leaves its hold, and a hold blocks the purge, so release it first.
+    sha = current_main_sha(repository)
+    if sha is None:
+        raise HubError("Could not resolve main's current SHA")
+    bundle = fetch(artifact_url(base, sha))
+    if bundle is None:
+        raise HubError(f"No published bundle for main at {sha}")
     clear_hold(transport, v3)
-    purge_fixtures(transport, v3)
-    plan = {**plan_from_bundle(sha, bundle), "baseUrl": base, "bundleBaseUrl": base}
-    request_id = operation_id("main")
-    baseline = start(transport, v3, plan, request_id)
-    log(f"Main ({sha}) is being restored on the hub as {request_id}; this step does not wait for it.")
-    try:
-        restore_state().write_text(json.dumps({"requestId": request_id, "plan": plan, "baseline": baseline}))
-    except OSError:
-        log("::warning::Could not record the restore for the wait step; the next run's prepare releases its hold.")
-
-
-def restore_state():
-    return Path(os.environ.get("RUNNER_TEMP", "."), "watchdog-v3-restore.json")
-
-
-def not_restored(reason):
-    log(f"::warning::Main was not restored ({reason}). This does not affect the e2e result: the next "
-        "run's prepare and install steps recover the hub.")
-
-
-def command_wait_restore(_args):
-    """Bounded wait for the submitted restore, so cleanup runs against a recompiled main. Never fatal."""
-    try:
-        state = json.loads(restore_state().read_text())
-    except (OSError, ValueError):
-        log("No restore was submitted by this run; nothing to wait for.")
-        return
-    try:
-        transport, v3, mcp = endpoints()
-        baseline = [tuple(item) for item in state["baseline"]]
-        result = follow(transport, v3, mcp, state["plan"], state["requestId"], baseline,
-                        attempts=72, endpoint_wait_s=600)
-        log(f"Restored main: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
-    except (HubError, ToolError, Unreadable) as error:
-        not_restored(str(error))
-    except Exception:
-        # Never print it: it can carry an endpoint URL and its token.
-        not_restored("an endpoint or input was unavailable")
+    result = deploy(transport, v3, mcp, {**plan_from_bundle(sha, bundle), "baseUrl": base, "bundleBaseUrl": base},
+                    operation_id("main"))
+    log(f"Installed main {sha}: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
 
 
 def command_endpoint(_args):
@@ -572,10 +537,10 @@ def main(argv=None):
     deploy_pr = commands.add_parser("deploy-pr")
     deploy_pr.add_argument("--bundle", required=True, help="mcp-libraries.zip built from the checkout")
     deploy_pr.set_defaults(run=command_deploy_pr)
-    restore = commands.add_parser("restore-main")
-    restore.add_argument("--cancelled", action="store_true", help="the run was cancelled: clean up, deploy nothing")
-    restore.set_defaults(run=command_restore_main)
-    commands.add_parser("wait-restore").set_defaults(run=command_wait_restore)
+    teardown = commands.add_parser("teardown")
+    teardown.add_argument("--cancelled", action="store_true", help="the run was cancelled: best effort, never fails")
+    teardown.set_defaults(run=command_teardown)
+    commands.add_parser("install-main").set_defaults(run=command_install_main)
     commands.add_parser("endpoint").set_defaults(run=command_endpoint)
     args = parser.parse_args(argv)
     try:
