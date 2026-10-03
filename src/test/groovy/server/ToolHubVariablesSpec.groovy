@@ -2320,6 +2320,33 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.dependentsError.contains('in-use registry')
     }
 
+    def "hub_get_variable includeDependents polls until the async reveal loads (first fetch unrevealed, later fetch revealed)"() {
+        given: 'the variable is in-use, but the revealed panel only renders on a later fetch (async click)'
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        def gets = 0
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            gets++
+            // GET 1 = platformInUse check, GET 2 = first reveal poll -> unrevealed (marker only, no
+            // anchors). GET 3+ = the revealed panel with the consumer anchor. Before the bounded-retry
+            // poll this raced to a false dependentsError; now it waits for the reveal to render.
+            if (gets <= 2) {
+                wrapCfg("<table><tr><td><div data-stateAttribute='inUse' title='Show In Use Apps for probe'>probe</div></td><td>Boolean</td></tr></table>")
+            } else {
+                hubVarInUsePage('probe', [[id: '21', label: 'ProbeRule']])
+            }
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'probe', includeDependents: true])
+
+        then: 'the poll waited for the reveal and parsed the consumer -- not a false dependentsError'
+        !result.containsKey('dependentsError')
+        result.appsUsing == [[id: '21', label: 'ProbeRule']]
+        gets >= 3
+    }
+
     def "hub_get_variable includeDependents matches an entity-escaped variable name and decodes app labels"() {
         given:
         script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }

@@ -84,8 +84,14 @@ def _appTypeEnrichment() {
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
         if (parsed instanceof Map && (parsed.userAppTypes != null || parsed.systemAppTypes != null)) {
             def catalog = []
+            def missing = []
+            // Enrich from whichever list is valid; name any field that is absent or not a list so a
+            // half-populated /hub2/appsList response doesn't silently drop that part of the catalog.
             if (parsed.userAppTypes instanceof List) catalog += parsed.userAppTypes
+            else missing << "userAppTypes (community/user types)"
             if (parsed.systemAppTypes instanceof List) catalog += parsed.systemAppTypes
+            else missing << "systemAppTypes (built-in types)"
+            if (missing) out.note = "/hub2/appsList did not return a usable ${missing.join(' and ')} list this call; that portion of the app-type catalog (and its menu tab) is omitted."
             catalog.each { e ->
                 if (e instanceof Map) {
                     if (e.id != null) out.menuById[e.id.toString()] = e.menu

@@ -756,14 +756,15 @@ private _setHubBackupSchedule(Map schedule) {
     }
 }
 
-// Read the current automatic-backup schedule from GET /hub2/backup/json -- the same source
-// _setHubBackupSchedule read-merges before a write. Field names differ from the write endpoint
-// (read = databaseCleanupTimeHour/databaseCleanupJobMinute; write = hour/minute). The cloud-backup
-// password (backupPassword) is deliberately NEVER returned -- it is a secret and the hub reads it
-// back masked anyway. Returns [ok:true, schedule:[...]] on success, or [ok:false, error:...] when the
-// read fails, so hub_list_backups can fold the schedule into the hub-DB listing (and route a failed
-// read through its existing hubBackupErrors/partial path) instead of failing the whole call.
 private Map _readHubBackupSchedule() {
+    // Read the current automatic-backup schedule from GET /hub2/backup/json -- the same source
+    // _setHubBackupSchedule read-merges before a write. Field names differ from the write endpoint
+    // (read = databaseCleanupTimeHour/databaseCleanupJobMinute; write = hour/minute). The cloud-backup
+    // password (backupPassword) is deliberately NEVER returned -- it is a secret and the hub reads it
+    // back masked anyway. Returns [ok:true, schedule:[...]] on success, or [ok:false, error:...] when
+    // the read OR a non-numeric frequency/time field fails -- so hub_list_backups can fold the schedule
+    // into the hub-DB listing (and route the failure through its existing hubBackupErrors/partial path)
+    // instead of failing the whole call.
     def cur
     try {
         def raw = hubInternalGet("/hub2/backup/json")
@@ -776,19 +777,26 @@ private Map _readHubBackupSchedule() {
         mcpLogError("hub-admin", "could not read current backup schedule", e)
         return [ok: false, error: "schedule: could not read the backup schedule (/hub2/backup/json): ${e.message}"]
     }
-    Integer localFreq = (cur.localBackupFrequency != null) ? (cur.localBackupFrequency as Integer) : null
-    Integer cloudFreq = (cur.cloudBackupFrequency != null) ? (cur.cloudBackupFrequency as Integer) : null
-    return [ok: true, schedule: [
-        localBackupFrequency: localFreq,
-        cloudBackupFrequency: cloudFreq,
-        hour: (cur.databaseCleanupTimeHour != null) ? (cur.databaseCleanupTimeHour as Integer) : null,
-        minute: (cur.databaseCleanupJobMinute != null) ? (cur.databaseCleanupJobMinute as Integer) : null,
-        localBackupEnabled: (localFreq ?: 0) > 0,
-        cloudBackupEnabled: (cloudFreq ?: 0) > 0,
-        hasCloudBackupEntitlements: cur.hasCloudBackupEntitlements,
-        hasCloudRestoreEntitlements: cur.hasCloudRestoreEntitlements,
-        note: "Frequencies are in DAYS (0=off). hour/minute is the daily backup time. The cloud-backup password is never returned. Change the schedule via hub_create_backup(schedule=...)."
-    ]]
+    // Convert the numeric fields inside the error-handled path: a non-numeric value from the hub must
+    // surface as ok:false (-> hubBackupErrors/partial), never throw out and abort the whole listing.
+    try {
+        Integer localFreq = (cur.localBackupFrequency != null) ? (cur.localBackupFrequency as Integer) : null
+        Integer cloudFreq = (cur.cloudBackupFrequency != null) ? (cur.cloudBackupFrequency as Integer) : null
+        return [ok: true, schedule: [
+            localBackupFrequency: localFreq,
+            cloudBackupFrequency: cloudFreq,
+            hour: (cur.databaseCleanupTimeHour != null) ? (cur.databaseCleanupTimeHour as Integer) : null,
+            minute: (cur.databaseCleanupJobMinute != null) ? (cur.databaseCleanupJobMinute as Integer) : null,
+            localBackupEnabled: (localFreq ?: 0) > 0,
+            cloudBackupEnabled: (cloudFreq ?: 0) > 0,
+            hasCloudBackupEntitlements: cur.hasCloudBackupEntitlements,
+            hasCloudRestoreEntitlements: cur.hasCloudRestoreEntitlements,
+            note: "Frequencies are in DAYS (0=off). hour/minute is the daily backup time. The cloud-backup password is never returned. Change the schedule via hub_create_backup(schedule=...)."
+        ]]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "backup schedule has a non-numeric field", e)
+        return [ok: false, error: "schedule: the hub returned a non-numeric schedule field (/hub2/backup/json): ${e.message}"]
+    }
 }
 
 // Fetch + normalize the hub-DB backup lists (GET /hub2/localBackups, /hub2/cloudBackups). Used by

@@ -1361,13 +1361,20 @@ List _hubVarInUseApps(Integer hubVarsAppId, String varName) {
     try {
         _primeHubVarsWizard(hubVarsAppId, "hub_get_variable includeDependents reveal")
         _rmClickAppButton(hubVarsAppId, varName, "inUse", "hubVar")
-        def raw = hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString()
-        // Decode the JSON page before scanning. The hub embeds the rendered HTML inside the
-        // configPage JSON, so JSON string escapes (\", \n, ...) would otherwise leak into the
-        // captured labels. Parse first, then regex-scan the real HTML (older firmware / a raw-HTML
-        // body falls back to the raw text).
-        def html = _hubVarRevealHtml(raw)
-        if (html) {
+        // The reveal click lands asynchronously (same behaviour _hubVarsClickAndWait handles): a single
+        // re-fetch right after the click can still return the unrevealed table, which would read as
+        // "no dependents" for a variable that has some. Poll the re-fetch with a bounded retry until
+        // the consumer anchors OR the revealed-panel marker appear; only then is the (possibly empty)
+        // list trustworthy. Still-unconfirmed after the budget -> null (UNKNOWN), not "no dependents".
+        for (int poll = 0; poll < 8 && !revealLoaded; poll++) {
+            if (poll > 0) { try { pauseExecution(250) } catch (Exception ignored) { } }
+            apps = []
+            // Decode the JSON page before scanning. The hub embeds the rendered HTML inside the
+            // configPage JSON, so JSON string escapes (\", \n, ...) would otherwise leak into the
+            // captured labels. Parse first, then regex-scan the real HTML (older firmware / a raw-HTML
+            // body falls back to the raw text).
+            def html = _hubVarRevealHtml(hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString())
+            if (!html) continue
             // Each consumer renders as <a href='/installedapp/configure/<appId>' target='_blank'
             // title='Open <label>'><label></a> (captured live off firmware 2.5.1.183). The variable
             // table itself carries no /installedapp/configure/<id> hrefs, so a whole-page scan matches
@@ -1376,10 +1383,9 @@ List _hubVarInUseApps(Integer hubVarsAppId, String varName) {
             while (m.find()) {
                 apps << [id: m.group(1), label: _decodeHubVarAppLabel(m.group(2))]
             }
-            // Confirm the reveal actually RENDERED before trusting an empty list: the revealed panel
-            // announces the consumers ("... is in use by these apps"). Zero matched anchors with no
-            // such marker means the reveal click no-op'd -- that is UNKNOWN (null), NOT "no
-            // dependents". Mirrors the marker-substring pattern _hubVarPlatformInUse uses.
+            // The revealed panel announces the consumers ("... is in use by these apps"). Zero matched
+            // anchors with no such marker means the reveal has not rendered yet -- keep polling, then
+            // fall through to UNKNOWN. Mirrors the marker-substring pattern _hubVarPlatformInUse uses.
             revealLoaded = !apps.isEmpty() || html.contains("is in use by these apps")
         }
     } catch (Exception e) {

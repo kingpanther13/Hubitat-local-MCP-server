@@ -88,6 +88,21 @@ class ToolBackupSpec extends ToolSpecBase {
         r.schedule.hour == 3
     }
 
+    def "a non-numeric schedule field preserves the backups and reports partial (does not abort the listing)"() {
+        given: 'the hub returns a malformed (non-numeric) frequency in /hub2/backup/json'
+        hubGet.register('/hub2/backup/json') { params -> '{"localBackupFrequency":"oops","cloudBackupFrequency":0,"databaseCleanupTimeHour":3,"databaseCleanupJobMinute":0}' }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub_local'])
+
+        then: 'the malformed schedule becomes a partial/error, not a thrown abort that loses the backups'
+        noExceptionThrown()
+        r.hubLocalBackups.size() == 1
+        r.schedule == null
+        r.partial == true
+        r.hubBackupErrors.any { it.toLowerCase().contains('schedule') }
+    }
+
     def "a failed schedule read folds into hubBackupErrors + partial, never failing the listing"() {
         given:
         hubGet.register('/hub2/backup/json') { params -> throw new RuntimeException('boom') }
