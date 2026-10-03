@@ -675,10 +675,9 @@ class HubitatMcpClient:
             replay_safe = True
 
         # Optional pre-send gap (E2E_REQUEST_GAP_SECONDS, default 0). It caps the server app's
-        # short-window duty cycle, which is what the platform's per-app load limiter measures
-        # ("App 38 generates excessive hub load"); a full lane runs clean without it now that
-        # per-call server cost is lower. Set it if the limiter cascades the native_apps RM group
-        # into 500s again. E2E_PACE_SECONDS adds further per-TEST spacing.
+        # short-window duty cycle, which the platform's per-app load limiter measures ("App <id>
+        # generates excessive hub load"); set it if the limiter cascades the native_apps RM group
+        # into 500s. E2E_PACE_SECONDS adds further per-TEST spacing.
         time.sleep(REQUEST_GAP_SECONDS)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and

@@ -96,7 +96,8 @@
 // recompilation resets statics without needing updated() or a contributor version bump.
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
 // Background-worker handoff: every continued read/write pays the start delay plus about half a poll.
-// The wait loops poll in-memory records, so the shorter step costs no hub or state reads.
+// Wait loops poll in-memory records only, so a short step adds no hub or state reads; keep any new
+// poll in-memory too.
 @groovy.transform.Field static final long WORKER_START_DELAY_MS = 50L
 @groovy.transform.Field static final long WORKER_POLL_MS = 50L
 // Serialize the one-time protected-app default across concurrent endpoint handlers.
@@ -106,7 +107,7 @@
 @groovy.transform.Field static final Set HUB_SECURITY_CHECKED = new java.util.HashSet()
 @groovy.transform.Field static final Map HUB_SECURITY_RETRY_AT = new java.util.HashMap()
 // Per-app latest released version, mirrored from state.updateCheck so every result's serverInfo
-// skips the state read; only handleUpdateCheckResponse changes it.
+// skips the state read; filled on first read, then replaced only by handleUpdateCheckResponse.
 @groovy.transform.Field static final Map LATEST_VERSION_SEEN = new java.util.HashMap()
 // Per-app last recorded header readability; header lookups touch state only on a transition.
 @groovy.transform.Field static final Map HEADERS_READABLE_SEEN = new java.util.HashMap()
