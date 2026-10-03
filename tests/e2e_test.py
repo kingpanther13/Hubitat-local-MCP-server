@@ -1097,9 +1097,9 @@ class LegacyEraClient:
         """
         method = payload.get("method")
         self._log(f">> {method} {json.dumps(payload.get('params') or {})[:300]}")
-        # Same 0.2s pre-send gap as _send: the pacing caps the server app's short-window
+        # Same pre-send gap as _send: the pacing caps the server app's short-window
         # duty cycle, which is what the platform's per-app load limiter measures.
-        time.sleep(0.2)
+        time.sleep(REQUEST_GAP_SECONDS)
         attempts = 3 if replay_safe else 1
         last_exc: Exception | None = None
         for attempt in range(attempts):
@@ -2366,9 +2366,14 @@ class TestRunner:
     def _flush_deferred_variables(self) -> None:
         """Delete deferred fixture variables now, so a re-run can recreate its fixed names."""
         deferred = getattr(self, "deferred_variable_names", [])
+        if not deferred:
+            return
         for name in list(deferred):
             self._delete_variable_safe(name, inline=True)
-            deferred.remove(name)
+        remaining = set(self._hub_variables_by_name())
+        deferred[:] = [name for name in deferred if name in remaining]
+        if deferred:
+            print(f"    [WARN] deferred variables still present before the re-run: {deferred}")
 
     def _delete_variable_safe(self, name: str, *, inline: bool = False) -> None:
         if getattr(self, "defer_native_deletes", False) and not inline:

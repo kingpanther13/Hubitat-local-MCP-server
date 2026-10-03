@@ -754,7 +754,14 @@ def _variable_delete_runner(defer):
     runner.created_variable_names = ["BAT_E2E_v"]
     runner.deferred_variable_names = []
     calls = []
-    runner.client = SimpleNamespace(_last_op=None, call_tool=lambda tool, args: calls.append(args["args"]["name"]))
+
+    def call_tool(tool, args):
+        if args["tool"] == "hub_list_variables":
+            return {"hubVariables": []}
+        calls.append(args["args"]["name"])
+        return {"success": True}
+
+    runner.client = SimpleNamespace(_last_op=None, call_tool=call_tool)
     return runner, calls
 
 
@@ -2126,14 +2133,14 @@ def test_math_create_waits_for_its_terminal_write_before_readback(monkeypatch, o
                              for leaf in leaves}
     runner = _native_rule_runner(client)
     runner.created_variable_names = []
-    var_name = f"{et.PREFIX}sv_modes"
+    var_name = et.TestRunner.PERM_VARIABLES["sv_number"][0]
     clock = [0.0]
     monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(et.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     monkeypatch.setattr(runner, "get_test_temperature_ids", lambda: [88], raising=False)
     monkeypatch.setattr(runner, "get_test_switch_id", lambda: 89, raising=False)
-    monkeypatch.setattr(runner, "_hub_variable_visible_in_bulk", lambda name: True)
-    monkeypatch.setattr(runner, "_delete_variable_safe", lambda name: None)
+    monkeypatch.setattr(runner, "_ensure_perm_variables",
+                        lambda *keys: {k: et.TestRunner.PERM_VARIABLES[k][0] for k in keys})
     deleted, healthy, writes, config_reads = [], [], [], []
     monkeypatch.setattr(runner, "_delete_native", deleted.append)
     monkeypatch.setattr(runner, "_assert_rule_healthy", healthy.append)
