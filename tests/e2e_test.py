@@ -1283,6 +1283,8 @@ class TestRunner:
         # they are unaffected.
         self.defer_native_deletes = os.environ.get("E2E_DEFER_NATIVE_DELETES") == "1"
         self.created_variable_names: list[str] = []
+        # Fixture variables left for the same purge; a test re-run deletes them first (fixed names).
+        self.deferred_variable_names: list[str] = []
 
         # Dispatch-dependent tests may attempt a watchdog disable/enable before
         # one retry. Only the retried operation/readback establishes recovery;
@@ -2004,6 +2006,10 @@ class TestRunner:
         # second transient failure is then an honest red.
         retry_reason = ""
         for attempt in (1, 2):
+            if attempt == 2:
+                for deferred in list(self.deferred_variable_names):
+                    self._delete_variable_safe(deferred, inline=True)
+                    self.deferred_variable_names.remove(deferred)
             try:
                 method()
                 elapsed = time.monotonic() - t0
@@ -2277,7 +2283,13 @@ class TestRunner:
         assert act_field, f"doActPage should reveal an actType.<n> picker: {page}"
         return act_field.split(".", 1)[1]
 
-    def _delete_variable_safe(self, name: str) -> None:
+    def _delete_variable_safe(self, name: str, *, inline: bool = False) -> None:
+        if self.defer_native_deletes and not inline:
+            if name in self.created_variable_names:
+                self.created_variable_names.remove(name)
+            if name not in self.deferred_variable_names:
+                self.deferred_variable_names.append(name)
+            return
         try:
             # confirm=true is required by Hub Admin Write gate; without it the
             # delete is silently skipped (try/except swallows the refusal),
@@ -3352,7 +3364,7 @@ class TestRunner:
 
     @test("devices")
     def test_device_configuration_matrix(self) -> None:
-        """Exercise native transport for provisioned child, selected and bypass ownership separately."""
+        """Exercise native transport for provisioned child and selected fixtures; bypass reachability only."""
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         manifest = json.loads((fixture_dir / "device-configuration-manifest.json").read_text(encoding="utf-8"))
         assert manifest["version"] == 2, "Update the configuration fixture manifest and provisioned drivers together"
@@ -3395,6 +3407,17 @@ class TestRunner:
         for position, (profile, device_id) in enumerate(profiles):
             observer_id = profiles[(position + 1) % len(profiles)][1]
             assert observer_id != device_id, "Disabling a fixture requires an independent standing observer"
+            if profile["path"] == "standalone-bypass":
+                # Bypass stays on all run and the update/read path never branches on selection, so
+                # the write cycle would repeat standalone-sdk; bypass writes are covered by
+                # test_bypass_device_allowlist_reaches_unlisted_device. Prove reachability only.
+                cfg = self.client.call_tool("hub_read_devices", {
+                    "tool": "hub_get_device", "args": {"deviceId": device_id, "mode": "configuration"},
+                })
+                assert cfg.get("preferenceRead", {}).get("status") == "complete", (
+                    f"Unselected configuration fixture is unreadable through bypass: {cfg}"
+                )
+                continue
             self._device_configuration_profile(profile, device_id, observer_id, manifest, driver_types, expected, room_name)
 
     def _assert_configuration_fixture_parent(self, profile, native):
@@ -3871,7 +3894,7 @@ class TestRunner:
 
     @test("devices")
     def test_configuration_fixture_lan_dispatch(self) -> None:
-        """Prove explicit asynchronous HubAction callbacks separately for each provisioned dispatch path."""
+        """Prove explicit asynchronous HubAction callbacks for the child and standalone dispatch paths."""
         manifest = json.loads((Path(__file__).resolve().parent / "fixtures" /
                                "device-configuration-manifest.json").read_text(encoding="utf-8"))
         inventory = self._device_allowlist_inventory(labelFilter=f"{SCAFFOLD_PREFIX}Configuration")
@@ -3880,6 +3903,8 @@ class TestRunner:
             assert len(matches) == 1 and matches[0].get("mcpAuthorized") is profile["authorized"], (
                 f"Provision the permanent {profile['path']} fixture before E2E: {matches}"
             )
+            if profile["path"] == "standalone-bypass":
+                continue  # same native dispatch as standalone-sdk; bypass access is proven elsewhere
             device_id = str(matches[0]["id"])
             nonce = str(time.time_ns())
             captured = self._write_once(None, "hub_call_device_command", {
@@ -11883,7 +11908,7 @@ class TestRunner:
         # resolved via the direct-alias redirect); get reads back through getGlobalVar,
         # so a green round-trip proves the wizard writes landed in the real namespace.
         var_name = f"{PREFIX}HubVar_RT"
-        # Track BEFORE creating: there is no prefix sweep for variables, so a crash
+        # Track BEFORE creating: only the CI purge prefix-sweeps variables, so locally a crash
         # between the create landing and a later append would strand it.
         self.created_variable_names.append(var_name)
         # CREATE -- the read-back below binds source/value/type, so a relay 504 only
@@ -11998,7 +12023,7 @@ class TestRunner:
             {"name": names[1], "type": "String", "value": "two"},
             {"name": names[2], "type": "Boolean", "value": True},
         ]
-        # Track BEFORE creating -- no prefix sweep for variables, so a crash between the
+        # Track BEFORE creating -- only the CI purge prefix-sweeps variables, so a crash between the
         # create landing and a later append would strand the entities.
         for n in names:
             self.created_variable_names.append(n)
@@ -12153,7 +12178,7 @@ class TestRunner:
                 self.client.call_tool("hub_set_variable", {"name": var_name, "mesh_shared": False})
             except Exception:
                 pass
-            self._delete_variable_safe(var_name)
+            self._delete_variable_safe(var_name, inline=True)
 
     @test("devices")
     def test_hub_create_device_mesh_link_validation(self) -> None:
@@ -13928,7 +13953,7 @@ class TestRunner:
         bg._read_only_catalog_tools = self.client._read_only_catalog_tools
         bg._active_test = self.client._active_test
 
-        # Track before creating -- there is no prefix sweep for variables, so a crash between
+        # Track before creating -- only the CI purge prefix-sweeps variables, so a crash between
         # a create landing and a later append would strand them on the hub.
         self.created_variable_names.extend(slow_names)
 
@@ -14661,12 +14686,9 @@ class TestRunner:
         a self-admin write the Spock harness cannot exercise. The remove runs in a finally so a
         mid-test failure never leaves the device authorized.
         """
-        def _authorized_ids() -> set[str]:
-            r = self._device_allowlist_inventory()
-            return {str(d["id"]) for d in (r.get("devices") or []) if d.get("mcpAuthorized")}
-        def _all_devices() -> list[dict]:
-            r = self._device_allowlist_inventory()
-            return r.get("devices") or []
+        def _authorized_ids(devices: list[dict] | None = None) -> set[str]:
+            rows = devices if devices is not None else (self._device_allowlist_inventory().get("devices") or [])
+            return {str(d["id"]) for d in rows if d.get("mcpAuthorized")}
         def _scope(mode: str, ids: list[str]) -> dict:
             return self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
@@ -14674,11 +14696,12 @@ class TestRunner:
                          "confirm": True},
             })
 
-        original = _authorized_ids()
+        all_devices = self._device_allowlist_inventory().get("devices") or []
+        original = _authorized_ids(all_devices)
         # Pick a device that is NOT currently authorized so add+remove nets to no change. Permanent
         # fixtures are unauthorized by construction -- exclude them so this never mutates one.
         _perm_labels = {lbl for lbl, _ in self.PERM_FIXTURES.values()}
-        unauth = next((str(d["id"]) for d in _all_devices()
+        unauth = next((str(d["id"]) for d in all_devices
                        if not d.get("mcpAuthorized") and d.get("id") is not None
                        and (d.get("label") or "") not in _perm_labels
                        and not (d.get("label") or "").startswith(SCAFFOLD_PREFIX)), None)
@@ -16187,7 +16210,7 @@ class TestRunner:
                 return None
             return got.get("value") if isinstance(got, dict) else None
 
-        # Track BEFORE creating: there is no prefix sweep for variables, so a crash between
+        # Track BEFORE creating: only the CI purge prefix-sweeps variables, so locally a crash between
         # the write landing and a later append would strand it on the hub.
         self.created_variable_names.append(var_name)
         try:
@@ -16294,7 +16317,7 @@ class TestRunner:
                 print(f"  [WARN] Failed to delete device DNI={dni}: {exc}")
         self.created_device_dnis.clear()
 
-        for var_name in list(self.created_variable_names):
+        for var_name in list(self.created_variable_names) if not self.defer_native_deletes else []:
             try:
                 print(f"  Deleting tracked variable {var_name}")
                 # force: teardown must not be stopped by the in-use refusal, which can still
