@@ -82,7 +82,7 @@ LEGACY_PROTOCOL_VERSION = "2025-06-18"
 MRTR_MIN_LOGICAL_SECONDS = 10.0
 MRTR_RELAY_LEG_CEILING_SECONDS = 9.5
 # Pre-send gap for every hub call; caps app 38's short-window duty cycle (see _send).
-REQUEST_GAP_SECONDS = float(os.environ.get("E2E_REQUEST_GAP_SECONDS", "0.1"))
+REQUEST_GAP_SECONDS = float(os.environ.get("E2E_REQUEST_GAP_SECONDS", "0"))
 
 
 def _sandbox_map_key_controls() -> dict:
@@ -682,7 +682,7 @@ class HubitatMcpClient:
         # short-window duty cycle over the limiter, cascading the heaviest group (native_apps
         # RM wizard) into a wall of 500s. So reads are paced too. Cost is ~0.2s x calls; the
         # alternative is a flaky full lane. E2E_PACE_SECONDS adds further per-TEST spacing.
-        # E2E_REQUEST_GAP_SECONDS tunes it (0.2s until #463 measured 0.1s on a full lane).
+        # E2E_REQUEST_GAP_SECONDS tunes it (0.2s before #463; 0.1s ran clean on a full lane).
         time.sleep(REQUEST_GAP_SECONDS)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
