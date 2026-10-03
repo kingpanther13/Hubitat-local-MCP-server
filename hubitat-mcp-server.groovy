@@ -95,8 +95,13 @@
 // Code-derived metadata is valid for one compiled class, including same-version deploys:
 // recompilation resets statics without needing updated() or a contributor version bump.
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
+// Background-worker handoff: every continued read/write pays the start delay plus about half a poll.
+@groovy.transform.Field static final long WORKER_START_DELAY_MS = 50L
+@groovy.transform.Field static final long WORKER_POLL_MS = 50L
 // Serialize the one-time protected-app default across concurrent endpoint handlers.
 @groovy.transform.Field static final Map PROTECTED_APPS_LOCK = new java.util.HashMap()
+// Apps whose protected-app default is persisted, so warm requests skip the atomicState read.
+@groovy.transform.Field static final Set PROTECTED_APPS_READY = new java.util.HashSet()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
@@ -625,6 +630,7 @@ def getChildAppById(appId) {
 
 def installed() {
     log.info "MCP Rule Server installed"
+    synchronized (PROTECTED_APPS_READY) { PROTECTED_APPS_READY.clear() }
     _protectedAppIds(true)
     _invalidateToolMetadata()
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
@@ -759,6 +765,18 @@ private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
             mcpLog('warn', 'server', "Could not save protected-app defaults; protection remains active and initialization will retry: ${e.message}")
         }
         return selected
+    }
+}
+
+private void _ensureProtectedAppsDefault() {
+    String appKey = _stateOwnerKey()
+    synchronized (PROTECTED_APPS_READY) {
+        if (PROTECTED_APPS_READY.contains(appKey)) return
+    }
+    _protectedAppIds()
+    def policy = atomicState.protectedAppsPolicy
+    if (policy instanceof Map && policy.ids instanceof List) {
+        synchronized (PROTECTED_APPS_READY) { PROTECTED_APPS_READY.add(appKey) }
     }
 }
 
@@ -1002,7 +1020,7 @@ def handleMcpRequest() {
     _cleanupRetiredToolState()
     _retireHubSecuritySettings()   // one-shot; updated() alone would never fire for a user who does not open the app page
     _refreshSetupAfterUpdate()
-    _protectedAppIds()
+    _ensureProtectedAppsDefault()
     _mrtrEnsureCleanupScheduled()
     def requestBody
     try {
@@ -3237,7 +3255,7 @@ private Map _mrtrClaimWithWait(String stateId, outerTool, leafTool, Map binding,
     while (claim.outcome == "in_progress") {
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
         if (remaining <= 0L) break
-        long sleepMs = Math.min(250L, remaining)
+        long sleepMs = Math.min(WORKER_POLL_MS, remaining)
         try {
             pauseExecution(sleepMs as Long)
         } catch (Exception waitErr) {
@@ -3283,7 +3301,7 @@ private Map _mrtrObserveScheduled(String stateId, Map claim, long requestStarted
         if (observed.outcome != "in_progress") return observed
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
         if (remaining <= 0L) return observed
-        long sleepMs = Math.min(250L, remaining)
+        long sleepMs = Math.min(WORKER_POLL_MS, remaining)
         try {
             pauseExecution(sleepMs as Long)
             remainingBudget -= sleepMs
@@ -3768,7 +3786,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         ])
     }
     try {
-        runInMillis(200, "runMrtrSlice", [overwrite: false,
+        runInMillis(WORKER_START_DELAY_MS, "runMrtrSlice", [overwrite: false,
             data: [stateId: stateId, claimId: claimId, generation: generation]])
         // Queued work is protected by the persisted claim + TTL. Mark it JVM-live
         // only while the worker is actually executing, so a scheduler/JVM loss can
@@ -7985,7 +8003,7 @@ private Map _getDebugLogHistoryResult(Map args = [:]) {
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
         if (remaining <= 0L) return [status: "in_progress", retryable: true,
             note: "Native log history is loading. Continue with requestState when supplied, otherwise repeat the same call."]
-        long waitMs = Math.min(250L, remaining)
+        long waitMs = Math.min(WORKER_POLL_MS, remaining)
         pauseExecution(waitMs)
         remainingBudget -= waitMs
     }
@@ -8010,7 +8028,7 @@ private void _scheduleDebugLogHistory(Map buffer) {
         buffer.fetchStartedAt = now()
     }
     try {
-        runInMillis(200, "runDebugLogHistoryFetch", [overwrite: false,
+        runInMillis(WORKER_START_DELAY_MS, "runDebugLogHistoryFetch", [overwrite: false,
             data: [appId: buffer.appId, generation: generation, fetchId: fetchId]])
     } catch (Exception e) {
         synchronized (buffer) {

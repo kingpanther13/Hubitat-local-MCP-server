@@ -1503,7 +1503,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         inner.retryable == true
         fetches.get() == 0
         runInMillisCalls.size() == 1
-        runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
+        runInMillisCalls[0][0..1] == [50, 'runLogsJsonFetch']
         runInMillisCalls[0][2].overwrite == false
         waitedMs.get() == 4500L   // 6000 ms budget - 1500 ms headroom, capped at 4500 over the cloud
 

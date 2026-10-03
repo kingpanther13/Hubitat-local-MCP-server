@@ -269,6 +269,7 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         (scriptStaticField('TOOL_METADATA_CACHE') as Map).clear()
         (scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set).clear()
+        (scriptStaticField('PROTECTED_APPS_READY') as Set).clear()
         (scriptStaticField('RETIRED_TOOL_STATE_RETRY_AT') as Map).clear()
         (scriptStaticField('CAPTURE_STORES') as Map).clear()
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
