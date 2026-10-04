@@ -185,6 +185,25 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolGetVariable --------
 
+    def "a hub variable lookup that throws is recorded in the MCP log at debug level"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+        script.log.messages.clear()
+        script.metaClass.getGlobalVar = { String name -> throw new RuntimeException('platform lookup failed') }
+
+        when:
+        script.toolGetVariable('outdoor_temp')
+
+        then: 'the lookup failure falls through to not-found'
+        thrown(IllegalArgumentException)
+
+        and: 'its diagnostic reaches the MCP history under hub-vars'
+        script.log.messages.any {
+            it.contains('[MCP1] ') && it.contains('"component":"hub-vars"') &&
+                it.contains("Hub variable 'outdoor_temp' lookup threw RuntimeException: platform lookup failed")
+        }
+    }
+
     def "hub_get_variable returns the modern shape with type and connector linkage"() {
         given:
         script.metaClass.getGlobalVar = { String name ->
