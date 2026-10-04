@@ -92,8 +92,8 @@ def test_focused_coverage_includes_shared_device_access_and_watchdog():
     spec = importlib.util.spec_from_file_location("e2e_scope", ROOT / ".github/scripts/e2e_scope.py")
     scope = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scope)
-    assert {"devices", "developer_mode", "system_tools", "deadman"} <= set(scope.FILE_GROUP_MAP["hubitat-mcp-server.groovy"])
-    assert "deadman" in scope.FILE_GROUP_MAP["libraries/mcp-code-management-lib.groovy"]
+    assert {"devices", "developer_mode", "system_tools", "app_code_update"} <= set(scope.FILE_GROUP_MAP["hubitat-mcp-server.groovy"])
+    assert "app_code_update" in scope.FILE_GROUP_MAP["libraries/mcp-code-management-lib.groovy"]
     # e2e never deploys the watchdog app, so mapping its sources would run tests that cannot see them.
     assert not any(source.startswith("e2e-deadman-watchdog") for source in scope.FILE_GROUP_MAP)
     assert "error_verification" in scope.SMOKE_GROUPS

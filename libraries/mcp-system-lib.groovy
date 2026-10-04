@@ -1153,7 +1153,20 @@ def isNewerVersion(String remote, String local) {
 // a hub already on the newest release would read "update available: <older>"). isNewerVersion
 // null-guards and rejects non-semver, so the "check in progress" sentinel compares as not-newer.
 def appUpdateAvailable() {
-    return isNewerVersion(state.updateCheck?.latestVersion, currentVersion())
+    return isNewerVersion(_latestKnownVersion(), currentVersion())
+}
+
+def _latestKnownVersion() {
+    String appKey = _stateOwnerKey()
+    synchronized (LATEST_VERSION_SEEN) {
+        if (LATEST_VERSION_SEEN.containsKey(appKey)) return LATEST_VERSION_SEEN.get(appKey)
+    }
+    def latest = state.updateCheck?.latestVersion
+    // A response handled since the state read above wins over this possibly older snapshot.
+    synchronized (LATEST_VERSION_SEEN) {
+        if (!LATEST_VERSION_SEEN.containsKey(appKey)) LATEST_VERSION_SEEN.put(appKey, latest)
+        return LATEST_VERSION_SEEN.get(appKey)
+    }
 }
 
 def checkForUpdate() {
@@ -1218,6 +1231,7 @@ def handleUpdateCheckResponse(resp, data) {
             latestVersion: latestVersion,
             checkedAt: now()
         ]
+        synchronized (LATEST_VERSION_SEEN) { LATEST_VERSION_SEEN.put(_stateOwnerKey(), latestVersion) }
         if (updateAvailable) {
             log.info "MCP Rule Server update available: v${latestVersion} (installed: v${installed})"
         } else {

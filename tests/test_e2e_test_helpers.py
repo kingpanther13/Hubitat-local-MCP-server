@@ -748,6 +748,115 @@ def test_run_one_paces_once_after_terminal_result(monkeypatch, outcome, pace):
     assert runner.results[0]["status"] == {"retry": "pass"}.get(outcome, outcome)
 
 
+def _variable_delete_runner(defer):
+    runner = object.__new__(et.TestRunner)
+    runner.defer_native_deletes = defer
+    runner.created_variable_names = ["BAT_E2E_v"]
+    runner.deferred_variable_names = []
+    calls = []
+
+    def call_tool(tool, args):
+        if args["tool"] == "hub_list_variables":
+            return {"hubVariables": []}
+        calls.append(args["args"]["name"])
+        return {"success": True}
+
+    runner.client = SimpleNamespace(_last_op=None, call_tool=call_tool)
+    return runner, calls
+
+
+@pytest.mark.parametrize("defer", [False, True])
+def test_variable_fixture_deletes_defer_to_the_purge_only_when_flagged(defer):
+    runner, calls = _variable_delete_runner(defer)
+    runner._delete_variable_safe("BAT_E2E_v")
+    assert calls == ([] if defer else ["BAT_E2E_v"])
+    assert runner.created_variable_names == []
+    assert runner.deferred_variable_names == (["BAT_E2E_v"] if defer else [])
+
+
+def test_rule_engine_variables_are_deleted_inline_even_when_deferring():
+    # They live in the MCP app's state, which the watchdog purge cannot reach.
+    runner, calls = _variable_delete_runner(True)
+    runner.rule_engine_variable_names = {"BAT_E2E_v"}
+    runner._delete_variable_safe("BAT_E2E_v")
+    assert calls == ["BAT_E2E_v"]
+    assert runner.deferred_variable_names == []
+
+
+def test_the_rule_engine_sweep_deletes_only_prefixed_rule_variables():
+    runner = object.__new__(et.TestRunner)
+    runner.created_variable_names = ["BAT_E2E_CondVar"]
+    deleted = []
+
+    def call_tool(tool, args):
+        if args["tool"] == "hub_list_variables":
+            return {"ruleVariables": [{"name": "BAT_E2E_CondVar"}, {"name": "Real"}],
+                    "hubVariables": [{"name": "BAT_E2E_Hub"}]}
+        deleted.append(args["args"]["name"])
+        return {"success": True}
+
+    runner.client = SimpleNamespace(_last_op=None, call_tool=call_tool)
+    runner._sweep_rule_engine_variables()
+    assert deleted == ["BAT_E2E_CondVar"]
+    assert runner.created_variable_names == []
+
+
+def test_a_test_rerun_deletes_its_deferred_variables_first(monkeypatch):
+    runner, calls = _variable_delete_runner(True)
+    runner._delete_variable_safe("BAT_E2E_v")
+    runner.results = []
+    runner._soft_passes = []
+    runner.pace_seconds = 0
+    runner._settle_before_504_retry = lambda name: None
+    monkeypatch.setattr(et.time, "sleep", lambda s: None)
+    seen = []
+
+    def probe():
+        seen.append(list(calls))
+        if len(seen) == 1:
+            raise et.RelayLostResponseError("504 Gateway Timeout")
+
+    runner.probe = probe
+    runner._run_one("isolated", "probe", "probe")
+    assert seen == [[], ["BAT_E2E_v"]]
+    assert runner.deferred_variable_names == []
+
+
+def test_permanent_variables_are_created_reset_or_recreated_only_when_needed():
+    runner = object.__new__(et.TestRunner)
+    runner.defer_native_deletes = True
+    runner.created_variable_names = []
+    runner.deferred_variable_names = []
+    hub = {
+        "E2E_PERM_Var_SvNumber": {"name": "E2E_PERM_Var_SvNumber", "type": "Number", "value": 0},
+        "E2E_PERM_Var_SvString": {"name": "E2E_PERM_Var_SvString", "type": "String", "value": "stale"},
+        "E2E_PERM_Var_SvBool": {"name": "E2E_PERM_Var_SvBool", "type": "String", "value": "false"},
+    }
+    calls = []
+
+    def call_tool(tool, args):
+        leaf, leaf_args = args["tool"], args.get("args", {})
+        calls.append((leaf, leaf_args.get("name") or [v["name"] for v in leaf_args.get("variables", [])]))
+        if leaf == "hub_list_variables":
+            return {"hubVariables": list(hub.values())}
+        if leaf == "hub_create_variable":
+            hub.update({v["name"]: dict(v) for v in leaf_args["variables"]})
+        if leaf == "hub_delete_variable":
+            hub.pop(leaf_args["name"], None)
+        return {"success": True}
+
+    runner.client = SimpleNamespace(_last_op=None, call_tool=call_tool)
+    names = runner._ensure_perm_variables("sv_number", "sv_string", "sv_bool", "sv_num_src")
+    assert names["sv_bool"] == "E2E_PERM_Var_SvBool"
+    writes = [c for c in calls if c[0] != "hub_list_variables"]
+    assert writes == [
+        ("hub_delete_variable", "E2E_PERM_Var_SvBool"),
+        ("hub_create_variable", ["E2E_PERM_Var_SvBool", "E2E_PERM_Var_SvNumSrc"]),
+        ("hub_set_variable", "E2E_PERM_Var_SvString"),
+    ]
+    assert runner.deferred_variable_names == []
+
+
 def test_assertion_failure_is_not_attributed_to_successful_cleanup():
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(_last_op=("hub_delete_variable", 3.6, True))
@@ -2051,14 +2160,14 @@ def test_math_create_waits_for_its_terminal_write_before_readback(monkeypatch, o
                              for leaf in leaves}
     runner = _native_rule_runner(client)
     runner.created_variable_names = []
-    var_name = f"{et.PREFIX}sv_modes"
+    var_name = et.TestRunner.PERM_VARIABLES["sv_number"][0]
     clock = [0.0]
     monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(et.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     monkeypatch.setattr(runner, "get_test_temperature_ids", lambda: [88], raising=False)
     monkeypatch.setattr(runner, "get_test_switch_id", lambda: 89, raising=False)
-    monkeypatch.setattr(runner, "_hub_variable_visible_in_bulk", lambda name: True)
-    monkeypatch.setattr(runner, "_delete_variable_safe", lambda name: None)
+    monkeypatch.setattr(runner, "_ensure_perm_variables",
+                        lambda *keys: {k: et.TestRunner.PERM_VARIABLES[k][0] for k in keys})
     deleted, healthy, writes, config_reads = [], [], [], []
     monkeypatch.setattr(runner, "_delete_native", deleted.append)
     monkeypatch.setattr(runner, "_assert_rule_healthy", healthy.append)

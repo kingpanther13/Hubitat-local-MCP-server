@@ -11,8 +11,9 @@ import support.PermissiveLog
 
 /**
  * Hub-less coverage of the v2 dead-man watchdog (e2e-deadman-watchdog-v2.groovy) -- the second MCP
- * server that drives the e2e install + restore. Locks the review-hardened failure contracts a green
- * Spock matrix must keep, so a future edit can't silently regress them:
+ * server that drove the e2e install + restore until v3 replaced it (#485). V2 is retired, so this
+ * spec is ignored: bringing v2 back means reverting #485's e2e scripts as well as re-enabling it here.
+ * While it ran, it locked the review-hardened failure contracts:
  *   - restorePackage installs main's bundle via adminInstallBundle(importUrl) + each app via
  *     adminUpdateApp(importUrl) from the manifest's canonical https URLs, with a mainChars landing assert;
  *   - adminUpdateLibrary fails CLOSED on a dropped/invalid POST (a null response is NOT success);
@@ -20,6 +21,7 @@ import support.PermissiveLog
  *     source over the dead-man restore cache -- the critical cache-poisoning fix);
  *   - checkDeadman parses a non-numeric deadline defensively (fires, never throws out of the tick).
  */
+@spock.lang.Ignore("watchdog v2 is retired; re-enable together with its entries in tests/sandbox_lint.py and ci/groovy24-parse/build.gradle")
 class WatchdogV2Spec extends Specification {
     HubitatAppScript script
     List<List<Object>> runInCalls = []     // captures (delaySeconds, handler[, opts]) of every runIn

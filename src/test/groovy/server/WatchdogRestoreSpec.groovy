@@ -13,9 +13,11 @@ import support.PermissiveLog
  * Hub-less coverage of the standalone E2E Dead-Man Watchdog's restoreApp confirmation gate.
  * e2e-deadman-watchdog.groovy is NOT in the server harness, so its hardening -- "a reported success
  * that doesn't ADVANCE the code-class version means the push didn't land" -- had no per-run test
- * after the one-time live fire-test was removed. This compiles the watchdog in a sandbox and drives
- * restoreApp with stubbed I/O so the version-advance logic is exercised on every build.
+ * after the one-time live fire-test was removed. This compiled the watchdog in a sandbox and drove
+ * restoreApp with stubbed I/O while v1 was in use. V1 is retired (v3 drives e2e since #485), so the
+ * spec is ignored; the file stays for reference.
  */
+@spock.lang.Ignore("watchdog v1 is retired; re-enable together with its entries in tests/sandbox_lint.py and ci/groovy24-parse/build.gradle")
 class WatchdogRestoreSpec extends Specification {
     HubitatAppScript script
 
