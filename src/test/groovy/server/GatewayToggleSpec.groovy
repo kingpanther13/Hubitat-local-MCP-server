@@ -493,7 +493,8 @@ class GatewayToggleSpec extends ToolSpecBase {
         def expectedIntro = script.getGatewayConfig().hub_manage_rooms.description
 
         then:
-        gateway.description.startsWith(expectedIntro + '\n\n')
+        // Write-bearing gateways lead with the guide-first sentence.
+        gateway.description.startsWith(script.guideFirstSentence() + ' ' + expectedIntro + '\n\n')
         (gateway.inputSchema.properties.tool.enum as Set) ==
             (script.handleGateway('hub_manage_rooms', null, null).tools*.name as Set)
 
@@ -514,7 +515,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         def expectedIntro = script.getGatewayConfig().hub_manage_destructive_ops.description
 
         then:
-        gateway.description.startsWith(expectedIntro + '\n\n')
+        gateway.description.startsWith(script.guideFirstSentence() + ' ' + expectedIntro + '\n\n')
     }
 
     def "a read gateway does not advertise a hidden operation in its referenced write gateway"() {

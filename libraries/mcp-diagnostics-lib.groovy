@@ -2483,7 +2483,7 @@ def _getAllToolDefinitions_partDiagnostics() {
     return [
         [
             name: "hub_get_logs",
-            description: """Read log history and MCP logging status. mode='hub' (default) returns native hub logs; mode='mcp' returns structured MCP entries with component/rule filters; mode='status' returns MCP log level, counts, and capacity. MCP history recovers from native Past Logs after reload; retention follows the hub's shared log limit. Requires Read master.""",
+            description: """Read log history and MCP logging status. mode='hub' (default) returns native hub logs; mode='mcp' returns structured MCP entries with component/rule filters; mode='status' returns MCP log level, counts, and capacity.[[FLAT_TRIM]] MCP history recovers from native Past Logs after reload; retention follows the hub's shared log limit.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2507,7 +2507,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         // ==================== MONITORING TOOLS ====================
         [
             name: "hub_get_performance_stats",
-            description: "Get device and/or app performance stats from the hub's logs page. Requires Read master.",
+            description: "Get device and/or app performance stats from the hub's logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2519,7 +2519,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_jobs",
-            description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page. Requires Read master.",
+            description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2529,7 +2529,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_metrics",
-            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Trend history is sparse/stale[[FLAT_TRIM]] — the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls[[/FLAT_TRIM]]. Requires Read master.",
+            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Trend history is sparse/stale[[FLAT_TRIM]] — the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2540,7 +2540,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_memory_history",
-            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer[[FLAT_TRIM]], each entry with freeMemoryKB and cpuLoad5min[[/FLAT_TRIM]]). Use to diagnose memory leaks or load trends over time.[[FLAT_TRIM]] For a single current snapshot plus temp/DB-size, use hub_get_metrics instead.[[/FLAT_TRIM]] Requires Read master.",
+            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer[[FLAT_TRIM]], each entry with freeMemoryKB and cpuLoad5min[[/FLAT_TRIM]]). Use to diagnose memory leaks or load trends over time.[[FLAT_TRIM]] For a single current snapshot plus temp/DB-size, use hub_get_metrics instead.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2568,7 +2568,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_radio_details",
-            description: """Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. The include_* flags and node_id attach extra read blocks. Requires Read master.""",
+            description: """Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. The include_* flags and node_id attach extra read blocks.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2585,7 +2585,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_gc",
-            description: "Force JVM garbage collection to reclaim memory. Non-destructive but may cause a brief pause. Requires the Write master.",
+            description: "Force JVM garbage collection to reclaim memory. Non-destructive but may cause a brief pause.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -2593,7 +2593,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zwave",
-            description: "Configure the Z-Wave radio (idempotent)[[FLAT_TRIM]]: enable/disable it, or set region and long-range channel[[/FLAT_TRIM]]. Read current values with hub_get_radio_details(radio='zwave'). Requires Write master.",
+            description: "Configure the Z-Wave radio (idempotent)[[FLAT_TRIM]]: enable/disable it, or set region and long-range channel[[/FLAT_TRIM]]. Read current values with hub_get_radio_details(radio='zwave').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2606,7 +2606,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zigbee",
-            description: "Configure the Zigbee radio (idempotent)[[FLAT_TRIM]]: enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping[[/FLAT_TRIM]]. One operation per call. Read current values with hub_get_radio_details(radio='zigbee'). Requires Write master.",
+            description: "Configure the Zigbee radio (idempotent)[[FLAT_TRIM]]: enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping[[/FLAT_TRIM]]. One operation per call. Read current values with hub_get_radio_details(radio='zigbee').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2622,7 +2622,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zwave",
-            description: "Z-Wave network lifecycle operations (NOT idempotent)[[FLAT_TRIM]]: repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete[[/FLAT_TRIM]]. Pick the operation with action. Requires Write master.",
+            description: "Z-Wave network lifecycle operations (NOT idempotent)[[FLAT_TRIM]]: repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete[[/FLAT_TRIM]]. Pick the operation with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2638,7 +2638,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zigbee",
-            description: "Zigbee radio operations (NOT idempotent); select with action. Requires Write master.",
+            description: "Zigbee radio operations (NOT idempotent); select with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2649,7 +2649,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_matter",
-            description: "Matter radio operations (NOT idempotent); select with action. Requires Write master.",
+            description: "Matter radio operations (NOT idempotent); select with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

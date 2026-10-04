@@ -1641,15 +1641,19 @@ def _mrtrClientErrorHint() {
     return "If a write returns a client-side error with no result body, the hub is still running it or has already finished it. Wait about 15 seconds, then call hub_get_info and check recentWrites for that tool (running, paused_resuming, finished, finished_with_error). Read the target before repeating the call: a repeat is only safe when the write shows as failed or absent and the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops')."
 }
 
+private String _guideFirstInstruction() {
+    return "${guideFirstSentence()} Before calling a write tool, read that tool's guide section. ".toString()
+}
+
 def serverInstructions() {
     // Flat mode advertises every tool individually and BLOCKS gateway-name calls
     // ("useGateways is OFF"), so the gateway guidance would send a flat client
     // straight into an error (worse: hub_manage_virtual_device / hub_manage_mode
     // match the hub_manage_* pattern but are direct tools, not gateways).
     if (settings.useGateways == false) {
-        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
+        return _guideFirstInstruction() + "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
     }
-    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
+    _guideFirstInstruction() + "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
 }
 
 // Protocol versions this server can speak, newest first. Single source for the
@@ -5637,14 +5641,40 @@ def stripFlatTrim(String text, boolean dropContent) {
         .replaceAll(/\[\[\/?FLAT_TRIM\]\]/, "")
 }
 
-def applyDescriptionTransform(List tools, boolean dropContent) {
+// guideFirst=false only for the search corpus, so the shared sentence does not skew BM25 ranking.
+def applyDescriptionTransform(List tools, boolean dropContent, boolean guideFirst = true) {
     tools.each { tool ->
         if (tool?.description instanceof String) {
-            tool.description = stripFlatTrim(tool.description as String, dropContent)
+            String description = stripFlatTrim(tool.description as String, dropContent)
+            tool.description = guideFirst ?
+                _withGuideFirst(tool.name as String, description, tool.inputSchema?.properties?.tool?.enum) : description
         }
         _stripFlatTrimDeep(tool?.inputSchema, dropContent)
     }
     return tools
+}
+
+def guideFirstSentence() {
+    return "MUST call hub_get_tool_guide first."
+}
+
+// A gateway counts as a write surface when any listed sub-tool writes; visibleSubTools narrows it.
+boolean _isWriteSurface(String name, visibleSubTools = null) {
+    if (!name) return false
+    Set readOnly = getReadOnlyToolNames()
+    def gateway = getGatewayConfig().get(name)
+    if (gateway != null) {
+        List subTools = (visibleSubTools instanceof List) ? visibleSubTools : gateway.tools
+        return subTools.any { !readOnly.contains(it) }
+    }
+    return !readOnly.contains(name)
+}
+
+// Idempotent: lists that pass through the transform twice keep a single sentence.
+String _withGuideFirst(String name, String description, visibleSubTools = null) {
+    String sentence = guideFirstSentence()
+    if (description == null || description.startsWith(sentence) || !_isWriteSurface(name, visibleSubTools)) return description
+    return "${sentence} ${description}".toString()
 }
 
 // Walk EVERY description in a schema, not just the top-level properties. A marker inside a
@@ -5735,7 +5765,8 @@ def getToolDefinitions() {
                 // marker in the selector's own descriptions ships raw in the flat catalog
                 // (caught by the flat-mode no-leak specs, and it is the flat wire an LLM
                 // actually reads).
-                def flatTool = applyDescriptionTransform([_setRuleFlatTool()], true)[0]
+                // The name lets the transform classify the selector as the write tool it fronts.
+                def flatTool = applyDescriptionTransform([_setRuleFlatTool() + [name: base.name]], true)[0]
                 base = base + [description: flatTool.description, inputSchema: flatTool.inputSchema]
             }
             base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
