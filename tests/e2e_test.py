@@ -1443,15 +1443,28 @@ class TestRunner:
             return False
 
     def _watchdog_tool(self, name: str, arguments: dict) -> dict:
-        """Call one watchdog v3 tool and return its decoded result; a JSON-RPC error raises."""
+        """Call one watchdog v3 tool and return its decoded result. Any unusable answer -- HTTP
+        error, JSON-RPC error, tool error, malformed body -- raises AssertionError."""
         resp = requests.post(self.watchdog_url, json={
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": name, "arguments": arguments},
         }, timeout=60)
-        body = resp.json()
-        if body.get("error"):
-            raise AssertionError(f"watchdog {name} failed: {body['error'].get('message')}")
-        return json.loads(body["result"]["content"][0]["text"])
+        try:
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("error"):
+                raise AssertionError(f"watchdog {name} failed: {body['error']}")
+            result = body["result"]
+            if result.get("isError") is True:
+                raise AssertionError(f"watchdog {name} failed: {str(result)[:300]}")
+            decoded = json.loads(result["content"][0]["text"])
+        except AssertionError:
+            raise
+        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise AssertionError(f"watchdog {name} returned no usable result: {exc}") from exc
+        if not isinstance(decoded, dict):
+            raise AssertionError(f"watchdog {name} returned a non-object result")
+        return decoded
 
     def _watchdog_tool_names(self) -> set[str]:
         resp = requests.post(self.watchdog_url, json={
@@ -14110,12 +14123,24 @@ class TestRunner:
                                   params={"access_token": self.client.access_token}, timeout=30)
             assert health.status_code == 403, f"/health with cloud access off: HTTP {health.status_code}"
         finally:
-            restored = self._watchdog_tool("hub_update_mcp_settings", {
-                "appId": self.server_app_id,
-                "settings": {"enableLocalAccess": True, "enableCloudAccess": True}, "confirm": True})
-            if restored.get("success") is not True:
+            # Every later test needs cloud access back, so retry before giving up.
+            restore_error = None
+            for attempt in range(3):
+                try:
+                    restored = self._watchdog_tool("hub_update_mcp_settings", {
+                        "appId": self.server_app_id,
+                        "settings": {"enableLocalAccess": True, "enableCloudAccess": True}, "confirm": True})
+                    if restored.get("success") is True:
+                        restore_error = None
+                        break
+                    restore_error = restored
+                except AssertionError as exc:
+                    restore_error = exc
+                if attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+            if restore_error is not None:
                 raise RuntimeError("could not turn the MCP server's endpoints back on through the watchdog -- "
-                                   f"every later test will fail: {restored}")
+                                   f"every later test will fail: {restore_error}")
 
         info = self.client.call_tool("hub_get_info", {})
         assert info["cloudAccessEnabled"] is True and info["localAccessEnabled"] is True, \
