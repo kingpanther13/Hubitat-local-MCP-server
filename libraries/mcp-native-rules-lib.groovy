@@ -8656,7 +8656,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
                 def parsedStored = new groovy.json.JsonSlurper().parseText(storedValue as String)
                 if (parsedStored instanceof List) storedValue = parsedStored
             } catch (Exception notJson) {
-                logDebug("walkStep valueEcho: stored value for ${writtenKey} is not a JSON array (${notJson.message}); comparing as text")
+                mcpLog("debug", "rm-native", "walkStep valueEcho: stored value for ${writtenKey} is not a JSON array (${notJson.message}); comparing as text")
             }
         }
         // Normalize comparison — both serialized to strings.
@@ -10154,7 +10154,7 @@ def _createNativeAppShell(args) {
                 def committedLabel = _rmFetchConfigJson(newId)?.app?.label?.toString()
                 labelApplied = (committedLabel != null && committedLabel.startsWith(name.toString()))
             } catch (Exception labelExc) {
-                logDebug("create ${appType} ${newId}: label verify fetch failed: ${labelExc.message}")
+                mcpLog("debug", "rm-native", "create ${appType} ${newId}: label verify fetch failed: ${labelExc.message}")
             }
         }
         def result = [

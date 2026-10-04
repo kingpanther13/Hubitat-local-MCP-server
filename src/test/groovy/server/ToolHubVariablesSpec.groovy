@@ -168,7 +168,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     def "hub_list_variables surfaces a hubVariablesError field when getAllGlobalVars throws (not silent)"() {
-        // Pre-fix this exception was only logged via logDebug; a caller couldn't
+        // Pre-fix this exception was only logged at debug level; a caller couldn't
         // distinguish "no hub variables" from "hub API broke".
         given:
         script.metaClass.getAllGlobalVars = { -> throw new RuntimeException('sandbox tightened: getAllGlobalVars not available') }

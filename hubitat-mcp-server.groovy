@@ -390,8 +390,8 @@ def mainPage() {
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
                   defaultValue: "error", required: false
-            input "debugLogging", "bool", title: "Enable Hubitat Console Logging", defaultValue: false,
-                  description: "Logs to Hubitat's built-in log viewer"
+            input "debugLogging", "bool", title: "Log MCP request/response traffic", defaultValue: false,
+                  description: "Writes every MCP request, response and notification to Hubitat's log viewer. Other debug output follows the MCP Debug Log Level above."
             input "maxCapturedStates", "number", title: "Max Captured States",
                   description: "Maximum temporary legacy-rule captures (default: 20); lost on hub restart or app code reload",
                   defaultValue: 20, range: "1..100", required: false
@@ -1056,7 +1056,7 @@ def handleMcpRequest() {
         return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson(errResp))
     }
 
-    logDebug("MCP Request: ${requestBody.toString().take(500)}${requestBody.toString().length() > 500 ? '...[truncated]' : ''}")
+    logMcpTraffic("MCP Request: ${requestBody.toString().take(500)}${requestBody.toString().length() > 500 ? '...[truncated]' : ''}")
 
     // ---- Era split: the header's VALUE, never its presence ----
     // MCP-Protocol-Version has been REQUIRED since 2025-06-18, so a legacy client sends it too
@@ -1166,7 +1166,7 @@ def handleMcpRequest() {
         httpStatus = null
     }
 
-    logDebug("MCP Response: ${jsonResponse.take(500)}${jsonResponse.length() > 500 ? '...[' + jsonResponse.length() + ' bytes total]' : ''}")
+    logMcpTraffic("MCP Response: ${jsonResponse.take(500)}${jsonResponse.length() > 500 ? '...[' + jsonResponse.length() + ' bytes total]' : ''}")
     def renderArgs = [contentType: "application/json", data: jsonResponse]
     if (httpStatus != null) renderArgs.status = httpStatus
     return render(renderArgs)
@@ -1629,7 +1629,7 @@ def _unwrapPreserialized(item) {
 }
 
 def handleNotification(msg) {
-    logDebug("MCP Notification: ${msg.method}")
+    logMcpTraffic("MCP Notification: ${msg.method}")
 }
 
 
@@ -6247,7 +6247,7 @@ def getVariableValue(name) {
         // Hub variable lookup failed — fall through to rule_engine namespace.
         // Logged at DEBUG so investigators can tell whether the lookup
         // genuinely missed (no such variable) or errored for some other reason.
-        logDebug("getVariableValue: hub lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "getVariableValue: hub lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
     }
     return state.ruleVariables?.get(name)
 }
@@ -6965,7 +6965,7 @@ private boolean _hubFirmwareReadable() {
     try {
         return location?.hub?.firmwareVersionString?.toString()?.trim() as boolean
     } catch (Exception e) {
-        logDebug("Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
+        mcpLog("debug", "hub-admin", "Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
         return false
     }
 }
@@ -7234,7 +7234,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
 // endpoint is named here before some client sees the 502.
 private void _hubRtLog(String method, String path, long elapsedMs, String outcome) {
     String redacted = _redactSecretsInPath(path)
-    logDebug("[hubrt] ${method} ${redacted} (${elapsedMs}ms${outcome == 'ok' ? '' : ', ' + outcome})")
+    mcpLog("debug", "hub-admin", "[hubrt] ${method} ${redacted} (${elapsedMs}ms${outcome == 'ok' ? '' : ', ' + outcome})")
     long budget = _relayBudgetMs()
     if (budget > 0L && elapsedMs >= budget) {
         mcpLog("warn", "hub-admin", "[hubrt] slow internal ${method} ${redacted} took ${elapsedMs}ms (${outcome}), at or over the ${budget}ms cloud-relay budget -- a request that waits on it synchronously cannot be answered over the relay (see hub_get_tool_guide(section='slow_ops'))")
@@ -7315,7 +7315,7 @@ private Integer _resolveDirectAppId(String alias) {
         try {
             resp = hubInternalGetRaw(path)
         } catch (Exception e) {
-            logDebug("_resolveDirectAppId(${alias}): hop ${hop} GET ${path} threw ${e.toString()}")
+            mcpLog("debug", "hub-admin", "_resolveDirectAppId(${alias}): hop ${hop} GET ${path} threw ${e.toString()}")
             mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} GET threw ${e.class.simpleName}: ${e.message}")
             return null
         }
@@ -7323,7 +7323,7 @@ private Integer _resolveDirectAppId(String alias) {
         try { status = resp?.status as Integer } catch (Exception ignore) { status = null }
         def location = resp?.location?.toString()
         if (status == null || status < 300 || status >= 400 || !location) {
-            logDebug("_resolveDirectAppId(${alias}): hop ${hop} ${path} status=${status} location=${location} -- not a redirect")
+            mcpLog("debug", "hub-admin", "_resolveDirectAppId(${alias}): hop ${hop} ${path} status=${status} location=${location} -- not a redirect")
             mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} returned status=${status} instead of a redirect -- a 200 with no Location usually means the hub auto-followed an absolute Location (hubInternalGetRaw caveat)")
             return null
         }
@@ -7337,7 +7337,7 @@ private Integer _resolveDirectAppId(String alias) {
             path = "/installedapp/create/${create[0][1]}"
             continue
         }
-        logDebug("_resolveDirectAppId(${alias}): hop ${hop} unexpected Location ${location}")
+        mcpLog("debug", "hub-admin", "_resolveDirectAppId(${alias}): hop ${hop} unexpected Location ${location}")
         mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} redirected to an unexpected Location shape -- the direct/create/configure chain may have changed on this firmware (the debug-logging toggle surfaces the raw Location in the hub logs)")
         return null
     }
@@ -7512,7 +7512,7 @@ private void _rmNoteHubBreadcrumbs(appId, resp) {
             HUB_PAGE_BREADCRUMBS.put(appId.toString(), [page: page.group(1), crumbs: trail?.toString(), at: now()])
         }
     } catch (Exception noteExc) {
-        logDebug("_rmNoteHubBreadcrumbs: could not read the returned trail for app ${appId}: ${noteExc.message}")
+        mcpLog("debug", "rm-native", "_rmNoteHubBreadcrumbs: could not read the returned trail for app ${appId}: ${noteExc.message}")
     }
 }
 
@@ -7983,7 +7983,9 @@ def jsonRpcError(id, code, message, data = null) {
     return error
 }
 
-def logDebug(msg) {
+// Per-call MCP traffic stays out of mcpLog on purpose: at debug level it would flush the
+// 100-entry MCP history within about 50 calls. Read it through hub_get_logs mode=hub.
+def logMcpTraffic(msg) {
     if (settings.debugLogging) {
         log.debug msg
     }

@@ -1178,7 +1178,7 @@ def checkForUpdate() {
             def msSinceCheck = now() - state.updateCheck.checkedAt
             if (msSinceCheck < 24 * 60 * 60 * 1000) {
                 def hoursSinceCheck = (int)(msSinceCheck / (1000 * 60 * 60))
-                logDebug("Version check skipped - last checked ${hoursSinceCheck} hours ago")
+                mcpLog("debug", "server", "Version check skipped - last checked ${hoursSinceCheck} hours ago")
                 return
             }
         }
@@ -1237,7 +1237,7 @@ def handleUpdateCheckResponse(resp, data) {
         if (updateAvailable) {
             log.info "MCP Rule Server update available: v${latestVersion} (installed: v${installed})"
         } else {
-            logDebug("MCP Rule Server is up to date (v${installed})")
+            mcpLog("debug", "server", "MCP Rule Server is up to date (v${installed})")
         }
     } catch (Exception e) {
         mcpLog("warn", "server", "Version check response parsing failed: ${e.message}")

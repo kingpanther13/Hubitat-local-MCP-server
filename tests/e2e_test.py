@@ -15082,7 +15082,7 @@ class TestRunner:
     @test("best_practice_gating")
     def test_bps_refusal_is_error_logged_at_error_and_debug_thresholds(self) -> None:
         """A rejected write is recoverable in the response, native logs, and MCP logs
-        even at the default error threshold. The deliberately invalid variable type
+        even at the default error threshold; at debug, hub-request timings are recorded too. The deliberately invalid variable type
         guarantees no mutation if the acknowledgment gate itself regresses."""
         # Main-app native-log reads use a 30-second MRTR snapshot cache. Protocol-era
         # headers do not control that cache, so a LegacyEraClient before/after pair
@@ -15151,6 +15151,15 @@ class TestRunner:
                     "Mandatory best-practice acknowledgment" in entry.get("message", "")
                     for entry in fresh_native
                 ), f"{threshold} threshold did not emit a fresh refusal to native logs: {fresh_native}"
+
+                if threshold == "debug":
+                    # Internal hub-request timings follow the MCP level as well.
+                    self.client.call_tool("hub_get_info", {})
+                    timings = self.client.call_tool("hub_get_logs", {
+                        "mode": "mcp", "level": "debug", "component": "hub-admin", "limit": 100})
+                    assert any(str(e.get("message", "")).startswith("[hubrt] ")
+                               for e in timings.get("entries", [])), \
+                        "debug threshold did not record [hubrt] hub-request timings in MCP logs"
         finally:
             self._set_bps(enableMandatoryBPS=False, mcpLogLevel="error")
 
