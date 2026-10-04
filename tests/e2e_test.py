@@ -1442,6 +1442,22 @@ class TestRunner:
             print(f"    [THROTTLE] watchdog bounce leg (disable={disable}) failed: {exc}")
             return False
 
+    def _watchdog_tool(self, name: str, arguments: dict) -> dict:
+        """Call one watchdog v3 tool and return its decoded result; a JSON-RPC error raises."""
+        resp = requests.post(self.watchdog_url, json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }, timeout=60)
+        body = resp.json()
+        if body.get("error"):
+            raise AssertionError(f"watchdog {name} failed: {body['error'].get('message')}")
+        return json.loads(body["result"]["content"][0]["text"])
+
+    def _watchdog_tool_names(self) -> set[str]:
+        resp = requests.post(self.watchdog_url, json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, timeout=60)
+        return {tool.get("name") for tool in resp.json().get("result", {}).get("tools", [])}
+
     def _clear_load_throttle(self, reason: str) -> bool:
         """Attempt watchdog disable/enable; True verifies those flags, not recovery.
 
@@ -14048,6 +14064,62 @@ class TestRunner:
                 "args": {"settings": {"mcpLogLevel": original_level}, "confirm": True}})
             assert restored.get("success") is True, "could not restore original logging level"
             assert read_settings() == before, "settings differ after self-admin restoration"
+
+    @test("developer_mode")
+    def test_endpoint_access_toggles_block_their_own_transport(self) -> None:
+        """Each access toggle refuses valid-token requests on its own transport only, and turning it
+        back on restores the same token. Local is proven through watchdog v3's loopback peer check;
+        cloud through this suite's own cloud endpoint, switched back on through v3."""
+        if not (self.watchdog_url and self.server_app_id):
+            raise SkipTest("WATCHDOG_URL/HUBITAT_APP_ID not set")
+        if "hub_update_mcp_settings" not in self._watchdog_tool_names():
+            raise SkipTest("the standing watchdog predates hub_update_mcp_settings; run watchdog maintenance")
+
+        def update(settings: dict) -> Any:
+            return self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings", "args": {"settings": settings, "confirm": True}})
+
+        def peer_available() -> Any:
+            return (self._watchdog_tool("hub_get_info", {"peer": True}).get("peerEndpoint") or {}).get("available")
+
+        try:
+            # A call cannot switch off the connection it arrived on.
+            try:
+                update({"enableCloudAccess": False})
+                raise AssertionError("a cloud request switched off cloud access")
+            except (McpError, McpToolError) as exc:
+                assert "lock this client out" in str(exc), str(exc)
+            assert self.client.call_tool("hub_get_info", {})["cloudAccessEnabled"] is True
+
+            # Local off: v3's loopback request with the valid token is refused; cloud keeps working.
+            assert update({"enableLocalAccess": False}).get("success") is True
+            assert self.client.call_tool("hub_get_info", {})["localAccessEnabled"] is False
+            assert peer_available() is False, "the local endpoint still answered with local access off"
+            assert update({"enableLocalAccess": True}).get("success") is True
+            assert peer_available() is True, "the local endpoint did not answer after local access came back on"
+
+            # Cloud off (through v3): this suite's valid token is refused on /mcp and /health.
+            off = self._watchdog_tool("hub_update_mcp_settings", {
+                "appId": self.server_app_id, "settings": {"enableCloudAccess": False}, "confirm": True})
+            assert off.get("success") is True, f"v3 could not switch cloud access off: {off}"
+            resp = self.client.raw_request({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                            "params": {"name": "hub_get_info", "arguments": {}}})
+            assert resp.status_code == 403, f"/mcp with cloud access off: HTTP {resp.status_code}"
+            assert resp.json()["error"]["code"] == -32600
+            health = requests.get(f"{self.client._app_path_prefix}/health",
+                                  params={"access_token": self.client.access_token}, timeout=30)
+            assert health.status_code == 403, f"/health with cloud access off: HTTP {health.status_code}"
+        finally:
+            restored = self._watchdog_tool("hub_update_mcp_settings", {
+                "appId": self.server_app_id,
+                "settings": {"enableLocalAccess": True, "enableCloudAccess": True}, "confirm": True})
+            if restored.get("success") is not True:
+                raise RuntimeError("could not turn the MCP server's endpoints back on through the watchdog -- "
+                                   f"every later test will fail: {restored}")
+
+        info = self.client.call_tool("hub_get_info", {})
+        assert info["cloudAccessEnabled"] is True and info["localAccessEnabled"] is True, \
+            "the same token did not regain access after cloud access came back on"
 
     @test("developer_mode")
     def test_t220_update_mcp_settings_boolean_flip(self) -> None:

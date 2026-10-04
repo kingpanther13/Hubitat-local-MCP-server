@@ -103,6 +103,8 @@ The app shows two endpoint URLs:
   https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN
   ```
 
+> **Access toggles**: both endpoints are on by default. **Enable local access** and **Enable cloud access** in the app let you turn either off on its own. A disabled endpoint returns HTTP 403 for every request, even with a valid token; turning it back on restores access with the same token and URL.
+
 > **Header auth**: clients that expect bearer-token auth can send the token as an `Authorization: Bearer YOUR_TOKEN` header instead of the `?access_token=` query parameter — the Hubitat platform accepts either. Platform behaviour, verified manually on firmware 2.5.1.135 against both the local endpoint and the cloud relay; the e2e suite pins it on whichever endpoint it targets (the cloud relay in CI).
 
 ### 3. Connect Your AI Client

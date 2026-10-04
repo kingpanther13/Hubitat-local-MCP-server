@@ -235,12 +235,17 @@ def mainPage() {
     _protectedAppIds()
     dynamicPage(name: "mainPage", title: "MCP Rule Server", install: true, uninstall: true) {
         section("MCP Endpoint") {
+            input "enableLocalAccess", "bool", title: "Enable local access (LAN endpoint)",
+                  defaultValue: true, submitOnChange: true
+            input "enableCloudAccess", "bool", title: "Enable cloud access (Hubitat cloud endpoint)",
+                  defaultValue: true, submitOnChange: true
+            paragraph "A disabled endpoint rejects every request, even one with a valid token. Turning it back on restores access with the same token and URL. With both off, nothing outside the hub can reach this server; this page stays available in the hub UI."
             if (!state.accessToken) {
                 paragraph "Click 'Done' to generate access token, then reopen app to see endpoint URLs."
             } else {
-                paragraph "<b>Local Endpoint:</b>"
+                paragraph "<b>Local Endpoint:</b> ${_transportStatusLabel(settings.enableLocalAccess)}"
                 paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
-                paragraph "<b>Cloud Endpoint:</b>"
+                paragraph "<b>Cloud Endpoint:</b> ${_transportStatusLabel(settings.enableCloudAccess)}"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "Clients that expect header auth can instead send the token as <code>Authorization: Bearer &lt;token&gt;</code> (no <code>?access_token=</code> needed) -- the Hubitat platform accepts it on both endpoints."
                 paragraph "<b>App ID:</b> ${app.id}"
@@ -919,6 +924,10 @@ def initialize() {
     }
 }
 
+private String _transportStatusLabel(value) {
+    return (value != false) ? "<span style='color: green;'>enabled</span>" : "<span style='color: red;'>disabled</span>"
+}
+
 // Saving new code does not call updated(), so the subscriptions, schedules and in-use
 // registrations initialize() owns would otherwise wait for the next Done click.
 private void _refreshSetupAfterUpdate() {
@@ -965,6 +974,10 @@ mappings {
 def hubResponseCapBytes() { 131072 }
 
 def handleHealth() {
+    if (!_transportEnabled()) {
+        return render(status: 403, contentType: "application/json",
+                      data: groovy.json.JsonOutput.toJson([status: "forbidden", error: _transportDisabledMessage()]))
+    }
     def ident = serverIdentity()
     return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson([
         status: "ok",
@@ -978,6 +991,7 @@ def handleHealth() {
 // HEM endpoint). GET returns a JSON-RPC-shaped 405 so a JSON-RPC client sees
 // a coherent error rather than an ad-hoc body.
 def handleMcpGet() {
+    if (!_transportEnabled()) return _transportDisabledResponse()
     return render(status: 405, contentType: "application/json",
                   data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600,
                       "This MCP endpoint is request-response only (POST). SSE/GET streaming is not supported.")))
@@ -986,6 +1000,8 @@ def handleMcpGet() {
 // Transport contract: application-level JSON-RPC errors ride HTTP 200 -- do NOT convert them
 // to 4xx, legacy clients expect the error inside the body. Every non-200 is spec-mandated:
 //
+//   403 -- the transport this request arrived on (local or cloud) is switched off in the app
+//          settings (issue #453); checked before anything else, GET included.
 //   405 -- GET (handleMcpGet); POST-only by design.
 //   403 -- present Origin naming no known identity; ANY POST, either era. Null-id error body.
 //          GET never reaches it -- handleMcpGet answers 405 first.
@@ -1000,8 +1016,9 @@ def handleMcpGet() {
 // presence (see the era split below). Legacy revisions keep every pre-2026 behaviour,
 // batch included.
 def handleMcpRequest() {
+    if (!_transportEnabled()) return _transportDisabledResponse()
     // Streamable HTTP security MUST: validate Origin on every inbound POST to
-    // block DNS rebinding. First thing in the handler, so a rejected request costs
+    // block DNS rebinding. Right after the transport check, so a rejected request costs
     // nothing and touches no state -- not even the migration below. Runs in both
     // eras: this is a transport security control, not a protocol-revision feature.
     if (!_originAllowed()) {
@@ -2276,6 +2293,21 @@ def handleToolsCallLegacy(msg) {
 def _isCloudRequest() {
     try { return request?.requestSource?.toString() == "cloud" }
     catch (Exception e) { return false }
+}
+
+// Issue #453: per-transport access toggles. Opt-out, not opt-in: the user already opted in by
+// enabling OAuth in Apps Code, which opens both endpoints. Only an explicit false blocks.
+def _transportEnabled() {
+    return settings[_isCloudRequest() ? "enableCloudAccess" : "enableLocalAccess"] != false
+}
+
+def _transportDisabledMessage() {
+    return "Forbidden: ${_isCloudRequest() ? 'cloud' : 'local'} access to this MCP server is disabled. Turn it on in the MCP Rule Server app on the hub."
+}
+
+def _transportDisabledResponse() {
+    return render(status: 403, contentType: "application/json",
+                  data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600, _transportDisabledMessage())))
 }
 
 // Relay time budget in ms. 0 disables self-budgeting; unset defaults to 6000. The check fires
@@ -4909,7 +4941,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
             ]
         ],
         hub_read_devices: [
@@ -10322,6 +10354,8 @@ Poll install progress with `statusOnly=true` (`status` is IDLE when none is runn
 For replace/add every id is validated against the full hub device list (discover ids via `hub_list_devices(scope='all')`, each carries an `mcpAuthorized` flag) -- one unknown id rejects the whole batch and nothing is written; `remove` does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless `allowEmpty:true`.
 
 If the hub's device inventory is incomplete (its device tree could not be read, or it disagrees with the picker feed), an id it lacks is reported as "could not validate" instead of unknown. Nothing is written, so retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
+
+**`enableLocalAccess` / `enableCloudAccess`** -- allow requests over the LAN endpoint / the Hubitat cloud endpoint (both ON by default). A disabled endpoint answers HTTP 403 to every request, even with a valid token; turning it back on restores access with the same token and URL. A call cannot turn off the connection it arrived on (that would lock the caller out) -- switch it off from the other connection or the app page on the hub. `hub_get_info` reports both as `localAccessEnabled` / `cloudAccessEnabled`.
 
 **Deliberately NOT allowlisted:**
 - `enableWrite` -- would disable this tool's own write path mid-session.

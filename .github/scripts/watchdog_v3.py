@@ -23,6 +23,7 @@ from pathlib import Path
 V3_APP_NAME = "E2E Dead-Man Watchdog v3"
 ENDPOINT_RE = re.compile(r"https://cloud\.hubitat\.com/api/[0-9a-f-]+/apps/[0-9]+/mcp\?access_token=[A-Za-z0-9-]+")
 PACKAGE_APPS = ("MCP Rule", "MCP Rule Server")
+MCP_APP_ID_RE = re.compile(r"/apps/([0-9]+)/mcp\?")
 
 
 class HubError(RuntimeError):
@@ -423,8 +424,31 @@ def operation_id(suffix):
     return f"e2e-{os.environ.get('GITHUB_RUN_ID', 'manual')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}-{suffix}"
 
 
+def restore_mcp_access(transport, v3, mcp):
+    """Turn both MCP endpoints back on: a run that died mid-test may have left one off.
+
+    Never fatal: the install step replaces the package whatever state it is in.
+    """
+    match = MCP_APP_ID_RE.search(mcp)
+    if not match:
+        log("::warning::MCP_URL names no app ID; MCP endpoint access was not checked.")
+        return
+    try:
+        result = transport.call(v3, "hub_update_mcp_settings", {
+            "appId": match.group(1), "settings": {"enableLocalAccess": True, "enableCloudAccess": True},
+            "confirm": True,
+        })
+    except OSError as error:  # ToolError included; neither message carries a URL
+        log(f"::warning::Could not restore MCP endpoint access: {error}")
+        return
+    if result.get("success") is not True:
+        log(f"::warning::MCP endpoint access was not restored: {result.get('error')}")
+    elif result.get("changed"):
+        log("Turned the MCP server's local and cloud endpoints back on.")
+
+
 def command_prepare(_args):
-    transport, v3, _mcp = endpoints()
+    transport, v3, mcp = endpoints()
     info = transport.call(v3, "hub_get_info", {})
     log(f"Watchdog v3 answers: firmware {info.get('firmwareVersion')}, free memory {info.get('freeMemoryKB')} KB")
     try:
@@ -434,6 +458,8 @@ def command_prepare(_args):
         # Not fatal: the install step replaces the MCP package whatever state it is in.
         log("::warning::The MCP endpoint check got no answer; continuing.")
     clear_hold(transport, v3)
+    # After the hold is released: v3 refuses manual writes while a deployment holds the hub.
+    restore_mcp_access(transport, v3, mcp)
 
 
 def command_deploy_pr(args):

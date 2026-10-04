@@ -173,6 +173,8 @@ def toolGetHubInfo(args = null) {
     info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
     info.developerModeEnabled = settings.enableDeveloperMode ?: false
+    info.localAccessEnabled = settings.enableLocalAccess != false
+    info.cloudAccessEnabled = settings.enableCloudAccess != false
 
     // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
     // its result on the call (success reloads the app; a big-file compile failure 504s), so it records

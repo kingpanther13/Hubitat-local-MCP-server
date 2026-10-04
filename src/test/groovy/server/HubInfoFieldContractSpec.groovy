@@ -75,6 +75,26 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.developerModeEnabled == true
     }
 
+    def "getHubInfo reports each endpoint's access toggle, on unless explicitly off (issue #453)"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        if (local != null) settingsMap.enableLocalAccess = local
+        if (cloud != null) settingsMap.enableCloudAccess = cloud
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.localAccessEnabled == (local != false)
+        result.cloudAccessEnabled == (cloud != false)
+
+        where:
+        local | cloud
+        null  | null
+        false | true
+        true  | false
+    }
+
     // issue #237: a self-deploy can't return its result on the deploy call (success reloads the app;
     // a big-file compile failure 504s), so toolUpdateItemCodeInner records the hub's verbatim outcome
     // to atomicState.lastSelfDeploy and hub_get_info surfaces it for a follow-up read (CI recovers the

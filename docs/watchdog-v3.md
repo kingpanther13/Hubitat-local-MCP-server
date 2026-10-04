@@ -32,6 +32,9 @@ app, hub variable, device, room and file plus the `mcptest` throwaway code, so
 teardown never depends on the MCP app under test. `BAT_E2E_KEEP_` scaffolds are
 kept.
 `hub_get_source` saves a large source to File Manager unless `noSave:true`.
+`hub_update_mcp_settings` mirrors the server tool of the same name (minus `mcpLogLevel`) through
+the hub's settings page, so it works while the MCP server's own endpoint refuses requests, e.g.
+with `enableCloudAccess` off. Every run's prepare step uses it to turn both endpoints back on.
 
 ## Package deployment
 

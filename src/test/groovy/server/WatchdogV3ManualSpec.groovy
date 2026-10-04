@@ -736,6 +736,98 @@ class WatchdogV3ManualSpec extends Specification {
                  [appId: 'abc', enabled: true, confirm: true]]
     }
 
+    private static Map mcpSettingsConfig(Map settings) {
+        [app: [id: 194, version: 3, appType: [namespace: 'mcp', name: 'MCP Rule Server']],
+         configPage: [name: 'mainPage'], settings: settings]
+    }
+
+    @Unroll
+    def "hub_update_mcp_settings writes the main app's settings page and trusts only the read-back (#scenario)"() {
+        given:
+        def reads = []
+        def posts = []
+        script.metaClass.hubGet = { String path, Map query ->
+            reads << path
+            groovy.json.JsonOutput.toJson(mcpSettingsConfig(reads.size() > 1 && landed
+                ? [enableCloudAccess: 'true', maxConcurrentWrites: '3'] : [enableCloudAccess: 'false']))
+        }
+        script.metaClass.hubPostForm = { String path, Map body ->
+            posts << [path, body]
+            [status: postStatus, data: '']
+        }
+
+        when:
+        def result = script.executeAdminTool('hub_update_mcp_settings',
+            [appId: '194', settings: [enableCloudAccess: true, maxConcurrentWrites: '3'], confirm: true])
+
+        then:
+        result.success == landed
+        reads == ['/installedapp/configure/json/194', '/installedapp/configure/json/194']
+        posts == [['/installedapp/update/json', [id: '194', version: '3',
+            'settings[enableCloudAccess]': 'true', 'enableCloudAccess.type': 'bool',
+            'settings[maxConcurrentWrites]': '3', 'maxConcurrentWrites.type': 'number',
+            currentPage: 'mainPage', pageBreadcrumbs: '[]', formAction: 'update']]]
+
+        where:
+        scenario                      | postStatus | landed
+        'normal write'                | 200        | true
+        'lost response but committed' | null       | true
+        'HTTP success without change' | 200        | false
+    }
+
+    def "hub_update_mcp_settings is a no-op when every value already holds"() {
+        given:
+        def posts = []
+        script.metaClass.hubGet = { String path, Map query ->
+            groovy.json.JsonOutput.toJson(mcpSettingsConfig([enableLocalAccess: 'true', enableCloudAccess: 'true']))
+        }
+        script.metaClass.hubPostForm = { String path, Map body -> posts << body; [:] }
+
+        when:
+        def result = script.adminUpdateMcpSettings([appId: '194', confirm: true,
+            settings: [enableLocalAccess: true, enableCloudAccess: 'true']])
+
+        then:
+        result.success && !result.changed
+        posts.empty
+    }
+
+    def "hub_update_mcp_settings refuses an app that is not the MCP server"() {
+        given:
+        def config = mcpSettingsConfig([:])
+        config.app.appType.name = 'Unrelated app'
+        def posts = []
+        script.metaClass.hubGet = { String path, Map query -> groovy.json.JsonOutput.toJson(config) }
+        script.metaClass.hubPostForm = { String path, Map body -> posts << body; [:] }
+
+        expect:
+        !script.adminUpdateMcpSettings([appId: '194', settings: [enableCloudAccess: true], confirm: true]).success
+        posts.empty
+    }
+
+    @Unroll
+    def "hub_update_mcp_settings validates before touching the hub (#args)"() {
+        given:
+        def reads = []
+        script.metaClass.hubGet = { String path, Map query -> reads << path; null }
+
+        when:
+        script.adminUpdateMcpSettings(args)
+
+        then:
+        thrown(IllegalArgumentException)
+        reads.empty
+
+        where:
+        args << [[appId: '194', settings: [enableCloudAccess: true]],
+                 [appId: '0', settings: [enableCloudAccess: true], confirm: true],
+                 [appId: '194', settings: [:], confirm: true],
+                 [appId: '194', settings: [enableWrite: false], confirm: true],
+                 [appId: '194', settings: [mcpLogLevel: 'info'], confirm: true],
+                 [appId: '194', settings: [enableCloudAccess: 'yes'], confirm: true],
+                 [appId: '194', settings: [loopGuardMax: 'many'], confirm: true]]
+    }
+
     @Unroll
     def "adminSetAppDisabled posts the Vue wire format and trusts only the read-back (#scenario)"() {
         given:

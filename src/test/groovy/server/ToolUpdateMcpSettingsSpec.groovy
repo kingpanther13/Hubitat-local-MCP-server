@@ -976,4 +976,63 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         gate << ['write', 'backup', 'confirmation']
     }
 
+    // -------- issue #453: endpoint access toggles --------
+
+    @spock.lang.Unroll
+    def "a #source request may switch off #key"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        mcpDriver.requestSource = source
+
+        when:
+        def result = script.toolUpdateMcpSettings([settings: [(key): false], confirm: true])
+
+        then:
+        result.success == true
+        sharedAppStub.settingsStore[key] == [type: 'bool', value: false]
+
+        where:
+        source  | key
+        'cloud' | 'enableLocalAccess'
+        'local' | 'enableCloudAccess'
+        null    | 'enableCloudAccess'
+    }
+
+    @spock.lang.Unroll
+    def "a #source request cannot switch off its own connection (#key)"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        mcpDriver.requestSource = source
+
+        when:
+        script.toolUpdateMcpSettings([settings: [debugLogging: true, (key): 'false'], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(key)
+        ex.message.contains('lock this client out')
+
+        and: 'the whole batch is refused before any write'
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        source  | key
+        'local' | 'enableLocalAccess'
+        null    | 'enableLocalAccess'
+        'cloud' | 'enableCloudAccess'
+    }
+
+    def "turning the request's own connection on is allowed"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        mcpDriver.requestSource = 'cloud'
+
+        when:
+        def result = script.toolUpdateMcpSettings([settings: [enableCloudAccess: true, enableLocalAccess: true], confirm: true])
+
+        then:
+        result.success == true
+        sharedAppStub.settingsStore.enableCloudAccess == [type: 'bool', value: true]
+        sharedAppStub.settingsStore.enableLocalAccess == [type: 'bool', value: true]
+    }
 }
