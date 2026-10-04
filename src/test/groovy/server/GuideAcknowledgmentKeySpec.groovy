@@ -1,5 +1,6 @@
 package server
 
+import support.TestChildApp
 import support.ToolSpecBase
 
 /**
@@ -11,6 +12,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
 
     static final String KEY_LINE = /^Acknowledgment key: I-HAVE-READ-THE-GUIDE-[a-z_]+-[0-9a-f]{8}$/
     static final String NOTE_PREFIX = 'Pass this exact value as the bestPracticeKey argument'
+    static final String PLURAL_NOTE_PREFIX = 'Each labelled key unlocks the write tools of the section it names'
 
     private Set servedKeys() {
         (script.getToolGuideSections().keySet() as Set) +
@@ -84,7 +86,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
 
         then:
         lines.take(subs.size()) == subs.collect { keyLine(it, true) }
-        lines[subs.size()].startsWith(NOTE_PREFIX)
+        lines[subs.size()].startsWith(PLURAL_NOTE_PREFIX)
         lines[subs.size() + 1] == ''
         content.endsWith(rawBody(parent))
 
@@ -99,7 +101,22 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         script.toolGetToolGuide(section).content == rawBody(section)
 
         where:
-        section << ['tool_access', 'performance', 'set_rule_reference_conditions', 'hub_admin_write_code']
+        section << ['tool_access', 'performance', 'performance_overview', 'rooms', 'hub_admin_write_code']
+    }
+
+    def "a sub-section of a gated parent serves the parent's key -- #section"() {
+        when:
+        def content = script.toolGetToolGuide(section).content as String
+        def lines = content.readLines()
+
+        then:
+        lines[0] == keyLine('set_rule_reference', true)
+        lines[1].startsWith(NOTE_PREFIX)
+        lines[2] == ''
+        content.endsWith(rawBody(section))
+
+        where:
+        section << ['set_rule_reference_conditions', 'set_rule_reference_triggers', 'set_rule_reference_guards']
     }
 
     def "the full guide publishes no key and says where keys are"() {
@@ -121,5 +138,31 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         expect:
         script.executeTool('hub_set_rule', [appId: 5, addTrigger: [capability: 'Switch'], confirm: true,
                                             bestPracticeKey: served]).stubbed == true
+    }
+
+    def "a labelled sub-section key read from its parent passes that sub-section's write tool"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+        settingsMap.enableWrite = true
+        script.metaClass.toolSetNativeApp = { m -> [success: true, stubbed: true] }
+        def label = 'Acknowledgment key (builtin_app_tools_crud): '
+        def served = (script.toolGetToolGuide('builtin_app_tools').content as String).readLines()
+            .find { it.startsWith(label) } - label
+
+        expect:
+        served == script.hubBpsGuideKey('builtin_app_tools_crud')
+        script.executeTool('hub_set_native_app', [appType: 'rule_machine', name: 'X',
+                                                  bestPracticeKey: served]).stubbed == true
+    }
+
+    def "keys are bound to the install: peers with different app ids publish different keys"() {
+        given:
+        def one = newCompiledScriptInstance([app: new TestChildApp(id: 1L)])
+        def two = newCompiledScriptInstance([app: new TestChildApp(id: 2L)])
+
+        expect:
+        one.hubBpsGuideKey('backup') != two.hubBpsGuideKey('backup')
+        one.hubBpsGuideKey('backup') != script.hubBpsGuideKey('backup')
+        two.hubBpsGuideKey('backup') != script.hubBpsGuideKey('backup')
     }
 }

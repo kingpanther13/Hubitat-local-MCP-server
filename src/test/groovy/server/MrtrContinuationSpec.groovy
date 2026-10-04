@@ -414,6 +414,63 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ranWith.size() == 2
     }
 
+    def "a continuation is not re-gated after its key rotates, while an initial call still is"() {
+        given: 'the gate ON and a paused bulk write started with its section key'
+        settingsMap.enableWrite = true
+        settingsMap.enableMandatoryBPS = true
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            if (ranWith.size() == 1) {
+                return [success: false, partial: true, ruleIds: [51, 52],
+                        rmAction: 'stopRule toggle x1',
+                        results: [[success: true, ruleId: 51]], remainingRuleIds: [52]]
+            }
+            return [success: true, partial: false, ruleIds: [52],
+                    rmAction: 'stopRule toggle x1', results: [[success: true, ruleId: 52]]]
+        }
+        def original = [ruleId: [51, 52], action: 'stop',
+                        bestPracticeKey: script.hubBpsGuideKey('builtin_app_tools_rules')]
+
+        when:
+        def first = modernCall('hub_call_rule', original)
+        String requestState = first.result.requestState
+
+        then:
+        first.result.resultType == 'input_required'
+        ranWith.size() == 1
+
+        when: 'two hours later the original key is stale, and the client resumes with the unchanged args'
+        virtualNow.addAndGet(2 * 3600000L)
+        assert !script.hubBpsKeyAccepted('builtin_app_tools_rules', original.bestPracticeKey)
+        def resumed = modernCall('hub_call_rule', original, requestState)
+
+        then: 'the remainder runs to completion'
+        resumed.error == null
+        resumed.result.resultType == 'complete'
+        resumed.result.isError != true
+        !resumed.toString().contains('Mandatory best-practice')
+        ranWith.size() == 2
+        ranWith[1].ruleId == [52]
+        mcpDriver.parseInner(resumed).success == true
+
+        when: 'a new initial call carrying another section\'s current key'
+        def refused = modernCall('hub_call_rule', [ruleId: [53], action: 'stop',
+                                                   bestPracticeKey: script.hubBpsGuideKey('set_rule_reference')])
+        def refusal = mcpDriver.parseInner(refused).error as String
+
+        then: 'the gate refuses it before anything runs'
+        refused.result.isError == true
+        refusal.startsWith('Mandatory best-practice acknowledgment')
+        refusal.contains("section='builtin_app_tools_rules'")
+        ranWith.size() == 2
+
+        cleanup:
+        NOW_OVERRIDE.set(null)
+    }
+
     def "an invalid gateway route (#caseName) refuses through ordinary dispatch without reserving state"() {
         given: 'an MRTR-eligible leaf on a route the canonical dispatcher will refuse'
         settingsMap.enableWrite = true

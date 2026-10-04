@@ -227,7 +227,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         seedLogs([])
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
-        script.metaClass.executeTool = { String name, Map args -> throw new IllegalArgumentException('bad trigger') }
+        script.metaClass.executeTool = { String name, Map args, boolean bpsChecked = false -> throw new IllegalArgumentException('bad trigger') }
         script.metaClass.getDebugLogReadResult = { Map args -> [entries: []] }
 
         when:

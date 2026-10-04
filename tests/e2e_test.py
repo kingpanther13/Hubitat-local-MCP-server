@@ -2523,6 +2523,12 @@ class TestRunner:
             f"Expected 36 default tools (13 core + 23 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
+        # Gateway mode: a write-bearing gateway leads with the guide-first sentence, a read gateway does not.
+        by_name = {t.get("name"): t for t in tools}
+        assert by_name["hub_manage_rooms"].get("description", "").startswith("MUST call hub_get_tool_guide first."), \
+            f"hub_manage_rooms must lead with the guide-first sentence: {by_name['hub_manage_rooms'].get('description', '')[:120]!r}"
+        assert not by_name["hub_read_rooms"].get("description", "").startswith("MUST call hub_get_tool_guide first."), \
+            "hub_read_rooms is read-only and must not carry the guide-first sentence"
 
     @test("infrastructure")
     def test_tools_list_titles(self) -> None:
@@ -2720,6 +2726,8 @@ class TestRunner:
 
             # serverInstructions is the flat branch: it must NOT tell the client to call a gateway.
             instr = self.client.discover().get("instructions", "")
+            assert instr.startswith("MUST call hub_get_tool_guide first."), \
+                f"flat-mode instructions must lead with the guide-first sentence: {instr[:120]!r}"
             assert "flat catalog" in instr.lower(), f"flat-mode instructions missing 'flat catalog': {instr!r}"
             assert "call a gateway" not in instr.lower(), \
                 f"flat-mode instructions must not steer the client into a gateway call: {instr!r}"
@@ -15153,15 +15161,17 @@ class TestRunner:
     def _assert_bps_blocked(self, gateway: str, tool: str, args: dict, section: str) -> None:
         """Gate ON: the write is refused, the refusal points at `section`, and carries no key."""
         try:
-            self.client.call_tool(gateway, {"tool": tool, "args": args})
+            result = self.client.call_tool(gateway, {"tool": tool, "args": args})
         except McpError as e:
             msg = str(e)
             assert "Mandatory best-practice" in msg, f"{tool} failed, but not at the gate: {msg}"
             assert f"section='{section}'" in msg, f"{tool} block does not point at {section}: {msg}"
             assert self._BPS_KEY_PREFIX not in msg, f"{tool} block LEAKED a key: {msg}"
             return
+        if isinstance(result, dict) and result.get("appId"):
+            self.created_native_app_ids.append(str(result["appId"]))
         raise AssertionError(f"gate ON but {tool} with bestPracticeKey="
-                             f"{args.get('bestPracticeKey')!r} was not blocked")
+                             f"{args.get('bestPracticeKey')!r} was not blocked; it returned: {str(result)[:500]}")
 
     def _section_key_after_refusals(self, gateway: str, tool: str, section: str, args: dict) -> str:
         """Gate ON: `tool` is refused keyless AND with the generic best_practice_reference key;
@@ -15517,10 +15527,18 @@ class TestRunner:
         failure never replaces an active test error; with no test error it is raised."""
         unwinding = sys.exc_info()[0] is not None
         cleanup_errors: list[Exception] = []
-        try:
-            self._set_bps(enableMandatoryBPS=False)
-        except Exception as exc:
-            cleanup_errors.append(exc)
+        gate_off_error: Exception | None = None
+        for _ in range(2):
+            try:
+                self._set_bps(enableMandatoryBPS=False)
+                gate_off_error = None
+                break
+            except Exception as exc:
+                gate_off_error = exc
+        if gate_off_error is not None:
+            cleanup_errors.append(RuntimeError(
+                "could not turn the best-practice gate OFF (retried once): the gate was LEFT ON, "
+                f"so later write tests will fail at it. Last error: {gate_off_error}"))
         if app_id:
             try:
                 self._delete_native(app_id, gateway=gateway)
@@ -16025,6 +16043,8 @@ class TestRunner:
         instructions = result.get("instructions")
         assert isinstance(instructions, str) and instructions.strip(), \
             f"Expected non-empty instructions string, got: {instructions!r}"
+        assert instructions.startswith("MUST call hub_get_tool_guide first."), \
+            f"gateway-mode instructions must lead with the guide-first sentence: {instructions[:120]!r}"
         assert "gateway" in instructions.lower(), f"gateway-mode instructions missing the gateway convention: {instructions!r}"
         assert "pagination" in instructions.lower(), f"instructions missing the pagination hint: {instructions!r}"
         # The direct-tool clarification (the #319 addition) must be present in gateway mode.
@@ -16089,6 +16109,20 @@ class TestRunner:
         tool = self.client.call_tool("hub_get_tool_guide", {"section": "performance"})
         assert content.get("text") == tool.get("content"), \
             "resources/read guide text differs from hub_get_tool_guide's content for the same section"
+
+    @test("protocol")
+    def test_guide_publishes_section_and_labelled_keys(self) -> None:
+        """A gated guide section read as a resource leads with its own acknowledgment key, and a
+        parent section read through hub_get_tool_guide publishes its gated sub-sections' keys."""
+        read = self.client._send("resources/read", {"uri": "hubitat://guide/set_rule_reference"})
+        text = read.get("contents", [{}])[0].get("text", "")
+        first_line = text.split("\n", 1)[0]
+        assert first_line == "Acknowledgment key: " + self._read_bps_key("set_rule_reference"), \
+            f"set_rule_reference resource does not lead with its key: {first_line!r}"
+        parent = self.client.call_tool("hub_get_tool_guide", {"section": "builtin_app_tools"})
+        content = parent.get("content", "") if isinstance(parent, dict) else str(parent)
+        assert "Acknowledgment key (builtin_app_tools_crud): " in content, \
+            f"builtin_app_tools does not publish its builtin_app_tools_crud key: {content[:300]!r}"
 
     @test("protocol")
     def test_resources_read_live_context(self) -> None:

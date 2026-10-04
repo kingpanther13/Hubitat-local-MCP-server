@@ -2106,7 +2106,7 @@ def handleToolsCall(msg) {
             executionArgs.__reqT0 = reqT0
         }
 
-        _mrtrValidateAccess(toolName, reactiveToolName, executionArgs)
+        _mrtrValidateAccess(toolName, reactiveToolName, executionArgs, false)
         if (detached) {
             Map scheduled = _mrtrScheduleSlice(stateId, rec, claim, executionArgs)
             if (scheduled.accepted == true) {
@@ -2384,11 +2384,11 @@ def _mrtrReadTools() {
 
 private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set }
 
-private def _executeWithDeviceReadContext(tool, Map args, Map context) {
+private def _executeWithDeviceReadContext(tool, Map args, Map context, boolean bpsChecked = false) {
     Map previous = deviceReadContext
     if (context != null) context.outerTool = tool?.toString()
     deviceReadContext = context
-    try { return executeTool(tool, args) }
+    try { return executeTool(tool, args, bpsChecked) }
     finally { deviceReadContext = previous }
 }
 
@@ -2728,7 +2728,9 @@ private Map _mrtrWithLeafArguments(Map rec, Map outerArgs, Map nextLeafArgs) {
     return next
 }
 
-private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
+// checkKey=false on continuations: their stored args carry the initial call's key, which may
+// have rotated since; the initial call already passed the gate.
+private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boolean checkKey = true) {
     String outer = outerToolName?.toString()
     String leaf = leafToolName?.toString()
     def leafArgs = _mrtrLeafArguments(outer, leaf, outerArgs)
@@ -2745,10 +2747,10 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
     if (getEffectiveDisabledTools().contains(leaf)) {
         throw new IllegalArgumentException("${leaf} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
     }
-    if (!readLeaf && settings.enableMandatoryBPS != false) {
+    if (checkKey && !readLeaf && settings.enableMandatoryBPS != false) {
         String bpsSection = _bpsSectionForTool(leaf)
         if (!hubBpsKeyAccepted(bpsSection, leafArgs?.bestPracticeKey)) {
-            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection))
+            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, leafArgs?.bestPracticeKey))
         }
     }
 }
@@ -4058,7 +4060,7 @@ def runMrtrAutoContinue(Map job = [:]) {
     Map executionArgs = _mrtrCopyMap(rec.nextArguments as Map)
     mcpLog("info", "mrtr", "Server-side continuation of ${leaf} at generation ${generation}: no client request resumed it")
     try {
-        _mrtrValidateAccess(rec.outerTool, leaf, executionArgs)
+        _mrtrValidateAccess(rec.outerTool, leaf, executionArgs, false)
         if (_mrtrDetachedWorkerTools().contains(leaf)) {
             _mrtrScheduleSlice(stateId, rec, claim, executionArgs)
             return
@@ -4138,7 +4140,8 @@ private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
     if (leaf == "hub_import_native_app") return _mrtrImportNativeAppSlice(rec, executionArgs)
     Map context = rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null
-    def result = _executeWithDeviceReadContext(rec.outerTool, executionArgs, context)
+    // Every caller validated access first; a continuation's stored key may have rotated since.
+    def result = _executeWithDeviceReadContext(rec.outerTool, executionArgs, context, true)
     // Execution-local provenance bounds terminal retention without adding response fields
     // or copying the snapshot payload into persisted continuation records.
     if (context?.fetchedAt instanceof Number) rec.readSnapshotFetchedAt = context.fetchedAt
@@ -5426,7 +5429,7 @@ def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempoten
     return ann
 }
 
-def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
+def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChecked = false) {
     def gwConfig = getGatewayConfig()
     def config = gwConfig[gatewayName]
     if (!config) {
@@ -5442,7 +5445,8 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
         // gated centrally in executeTool on re-entry; this closes the catalog surface.
         // Strip [[FLAT_TRIM]] marker tokens but KEEP the content -- gateway catalog
         // mode is the disclosure surface where full descriptions belong (size cap
-        // does not apply per-tool here, only the per-response cap).
+        // does not apply per-tool here, only the per-response cap). The transform also
+        // prefixes write leaves with the guide-first sentence.
         def hidden = getHiddenToolNames()
         def visibleSubTools = config.tools.findAll { !hidden.contains(it) }
         def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
@@ -5571,7 +5575,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
         }
     }
 
-    return executeTool(toolName, safeArgs)
+    return executeTool(toolName, safeArgs, bpsChecked)
 }
 
 // Flat-mode schema trim (issue #181). Heavy tool descriptions can wrap prose
@@ -5766,7 +5770,7 @@ def getToolDefinitions() {
             // fat schema (already lazily disclosed by its gateway).
             if (base.name == 'hub_set_rule') {
                 // The selector REPLACES the schema that applyDescriptionTransform already
-                // walked, so it has to be stripped itself -- otherwise every trim marker
+                // walked, so it has to be stripped itself -- otherwise every trim
                 // marker in the selector's own descriptions ships raw in the flat catalog
                 // (caught by the flat-mode no-leak specs, and it is the flat wire an LLM
                 // actually reads).
@@ -5816,9 +5820,9 @@ def getToolDefinitions() {
     }
 
     // Gateway-mode tools/list returns the gateway entries (short prose + sub-tool
-    // summaries) plus any base tools. None of those descriptions currently carry
-    // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
-    // if a future author adds one to a base-tool description.
+    // summaries) plus any base tools. The transform strips [[FLAT_TRIM]] marker
+    // tokens (base-tool descriptions carry them) and prefixes write surfaces with
+    // the guide-first sentence.
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
     Set writeLeaves = _mrtrWriteTools()
     return transformed.collect { tool ->
@@ -5876,7 +5880,8 @@ def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
     return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
 }
 
-def executeTool(toolName, args) {
+// bpsChecked: the key was already validated for this slice's initial call (continuations).
+def executeTool(toolName, args, boolean bpsChecked = false) {
     // opToken is GONE (replaced by standard MCP requestState continuation). A client
     // still sending one is running the removed idempotent-replay protocol and would
     // otherwise lose its duplicate-commit protection silently -- fail loud instead.
@@ -5928,10 +5933,11 @@ def executeTool(toolName, args) {
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))
             && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args ?: [:]))
-            && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])) {
+            && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
+            && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)
         if (!hubBpsKeyAccepted(bpsSection, args?.bestPracticeKey)) {
-            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection))
+            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, args?.bestPracticeKey))
         }
     }
 
@@ -6245,7 +6251,7 @@ def executeTool(toolName, args) {
                     hint: hint
                 ]
             }
-            return handleGateway(toolName, args.tool, args.args, (args instanceof Map) ? args.__reqT0 : null)
+            return handleGateway(toolName, args.tool, args.args, (args instanceof Map) ? args.__reqT0 : null, bpsChecked)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${_externalToolName(toolName as String)}")
@@ -10001,7 +10007,7 @@ def currentVersion() {
 
 // ---- Best-practice acknowledgment + reactive hints (issue #299) ----
 // Current acknowledgment key for a guide section. Stateless: app.id (per-install), the section name
-// and the current hour. No state/atomicState touch. Reuses _mrtrSha256 (java.security.MessageDigest).
+// and the current hour. No state/atomicState touch. Reuses _mrtrSha256.
 def hubBpsGuideKey(String section, Long atMs = null) {
     long bucket = ((atMs != null ? atMs : now()) as long).intdiv(3600000L)
     String digest = _mrtrSha256("${app?.id}:${section}:${bucket}".toString())
@@ -10019,15 +10025,27 @@ boolean hubBpsKeyAccepted(String section, value) {
 // Section whose key a write tool must carry.
 String _bpsSectionForTool(toolName) { _guideSectionForTool(toolName) ?: 'best_practice_reference' }
 
-// The gate's refusal at both chokepoints. Names the section, never the key.
-String _bpsBlockMessage(String section) {
-    return ("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='${section}') " +
+// The gate's refusal. Names the section and why the offered value failed, never a key.
+String _bpsBlockMessage(String section, value) {
+    String v = value?.toString() ?: ''
+    String prefix = 'I-HAVE-READ-THE-GUIDE-'
+    String rest = v.startsWith(prefix) ? v.substring(prefix.length()) : ''
+    String offeredSection = rest.lastIndexOf('-') > 0 ? rest.substring(0, rest.lastIndexOf('-')) : ''
+    String why = ''
+    if (v.startsWith('bps-ack-')) {
+        why = " The key format changed; a cached bps-ack key no longer works."
+    } else if (offeredSection == section) {
+        why = " The key you passed has expired (keys rotate hourly); read the section again."
+    } else if (offeredSection ==~ /[a-z_]+/) {
+        why = " The key you passed belongs to section '${offeredSection}', not this tool's section."
+    }
+    return ("Mandatory best-practice acknowledgment is enabled for write tools.${why} Read hub_get_tool_guide(section='${section}') " +
         "and pass the acknowledgment key published at the top of that section as the bestPracticeKey argument on this call. " +
         "The key rotates hourly and appears only in the guide.").toString()
 }
 
 // Sections that publish a key: best_practice_reference plus every section a write tool maps to.
-// Guide reads only (never the gate path); cached with the other code-derived tool metadata.
+// Off the request path, so it is safe to cache with the other code-derived tool metadata.
 Set _bpsGatedSections() {
     def cached = _toolMetadataGet("bpsGatedSections")
     if (cached != null) return cached as Set
@@ -10040,20 +10058,26 @@ Set _bpsGatedSections() {
     return _toolMetadataPut("bpsGatedSections", gated) as Set
 }
 
-// A guide section as served by hub_get_tool_guide AND the hubitat://guide resources: the key(s) it
-// publishes on top (its own if gated, one per gated sub-section if a parent), then the body.
+// A guide section as served: the key(s) it publishes on top (its own if gated, its gated parent's
+// if a sub-section, one per gated sub-section if a parent), then the body.
 String _guideSectionServed(String key, String body) {
     Set gated = _bpsGatedSections()
+    def registry = getToolGuideSubSections()
     List lines = []
     if (gated.contains(key)) lines << "Acknowledgment key: ${hubBpsGuideKey(key)}".toString()
-    def subs = getToolGuideSubSections()[key]
+    def parent = registry.keySet().find { registry[it].containsKey(key) }
+    if (parent && gated.contains(parent)) lines << "Acknowledgment key (${parent}): ${hubBpsGuideKey(parent as String)}".toString()
+    def subs = registry[key]
     if (subs instanceof Map) {
         subs.keySet().each { sub ->
             if (gated.contains(sub)) lines << "Acknowledgment key (${sub}): ${hubBpsGuideKey(sub as String)}".toString()
         }
     }
     if (!lines) return body
-    lines << "Pass this exact value as the bestPracticeKey argument on the write tools this section covers. It is a read-receipt, not a secret: published here deliberately by the MCP server, it rotates hourly (the previous hour's value is still accepted) and grants no privileges."
+    String receipt = "It is a read-receipt, not a secret: published here deliberately by the MCP server, it rotates hourly (the previous hour's value is still accepted) and grants no privileges."
+    lines << (lines.size() > 1
+        ? "Each labelled key unlocks the write tools of the section it names (best_practice_reference maps each write tool to its section); pass that exact value as the bestPracticeKey argument. ${receipt}".toString()
+        : "Pass this exact value as the bestPracticeKey argument on the write tools this section covers. ${receipt}".toString())
     return lines.join("\n") + "\n\n" + (body ?: '')
 }
 
@@ -10065,7 +10089,8 @@ String _guideSectionServed(String key, String body) {
 // keys in getToolGuideSections() / getToolGuideSubSections(); the groupings mirror where each
 // family already cites hub_get_tool_guide(section=...) in its descriptions/errors. Returns null
 // for tools with no dedicated section -- those get NO reactive hint (a generic pointer is exactly
-// what this feature must avoid).
+// what this feature must avoid). The map also selects the gate's required key (null ->
+// best_practice_reference), so it must match best_practice_reference's tool list (drift guard).
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
     if (t == 'hub_set_rule') return 'set_rule_reference'

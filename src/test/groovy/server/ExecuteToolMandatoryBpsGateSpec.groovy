@@ -14,6 +14,9 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
     static final long HOUR = 3600000L
     static final long T0 = 1234567890000L
+    static final String BLOCK_HEAD = 'Mandatory best-practice acknowledgment is enabled for write tools.'
+    static final String ANY_KEY = /I-HAVE-READ-THE-GUIDE-[a-z_]+-[0-9a-f]{8}/
+    static final List<String> WHY_STEMS = ['The key format changed', 'has expired', 'belongs to section']
 
     def setup() {
         // Representative writes; stubbed so a past-the-gate dispatch returns a sentinel instead
@@ -69,7 +72,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         result.stubbed == true
     }
 
-    def "block names the calling tool's section, exact text, no key -- #tool"() {
+    def "block names the calling tool's section, no key -- #tool"() {
         given:
         settingsMap.enableMandatoryBPS = true
 
@@ -78,8 +81,11 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message == "Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='${section}') and pass the acknowledgment key published at the top of that section as the bestPracticeKey argument on this call. The key rotates hourly and appears only in the guide."
-        !e.message.contains(key(section))
+        e.message == script._bpsBlockMessage(section, null)
+        e.message.startsWith(BLOCK_HEAD)
+        e.message.contains("hub_get_tool_guide(section='${section}')")
+        !(e.message =~ ANY_KEY)
+        WHY_STEMS.findAll { e.message.contains(it) } == []
 
         where:
         tool                 | args                                     || section
@@ -111,6 +117,59 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         'hub_set_rule'       | SET_RULE_ARGS                        | 'set_rule_reference'      | 'best_practice_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']              | 'best_practice_reference' | 'set_rule_reference'
         'hub_set_native_app' | [appType: 'rule_machine', name: 'X'] | 'builtin_app_tools_crud'  | 'builtin_app_tools_rules'
+    }
+
+    /** The value a caller offers for each refusal variant; the clock is the harness default T0. */
+    private String offeredFor(String variant) {
+        switch (variant) {
+            case 'missing': return null
+            case 'unknown format': return 'not-the-key'
+            case 'cached bps-ack': return 'bps-ack-0123abcd'
+            case 'expired': return script.hubBpsGuideKey('set_rule_reference', T0 - 2 * HOUR) as String
+            case 'other section': return key('best_practice_reference')
+        }
+        throw new IllegalStateException(variant)
+    }
+
+    private String refusalAt(String chokepoint, String offered) {
+        Map leafArgs = SET_RULE_ARGS + (offered == null ? [:] : [bestPracticeKey: offered])
+        try {
+            if (chokepoint == 'executeTool') script.executeTool('hub_set_rule', leafArgs)
+            else script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule', [tool: 'hub_set_rule', args: leafArgs])
+        } catch (IllegalArgumentException e) {
+            return e.message
+        }
+        throw new AssertionError("${chokepoint} did not refuse ${offered}")
+    }
+
+    def "the refusal says why the offered key failed -- #variant at #chokepoint"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+        def offered = offeredFor(variant)
+
+        when:
+        def message = refusalAt(chokepoint, offered)
+
+        then: 'same text at both chokepoints, pointing at the section, never carrying a key'
+        message == script._bpsBlockMessage('set_rule_reference', offered)
+        message.startsWith(BLOCK_HEAD)
+        message.contains("hub_get_tool_guide(section='set_rule_reference')")
+        !(message =~ ANY_KEY)
+
+        and: 'exactly the distinguishing sentence for this variant'
+        WHY_STEMS.findAll { message.contains(it) } == (sentence ? WHY_STEMS.findAll { sentence.contains(it) } : [])
+        sentence == null || message.contains(sentence)
+
+        where:
+        [chokepoint, variant] << [['executeTool', 'modern path'],
+                                  ['missing', 'unknown format', 'cached bps-ack', 'expired', 'other section']].combinations()
+        sentence = [
+            'missing'       : null,
+            'unknown format': null,
+            'cached bps-ack': 'The key format changed; a cached bps-ack key no longer works.',
+            'expired'       : 'The key you passed has expired (keys rotate hourly); read the section again.',
+            'other section' : "The key you passed belongs to section 'best_practice_reference', not this tool's section."
+        ][variant]
     }
 
     def "keys rotate hourly: previous hour accepted, two hours old refused"() {
@@ -325,7 +384,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
         then: 'the same block text as executeTool, naming the leaf section'
         def e = thrown(IllegalArgumentException)
-        e.message == script._bpsBlockMessage('set_rule_reference')
+        e.message == script._bpsBlockMessage('set_rule_reference', key('best_practice_reference'))
 
         when: 'the leaf section key'
         script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule',
