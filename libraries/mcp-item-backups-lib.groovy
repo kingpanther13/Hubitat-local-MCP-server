@@ -760,8 +760,8 @@ private Map _readHubBackupSchedule() {
     // Read the current automatic-backup schedule from GET /hub2/backup/json -- the same source
     // _setHubBackupSchedule read-merges before a write. Field names differ from the write endpoint
     // (read = databaseCleanupTimeHour/databaseCleanupJobMinute; write = hour/minute). The cloud-backup
-    // password (backupPassword) is deliberately NEVER returned -- it is a secret and the hub reads it
-    // back masked anyway. Returns [ok:true, schedule:[...]] on success, or [ok:false, error:...] when
+    // password (backupPassword) is deliberately NEVER returned -- it is a secret (the endpoint returns
+    // it as null anyway). Returns [ok:true, schedule:[...]] on success, or [ok:false, error:...] when
     // the read OR a non-numeric frequency/time field fails -- so hub_list_backups can fold the schedule
     // into the hub-DB listing (and route the failure through its existing hubBackupErrors/partial path)
     // instead of failing the whole call.
@@ -787,8 +787,8 @@ private Map _readHubBackupSchedule() {
             cloudBackupFrequency: cloudFreq,
             hour: (cur.databaseCleanupTimeHour != null) ? (cur.databaseCleanupTimeHour as Integer) : null,
             minute: (cur.databaseCleanupJobMinute != null) ? (cur.databaseCleanupJobMinute as Integer) : null,
-            localBackupEnabled: (localFreq ?: 0) > 0,
-            cloudBackupEnabled: (cloudFreq ?: 0) > 0,
+            localBackupEnabled: (localFreq != null) ? (localFreq > 0) : null,
+            cloudBackupEnabled: (cloudFreq != null) ? (cloudFreq > 0) : null,
             hasCloudBackupEntitlements: cur.hasCloudBackupEntitlements,
             hasCloudRestoreEntitlements: cur.hasCloudRestoreEntitlements,
             note: "Frequencies are in DAYS (0=off). hour/minute is the daily backup time. The cloud-backup password is never returned. Change the schedule via hub_create_backup(schedule=...)."

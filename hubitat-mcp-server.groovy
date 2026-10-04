@@ -4681,12 +4681,12 @@ def getGatewayConfig() {
             description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
             tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
-                hub_list_apps: "List installed apps. scope='types' (installed app code library) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
+                hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
                 hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, cursor?",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
                 hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
-                hub_list_backups: "List auto-created source code backups",
+                hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all (hub scopes also return the automatic-backup schedule). Args: scope?, cursor?",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
                 hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?",
@@ -4699,7 +4699,7 @@ def getGatewayConfig() {
                 hub_get_source: "view read application driver library groovy code namespace include",
                 hub_list_libraries: "list show installed groovy libraries code namespace include shared modules discover library id",
                 hub_list_bundles: "list show installed bundles bundle manager hpm package zip containers code delivery discover bundle id apps drivers libraries",
-                hub_list_backups: "show saved previous versions revisions",
+                hub_list_backups: "list show backups code source whole hub database local cloud restore points schedule frequency automatic daily time when backups run",
                 hub_get_backup: "view read saved previous version revision",
                 hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
                 hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
@@ -10641,7 +10641,7 @@ Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-
 
 `scope=source` (default) lists auto-created code backups, each with a `backupKey`. `scope=hub_local` / `hub_cloud` / `hub` / `all` return whole-hub DB backups under `hubLocalBackups` / `hubCloudBackups`. A local backup's `name` and a cloud backup's `path` feed hub_restore_backup and hub_delete_backup.
 
-The hub scopes (`hub_local` / `hub_cloud` / `hub` / `all`) also return the current automatic-backup `schedule` block: `localBackupFrequency` and `cloudBackupFrequency` (both in DAYS, 0=off), the daily `hour`/`minute`, the `localBackupEnabled`/`cloudBackupEnabled` convenience flags, and the `hasCloudBackupEntitlements`/`hasCloudRestoreEntitlements` cloud flags. The cloud-backup password is **never** returned (it is a secret, and the hub reads it back masked). A failed schedule read is reported under `hubBackupErrors` with `partial:true` rather than failing the listing. To CHANGE any of these fields, call hub_create_backup with a `schedule` object.
+The hub scopes (`hub_local` / `hub_cloud` / `hub` / `all`) also return the current automatic-backup `schedule` block: `localBackupFrequency` and `cloudBackupFrequency` (both in DAYS, 0=off), the daily `hour`/`minute`, the `localBackupEnabled`/`cloudBackupEnabled` convenience flags, and the `hasCloudBackupEntitlements`/`hasCloudRestoreEntitlements` cloud flags. The cloud-backup password is **never** returned (it is a secret; the endpoint returns it as null anyway). A failed schedule read is reported under `hubBackupErrors` with `partial:true` rather than failing the listing. To CHANGE any of these fields, call hub_create_backup with a `schedule` object.
 
 ### hub_get_backup
 
@@ -11451,7 +11451,7 @@ The returned `source` field says which one matched (the hub-variable namespace i
 
 - **Source:** the hub's own in-use registry, surfaced through the Settings → Hub Variables wizard. There is no pure-GET dependents document for variables (unlike a device's `/device/fullJson` `appsUsing`), so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only.
 - **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
-- **Empty vs unknown:** a variable the registry marks in-use but whose reveal lists no consumers returns `appsUsing:[]`, `count:0`. A rule-engine variable (no hub in-use registry) returns `appsUsing:[]` with a `dependentsNote`. If the reveal cannot be read or did not actually load, the response carries `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
+- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the reveal cannot be read, did not render, or renders in-use yet lists no consumers, the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
 - **Coverage caveat:** only apps that register Hub Variable use with the hub appear (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps — what the page shows in orange). Apps that never register their use, such as webCoRE pistons, are not covered; `coverageNote` says so.
 
 ### hub_create_variable
@@ -11492,7 +11492,7 @@ Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable)
 
 ### hub_list_variable_changes
 
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. It is not a complete history — an empty or partial result does NOT mean the variable never changed. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
 
 ### hub_create_connector
 

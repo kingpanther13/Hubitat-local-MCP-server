@@ -510,16 +510,6 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Recognizes a network change can disconnect the hub, so it warns the user, ensures a recent backup, and calls `hub_set_system_settings` with `network: {ipMode:"static", address:"192.168.1.50", netmask:"255.255.255.0", gateway:"192.168.1.1"}` and `confirm: true`. Without `confirm` the call is rejected by the destructive gate and nothing changes. On success `applied` includes `network.staticIp`. Other valid network shapes (each its own leg, applied in order, non-atomic): `{ipMode:"dhcp", useDNSFallover:true}` → `network.dhcp`; `{ethernetAutoneg:false}` → `network.ethernetAutoneg`; `{wifiSsid:"Net", wifiPassword:"…"}` → `network.wifi`. A static IP without address/netmask/gateway is rejected with `-32602` before any hub call.
 
-### T14i — read the hub network configuration (hub_get_info includeNetwork)
-
-```json
-{
-  "test_prompt": "What's my hub's current network configuration — is it on DHCP or a static IP, and what's the gateway and DNS?"
-}
-```
-
-**Expected**: Calls `hub_get_info` with `includeNetwork: true` and reads the `network` block. Reports `ipMode` (`dhcp`/`static`, or `unknown` when the hub does not report it), `activeDnsServers`, `staticGateway`/`staticSubnetMask`, Ethernet autoneg, and the joined `wifiSsid`. The current LAN address is NOT in the block — it is the top-level `localIP` field. Read-only — no `confirm`; `includeNetwork` is opt-in, so a plain `hub_get_info` omits the block. The Wi-Fi PASSWORD is never returned (SSID only). On firmware without the endpoint (or an unreadable/empty/non-JSON body) the `network` block is `success:false` with an `error` + `note`, not a throw. The write counterpart is `hub_set_system_settings(network:...)`.
-
 ### T14h — destructive network/cloud ops (⚠️ MANUAL ONLY — disconnects / disables cloud)
 
 > **DO NOT run on the e2e/CI test hub.** `target=network` disconnects a link; `target=cloud` `disable` severs Alexa/Google, cloud dashboards, cloud firmware updates, and subscription features (and the cloud MCP endpoint). Exercise only on a hub you can recover by hand.
@@ -565,6 +555,16 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```
 
 **Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `mesh_shared: true` (no `value` needed — mesh_shared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `mesh_shared: false` to stop. `mesh_shared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `mesh_shared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
+
+### T14l — read the hub network configuration (hub_get_info includeNetwork)
+
+```json
+{
+  "test_prompt": "Is my hub on DHCP or a static IP, what DNS servers is it using, and — if a static IP is saved — what are its saved IP, gateway, and subnet?"
+}
+```
+
+**Expected**: Calls `hub_get_info` with `includeNetwork: true` and reads the `network` block. Reports `ipMode` (`dhcp`/`static`, or `unknown` when the hub does not report it), `activeDnsServers`, and the SAVED static config `staticIp`/`staticGateway`/`staticSubnetMask` (reported whether or not static is the active mode; null on a DHCP-only hub — there is no current-gateway field on the endpoint), Ethernet autoneg, and the joined `wifiSsid`. The current LAN address is NOT in the block — it is the top-level `localIP` field. Read-only — no `confirm`; `includeNetwork` is opt-in, so a plain `hub_get_info` omits the block. The Wi-Fi PASSWORD is never returned (SSID only). On firmware without the endpoint (or an unreadable/empty/non-JSON body) the `network` block is `success:false` with an `error` + `note`, not a throw. The write counterpart is `hub_set_system_settings(network:...)`.
 
 ### T14l — link a device or variable a peer hub shares (hub_create_device / hub_create_variable mesh link)
 

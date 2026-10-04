@@ -3457,40 +3457,37 @@ class TestRunner:
 
     @test("devices")
     def test_get_device_zwave_manufacturer_name(self) -> None:
-        """A Z-Wave device's numeric data.manufacturer id resolves to a brand name in details mode.
+        """A numeric Z-Wave data.manufacturer id resolves to a brand name in details mode.
 
-        The raw id (e.g. "634") is preserved for chaining and manufacturerName ("Zooz") is added
-        beside it. Passes (does not skip) when no allowlisted device carries a resolvable numeric id --
-        a hub without such a device has nothing to assert, and SkipTest counts as a run failure.
+        Deterministic on any hub (the CI hub has no Z-Wave radio): a BAT_E2E_ virtual device gets
+        dataValues manufacturer="634" (0x027A = Zooz) PLUS a Z-Wave marker (inClusters) -- resolution
+        is gated on the device data carrying a Z-Wave marker, so a numeric id alone is not labelled.
+        The raw id is preserved for chaining and manufacturerName ("Zooz") is added beside it.
         """
-        listed = self.client.call_tool("hub_list_devices", {"format": "ids", "limit": 300})
-        ids = listed.get("deviceIds") or listed.get("ids") or []
-        assert isinstance(ids, list), f"hub_list_devices ids form did not return a list: {listed}"
-
-        resolved = None
-        for dev_id in ids[:60]:
+        label = f"{PREFIX}ZwaveMfr"
+        dev_id = self._create_virtual_switch_device(label)
+        assert dev_id, f"could not create virtual device {label}"
+        dni = self._last_created_dni
+        try:
+            # updateDataValue writes arbitrary keys onto device.data; the inClusters marker makes the
+            # resolver treat the record as Z-Wave (a bare numeric id with no marker stays unlabelled).
+            self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id,
+                "dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70"}})
             result = self.client.call_tool("hub_get_device", {
-                "deviceId": str(dev_id), "mode": "details", "sections": ["data"]})
-            data = (result.get("sections") or {}).get("data")
-            if not isinstance(data, dict) or "manufacturer" not in data:
-                continue
-            raw = str(data["manufacturer"])
-            if not raw.isdigit():
-                continue  # already a brand-name string or non-numeric -- nothing to resolve
-            if "manufacturerName" in data:
-                name = data["manufacturerName"]
-                assert isinstance(name, str) and name, \
-                    f"manufacturerName must be a non-empty brand string: {data}"
-                assert data["manufacturer"] == raw, \
-                    f"raw manufacturer id must be preserved beside manufacturerName: {data}"
-                resolved = (raw, name)
-                break
-
-        if resolved is None:
-            # No allowlisted device carries a resolvable numeric Z-Wave manufacturer id on this hub --
-            # nothing to assert, so this is a pass, not a skip (a skip is counted as a run failure).
-            print("    [COVERAGE GAP] no allowlisted device carries a resolvable numeric Z-Wave "
-                  "manufacturer id -- manufacturerName resolution not exercised on this hub")
+                "deviceId": dev_id, "mode": "details", "sections": ["data"]})
+            data = (result.get("sections") or {}).get("data") or {}
+            assert str(data.get("manufacturer")) == "634", \
+                f"raw manufacturer id must be preserved beside manufacturerName: {data}"
+            assert data.get("manufacturerName") == "Zooz", \
+                f"manufacturer 634 (0x027A) must resolve to Zooz: {data}"
+        finally:
+            if dni:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": dni, "confirm": True})
+                except (McpError, McpToolError):
+                    pass
 
     @test("devices")
     def test_device_configuration_matrix(self) -> None:
@@ -11693,6 +11690,43 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("installed_app_reads")
+    def test_get_app_config_mode_inputs(self) -> None:
+        # modeInputs surfaces each type='mode' input on a config page with its CONFIGURED list
+        # (issue #431 item 3; the review-2 fix reads `modes` from the page JSON settings[name], not
+        # the always-null defaultValue). A Notifier carries a `modes` type='mode' RESTRICT input on
+        # its moreOptions sub-page; set it, then read it back and assert the list is the one written.
+        modes = self.client.call_tool("hub_list_modes").get("modes") or []
+        assert len(modes) >= 1, "hub_list_modes returned no modes -- cannot set a mode restriction"
+        want = [m["name"] for m in modes[:2]]
+
+        label = f"{PREFIX}NotifierModes"
+        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appType": "notifier", "name": label, "confirm": True}})
+        app_id = (created or {}).get("appId") or self._find_app_id_by_label(label)
+        assert app_id, f"notifier create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        try:
+            # Navigate to the moreOptions sub-page and write the type='mode' `modes` restriction.
+            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": app_id,
+                         "walkStep": {"page": "moreOptions", "operation": "write", "write": {"modes": want}},
+                         "confirm": True}})
+            # Read the sub-page back; modeInputs[].modes must equal the configured list (not null).
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "moreOptions"}})
+            mode_inputs = cfg.get("modeInputs") or []
+            entry = next((mi for mi in mode_inputs if mi.get("name") == "modes"), None)
+            assert entry is not None, \
+                f"moreOptions did not surface a `modes` type='mode' input in modeInputs: {cfg.get('modeInputs')}"
+            assert sorted(entry.get("modes") or []) == sorted(want), \
+                f"modeInputs modes must equal the configured list {want}, got: {entry.get('modes')}"
+            assert cfg.get("modeInputsNote"), f"modeInputs present without a modeInputsNote: {cfg}"
+        finally:
+            self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
+
+    @test("installed_app_reads")
     def test_list_apps_types_menu_and_builtin_flags(self) -> None:
         # scope='types' surfaces, for every installed app type, the built-in-vs-community
         # flag (issue #431 item 6) and the admin-UI menu tab it declares (item 5). The
@@ -12130,7 +12164,9 @@ class TestRunner:
             assert "webCoRE" in (dep.get("coverageNote") or ""), \
                 f"coverageNote missing the registered-apps-only caveat: {dep}"
 
-            # An in-use-registered but unreferenced variable returns an empty list, not an error.
+            # A variable with no referencing apps (not in the in-use registry) returns an empty list,
+            # not an error. (An empty appsUsing means NOT in use -- never "in use but unreadable", which
+            # is reported as dependentsError instead.)
             empty = self.client.call_tool("hub_read_variables", {
                 "tool": "hub_get_variable", "args": {"name": unused_var, "includeDependents": True}})
             assert empty.get("appsUsing") == [] and empty.get("count") == 0, \
@@ -12471,7 +12507,7 @@ class TestRunner:
         # The network config read is folded into hub_get_info as the opt-in includeNetwork flag
         # (issue #431 item 3). Reads /hub2/networkConfiguration into a `network` block. MUST NEVER
         # return the Wi-Fi password -- only the SSID. The current LAN address is NOT in the block
-        # (hub_get_info reports it as the top-level localIP), so the block drops currentLanAddress.
+        # (hub_get_info reports it as the top-level localIP), so the block carries no currentLanAddress.
         info = self.client.call_tool("hub_get_info", {"includeNetwork": True})
         assert isinstance(info, dict), f"hub_get_info returned {type(info).__name__}"
         net = info.get("network")
@@ -12486,9 +12522,9 @@ class TestRunner:
         for key in ("staticGateway", "staticSubnetMask", "ethernetAutoneg", "wifiSsid",
                     "hasEthernet", "hasWiFi", "currentWifiAddress"):
             assert key in net, f"network block missing {key}: {sorted(net.keys())}"
-        # The folded block drops currentLanAddress (deduped against the top-level localIP).
+        # The block never carries a currentLanAddress field (the LAN address is the top-level localIP).
         assert "currentLanAddress" not in net, \
-            f"network block must not duplicate the LAN address (it is top-level localIP): {sorted(net.keys())}"
+            f"network block must not carry the LAN address (it is the top-level localIP): {sorted(net.keys())}"
         # SECURITY: no secret-shaped key, and no secret value, may ever appear.
         for key in net:
             low = key.lower()

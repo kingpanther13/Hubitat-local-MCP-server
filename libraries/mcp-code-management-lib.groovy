@@ -13,8 +13,23 @@ def toolListHubApps(args) {
         // (the payload the Apps admin page itself loads) via _appTypeEnrichment().
         def responseText = hubInternalGet("/hub2/userAppTypes")
         if (responseText) {
+            def parsed = null
+            boolean notJson = false
+            // Narrow the catch to the parse itself -- a failure in enrichment/projection below is a
+            // real bug and must not masquerade as "Response was not JSON".
             try {
-                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                parsed = new groovy.json.JsonSlurper().parseText(responseText)
+            } catch (Exception parseErr) {
+                // Response was not JSON - return what we can. apps=[] keeps the cursor
+                // block + downstream shape consistent so a paginating caller doesn't
+                // silently lose the pagination contract on a firmware shape drift.
+                result.apps = []
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+                notJson = true
+            }
+            if (!notJson) {
                 if (parsed instanceof List) {
                     def enrich = _appTypeEnrichment()
                     def types = []
@@ -33,15 +48,8 @@ def toolListHubApps(args) {
                     result.apps = parsed
                     result.count = 0
                     result.source = "hub_api"
+                    result.note = "/hub2/userAppTypes returned an unexpected (non-array) shape; passing it through unprojected. Hubitat firmware may have changed the endpoint format."
                 }
-            } catch (Exception parseErr) {
-                // Response was not JSON - return what we can. apps=[] keeps the cursor
-                // block + downstream shape consistent so a paginating caller doesn't
-                // silently lose the pagination contract on a firmware shape drift.
-                result.apps = []
-                result.rawResponse = responseText?.take(2000)
-                result.source = "hub_api_raw"
-                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
             }
         } else {
             result.apps = []
@@ -84,14 +92,15 @@ def _appTypeEnrichment() {
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
         if (parsed instanceof Map && (parsed.userAppTypes != null || parsed.systemAppTypes != null)) {
             def catalog = []
-            def missing = []
-            // Enrich from whichever list is valid; name any field that is absent or not a list so a
-            // half-populated /hub2/appsList response doesn't silently drop that part of the catalog.
+            def notes = []
+            // Enrich from whichever list is valid. appsList supplies only the `menu` tab and the
+            // built-in catalog; community types themselves come from /hub2/userAppTypes, so a missing
+            // appsList.userAppTypes only nulls their menu -- it does NOT drop them from the listing.
             if (parsed.userAppTypes instanceof List) catalog += parsed.userAppTypes
-            else missing << "userAppTypes (community/user types)"
+            else notes << "community app types are still listed (from the code registry) but without their menu tab"
             if (parsed.systemAppTypes instanceof List) catalog += parsed.systemAppTypes
-            else missing << "systemAppTypes (built-in types)"
-            if (missing) out.note = "/hub2/appsList did not return a usable ${missing.join(' and ')} list this call; that portion of the app-type catalog (and its menu tab) is omitted."
+            else notes << "built-in (system) app types are omitted this call"
+            if (notes) out.note = "/hub2/appsList did not return a usable list this call; " + notes.join("; ") + "."
             catalog.each { e ->
                 if (e instanceof Map) {
                     if (e.id != null) out.menuById[e.id.toString()] = e.menu
@@ -366,7 +375,8 @@ private String stripAppConfigHtml(value) {
     }
     // Decode the common HTML entities Hubitat escapes user-typed names with: a
     // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
-    // Decode &amp; LAST so a single-encoded "&lt;" resolves correctly.
+    // Decode &amp; LAST so a double-encoded entity doesn't collapse (e.g. "&amp;lt;"
+    // must stay "&lt;", not become "<").
     if (s.contains("&")) {
         s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
              .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
@@ -637,7 +647,13 @@ def toolGetAppConfig(args) {
                 if (input.containsKey("value")) input.value = redactedPw
             }
             if (i.type == "mode") {
-                modeInputs << [name: input.name, modes: input.get("value"), section: section.title]
+                // A type="mode" input carries no defaultValue; its configured value lives in the page
+                // JSON settings[name] as a comma-joined string (e.g. "Day,Night").
+                def rawModes = (parsed.settings instanceof Map) ? parsed.settings[i.name] : null
+                def modes = null
+                if (rawModes instanceof List) modes = rawModes.collect { it?.toString() }.findAll { it }
+                else if (rawModes != null) modes = rawModes.toString().split(",").collect { it.trim() }.findAll { it }
+                modeInputs << [name: input.name, modes: modes, section: section.title]
             }
             section.inputs << input
         }
@@ -698,7 +714,7 @@ def toolGetAppConfig(args) {
     // gate via its own settings model or handler logic). Full caveats in the served guide.
     if (modeInputs) {
         result.modeInputs = modeInputs
-        result.modeInputsNote = "Framework-standard mode input(s) (type='mode') on this page. Semantics are app-specific -- a 'only run during these modes' restriction OR per-mode overrides -- read the input titles/settings to interpret; `modes` is the configured list. Per-page only; absence does NOT mean the app ignores mode: some built-ins gate via mode-ID settings, not a type='mode' input (e.g. Room Lights, Thermostat Scheduler). See hub_get_tool_guide(section='builtin_app_tools_apps') for the per-built-in key reference."
+        result.modeInputsNote = "Framework-standard mode input(s) (type='mode') on this page. Semantics are app-specific -- a 'only run during these modes' restriction OR per-mode overrides -- read the input titles/settings to interpret; `modes` is the configured list. Per-page only; absence does NOT mean the app ignores mode: some built-ins gate via mode-ID settings, not a type='mode' input (e.g. Room Lights). See hub_get_tool_guide(section='builtin_app_tools_apps') for the per-built-in key reference."
     }
     // Sub-pages this page links to. Their inputs are not in `sections`; read one with
     // pageName=<page>, or drive it with hub_set_native_app walkStep (navigate, write, done).

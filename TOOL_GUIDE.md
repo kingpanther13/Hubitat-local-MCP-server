@@ -641,7 +641,7 @@ Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-
 
 `scope=source` (default) lists auto-created code backups, each with a `backupKey`. `scope=hub_local` / `hub_cloud` / `hub` / `all` return whole-hub DB backups under `hubLocalBackups` / `hubCloudBackups`. A local backup's `name` and a cloud backup's `path` feed hub_restore_backup and hub_delete_backup.
 
-The hub scopes (`hub_local` / `hub_cloud` / `hub` / `all`) also return the current automatic-backup `schedule` block: `localBackupFrequency` and `cloudBackupFrequency` (both in DAYS, 0=off), the daily `hour`/`minute`, the `localBackupEnabled`/`cloudBackupEnabled` convenience flags, and the `hasCloudBackupEntitlements`/`hasCloudRestoreEntitlements` cloud flags. The cloud-backup password is **never** returned (it is a secret, and the hub reads it back masked). A failed schedule read is reported under `hubBackupErrors` with `partial:true` rather than failing the listing. To CHANGE any of these fields, call hub_create_backup with a `schedule` object.
+The hub scopes (`hub_local` / `hub_cloud` / `hub` / `all`) also return the current automatic-backup `schedule` block: `localBackupFrequency` and `cloudBackupFrequency` (both in DAYS, 0=off), the daily `hour`/`minute`, the `localBackupEnabled`/`cloudBackupEnabled` convenience flags, and the `hasCloudBackupEntitlements`/`hasCloudRestoreEntitlements` cloud flags. The cloud-backup password is **never** returned (it is a secret; the endpoint returns it as null anyway). A failed schedule read is reported under `hubBackupErrors` with `partial:true` rather than failing the listing. To CHANGE any of these fields, call hub_create_backup with a `schedule` object.
 
 ### hub_get_backup
 
@@ -1649,7 +1649,7 @@ The returned `source` field says which one matched (the hub-variable namespace i
 
 - **Source:** the hub's own in-use registry, surfaced through the Settings → Hub Variables wizard. There is no pure-GET dependents document for variables (unlike a device's `/device/fullJson` `appsUsing`), so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only.
 - **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
-- **Empty vs unknown:** a variable the registry marks in-use but whose reveal lists no consumers returns `appsUsing:[]`, `count:0`. A rule-engine variable (no hub in-use registry) returns `appsUsing:[]` with a `dependentsNote`. If the reveal cannot be read or did not actually load, the response carries `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
+- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the reveal cannot be read, did not render, or renders in-use yet lists no consumers, the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
 - **Coverage caveat:** only apps that register Hub Variable use with the hub appear (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps — what the page shows in orange). Apps that never register their use, such as webCoRE pistons, are not covered; `coverageNote` says so.
 
 ### hub_create_variable
@@ -1690,7 +1690,7 @@ Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable)
 
 ### hub_list_variable_changes
 
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. It is not a complete history — an empty or partial result does NOT mean the variable never changed. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
 
 ### hub_create_connector
 

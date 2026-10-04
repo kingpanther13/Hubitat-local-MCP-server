@@ -1623,7 +1623,9 @@ private Map getZwaveManufacturers() {
 
 // Resolve a Z-Wave manufacturer id to a brand name, or null when it is unknown or not a bare
 // numeric id (an already-resolved brand string is left for the caller to keep untouched).
-// Handles the Hubitat decimal wire form ("634") plus hex ("0x027A" / "027A").
+// Handles the Hubitat decimal wire form ("634") and "0x"-prefixed hex ("0x027A"). A bare,
+// unprefixed string is read as hex ONLY when it contains an a-f digit ("027A"); an all-digit
+// string ("0063") is read as decimal, not hex.
 private String _zwaveManufacturerName(id) {
     if (id == null) return null
     String s = id.toString().trim()
@@ -1642,9 +1644,12 @@ private String _zwaveManufacturerName(id) {
 
 // Add a resolved manufacturerName beside a bare numeric manufacturer id in a device data map,
 // preserving the raw value for chaining. Non-maps, missing/name-form manufacturer values, and
-// unknown ids pass through unchanged; an existing manufacturerName is never overwritten.
+// unknown ids pass through unchanged; an existing manufacturerName is never overwritten. The id
+// table is Z-Wave Alliance, so resolve only when the data carries a Z-Wave marker -- otherwise a
+// non-Z-Wave device whose data happens to hold a numeric 'manufacturer' (e.g. "0") is mislabelled.
 private _withResolvedManufacturer(value) {
     if (!(value instanceof Map) || !value.containsKey('manufacturer') || value.containsKey('manufacturerName')) return value
+    if (!value.containsKey('zwNodeInfo') && !value.containsKey('inClusters')) return value
     String name = _zwaveManufacturerName(value.get('manufacturer'))
     if (name == null) return value
     def copy = [:]

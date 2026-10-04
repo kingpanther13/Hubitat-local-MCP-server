@@ -369,7 +369,7 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         result.healthAlerts == null
     }
 
-    // -------- includeNetwork: the folded hub_get_network_settings read --------
+    // -------- includeNetwork: the folded network-config read --------
     // The network-config read (GET /hub2/networkConfiguration) is folded into hub_get_info as the opt-in
     // includeNetwork flag. Field names RE'd from resources/hub2-source/vue-hub2.min.js. The planted
     // psk/wifiPassword keys below are NOT sent by the real endpoint; they prove the allowlist drops them.

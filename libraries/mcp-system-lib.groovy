@@ -268,9 +268,8 @@ def toolGetHubInfo(args = null) {
     }
 
     // Opt-in hub network configuration (the read counterpart of hub_set_system_settings(network:...)).
-    // Off by default: it adds a /hub2/networkConfiguration round-trip. The block NEVER carries the
-    // Wi-Fi password (SSID only) and omits the current LAN address -- hub_get_info already reports it
-    // as localIP (PII-gated), so this block does not duplicate it.
+    // Off by default: it adds a /hub2/networkConfiguration round-trip. The block omits the current LAN
+    // address -- hub_get_info already reports it as localIP (PII-gated), so this block does not duplicate it.
     if (args?.includeNetwork == true) {
         info.network = _readHubNetworkSettings()
     }
@@ -1097,6 +1096,19 @@ private Map _readHubNetworkSettings() {
                 error: "Unexpected /hub2/networkConfiguration response; it parsed as JSON but not as an object.",
                 note: "The endpoint returned an unrecognized shape. See hub_get_tool_guide(section='hub_admin_write_system')."]
     }
+    // An empty or error object ({} or {success:false,...}) would otherwise project to success:true with
+    // every field null and dnsList:[] -- indistinguishable from a real "no DNS". Require at least one
+    // recognized network key before trusting the shape.
+    def knownKeys = ["usingStaticIP", "lanAddr", "wlanAddr", "dnsServers", "staticIP", "staticGateway",
+                     "staticSubnetMask", "staticNameServers", "dhcpNameServers", "useDNSFallover",
+                     "lanAutoneg", "hasEthernet", "hasWiFi", "wifiNetwork", "wifiDriversInstalled",
+                     "restartBonjourOnSchedule", "hubVersion"]
+    if (!knownKeys.any { parsed.containsKey(it) }) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration had none of the expected network keys")
+        return [success: false,
+                error: "The /hub2/networkConfiguration response carried none of the expected network fields.",
+                note: "The hub returned an empty or unexpected object (transient error or a changed response shape); retry. See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
 
     // Normalize a DNS list the hub may send as an array OR a comma/space-joined string into a clean list.
     def dnsList = { v ->
@@ -1124,7 +1136,7 @@ private Map _readHubNetworkSettings() {
         // DHCP config.
         dhcpNameServers: dnsList(parsed.dhcpNameServers),
         useDNSFallover: parsed.useDNSFallover,
-        // Ethernet / WiFi (SSID only -- the password is never returned by the endpoint or this helper).
+        // Ethernet / WiFi (SSID only).
         ethernetAutoneg: parsed.lanAutoneg,
         hasEthernet: parsed.hasEthernet,
         hasWiFi: parsed.hasWiFi,
@@ -1406,7 +1418,7 @@ def _getAllToolDefinitions_partSystem() {
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate. The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.", default: false],
-                    includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, gateway, subnet, DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
+                    includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
                 ]
             ]
         ],

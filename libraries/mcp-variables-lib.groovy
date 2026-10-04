@@ -245,23 +245,18 @@ def toolGetVariable(args) {
 
     if (found == null) throw new IllegalArgumentException("Variable not found: ${name}")
 
-    if (includeDependents) _attachHubVarDependents(found, name)
+    // The in-use registry is hub-variable-only, so dependents apply only when the lookup resolved to a
+    // hub variable -- a rule-engine variable gets no dependents fields.
+    if (includeDependents && found.source == "hub") _attachHubVarDependents(found, name)
     return found
 }
 
 // Opt-in: attach the apps that reference this HUB variable (its in-use registry) to a hub_get_variable
 // response. Opt-in because it CLICKS the Settings > Hub Variables "Show In Use Apps" wizard reveal (a
 // transient UI toggle, dismissed afterward). Reports every failure IN the response -- it must never
-// fail the whole hub_get_variable call. The in-use registry is hub-variable-only, so a rule-engine
-// variable gets an empty list with a note instead.
+// fail the whole hub_get_variable call.
 private void _attachHubVarDependents(Map found, String name) {
     found.coverageNote = _hubVarDependentsCoverageNote()
-    if (found.source != "hub") {
-        found.appsUsing = []
-        found.count = 0
-        found.dependentsNote = "Dependent-app tracking applies to hub variables only; '${name}' is a rule-engine variable."
-        return
-    }
     Integer hubVarsAppId = null
     try { hubVarsAppId = _findHubVariablesAppId() }
     catch (Exception e) {
@@ -269,14 +264,14 @@ private void _attachHubVarDependents(Map found, String name) {
         found.dependentsNote = "Check that Hub Variables is enabled (Settings > Hub Variables), then retry. See hub_get_tool_guide(section='variables')."
         return
     }
-    def apps = _hubVarInUseApps(hubVarsAppId, name)
-    if (apps == null) {
-        found.dependentsError = "Could not read the hub's in-use registry for Hub Variable '${name}'."
-        found.dependentsNote = "The Settings > Hub Variables page was unreadable or did not list the variable; verify it exists (hub_list_variables) and retry. See hub_get_tool_guide(section='variables')."
+    def res = _hubVarInUseApps(hubVarsAppId, name)
+    if (res.error) {
+        found.dependentsError = res.error
+        found.dependentsNote = res.note
         return
     }
-    found.appsUsing = apps
-    found.count = apps.size()
+    found.appsUsing = res.apps
+    found.count = res.apps.size()
 }
 
 // Hub variable name validation. Hubitat's UI rejects ' " \ ~ [ : ] < > and
@@ -1343,62 +1338,92 @@ String _hubVarDependentsCoverageNote() {
     return "Lists apps that register Hub Variable use with the hub -- what Settings > Hub Variables shows in orange (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps). Apps that do not register their use, such as webCoRE pistons, are not covered."
 }
 
-// Apps that reference a hub variable, as [[id, label], ...]. Null when the page cannot be
-// read (unknown, not proof of "no consumers"); [] when the variable is registered but has no
-// listed consumers. The wizard renders the consuming apps only after the per-variable "Show
-// In Use Apps" reveal is clicked, so: read the page (the reveal link appears only for an
-// in-use variable), click the reveal, re-fetch, then parse the revealed <a> anchors. The
-// reveal is a transient wizard-UI toggle (like _primeHubVarsWizard), not a data mutation --
-// dismissed with a best-effort cancelDel click so the page returns to its plain table view.
-List _hubVarInUseApps(Integer hubVarsAppId, String varName) {
-    if (hubVarsAppId == null || !varName) return null
+// Apps that reference a hub variable. Returns a Map: [apps: [[id,label],...]] on success (apps is []
+// only when the variable is registered but has no listed consumers), or [error, note] when the registry
+// could not be read or trusted (UNKNOWN -- never proof of "no consumers"). The wizard renders the
+// consuming apps only after the per-variable "Show In Use Apps" reveal is clicked, so: read the page
+// (the reveal link appears only for an in-use variable), click the reveal, re-fetch, then parse the
+// revealed <a> anchors. The reveal is a transient wizard-UI toggle (like _primeHubVarsWizard), not a
+// data mutation -- dismissed with a best-effort cancelDel click so the page returns to its plain table.
+Map _hubVarInUseApps(Integer hubVarsAppId, String varName) {
+    if (hubVarsAppId == null || !varName) {
+        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}'.",
+                note: "The Settings > Hub Variables app could not be located; verify it is enabled and retry. See hub_get_tool_guide(section='variables')."]
+    }
     Boolean inUse = _hubVarPlatformInUse(hubVarsAppId, varName)
-    if (inUse == null) return null   // page unreadable / var not listed -> unknown
-    if (!inUse) return []            // registered but no consumers
+    if (inUse == null) {
+        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}'.",
+                note: "The Settings > Hub Variables page was unreadable or did not list the variable; verify it exists (hub_list_variables) and retry. See hub_get_tool_guide(section='variables')."]
+    }
+    if (!inUse) return [apps: []]   // registered but no consumers
+
+    // The reveal panel is a single shared wizard toggle, so a parallel includeDependents call for a
+    // different variable can race its panel into our re-fetch. Only trust a panel whose marker names
+    // THIS variable (match raw and escaped forms, like _hubVarPlatformInUse). A panel naming another
+    // variable -> not our panel -> keep polling -> fall through to UNKNOWN.
+    def escaped = varName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
+    def markerForms = [varName, escaped].unique().collect { "<b>${it}</b> is in use by these apps".toString() }
 
     def apps = []
-    boolean revealLoaded = false
+    boolean panelForThisVar = false
+    boolean clickFailed = false
     try {
         _primeHubVarsWizard(hubVarsAppId, "hub_get_variable includeDependents reveal")
         _rmClickAppButton(hubVarsAppId, varName, "inUse", "hubVar")
-        // The reveal click lands asynchronously (same behaviour _hubVarsClickAndWait handles): a single
-        // re-fetch right after the click can still return the unrevealed table, which would read as
-        // "no dependents" for a variable that has some. Poll the re-fetch with a bounded retry until
-        // the consumer anchors OR the revealed-panel marker appear; only then is the (possibly empty)
-        // list trustworthy. Still-unconfirmed after the budget -> null (UNKNOWN), not "no dependents".
-        for (int poll = 0; poll < 8 && !revealLoaded; poll++) {
+        // The reveal click lands asynchronously: a single re-fetch right after the click can still
+        // return the unrevealed table. Poll the re-fetch with a bounded retry until this variable's
+        // panel marker appears; only then are the parsed anchors trustworthy.
+        for (int poll = 0; poll < 8 && !panelForThisVar; poll++) {
             if (poll > 0) { try { pauseExecution(250) } catch (Exception ignored) { } }
-            apps = []
             // Decode the JSON page before scanning. The hub embeds the rendered HTML inside the
             // configPage JSON, so JSON string escapes (\", \n, ...) would otherwise leak into the
             // captured labels. Parse first, then regex-scan the real HTML (older firmware / a raw-HTML
             // body falls back to the raw text).
             def html = _hubVarRevealHtml(hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString())
             if (!html) continue
-            // Each consumer renders as <a href='/installedapp/configure/<appId>' target='_blank'
-            // title='Open <label>'><label></a> (captured live off firmware 2.5.1.183). The variable
-            // table itself carries no /installedapp/configure/<id> hrefs, so a whole-page scan matches
-            // only the revealed list.
-            def m = html =~ /<a\s+href='\/installedapp\/configure\/(\d+)'[^>]*>(.*?)<\/a>/
-            while (m.find()) {
-                apps << [id: m.group(1), label: _decodeHubVarAppLabel(m.group(2))]
-            }
-            // The revealed panel announces the consumers ("... is in use by these apps"). Zero matched
-            // anchors with no such marker means the reveal has not rendered yet -- keep polling, then
-            // fall through to UNKNOWN. Mirrors the marker-substring pattern _hubVarPlatformInUse uses.
-            revealLoaded = !apps.isEmpty() || html.contains("is in use by these apps")
+            if (!markerForms.any { html.contains(it) }) continue   // not our panel yet (or another var's)
+            panelForThisVar = true
+            apps = _parseHubVarConsumerAnchors(html)
         }
     } catch (Exception e) {
-        // A failed reveal click or re-fetch is an unreadable-registry condition, not a caller
-        // error -- return null so the fold reports dependentsError with recovery guidance.
-        logDebug("hub_get_variable includeDependents: reveal/parse threw ${e.class.simpleName}: ${e.message}")
+        clickFailed = true
+        mcpLog("warn", "variables", "hub_get_variable includeDependents: reveal/parse threw ${e.class.simpleName}: ${e.message}")
     } finally {
         try { _rmClickAppButton(hubVarsAppId, "cancelDel", null, "hubVar") }
         catch (Exception e) {
-            logDebug("hub_get_variable includeDependents: reveal dismiss (cancelDel) failed: ${e.class.simpleName}: ${e.message}")
+            mcpLog("warn", "variables", "hub_get_variable includeDependents: reveal dismiss (cancelDel) failed: ${e.class.simpleName}: ${e.message}")
         }
     }
-    return revealLoaded ? apps : null
+
+    if (clickFailed) {
+        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the reveal click or page re-read failed).",
+                note: "Retry; if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
+    }
+    if (!panelForThisVar) {
+        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the reveal panel did not render).",
+                note: "Retry (the reveal lands asynchronously); if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
+    }
+    if (apps.isEmpty()) {
+        // The registry marked the variable in use and its panel rendered, yet no consumer anchors
+        // parsed -- a contradiction, so report UNKNOWN rather than a false "no consumers".
+        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (marked in use, but no consumer apps parsed from the reveal).",
+                note: "Read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
+    }
+    return [apps: apps]
+}
+
+// Parse the revealed consumer anchors into [[id, label], ...]. The hub renders each as
+// <a href='/installedapp/configure/<id>' target='_blank' title='Open <label>'><label></a> with the
+// label RAW (not entity-escaped), so < > & ' in a label appear literally. The tag-bearing anchor text
+// is unparseable (a label's own < > read as tags), so read the id from the href and the label from the
+// title attribute, which is delimited by '> (the quote that closes title plus the tag's own >).
+private List _parseHubVarConsumerAnchors(String html) {
+    def apps = []
+    def m = html =~ /<a\s+href='\/installedapp\/configure\/(\d+)'[^>]*?title='Open (.*?)'>.*?<\/a>/
+    while (m.find()) {
+        apps << [id: m.group(1), label: m.group(2)?.trim()]
+    }
+    return apps
 }
 
 // Extract the rendered HTML from the Hub Variables configPage JSON so label capture scans true HTML
@@ -1419,21 +1444,6 @@ private String _hubVarRevealHtml(String raw) {
         fromBody + fromParagraphs
     }
     return chunks ? chunks.join("\n") : raw
-}
-
-// Strip any residual tags and decode the HTML entities Hubitat escapes an app label with
-// (mirror of the escaped-name logic near _hubVarPlatformInUse, reversed). &amp; is decoded
-// LAST so a single-encoded "&lt;" resolves correctly.
-private String _decodeHubVarAppLabel(String s) {
-    if (s == null) return null
-    String out = s
-    if (out.contains("<")) out = out.replaceAll(/<[^>]+>/, "")
-    if (out.contains("&")) {
-        out = out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
-                 .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
-                 .replace("&amp;", "&")
-    }
-    return out.trim()
 }
 
 def _getAllToolDefinitions_partVariables() {

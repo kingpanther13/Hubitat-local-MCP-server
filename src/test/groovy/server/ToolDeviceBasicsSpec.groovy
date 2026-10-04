@@ -1978,7 +1978,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     def "_withResolvedManufacturer adds manufacturerName beside a numeric id and keeps the raw"() {
         when:
-        def out = script._withResolvedManufacturer([manufacturer: '634', deviceModel: 'ZEN04'])
+        def out = script._withResolvedManufacturer([manufacturer: '634', zwNodeInfo: 'x', deviceModel: 'ZEN04'])
 
         then:
         out.manufacturer == '634'          // raw preserved for chaining
@@ -1988,8 +1988,15 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     def "_withResolvedManufacturer leaves an unknown numeric id without a name"() {
         expect:
-        def out = script._withResolvedManufacturer([manufacturer: '9999'])
+        def out = script._withResolvedManufacturer([manufacturer: '9999', zwNodeInfo: 'x'])
         out.manufacturer == '9999'
+        !out.containsKey('manufacturerName')
+    }
+
+    def "_withResolvedManufacturer does not label a non-Z-Wave device (no zwNodeInfo/inClusters)"() {
+        expect: "a numeric 'manufacturer' on data lacking any Z-Wave marker is NOT read as a Z-Wave id"
+        def out = script._withResolvedManufacturer([manufacturer: '0', endpointId: '01'])
+        out.manufacturer == '0'
         !out.containsKey('manufacturerName')
     }
 
@@ -2018,7 +2025,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, deviceNetworkId: 'mcp-10')
         childDevicesList << device
         def model = [device: [id: 10, name: 'Zooz Plug', label: 'Zooz Plug',
-            data: [manufacturer: '634', deviceModel: 'ZEN04', firmwareVersion: '2.30']]]
+            data: [manufacturer: '634', zwNodeInfo: '53-9C-...', deviceModel: 'ZEN04', firmwareVersion: '2.30']]]
         hubGet.register('/device/fullJson/10') { JsonOutput.toJson(model) }
 
         when:
@@ -2035,7 +2042,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, deviceNetworkId: 'mcp-10')
         childDevicesList << device
         def model = [device: [id: 10, name: 'Odd Device', label: 'Odd Device',
-            data: [manufacturer: '9999']]]
+            data: [manufacturer: '9999', zwNodeInfo: '53-9C-...']]]
         hubGet.register('/device/fullJson/10') { JsonOutput.toJson(model) }
 
         when:

@@ -365,7 +365,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. |
 | `hub_list_captured_states` | List saved device state snapshots |
 
-Monitoring tools are gated by the Read master (ON by default). The network config read folds into `hub_get_info` (`includeNetwork=true`); the automatic-backup schedule folds into `hub_list_backups` (hub scopes).
+Monitoring tools are gated by the Read master (ON by default). The network config read is available through `hub_get_info` (`includeNetwork=true`); the automatic-backup schedule is included in `hub_list_backups` (hub scopes).
 
 </details>
 

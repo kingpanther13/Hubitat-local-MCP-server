@@ -405,19 +405,22 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
 
-        and: 'a page with a type="mode" input (e.g. a per-mode override section)'
+        and: 'a page with a type="mode" input (the configured value lives in settings[name], comma-joined)'
         hubGet.register('/installedapp/configure/json/35') { params ->
-            makeAppConfigJson([configPage: [name: 'ModeOptions', title: 'Mode Options', install: false, refreshInterval: null, sections: [
-                [title: 'Override 1', input: [
-                    [name: 'mode1Override', type: 'mode', title: 'Mode', description: null, multiple: false, required: false, defaultValue: ['Away', 'Night'], options: ['Away', 'Day', 'Night']]
-                ], body: []]
-            ]]])
+            makeAppConfigJson([
+                settings: [mode1Override: 'Away,Night'],
+                configPage: [name: 'ModeOptions', title: 'Mode Options', install: false, refreshInterval: null, sections: [
+                    [title: 'Override 1', input: [
+                        [name: 'mode1Override', type: 'mode', title: 'Mode', description: null, multiple: false, required: false, options: ['Away', 'Day', 'Night']]
+                    ], body: []]
+                ]]
+            ])
         }
 
         when:
         def result = script.toolGetAppConfig([appId: 35])
 
-        then: 'the mode input is surfaced with its configured modes + the app-specific-semantics caveat'
+        then: 'the mode input is surfaced with its configured modes (read from settings[name]) + the caveat'
         result.success == true
         result.modeInputs.size() == 1
         result.modeInputs[0].name == 'mode1Override'
