@@ -430,12 +430,13 @@ def test_validation_log_expectation_uses_reactive_gateway_tool_and_exact_reason(
     }
     error = {
         "code": -32602,
-        "message": "Invalid params: Mandatory best-practice acknowledgment required",
+        "message": "Invalid params: Mandatory best-practice acknowledgment is enabled for write "
+                   "tools. Read hub_get_tool_guide(section='best_practice_reference') first.",
     }
 
     assert et._validation_log_expectation("tools/call", params, error) == (
-        "Validation error in hub_create_variable: "
-        "Mandatory best-practice acknowledgment required"
+        "Validation error in hub_create_variable: Mandatory best-practice acknowledgment is "
+        "enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') first."
     )
 
 

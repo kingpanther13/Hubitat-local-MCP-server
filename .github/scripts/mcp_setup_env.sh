@@ -89,12 +89,24 @@ echo "Stamping a backup to satisfy the destructive-confirm 24h gate before enabl
 # pins it off, but only AFTER this step -- so a run that died between the test that re-enables the
 # gate and its restore leaves it on, and every backup here is refused. A refusal is -32602 on
 # HTTP 200, which surfaced as a bare `jq: null (null)` and read as "the hub can't back up".
-BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"mock":true,"bestPracticeKey":"bps-ack-299"}}}' hub_create_backup 2>/dev/null || true)"
+# The key belongs to the backup guide section and rotates hourly, so read it live from the guide.
+GUIDE_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_get_tool_guide","arguments":{"section":"backup"}}}' hub_get_tool_guide 2>/dev/null || true)"
+BPS_KEY="$(printf '%s' "$GUIDE_RESP" | jq -r '.result.content[0].text | fromjson | .content // empty' 2>/dev/null \
+  | sed -n -E '/^Acknowledgment key: *I-HAVE-READ-THE-GUIDE-[A-Za-z0-9_-]+ *$/{s/^Acknowledgment key: *//;s/ *$//;p;q;}' || true)"
+if [ -z "$BPS_KEY" ]; then
+  echo "::error::No acknowledgment key in hub_get_tool_guide(section='backup'); hub_create_backup needs it while the best-practice gate is on. Response: ${GUIDE_RESP:0:300}"
+  exit 1
+fi
+backup_rpc() {
+  jq -nc --arg key "$BPS_KEY" --argjson mock "$1" \
+    '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"hub_create_backup",arguments:({confirm:true,bestPracticeKey:$key} + (if $mock then {mock:true} else {} end))}}'
+}
+BACKUP_RESP="$(mcp_call "$(backup_rpc true)" hub_create_backup 2>/dev/null || true)"
 if printf '%s' "$BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
   echo "  Backup gate stamped (MOCK -- no real backupDB write)."
 else
   echo "::notice::Mock backup refused -- falling back to a real backup."
-  REAL_BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}' hub_create_backup 2>/dev/null || true)"
+  REAL_BACKUP_RESP="$(mcp_call "$(backup_rpc false)" hub_create_backup 2>/dev/null || true)"
   if ! printf '%s' "$REAL_BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
     RB_ERR="$(printf '%s' "$REAL_BACKUP_RESP" | jq -r '
       .error.message //

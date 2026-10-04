@@ -15126,7 +15126,11 @@ class TestRunner:
     # keyless writes run, and these tests flip it on/off themselves. CRITICAL: every test that turns
     # the gate ON restores it OFF in finally -- a stuck gate would block every later write test. The
     # reactive hint has no toggle (always on) and points each failed write at THAT tool's own section.
+    # Keys are per guide section and rotate hourly: a write carries the key of its own tool's section
+    # (_guideSectionForTool; best_practice_reference for tools without one), so tests read it live.
     # -----------------------------------------------------------------------
+
+    _BPS_KEY_PREFIX = "I-HAVE-READ-THE-GUIDE-"
 
     def _set_bps(self, **toggles) -> None:
         """Set the issue-#299 gate toggle via the gate-exempt settings tool."""
@@ -15136,12 +15140,38 @@ class TestRunner:
         })
         assert res.get("success") is True, f"failed to set BPS toggles {toggles}: {res}"
 
-    def _read_bps_key(self) -> str:
-        """Read the acknowledgment key from the guide section -- the ONLY place it is published."""
-        guide = self.client.call_tool("hub_get_tool_guide", {"section": "best_practice_reference"})
+    def _read_bps_key(self, section: str = "best_practice_reference") -> str:
+        """Read a guide section's acknowledgment key -- the ONLY place it is published."""
+        guide = self.client.call_tool("hub_get_tool_guide", {"section": section})
         text = guide.get("content", "") if isinstance(guide, dict) else str(guide)
-        m = re.search(r"Acknowledgment key:\s*(\S+)", text)
-        return m.group(1) if m else ""
+        m = re.search(r"^Acknowledgment key:\s*(\S+)\s*$", text, re.MULTILINE)
+        assert m, f"guide section {section} published no acknowledgment key: {text[:200]!r}"
+        assert m.group(1).startswith(f"{self._BPS_KEY_PREFIX}{section}-"), \
+            f"section {section} published a key not bound to it: {m.group(1)}"
+        return m.group(1)
+
+    def _assert_bps_blocked(self, gateway: str, tool: str, args: dict, section: str) -> None:
+        """Gate ON: the write is refused, the refusal points at `section`, and carries no key."""
+        try:
+            self.client.call_tool(gateway, {"tool": tool, "args": args})
+        except McpError as e:
+            msg = str(e)
+            assert "Mandatory best-practice" in msg, f"{tool} failed, but not at the gate: {msg}"
+            assert f"section='{section}'" in msg, f"{tool} block does not point at {section}: {msg}"
+            assert self._BPS_KEY_PREFIX not in msg, f"{tool} block LEAKED a key: {msg}"
+            return
+        raise AssertionError(f"gate ON but {tool} with bestPracticeKey="
+                             f"{args.get('bestPracticeKey')!r} was not blocked")
+
+    def _section_key_after_refusals(self, gateway: str, tool: str, section: str, args: dict) -> str:
+        """Gate ON: `tool` is refused keyless AND with the generic best_practice_reference key;
+        returns `section`'s own key, the only one that should unlock it."""
+        generic = self._read_bps_key()
+        key = self._read_bps_key(section)
+        assert key != generic, f"{section} and best_practice_reference share a key: {key}"
+        self._assert_bps_blocked(gateway, tool, args, section)
+        self._assert_bps_blocked(gateway, tool, {**args, "bestPracticeKey": generic}, section)
+        return key
 
     @test("best_practice_gating")
     def test_bps_gate_blocks_then_unlocks(self) -> None:
@@ -15151,8 +15181,8 @@ class TestRunner:
         self._set_bps(enableMandatoryBPS=True)
         try:
             # 1. WRITE WITHOUT KEY -> blocked with a guide pointer; the key is NOT leaked.
+            # hub_create_variable has no dedicated section, so best_practice_reference's key unlocks it.
             key = self._read_bps_key()
-            assert key, "could not extract the acknowledgment key from the guide section"
             try:
                 self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_create_variable",
@@ -15160,9 +15190,9 @@ class TestRunner:
                 raise AssertionError("gate ON but a write WITHOUT the key was not blocked")
             except McpError as e:
                 msg = str(e)
-                assert "best_practice_reference" in msg, f"block message missing the guide pointer: {msg}"
+                assert "section='best_practice_reference'" in msg, f"block message missing the guide pointer: {msg}"
                 assert "bestPracticeKey" in msg, f"block message missing the param name: {msg}"
-                assert key not in msg, f"block message LEAKED the acknowledgment key: {msg}"
+                assert self._BPS_KEY_PREFIX not in msg, f"block message LEAKED an acknowledgment key: {msg}"
             # 2. WRITE WITH KEY -> succeeds (a real mutation past the gate).
             self.created_variable_names.append(var_name)
             created = self.client.call_tool("hub_manage_variables", {
@@ -15273,7 +15303,7 @@ class TestRunner:
             assert guide.get("success") is True, f"guide read blocked under the gate: {guide}"
             assert "Acknowledgment key" in guide.get("content", ""), \
                 f"guide section missing the acknowledgment-key line: {guide}"
-            assert self._read_bps_key(), "could not extract the key from the reachable guide"
+            self._read_bps_key()
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -15406,22 +15436,15 @@ class TestRunner:
 
     @test("best_practice_gating")
     def test_bps_gate_wrong_and_numeric_key_blocked(self) -> None:
-        """Gate ON: a wrong STRING key and a NUMERIC key both hit the same block; the key never leaks."""
+        """Gate ON: a wrong STRING key, a NUMERIC key, and a genuine key from ANOTHER section all hit
+        the same block on a best_practice_reference write; no key ever leaks."""
         self._set_bps(enableMandatoryBPS=True)
         try:
-            key = self._read_bps_key()
-            assert key, "could not read the acknowledgment key from the guide"
-            for bad in ["not-the-key", 12345]:
-                try:
-                    self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_create_variable",
-                        "args": {"name": "BAT_E2E_BPS_WrongKey", "type": "String", "value": "v",
-                                 "confirm": True, "bestPracticeKey": bad}})
-                    raise AssertionError(f"gate ON but wrong key {bad!r} was not blocked")
-                except McpError as e:
-                    msg = str(e)
-                    assert "Mandatory best-practice" in msg, f"wrong key {bad!r} did not hit the gate: {msg}"
-                    assert key not in msg, f"block leaked the key for {bad!r}: {msg}"
+            other_section_key = self._read_bps_key("set_rule_reference")
+            for bad in ["not-the-key", 12345, other_section_key]:
+                self._assert_bps_blocked("hub_manage_variables", "hub_create_variable", {
+                    "name": "BAT_E2E_BPS_WrongKey", "type": "String", "value": "v",
+                    "confirm": True, "bestPracticeKey": bad}, "best_practice_reference")
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -15439,6 +15462,7 @@ class TestRunner:
             except McpError as e:
                 msg = str(e)
                 assert "Mandatory best-practice" in msg, f"expected the gate block: {msg}"
+                assert "section='device_authorization'" in msg, f"gate block should name the tool's section: {msg}"
                 assert "reference and best practices" not in msg, f"gate message was double-coached: {msg}"
                 assert 'section="device_authorization"' not in msg, f"gate leaked a per-tool reactive pointer: {msg}"
         finally:
@@ -15469,6 +15493,8 @@ class TestRunner:
         res = self.client.call_tool("hub_get_tool_guide", {"section": "best_practice_reference"})
         content = res.get("content", "") if isinstance(res, dict) else str(res)
         assert "Acknowledgment key" in content, f"missing the key line: {content[:200]!r}"
+        assert "- hub_set_rule -> set_rule_reference" in content, \
+            f"missing the tool -> section key map: {content[:600]!r}"
         assert "native Rule Machine" in content, f"missing the native-RM best practice: {content[:400]!r}"
         assert "hub_list_devices" in content, f"missing the device-resolution best practice: {content[:400]!r}"
         assert "hub_create_backup" in content, f"missing the destructive-backup best practice: {content[:400]!r}"
@@ -15487,6 +15513,51 @@ class TestRunner:
             assert "##" in content and len(content) > 80, f"guide section {sec} returned trivial content: {content[:120]!r}"
 
     @test("best_practice_gating")
+    def test_bps_gate_set_rule_unlocked_only_by_set_rule_reference_key(self) -> None:
+        """hub_set_rule is refused keyless and with the generic key, the refusal pointing at
+        set_rule_reference; that section's key then creates a real rule."""
+        app_id = None
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            key = self._section_key_after_refusals(
+                "hub_manage_rule_machine", "hub_set_rule", "set_rule_reference",
+                {"name": f"{PREFIX}BPS_SetRule_Refused", "confirm": True})
+            app_id = self._create_native_rule("BPS_SetRule", {"bestPracticeKey": key})
+        finally:
+            try:
+                self._set_bps(enableMandatoryBPS=False)
+            finally:
+                if app_id:
+                    self._delete_native(app_id)
+
+    @test("best_practice_gating")
+    def test_bps_gate_set_native_app_unlocked_only_by_builtin_app_tools_crud_key(self) -> None:
+        """hub_set_native_app is refused keyless and with the generic key, the refusal pointing at
+        builtin_app_tools_crud; that section's key then creates a real app."""
+        label = f"{PREFIX}BPS_NativeApp_{_run_artifact_suffix()}_{time.time_ns()}"
+        args = {"appType": "rule_machine", "name": label, "confirm": True}
+        app_id = None
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            key = self._section_key_after_refusals(
+                "hub_manage_native_rules_and_apps", "hub_set_native_app", "builtin_app_tools_crud", args)
+            cw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_set_native_app", "args": {**args, "bestPracticeKey": key}}),
+                lambda: self._find_app_id_by_label(label),
+                "keyed hub_set_native_app create",
+            )
+            app_id = cw["evidence"] if cw["relayDropped"] else cw["response"].get("appId")
+            assert app_id, f"keyed hub_set_native_app create did not commit: {cw}"
+            self.created_native_app_ids.append(str(app_id))
+        finally:
+            try:
+                self._set_bps(enableMandatoryBPS=False)
+            finally:
+                if app_id:
+                    self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
+
+    @test("best_practice_gating")
     def test_guide_full_call_pages_instead_of_hitting_the_size_guard(self) -> None:
         """Issue #392: the documented no-section call used to return the response_too_large
         envelope and nothing else -- ~188 KB of guide against a 120 KB cap. It now pages."""
@@ -15495,6 +15566,9 @@ class TestRunner:
         assert not first.get("response_too_large"), f"full-guide call still trips the size guard: {first!r}"
         assert first.get("success") is True, f"full-guide call failed: {first!r}"
         assert len(first.get("content", "")) > 1000, "first page carried no real content"
+        assert "Acknowledgment keys are published only when a single section is read." in first["content"]
+        assert not re.search(r"I-HAVE-READ-THE-GUIDE-\w+-[0-9a-f]{8}", first["content"]), \
+            "the full-guide read published a key"
         # The point of the no-section call: discover the key space. Both levels, on page one.
         assert "set_rule_reference" in (first.get("availableSections") or [])
         sub_map = first.get("availableSubSections") or {}
@@ -17398,8 +17472,8 @@ def main() -> None:
     except McpError as exc:
         _m = str(exc)
         assert "Mandatory best-practice" in _m, f"expected the gate block, got: {exc}"
-        assert "best_practice_reference" in _m, f"gate block should point at the guide section: {exc}"
-        assert "bps-ack-299" not in _m, f"gate block must not leak the key: {exc}"
+        assert "section='device_authorization'" in _m, f"gate block should point at the tool's guide section: {exc}"
+        assert "I-HAVE-READ-THE-GUIDE-" not in _m, f"gate block must not leak a key: {exc}"
     print("Best-practice gate: default-ON behaviour verified on the live hub (keyless write blocked)")
     client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",

@@ -22,15 +22,21 @@ class _Headers(dict):
 
 
 def test_bps_key_extraction_requires_the_documented_guide_line() -> None:
-    guide = """# Best-Practice Reference
+    guide = """Acknowledgment key: I-HAVE-READ-THE-GUIDE-set_rule_reference-3fa29b1c
+Pass this exact value as the bestPracticeKey argument on the write tools this section covers.
 
-Acknowledgment key: bps-ack-299
+## Native Rule Machine
 """
 
-    assert extract_bps_acknowledgment_key(guide) == "bps-ack-299"
+    assert extract_bps_acknowledgment_key(guide) == "I-HAVE-READ-THE-GUIDE-set_rule_reference-3fa29b1c"
 
-    with pytest.raises(AssertionError, match="acknowledgment key"):
-        extract_bps_acknowledgment_key("bestPracticeKey is required")
+    for unkeyed in (
+        "bestPracticeKey is required",
+        "Acknowledgment key: bps-ack-299",
+        "Acknowledgment key (builtin_app_tools_crud): I-HAVE-READ-THE-GUIDE-builtin_app_tools_crud-0a1b2c3d",
+    ):
+        with pytest.raises(AssertionError, match="acknowledgment key"):
+            extract_bps_acknowledgment_key(unkeyed)
 
 
 def _request(name: str = "hub_manage_rule_machine") -> SimpleNamespace:
