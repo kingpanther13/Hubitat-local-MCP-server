@@ -415,10 +415,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
     }
 
     def "a continuation is not re-gated after its key rotates, while an initial call still is"() {
-        given: 'the gate ON and a paused bulk write started with its section key'
+        given: 'the gate ON; one second before an hour boundary, a paused bulk write starts with the key of the PREVIOUS hour (still in grace)'
         settingsMap.enableWrite = true
         settingsMap.enableMandatoryBPS = true
-        def virtualNow = new AtomicLong(1234567890000L)
+        long hourEnd = (1234567890000L.intdiv(3600000L) + 1L) * 3600000L
+        def virtualNow = new AtomicLong(hourEnd - 1000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         def ranWith = []
         script.metaClass.toolRunRmRule = { Map a ->
@@ -432,7 +433,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
                     rmAction: 'stopRule toggle x1', results: [[success: true, ruleId: 52]]]
         }
         def original = [ruleId: [51, 52], action: 'stop',
-                        bestPracticeKey: script.hubBpsGuideKey('builtin_app_tools_rules')]
+                        bestPracticeKey: script.hubBpsGuideKey('builtin_app_tools_rules', hourEnd - 3600000L - 1000L)]
 
         when:
         def first = modernCall('hub_call_rule', original)
@@ -442,8 +443,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         first.result.resultType == 'input_required'
         ranWith.size() == 1
 
-        when: 'two hours later the original key is stale, and the client resumes with the unchanged args'
-        virtualNow.addAndGet(2 * 3600000L)
+        when: 'two seconds later the hour has rolled, the key is two hours old, and the client resumes with the unchanged args'
+        virtualNow.addAndGet(2000L)
         assert !script.hubBpsKeyAccepted('builtin_app_tools_rules', original.bestPracticeKey)
         def resumed = modernCall('hub_call_rule', original, requestState)
 
