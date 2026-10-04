@@ -26,6 +26,15 @@ jobs:
           fetch-depth: 0
       - name: Fetch base branch
         run: git fetch origin "$BASE_BRANCH"
+      # Dependabot commits through the API, bypassing .gitattributes, so a wrapper
+      # bump can land gradlew.bat with CRLF in the index.
+      - name: Check line endings match .gitattributes
+        run: |
+          git add --renormalize .
+          git diff --cached --name-only --exit-code || {
+            echo "::error::Files above are committed with line endings that .gitattributes would normalize. Run: git add --renormalize <file>"
+            exit 1
+          }
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
