@@ -95,7 +95,7 @@ def toolSearchTools(args) {
         def tool = visibleCorpus[r.index]
         def entry = [
             tool: _externalToolName(tool.name as String),
-            description: tool.description,
+            description: _withGuideFirst(tool.name as String, tool.description as String),
             relevance: Math.round(r.score * 100) / 100.0
         ]
         // Defensive: a corpus entry can lack a title if a gateway lists a tool name
@@ -106,7 +106,7 @@ def toolSearchTools(args) {
             // Keep cached ranking vocabulary stable, but disclose only currently available routing context.
             def config = gatewayConfig.get(tool.gateway)
             def intro = _visibleGatewayIntro(tool.gateway, gatewayConfig, searchHideByName, displayMeta)
-            entry.description = "${config.summaries.get(tool.name) ?: ''} [${intro}]".toString()
+            entry.description = _withGuideFirst(tool.name as String, "${config.summaries.get(tool.name) ?: ''} [${intro}]".toString())
             entry.gateway = _externalToolName(tool.gateway as String)
             entry.callAs = "Call via ${_externalToolName(tool.gateway as String)}(tool=\"${_externalToolName(tool.name as String)}\", args={...})"
         } else {
@@ -148,7 +148,7 @@ def toolSearchTools(args) {
 def toolSearchCorpusFingerprint(List defs = null) {
     long h = 17L
     def displayMeta = getToolDisplayMeta()
-    applyDescriptionTransform(defs ?: getAllToolDefinitions(), false).each { toolDef ->
+    applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false).each { toolDef ->
         h = _fpField(h, toolDef.name as String)
         h = _fpField(h, displayMeta[toolDef.name]?.title)
         h = _fpField(h, toolDef.description)
@@ -200,7 +200,7 @@ private buildToolSearchCorpus(List defs = null) {
     // Strip [[FLAT_TRIM]] marker tokens before BM25 corpus build -- the markers
     // shouldn't show up as searchable tokens, but the wrapped capability lists
     // SHOULD (so hub_search_tools still matches "switch motion contact").
-    def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false)
+    def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
     // Friendly names join the searchable text: titles add tokens the bare
     // name/description lack (hub_set_rule gains 'author' from "Author Rule
@@ -367,7 +367,7 @@ def _getAllToolDefinitions_partDiscovery() {
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]] when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section to minimize tokens: omitting it returns the section + sub-section key list plus the first page of the whole guide, paging onward via nextCursor -- that first page is the largest response this tool produces, so on a timeout retry a specific section instead.",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor), the largest response this tool produces, so on a timeout retry a specific section.",
             inputSchema: [
                 type: "object",
                 properties: [

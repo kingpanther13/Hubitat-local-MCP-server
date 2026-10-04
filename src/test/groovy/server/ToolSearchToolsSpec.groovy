@@ -74,7 +74,8 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         !device.description.contains('device commands and updates live')
         !device.description.contains('send commands')
         !device.description.contains('listed below')
-        device.description.endsWith('[' + listedGateway.description.split('\\n\\n')[0] + ']')
+        // The bracketed intro is the gateway's own text, without the guide-first sentence it may lead with.
+        device.description.endsWith('[' + (listedGateway.description.split('\\n\\n')[0] - (script.guideFirstSentence() + ' ')) + ']')
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.is(cachedCorpus)
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.is(cachedTokens)
 
@@ -97,7 +98,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         then:
         room != null
         room.description.contains('Manage hub rooms: list, view details, create, delete, and rename rooms.')
-        room.description.endsWith('[' + gateway.description.split('\\n\\n')[0] + ']')
+        room.description.endsWith('[' + (gateway.description.split('\\n\\n')[0] - (script.guideFirstSentence() + ' ')) + ']')
     }
 
     def "the corpus + tokens are built once into the class static -- never atomicState -- and a second identical query is served from it"() {
