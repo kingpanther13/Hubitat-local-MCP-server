@@ -15512,6 +15512,27 @@ class TestRunner:
             content = res.get("content", "")
             assert "##" in content and len(content) > 80, f"guide section {sec} returned trivial content: {content[:120]!r}"
 
+    def _bps_fixture_cleanup(self, app_id, gateway: str = "hub_manage_rule_machine") -> None:
+        """finally-block cleanup for the gate tests: gate OFF first, then the fixture. A cleanup
+        failure never replaces an active test error; with no test error it is raised."""
+        unwinding = sys.exc_info()[0] is not None
+        cleanup_errors: list[Exception] = []
+        try:
+            self._set_bps(enableMandatoryBPS=False)
+        except Exception as exc:
+            cleanup_errors.append(exc)
+        if app_id:
+            try:
+                self._delete_native(app_id, gateway=gateway)
+            except Exception as exc:
+                cleanup_errors.append(exc)
+        if cleanup_errors:
+            if unwinding:
+                print("  [WARN] cleanup failed while preserving the primary test error: " +
+                      " | ".join(str(exc) for exc in cleanup_errors))
+            else:
+                raise cleanup_errors[0]
+
     @test("best_practice_gating")
     def test_bps_gate_set_rule_unlocked_only_by_set_rule_reference_key(self) -> None:
         """hub_set_rule is refused keyless and with the generic key, the refusal pointing at
@@ -15524,11 +15545,7 @@ class TestRunner:
                 {"name": f"{PREFIX}BPS_SetRule_Refused", "confirm": True})
             app_id = self._create_native_rule("BPS_SetRule", {"bestPracticeKey": key})
         finally:
-            try:
-                self._set_bps(enableMandatoryBPS=False)
-            finally:
-                if app_id:
-                    self._delete_native(app_id)
+            self._bps_fixture_cleanup(app_id)
 
     @test("best_practice_gating")
     def test_bps_gate_set_native_app_unlocked_only_by_builtin_app_tools_crud_key(self) -> None:
@@ -15551,11 +15568,7 @@ class TestRunner:
             assert app_id, f"keyed hub_set_native_app create did not commit: {cw}"
             self.created_native_app_ids.append(str(app_id))
         finally:
-            try:
-                self._set_bps(enableMandatoryBPS=False)
-            finally:
-                if app_id:
-                    self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
+            self._bps_fixture_cleanup(app_id, gateway="hub_manage_native_rules_and_apps")
 
     @test("best_practice_gating")
     def test_guide_full_call_pages_instead_of_hitting_the_size_guard(self) -> None:
