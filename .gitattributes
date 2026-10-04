@@ -5,7 +5,7 @@ gradlew text eol=lf
 *.gradle text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
-*.bat text eol=crlf
+*.bat -text
 *.jar binary
 *.zip binary
 # Vendored upstream MCP JSON Schemas. Their byte hashes are recorded as provenance in
