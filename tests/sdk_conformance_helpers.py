@@ -41,10 +41,10 @@ def build_capacity_recovery(e2e_test_module: Any, client: Any) -> Callable[[str]
 
 
 def extract_bps_acknowledgment_key(guide: Any) -> str:
-    """Extract only the key published on the best-practice guide's canonical line."""
+    """Extract only the key published on a guide section's canonical key line."""
     assert isinstance(guide, str), "best-practice guide content is not text"
     match = re.search(
-        r"^Acknowledgment key:\s*(bps-ack-[A-Za-z0-9._-]+)\s*$",
+        r"^Acknowledgment key:\s*(I-HAVE-READ-THE-GUIDE-[A-Za-z0-9_-]+)\s*$",
         guide,
         flags=re.MULTILINE,
     )
