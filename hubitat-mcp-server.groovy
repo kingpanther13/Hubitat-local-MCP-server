@@ -5648,8 +5648,9 @@ def stripFlatTrim(String text, boolean dropContent) {
 // guideFirst=false only for the search corpus, so the shared sentence does not skew BM25 ranking.
 def applyDescriptionTransform(List tools, boolean dropContent, boolean guideFirst = true) {
     tools.each { tool ->
-        if (tool?.description instanceof String) {
-            String description = stripFlatTrim(tool.description as String, dropContent)
+        // CharSequence, not String: gateway entries build their description as a GString.
+        if (tool?.description instanceof CharSequence) {
+            String description = stripFlatTrim(tool.description.toString(), dropContent)
             tool.description = guideFirst ?
                 _withGuideFirst(tool.name as String, description, tool.inputSchema?.properties?.tool?.enum) : description
         }
