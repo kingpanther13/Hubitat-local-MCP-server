@@ -50,7 +50,12 @@ elif name == "hub_set_mcp_developer_mode":
     if scenario == "lost_response":
         sys.exit(22)
     emit({"success": scenario != "refused"})
+elif name == "hub_get_tool_guide":
+    assert params["arguments"] == {"section": "backup"}
+    emit({"success": True, "section": "backup",
+          "content": "Acknowledgment key: I-HAVE-READ-THE-GUIDE-backup-0badf00d\nPass this value.\n\n## Backup System"})
 elif name == "hub_create_backup":
+    assert params["arguments"]["bestPracticeKey"] == "I-HAVE-READ-THE-GUIDE-backup-0badf00d"
     emit({"success": True})
 elif name == "hub_manage_mcp":
     assert params["arguments"]["tool"] == "hub_update_mcp_settings"
@@ -92,7 +97,7 @@ def test_setup_bootstraps_only_verified_off_state(tmp_path, scenario, succeeds, 
     names = [call["name"] for call in calls]
     assert names.count("hub_set_mcp_developer_mode") == int(bootstrap)
     if succeeds:
-        assert names[-2:] == ["hub_create_backup", "hub_manage_mcp"]
+        assert names[-3:] == ["hub_get_tool_guide", "hub_create_backup", "hub_manage_mcp"]
         if bootstrap:
             assert names[:3] == ["hub_get_info", "hub_set_mcp_developer_mode", "hub_get_info"]
     else:
