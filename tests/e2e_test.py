@@ -1445,11 +1445,11 @@ class TestRunner:
     def _watchdog_tool(self, name: str, arguments: dict) -> dict:
         """Call one watchdog v3 tool and return its decoded result. Any unusable answer -- HTTP
         error, JSON-RPC error, tool error, malformed body -- raises AssertionError."""
-        resp = requests.post(self.watchdog_url, json={
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        }, timeout=60)
         try:
+            resp = requests.post(self.watchdog_url, json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }, timeout=60)
             resp.raise_for_status()
             body = resp.json()
             if body.get("error"):
