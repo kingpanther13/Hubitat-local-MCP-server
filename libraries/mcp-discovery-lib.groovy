@@ -306,7 +306,7 @@ def toolGetToolGuide(section, cursor = null) {
             // Sub-keys of an oversized parent (issue #392): advertise them on the parent's own
             // response so the next call can be the narrow one, without a trip to the schema.
             if (subSections.containsKey(key)) result.subSections = subSections[key].keySet().toList()
-            return _withGuidePage(result, sections[key], cursor)
+            return _withGuidePage(result, _guideSectionServed(key, sections[key]), cursor)
         }
         def sub = guideSubSectionLookup(key)
         if (sub) {
@@ -321,7 +321,7 @@ def toolGetToolGuide(section, cursor = null) {
                 subSections: subSections[sub.parent].keySet().toList(),
                 note: "Part of the '${sub.parent}' section. A sibling sub-key may hold what you need; hub_get_tool_guide(section='${sub.parent}') returns all of it.".toString()
             ]
-            return _withGuidePage(result, sub.content, cursor)
+            return _withGuidePage(result, _guideSectionServed(key, sub.content), cursor)
         }
         return [
             success: false,
@@ -333,8 +333,9 @@ def toolGetToolGuide(section, cursor = null) {
 
     // Full guide. It does not fit one response and never has (issue #392), so this pages instead
     // of tripping the size guard -- the caller gets real content plus the whole key space to
-    // narrow with, and nextCursor when it wants the rest.
-    def fullGuide = sections.collect { k, v -> v }.join("\n\n---\n\n")
+    // narrow with, and nextCursor when it wants the rest. Keys are served per section only.
+    def fullGuide = "Acknowledgment keys are published only when a single section is read.\n\n" +
+        sections.collect { k, v -> v }.join("\n\n---\n\n")
     def result = [
         success: true,
         section: "full",

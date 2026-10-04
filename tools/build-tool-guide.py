@@ -86,13 +86,9 @@ def served_sections(server_src: str, lib_src: str) -> list:
 
 
 def render(server_src: str, lib_src: str) -> str:
-    # The best-practice gate relies on its key being published only by hub_get_tool_guide.
-    key = re.search(r"def hubBpsGuideKey\(\)\s*\{\s*'([^']+)'\s*\}", server_src)
-    if not key:
-        raise ValueError("hubBpsGuideKey() literal not found")
     parts = [HEADER]
     for _, text in served_sections(server_src, lib_src):
-        parts.append(text.replace(key.group(1), "<served only by hub_get_tool_guide>").strip("\n") + "\n")
+        parts.append(text.strip("\n") + "\n")
     return "\n".join(parts)
 
 

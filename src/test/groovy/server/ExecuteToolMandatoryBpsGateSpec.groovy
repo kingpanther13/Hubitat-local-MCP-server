@@ -3,23 +3,30 @@ package server
 import support.ToolSpecBase
 
 /**
- * Mandatory best-practice acknowledgment gate at the executeTool dispatch chokepoint
- * (issue #299, default ON). When enableMandatoryBPS is ON every write tool requires the caller
- * to pass the acknowledgment key published by hub_get_tool_guide(section='best_practice_reference')
- * as the bestPracticeKey argument. Only explicit false disables the gate. hub_get_tool_guide
- * (read) and hub_update_mcp_settings (self-disable)
- * are exempt so the caller can never lock itself out; gateway names short-circuit.
+ * Mandatory best-practice acknowledgment gate at the executeTool dispatch chokepoint and the
+ * modern-path _mrtrValidateAccess chokepoint (issue #299, default ON). Each write tool requires
+ * the acknowledgment key of its own guide section (_bpsSectionForTool) as the bestPracticeKey
+ * argument; keys rotate hourly and the previous hour's key is still accepted. Only explicit
+ * false disables the gate. hub_get_tool_guide (read) and hub_update_mcp_settings
+ * (self-disable) are exempt so the caller can never lock itself out; gateway names short-circuit.
  */
 class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
+    static final long HOUR = 3600000L
+    static final long T0 = 1234567890000L
+
     def setup() {
-        // hub_set_hsm is the representative write tool; stub its impl so a past-the-gate dispatch
-        // returns a sentinel instead of touching the hub. The base setup() wiped the metaClass
-        // first (superclass fixtures run before subclass), so this stub is fresh each feature.
+        // Representative writes; stubbed so a past-the-gate dispatch returns a sentinel instead
+        // of touching the hub. The base setup() wiped the metaClass first, so stubs are fresh.
         script.metaClass.toolSetHsm = { m -> [success: true, stubbed: true] }
+        script.metaClass.toolSetRule = { m -> [success: true, stubbed: true] }
         settingsMap.enableWrite = true
         settingsMap.enableRead = true
     }
+
+    private String key(String section) { script.hubBpsGuideKey(section) as String }
+
+    private static final Map SET_RULE_ARGS = [appId: 5, addTrigger: [capability: 'Switch'], confirm: true]
 
     def "gate ON + missing key blocks a write tool with a guide-pointer message and never leaks the key"() {
         given:
@@ -35,7 +42,8 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         e.message.contains("bestPracticeKey")
 
         and: "the block message tells the LLM how to get the key but never contains the key itself"
-        !e.message.contains(script.hubBpsGuideKey())
+        !e.message.contains(key('best_practice_reference'))
+        !e.message.contains('I-HAVE-READ-THE-GUIDE')
     }
 
     def "gate ON + wrong key blocks the write"() {
@@ -54,11 +62,83 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
 
         when:
-        def result = script.executeTool("hub_set_hsm", [armCommand: "armHome", bestPracticeKey: script.hubBpsGuideKey()])
+        def result = script.executeTool("hub_set_hsm", [armCommand: "armHome", bestPracticeKey: key('best_practice_reference')])
 
         then:
         noExceptionThrown()
         result.stubbed == true
+    }
+
+    def "block names the calling tool's section, exact text, no key -- #tool"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+
+        when:
+        script.executeTool(tool, args)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == "Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='${section}') and pass the acknowledgment key published at the top of that section as the bestPracticeKey argument on this call. The key rotates hourly and appears only in the guide."
+        !e.message.contains(key(section))
+
+        where:
+        tool                 | args                                     || section
+        'hub_set_rule'       | SET_RULE_ARGS                            || 'set_rule_reference'
+        'hub_set_native_app' | [appType: 'rule_machine', name: 'X']     || 'builtin_app_tools_crud'
+        'hub_set_hsm'        | [armCommand: 'armHome']                  || 'best_practice_reference'
+    }
+
+    def "the calling tool's section key passes; another section's key is refused -- #tool"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+        script.metaClass.toolSetNativeApp = { m -> [success: true, stubbed: true] }
+
+        when: 'the right section key'
+        def ok = script.executeTool(tool, args + [bestPracticeKey: key(own)])
+
+        then:
+        ok.stubbed == true
+
+        when: 'a real, current key from a different section'
+        script.executeTool(tool, args + [bestPracticeKey: key(other)])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("section='${own}'")
+
+        where:
+        tool                 | args                                 | own                       | other
+        'hub_set_rule'       | SET_RULE_ARGS                        | 'set_rule_reference'      | 'best_practice_reference'
+        'hub_set_hsm'        | [armCommand: 'armHome']              | 'best_practice_reference' | 'set_rule_reference'
+        'hub_set_native_app' | [appType: 'rule_machine', name: 'X'] | 'builtin_app_tools_crud'  | 'builtin_app_tools_rules'
+    }
+
+    def "keys rotate hourly: previous hour accepted, two hours old refused"() {
+        given: 'a key read at T0'
+        settingsMap.enableMandatoryBPS = true
+        NOW_OVERRIDE.set({ -> T0 })
+        def readAt = key('set_rule_reference')
+        assert readAt != script.hubBpsGuideKey('set_rule_reference', T0 + HOUR)
+        assert readAt != key('best_practice_reference')
+
+        when: 'one hour later'
+        NOW_OVERRIDE.set({ -> T0 + HOUR })
+
+        then: 'still accepted (grace for a read just before rotation)'
+        script.hubBpsKeyAccepted('set_rule_reference', readAt)
+        script.executeTool('hub_set_rule', SET_RULE_ARGS + [bestPracticeKey: readAt]).stubbed == true
+
+        when: 'two hours later'
+        NOW_OVERRIDE.set({ -> T0 + 2 * HOUR })
+
+        then: 'refused at the predicate and at the gate'
+        !script.hubBpsKeyAccepted('set_rule_reference', readAt)
+
+        when:
+        script.executeTool('hub_set_rule', SET_RULE_ARGS + [bestPracticeKey: readAt])
+
+        then:
+        thrown(IllegalArgumentException)
     }
 
     def "gate is ON by default (null/unset) -- a keyless write is blocked"() {
@@ -78,7 +158,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.remove('enableMandatoryBPS')
 
         expect:
-        script.executeTool("hub_set_hsm", [armCommand: "armHome", bestPracticeKey: script.hubBpsGuideKey()]).stubbed == true
+        script.executeTool("hub_set_hsm", [armCommand: "armHome", bestPracticeKey: key('best_practice_reference')]).stubbed == true
     }
 
     def "gate OFF (explicit false) leaves writes reachable without a key"() {
@@ -165,11 +245,6 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         result != null
     }
 
-    def "hubBpsGuideKey() matches the literal published in the guide body (drift guard)"() {
-        expect: "the key the gate validates is the same literal the guide hands the LLM"
-        (script.getToolGuideSections()['best_practice_reference'] as String).contains(script.hubBpsGuideKey())
-    }
-
     def "gate ON + non-string key value is rejected (toString coercion does not bypass)"() {
         given:
         settingsMap.enableMandatoryBPS = true
@@ -210,10 +285,53 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
         when:
         def result = script.executeTool("hub_manage_variables",
-            [tool: "hub_create_variable", args: [name: "x", bestPracticeKey: script.hubBpsGuideKey()]])
+            [tool: "hub_create_variable", args: [name: "x", bestPracticeKey: key('best_practice_reference')]])
 
         then:
         noExceptionThrown()
         result.stubbed == true
+    }
+
+    def "a gateway-routed sub-tool is gated on re-entry with its own section"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+        settingsMap.useGateways = true
+        script.metaClass.requiredParamsByTool = { -> [:] }
+        script.metaClass.toolRunRmRule = { a -> [success: true, stubbed: true] }
+
+        when: 'the generic key on hub_call_rule, whose section is builtin_app_tools_rules'
+        script.executeTool("hub_manage_native_rules_and_apps",
+            [tool: "hub_call_rule", args: [ruleId: 1, action: 'run', bestPracticeKey: key('best_practice_reference')]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("section='builtin_app_tools_rules'")
+
+        when: 'its own section key'
+        def result = script.executeTool("hub_manage_native_rules_and_apps",
+            [tool: "hub_call_rule", args: [ruleId: 1, action: 'run', bestPracticeKey: key('builtin_app_tools_rules')]])
+
+        then:
+        result.stubbed == true
+    }
+
+    def "the modern-path chokepoint requires the leaf tool's section key too"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+
+        when: 'another section key on a gateway-routed hub_set_rule'
+        script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule',
+            [tool: 'hub_set_rule', args: [bestPracticeKey: key('best_practice_reference')]])
+
+        then: 'the same block text as executeTool, naming the leaf section'
+        def e = thrown(IllegalArgumentException)
+        e.message == script._bpsBlockMessage('set_rule_reference')
+
+        when: 'the leaf section key'
+        script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule',
+            [tool: 'hub_set_rule', args: [bestPracticeKey: key('set_rule_reference')]])
+
+        then:
+        noExceptionThrown()
     }
 }

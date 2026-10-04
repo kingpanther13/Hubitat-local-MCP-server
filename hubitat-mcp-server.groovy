@@ -292,7 +292,7 @@ def mainPage() {
         section("Best-Practice Guidance") {
             paragraph "Surfaces this project's best practices to the AI. Reactive hints are always on: a failed write tool's error gains a pointer to that tool's own guide section. The acknowledgment gate below is ON by default."
             input "enableMandatoryBPS", "bool", title: "Require Best-Practice Guide Acknowledgment (write tools)",
-                  description: "ON by default. When ON, every write tool is blocked until the AI reads hub_get_tool_guide(section='best_practice_reference') and passes the acknowledgment key it publishes as the bestPracticeKey argument. Reads, the guide, and this settings tool stay reachable, so the AI can never lock itself out. Turn OFF for clients that can't carry the extra context.",
+                  description: "ON by default. When ON, each write tool is blocked until the AI reads that tool's hub_get_tool_guide section (best_practice_reference lists which section covers which tool) and passes the acknowledgment key published at its top as the bestPracticeKey argument. Each section has its own key, rotating hourly. Reads, the guide, and this settings tool stay reachable, so the AI can never lock itself out. Turn OFF for clients that can't carry the extra context.",
                   defaultValue: true, submitOnChange: true
         }
 
@@ -1855,7 +1855,8 @@ def _guideResourceUriPrefix() { "hubitat://guide/" }
 // mode/HSM header data in the context snapshot is part of hub_list_devices' own
 // format='context' output (the tool serves it under the same gate), not a reach into
 // hub_list_modes / hub_get_hsm_status. (The best-practice acknowledgment gate is a
-// different, write-only gate and does not apply to resources at all.)
+// different, write-only gate and does not apply to resources; a guide resource publishes
+// the same acknowledgment keys as its hub_get_tool_guide section.)
 def _contextResourcesEnabled() { !getHiddenToolNames().contains("hub_list_devices") }
 def _guideResourcesEnabled() { !getHiddenToolNames().contains("hub_get_tool_guide") }
 
@@ -1953,7 +1954,7 @@ def handleResourcesRead(msg) {
                 return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} mirrors hub_get_tool_guide and ${_resourceGateCause()}.", [uri: uri])
             }
             return jsonRpcResult(msg.id, [
-                contents: [[uri: uri, mimeType: "text/markdown", text: sections[section]]],
+                contents: [[uri: uri, mimeType: "text/markdown", text: _guideSectionServed(section, sections[section])]],
                 ttlMs: cacheHintTtlMs(), cacheScope: "private"
             ])
         }
@@ -2740,8 +2741,11 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
     if (getEffectiveDisabledTools().contains(leaf)) {
         throw new IllegalArgumentException("${leaf} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
     }
-    if (!readLeaf && settings.enableMandatoryBPS != false && leafArgs?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
-        throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
+    if (!readLeaf && settings.enableMandatoryBPS != false) {
+        String bpsSection = _bpsSectionForTool(leaf)
+        if (!hubBpsKeyAccepted(bpsSection, leafArgs?.bestPracticeKey)) {
+            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection))
+        }
     }
 }
 
@@ -5876,16 +5880,15 @@ def executeTool(toolName, args) {
     }
 
     // ---- Mandatory best-practice acknowledgment gate (issue #299) ----
-    // When enableMandatoryBPS is ON, every write tool requires the caller to first read
-    // hub_get_tool_guide(section='best_practice_reference') and pass the acknowledgment key
-    // it publishes as the bestPracticeKey argument. The block message names ONLY how to get
-    // the key, never the key itself, so the LLM must actually read the guide. ON by default:
+    // When enableMandatoryBPS is ON, every write tool requires the acknowledgment key of its
+    // own guide section (_bpsSectionForTool) as the bestPracticeKey argument. The block message
+    // names the section, never the key, so the LLM must actually read it. ON by default:
     // `!= false` so null/unset/true = active and only an explicit false disables it, mirroring
     // the #113 master-gate convention (the Spock harness + the e2e env setup pin it false so the
     // suites' keyless writes run). Reuses the isGatewayName + read/write partition already
     // computed above -- gateway names short-circuit (sub-tools gate on re-entry). Two tools are
-    // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; the only
-    // way to discover the key) and hub_update_mcp_settings (the toggle-off escape hatch).
+    // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; it
+    // publishes the keys) and hub_update_mcp_settings (the toggle-off escape hatch).
     // hub_set_rule / hub_set_native_app schema-only probes stay reachable like the
     // Write master above.
     if (!isGatewayName && settings.enableMandatoryBPS != false
@@ -5894,8 +5897,9 @@ def executeTool(toolName, args) {
             && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))
             && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args ?: [:]))
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])) {
-        if (args?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
-            throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
+        String bpsSection = _bpsSectionForTool(toolName)
+        if (!hubBpsKeyAccepted(bpsSection, args?.bestPracticeKey)) {
+            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection))
         }
     }
 
@@ -9964,11 +9968,62 @@ def currentVersion() {
 
 
 // ---- Best-practice acknowledgment + reactive hints (issue #299) ----
-// Single source of truth for the acknowledgment key the enableMandatoryBPS gate validates.
-// The same literal is ALSO typed into the best_practice_reference guide body below (a Groovy
-// '''-string cannot interpolate ${...}, and switching it to a """ string would hide the key
-// from sandbox-lint's section-key parser) -- ExecuteToolMandatoryBpsGateSpec asserts the two copies stay in sync.
-def hubBpsGuideKey() { 'bps-ack-299' }
+// Current acknowledgment key for a guide section. Stateless: app.id (per-install), the section name
+// and the current hour. No state/atomicState touch. Reuses _mrtrSha256 (java.security.MessageDigest).
+def hubBpsGuideKey(String section, Long atMs = null) {
+    long bucket = ((atMs != null ? atMs : now()) as long).intdiv(3600000L)
+    String digest = _mrtrSha256("${app?.id}:${section}:${bucket}".toString())
+    return "I-HAVE-READ-THE-GUIDE-${section}-${digest.substring(0, 8)}".toString()
+}
+
+// Current OR previous hour's key (grace so a read just before rotation is not stranded).
+boolean hubBpsKeyAccepted(String section, value) {
+    if (value == null) return false
+    String v = value.toString()
+    long t = now() as long
+    return v == hubBpsGuideKey(section, t) || v == hubBpsGuideKey(section, t - 3600000L)
+}
+
+// Section whose key a write tool must carry.
+String _bpsSectionForTool(toolName) { _guideSectionForTool(toolName) ?: 'best_practice_reference' }
+
+// The gate's refusal at both chokepoints. Names the section, never the key.
+String _bpsBlockMessage(String section) {
+    return ("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='${section}') " +
+        "and pass the acknowledgment key published at the top of that section as the bestPracticeKey argument on this call. " +
+        "The key rotates hourly and appears only in the guide.").toString()
+}
+
+// Sections that publish a key: best_practice_reference plus every section a write tool maps to.
+// Guide reads only (never the gate path); cached with the other code-derived tool metadata.
+Set _bpsGatedSections() {
+    def cached = _toolMetadataGet("bpsGatedSections")
+    if (cached != null) return cached as Set
+    def readOnly = getReadOnlyToolNames()
+    Set gated = ['best_practice_reference'] as Set
+    _toolCatalogIndexes().names.each { name ->
+        def section = readOnly.contains(name) ? null : _guideSectionForTool(name)
+        if (section) gated << section
+    }
+    return _toolMetadataPut("bpsGatedSections", gated) as Set
+}
+
+// A guide section as served by hub_get_tool_guide AND the hubitat://guide resources: the key(s) it
+// publishes on top (its own if gated, one per gated sub-section if a parent), then the body.
+String _guideSectionServed(String key, String body) {
+    Set gated = _bpsGatedSections()
+    List lines = []
+    if (gated.contains(key)) lines << "Acknowledgment key: ${hubBpsGuideKey(key)}".toString()
+    def subs = getToolGuideSubSections()[key]
+    if (subs instanceof Map) {
+        subs.keySet().each { sub ->
+            if (gated.contains(sub)) lines << "Acknowledgment key (${sub}): ${hubBpsGuideKey(sub as String)}".toString()
+        }
+    }
+    if (!lines) return body
+    lines << "Pass this exact value as the bestPracticeKey argument on the write tools this section covers. It is a read-receipt, not a secret: published here deliberately by the MCP server, it rotates hourly (the previous hour's value is still accepted) and grants no privileges."
+    return lines.join("\n") + "\n\n" + (body ?: '')
+}
 
 // Map a (write) tool to the hub_get_tool_guide section that documents IT (issue #299). This is the
 // reactive hint's whole point: on an error, point the LLM at the FAILING tool's own reference, not
@@ -10058,14 +10113,58 @@ def getToolGuideSections() {
 
         best_practice_reference: '''## Best-Practice Reference
 
-Acknowledgment key: bps-ack-299
-
 The "Require Best-Practice Guide Acknowledgment" gate is ON by default. While it is on, every write
-tool requires you to pass this exact key as the `bestPracticeKey` argument on the call --
-e.g. `bestPracticeKey: "bps-ack-299"`. Read this section once, then include that argument on each
-write for the rest of the session. Reads, hub_get_tool_guide, and hub_update_mcp_settings are
-never gated, so you can always reach this guide and (if needed) toggle the gate off. The key is
-published only here, so supplying it proves you consulted these practices before writing.
+tool requires the `bestPracticeKey` argument on the call (through a gateway, inside its `args`),
+carrying the acknowledgment key published at the top of the guide section that covers that tool.
+Each section has its own key, so a key from one section does not unlock a tool another section
+covers. Keys rotate hourly and the previous hour's key is still accepted: when a key is refused,
+read the section again. A key is a read-receipt, not a secret, and grants no privileges. Reads,
+hub_get_tool_guide, and hub_update_mcp_settings are never gated, so you can always reach this guide
+and (if needed) toggle the gate off.
+
+If you are calling one of these tools, you must read its section for that section's key:
+- hub_create_backup -> backup
+- hub_restore_backup -> backup
+- hub_clone_native_app -> builtin_app_tools_crud
+- hub_delete_native_app -> builtin_app_tools_crud
+- hub_export_native_app -> builtin_app_tools_crud
+- hub_import_native_app -> builtin_app_tools_crud
+- hub_set_native_app -> builtin_app_tools_crud
+- hub_call_rule -> builtin_app_tools_rules
+- hub_set_app_disabled -> builtin_app_tools_rules
+- hub_set_rule_paused -> builtin_app_tools_rules
+- hub_set_rule_private_boolean -> builtin_app_tools_rules
+- hub_clone_dashboard -> dashboards
+- hub_create_dashboard -> dashboards
+- hub_delete_dashboard -> dashboards
+- hub_update_dashboard -> dashboards
+- hub_call_device_command -> device_authorization
+- hub_delete_file -> file_manager
+- hub_write_file -> file_manager
+- hub_call_destructive_ops -> hub_admin_write_destructive
+- hub_delete_device -> hub_admin_write_destructive
+- hub_delete_item -> hub_admin_write_destructive
+- hub_delete_room -> hub_admin_write_destructive
+- hub_reboot -> hub_admin_write_destructive
+- hub_shutdown -> hub_admin_write_destructive
+- hub_update_firmware -> hub_admin_write_destructive
+- hub_call_device_replace -> hub_admin_write_devices
+- hub_call_device_swap -> hub_admin_write_devices
+- hub_call_matter -> hub_admin_write_radios
+- hub_call_zigbee -> hub_admin_write_radios
+- hub_call_zwave -> hub_admin_write_radios
+- hub_clone_custom_rule -> rules
+- hub_create_custom_rule -> rules
+- hub_delete_custom_rule -> rules
+- hub_export_custom_rule -> rules
+- hub_import_custom_rule -> rules
+- hub_update_custom_rule -> rules
+- hub_set_rule -> set_rule_reference
+- hub_update_device -> update_device
+- hub_manage_virtual_device -> virtual_devices
+- hub_delete_visual_rule -> visual_rule_reference
+- hub_set_visual_rule -> visual_rule_reference
+Every other write tool uses this section's key.
 
 Reactive hints are always on (no toggle): when a write tool errors, the error gains a one-line
 pointer to THAT tool's own guide section -- follow it for the failing tool's reference.

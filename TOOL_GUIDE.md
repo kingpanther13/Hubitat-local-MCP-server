@@ -30,14 +30,58 @@ Detailed reference for MCP Rule Server tools, the same text `hub_get_tool_guide`
 
 ## Best-Practice Reference
 
-Acknowledgment key: <served only by hub_get_tool_guide>
-
 The "Require Best-Practice Guide Acknowledgment" gate is ON by default. While it is on, every write
-tool requires you to pass this exact key as the `bestPracticeKey` argument on the call --
-e.g. `bestPracticeKey: "<served only by hub_get_tool_guide>"`. Read this section once, then include that argument on each
-write for the rest of the session. Reads, hub_get_tool_guide, and hub_update_mcp_settings are
-never gated, so you can always reach this guide and (if needed) toggle the gate off. The key is
-published only here, so supplying it proves you consulted these practices before writing.
+tool requires the `bestPracticeKey` argument on the call (through a gateway, inside its `args`),
+carrying the acknowledgment key published at the top of the guide section that covers that tool.
+Each section has its own key, so a key from one section does not unlock a tool another section
+covers. Keys rotate hourly and the previous hour's key is still accepted: when a key is refused,
+read the section again. A key is a read-receipt, not a secret, and grants no privileges. Reads,
+hub_get_tool_guide, and hub_update_mcp_settings are never gated, so you can always reach this guide
+and (if needed) toggle the gate off.
+
+If you are calling one of these tools, you must read its section for that section's key:
+- hub_create_backup -> backup
+- hub_restore_backup -> backup
+- hub_clone_native_app -> builtin_app_tools_crud
+- hub_delete_native_app -> builtin_app_tools_crud
+- hub_export_native_app -> builtin_app_tools_crud
+- hub_import_native_app -> builtin_app_tools_crud
+- hub_set_native_app -> builtin_app_tools_crud
+- hub_call_rule -> builtin_app_tools_rules
+- hub_set_app_disabled -> builtin_app_tools_rules
+- hub_set_rule_paused -> builtin_app_tools_rules
+- hub_set_rule_private_boolean -> builtin_app_tools_rules
+- hub_clone_dashboard -> dashboards
+- hub_create_dashboard -> dashboards
+- hub_delete_dashboard -> dashboards
+- hub_update_dashboard -> dashboards
+- hub_call_device_command -> device_authorization
+- hub_delete_file -> file_manager
+- hub_write_file -> file_manager
+- hub_call_destructive_ops -> hub_admin_write_destructive
+- hub_delete_device -> hub_admin_write_destructive
+- hub_delete_item -> hub_admin_write_destructive
+- hub_delete_room -> hub_admin_write_destructive
+- hub_reboot -> hub_admin_write_destructive
+- hub_shutdown -> hub_admin_write_destructive
+- hub_update_firmware -> hub_admin_write_destructive
+- hub_call_device_replace -> hub_admin_write_devices
+- hub_call_device_swap -> hub_admin_write_devices
+- hub_call_matter -> hub_admin_write_radios
+- hub_call_zigbee -> hub_admin_write_radios
+- hub_call_zwave -> hub_admin_write_radios
+- hub_clone_custom_rule -> rules
+- hub_create_custom_rule -> rules
+- hub_delete_custom_rule -> rules
+- hub_export_custom_rule -> rules
+- hub_import_custom_rule -> rules
+- hub_update_custom_rule -> rules
+- hub_set_rule -> set_rule_reference
+- hub_update_device -> update_device
+- hub_manage_virtual_device -> virtual_devices
+- hub_delete_visual_rule -> visual_rule_reference
+- hub_set_visual_rule -> visual_rule_reference
+Every other write tool uses this section's key.
 
 Reactive hints are always on (no toggle): when a write tool errors, the error gains a one-line
 pointer to THAT tool's own guide section -- follow it for the failing tool's reference.

@@ -59,7 +59,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         handlerCalls.isEmpty()
         observations.values().every { observation ->
             def rendered = observation.visible.entries.toString() + observation.nativeLines.toString()
-            !rendered.contains(script.hubBpsGuideKey()) && !rendered.contains('definitely-wrong-secret')
+            !rendered.contains(script.hubBpsGuideKey('best_practice_reference')) && !rendered.contains('definitely-wrong-secret')
         }
 
         where:
