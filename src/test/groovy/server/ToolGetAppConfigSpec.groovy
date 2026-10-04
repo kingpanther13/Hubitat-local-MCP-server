@@ -22,8 +22,9 @@ import support.ToolSpecBase
  *  - Not-found 404/410 throw (deleted / mid-delete / install shell whose config page
  *    can't render): clean 'app not found (404)' degrade at warn, full + summary modes
  *  - HTML stripping: span tags removed from labels
- *  - RM disabled actions: red italic span -> [DISABLED] paragraph mark, disabledActions list,
- *    embeddedActions disabled:true; legend span and *BROKEN* marker excluded
+ *  - RM disabled actions: red italic span -> [DISABLED] paragraph mark, disabledActions
+ *    [{text, disableButton}] list, embeddedActions disabled:true; legend span and *BROKEN*
+ *    marker excluded; non-RM apps untouched
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
  * the same tool through {@code mcpDriver.callTool} so the production
@@ -1741,8 +1742,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     // Rule Machine disabled-action marker
     // -------------------------------------------------------------------------
 
-    // RM's only carrier of a disabled action is the red italic span around the row
-    // text (disable<N> settings stay blank); the tag-stripping read used to render a
+    // On mainPage RM's only carrier of a disabled action is the red italic span around
+    // the row text (disable<N> settings stay blank; selectActions also flips the
+    // disable<N> button title and icon); the tag-stripping read used to render a
     // disabled action exactly like a live one. Shape mirrors a live RM 5.1 mainPage
     // actions paragraph (fw 2.5.2), including a condition's green (T) span and a
     // *BROKEN* marker, which is red but NOT italic.
@@ -1777,8 +1779,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !para.contains('<span')
 
         and: 'the structured list names only the disabled action'
-        result.disabledActions == ["Notify Pushover: 'Fixed mismatch'"]
+        result.disabledActions == [[text: "Notify Pushover: 'Fixed mismatch'"]]
         result.disabledActionsNote.contains('[DISABLED]')
+        result.disabledActionsNote.contains('selectActionsX')
     }
 
     @spock.lang.Unroll
@@ -1795,7 +1798,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
 
         then:
-        result.disabledActions == ['Delay 0:02:00']
+        result.disabledActions == [[text: 'Delay 0:02:00']]
         result.page.sections[0].paragraphs[0].contains(legend)
         !result.page.sections[0].paragraphs[0].contains("[DISABLED] ${legend}")
 
@@ -1841,7 +1844,115 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         rows[1].name == '2.0.false'
         rows[1].disabled == true
         rows[1].description == "Notify Pushover: 'Fixed mismatch'"
-        result.disabledActions == ["Notify Pushover: 'Fixed mismatch'"]
+
+        and: 'no disable2 button on the page, so no disableButton is guessed'
+        result.disabledActions == [[text: "Notify Pushover: 'Fixed mismatch'"]]
+    }
+
+    def "several disabled spans across paragraphs and sections are all marked, in order"() {
+        given:
+        settingsMap.enableRead = true
+        def red = { String t -> "<span style='color:red'><i>${t}\n</i></span>" }
+        def p1 = "IF (Switch on) THEN\n\t" + red('Log: a1') + "\tLog: live1\n\t" + red('Log: a2') +
+            "\tLog: live2\n\tLog: live3\n\t" + red('Log: a3') + "END-IF"
+        def p2 = "\tLog: live4\n\t" + red('Log: b1')
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null,
+                sections: [
+                    [title: 'Actions', input: [], body: [[element: 'paragraph', description: p1]]],
+                    [title: 'More', input: [], body: [[element: 'paragraph', description: p2]]]
+                ]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def para1 = result.page.sections[0].paragraphs[0]
+        def para2 = result.page.sections[1].paragraphs[0]
+
+        then:
+        ['a1', 'a2', 'a3'].every { para1.contains("[DISABLED] Log: ${it}") }
+        para2.contains('[DISABLED] Log: b1')
+        ['live1', 'live2', 'live3'].every { para1.contains("\tLog: ${it}") && !para1.contains("[DISABLED] Log: ${it}") }
+        !para2.contains('[DISABLED] Log: live4')
+        !para1.contains('<span') && !para2.contains('<span')
+        para1.count('[DISABLED]') == 3
+        result.disabledActions == [[text: 'Log: a1'], [text: 'Log: a2'], [text: 'Log: a3'], [text: 'Log: b1']]
+    }
+
+    // Verbatim selectActions row (fw 2.5.2 / RM 5.1; a disabled row's disable<N> button reads
+    // 'Enable Action' with a checked icon). N is RM's action index, so after
+    // removeAction(index:2) on a 3-action rule the rows are 1 and 3 and there is no disable2.
+    private static String rmSelectActionsRow(int n, String rowText, String title) {
+        "<tr><th><div class='form-group'><input type='hidden' name='chkBox${n}.type' value='button'></div><div><div class='submitOnChange' onclick='buttonClick(this)' style='color:purple;cursor:pointer;font-size:15px' title='Select for Copy Action'><i class='he-checkbox-unchecked'></i></div></div><input type='hidden' name='settings[chkBox${n}]' value=''></th>" +
+        "<td style='text-align:left;min-width:250px' title='Edit Action'><div class='form-group'><input type='hidden' name='${n}.0.false.type' value='button'></div><div><div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple;cursor:pointer;font-size:15px'>${rowText}</div></div><input type='hidden' name='settings[${n}.0.false]' value='' /></td>" +
+        "<td><div class='form-group'><input type='hidden' name='disable${n}.type' value='button'></div><div><div class='submitOnChange' onclick='buttonClick(this)' style='color:purple;cursor:pointer;font-size:15px' title='${title}'><i class='${title == 'Enable Action' ? 'he-checkbox-checked' : 'he-checkbox-unchecked'}'></i></div></div><input type='hidden' name='settings[disable${n}]' value=''></td></tr>"
+    }
+
+    def "selectActions pairs a disabled row with its disable<N> button by action index"() {
+        given:
+        settingsMap.enableRead = true
+        def html = "<table><tr><th>Actions for <b>R</b><span style='color:red'>           <i>Disabled Action</i></span></th></tr>" +
+            rmSelectActionsRow(1, "Log: 'one'", 'Disable Action') +
+            rmSelectActionsRow(3, "<span style='color:red'><i>Log: 'three'\n</i></span>", 'Enable Action') +
+            "</table>"
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
+        def rows = result.page.sections[0].embeddedActions
+
+        then:
+        rows*.name == ['chkBox1', '1.0.false', 'disable1', 'chkBox3', '3.0.false', 'disable3']
+        rows.findAll { it.disabled }*.name == ['3.0.false']
+        rows.find { it.name == '3.0.false' }.description == "Log: 'three'"
+        rows.find { it.name == '1.0.false' }.description == "Log: 'one'"
+        rows.find { it.name == 'disable3' }.title == 'Enable Action'
+        rows.find { it.name == 'disable1' }.title == 'Disable Action'
+        result.disabledActions == [[text: "Log: 'three'", disableButton: 'disable3']]
+        !result.page.sections[0].paragraphs[0].contains('[DISABLED] Disabled Action')
+    }
+
+    def "a non-RM app with red italic spans gets no disabled-action marks"() {
+        given:
+        settingsMap.enableRead = true
+        def html = "<input type='hidden' name='1.0.false.type' value='button'>" +
+            "<div class='submitOnChange' data-stateAttribute='doAct'><span style='color:red'><i>Warning: battery low\n</i></span></div>"
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([
+                app: [id: 35, trueLabel: 'Hall', label: 'Hall', name: 'Room Lights', disabled: false, installed: true,
+                      appType: [name: 'Room Lights', namespace: 'hubitat']],
+                configPage: [name: 'mainPage', title: 'Hall', install: true, refreshInterval: null,
+                    sections: [[title: 'Main', input: [], body: [[element: 'paragraph', description: html]]]]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == true
+        result.page.sections[0].paragraphs[0] == 'Warning: battery low'
+        !result.containsKey('disabledActions')
+        !result.containsKey('disabledActionsNote')
+        result.page.sections[0].embeddedActions.size() == 1
+        !result.page.sections[0].embeddedActions[0].containsKey('disabled')
+    }
+
+    @spock.lang.Unroll
+    def "_rmIsRuleAppType('#name') == #expected"() {
+        expect:
+        script._rmIsRuleAppType(name) == expected
+
+        where:
+        name               | expected
+        'Rule-5.1'         | true
+        'Button Rule-5.1'  | true
+        'Rule-4.1'         | true
+        'Rule-4.0'         | true
+        'Rule Machine'     | false
+        'Room Lights'      | false
+        'My Rule-5.1'      | false
+        'rule-5.1'         | false
+        null               | false
     }
 
     @spock.lang.Unroll
@@ -1859,7 +1970,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.disabledActions == ["Notify Pushover: 'Fixed mismatch'"]
+        inner.disabledActions == [[text: "Notify Pushover: 'Fixed mismatch'"]]
         inner.page.sections[0].paragraphs[0].contains("[DISABLED] Notify Pushover: 'Fixed mismatch'")
 
         where:

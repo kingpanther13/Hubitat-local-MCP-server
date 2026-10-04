@@ -308,15 +308,10 @@ private stripOptionsHtml(options) {
     return options
 }
 
-// Rule Machine renders an action the user disabled (the per-row Disable button on
-// selectActions) as a red italic span -- <span style='color:red'><i>...</i></span> --
-// on both the mainPage actions paragraph and the selectActions row table, while an
-// active action is plain text. That styling is the ONLY carrier of the flag: the
-// disable<N> settings are blank button inputs and the state lives in RM's app
-// state, so stripping tags makes a disabled action read as live. The same markup
-// wraps the literal legend "Disabled Actions" in the selectActions table header,
-// (singular with one disabled row), which is not an action. Live-captured on
-// firmware 2.5.2 / RM 5.1.
+// RM 5.1 renders a user-disabled action as a red italic span around its row text. On
+// mainPage that span is the only carrier of the state (it lives in RM app state, not
+// settings); selectActions also flips the row's disable<N> button title to "Enable Action".
+// Live-captured on firmware 2.5.2 / RM 5.1.
 private String _rmDisabledActionSpanRegex() {
     // Assigned first: the hub's Groovy 2.4 parses a slashy literal right after `return` as division.
     def regex = /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
@@ -325,9 +320,21 @@ private String _rmDisabledActionSpanRegex() {
 
 private String _rmDisabledActionMark() { return "[DISABLED] " }
 
-// Replaces each disabled-action span with "[DISABLED] <inner html>" so the mark
-// survives stripAppConfigHtml, and returns the stripped text of every action it
-// marked. The legend span is left untouched.
+// The Rule Machine parent app is not a rule; older hubs still run Rule-4.x children.
+private boolean _rmIsRuleAppType(String name) {
+    return name != null && name ==~ /(Button )?Rule-\d.*/
+}
+
+// Stripped text of a disabled-action span's inner html, or null when the span is empty or
+// is the selectActions header legend (RM pluralizes it by count).
+private String _rmDisabledActionText(String spanInnerHtml) {
+    def text = stripAppConfigHtml(spanInnerHtml)
+    if (!text || text ==~ /(?i)Disabled Actions?/) return null
+    return text
+}
+
+// Prefixes each disabled-action span with "[DISABLED] " (keeping its inner html so the mark
+// survives stripAppConfigHtml). Returns [html: <marked html>, disabled: <stripped texts>].
 private Map _rmMarkDisabledActions(String html) {
     if (!html || !html.contains("color:")) return [html: html, disabled: []]
     def disabled = []
@@ -336,9 +343,8 @@ private Map _rmMarkDisabledActions(String html) {
     def m = (html =~ _rmDisabledActionSpanRegex())
     while (m.find()) {
         def inner = m.group(1)
-        def text = stripAppConfigHtml(inner)
-        // RM pluralizes the legend by count: "Disabled Action" with one row disabled.
-        if (!text || text ==~ /(?i)Disabled Actions?/) continue
+        def text = _rmDisabledActionText(inner)
+        if (!text) continue
         out << html.substring(last, m.start()) << _rmDisabledActionMark() << inner
         last = m.end()
         disabled << text
@@ -348,7 +354,19 @@ private Map _rmMarkDisabledActions(String html) {
     return [html: out.toString(), disabled: disabled]
 }
 
-private List _extractEmbeddedActions(String html) {
+private String _rmDisabledRowText(String innerRaw) {
+    if (!innerRaw || !innerRaw.contains("color:")) return null
+    def m = (innerRaw =~ _rmDisabledActionSpanRegex())
+    while (m.find()) {
+        def text = _rmDisabledActionText(m.group(1))
+        if (text) return text
+    }
+    return null
+}
+
+// markDisabled flags RM disabled rows; disabledRows, when given, collects
+// [text:, disableButton:] for each one (disableButton only when that button is on the page).
+private List _extractEmbeddedActions(String html, boolean markDisabled = false, List disabledRows = null) {
     if (!html) return []
     def buttonNames = []
     def im = (html =~ /<input\s+type=['"]hidden['"]\s+name=['"]([^'"]+?)\.type['"]\s+value=['"]button['"][^>]*>/)
@@ -366,9 +384,15 @@ private List _extractEmbeddedActions(String html) {
         if (tm.find()) title = tm.group(1)
         def sm = attrs =~ /data-stateAttribute=['"]([^'"]+?)['"]/
         if (sm.find()) state = sm.group(1)
-        def inner = innerRaw.replaceAll(/<[^>]+>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
-        def div = [title: title, stateAttribute: state, description: inner ?: null]
-        if ((innerRaw =~ _rmDisabledActionSpanRegex()).find()) div.disabled = true
+        def div = [title: title, stateAttribute: state]
+        def disabledText = markDisabled ? _rmDisabledRowText(innerRaw) : null
+        if (disabledText) {
+            div.description = stripAppConfigHtml(innerRaw) ?: null
+            div.disabledText = disabledText
+        } else {
+            def inner = innerRaw.replaceAll(/<[^>]+>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
+            div.description = inner ?: null
+        }
         divs << div
     }
     if (!buttonNames || !divs) return []
@@ -380,7 +404,16 @@ private List _extractEmbeddedActions(String html) {
         if (d.title) a.title = d.title
         if (d.stateAttribute) a.stateAttribute = d.stateAttribute
         if (d.description) a.description = d.description
-        if (d.disabled) a.disabled = true
+        if (d.disabledText) {
+            a.disabled = true
+            if (disabledRows != null) {
+                def row = [text: d.disabledText]
+                // RM names the row's buttons by action index: <N>.0.false (edit) pairs with disable<N>.
+                def im2 = (a.name.toString() =~ /^(\d+)\./)
+                if (im2.find() && buttonNames.contains("disable" + im2.group(1))) row.disableButton = "disable" + im2.group(1)
+                disabledRows << row
+            }
+        }
         actions << a
     }
     return actions
@@ -541,6 +574,8 @@ def toolGetAppConfig(args) {
     def redactedPw = "***redacted (password)***"
     def passwordInputNames = [] as Set
     def disabledActions = []
+    boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
+        _rmIsRuleAppType(parsed.app.name?.toString())
     def sections = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
@@ -606,13 +641,22 @@ def toolGetAppConfig(args) {
         for (b in (s.body ?: [])) {
             if (!(b instanceof Map)) continue
             def rawHtml = (b.description ?: b.title)?.toString()
-            def marked = _rmMarkDisabledActions(rawHtml)
+            def marked = isRmRule ? _rmMarkDisabledActions(rawHtml) : [html: rawHtml, disabled: []]
             def text = stripAppConfigHtml(marked.html)
             if (text && text != "Click to set") paragraphs << text
-            if (marked.disabled) disabledActions.addAll(marked.disabled)
+            def disabledRows = []
             if (rawHtml) {
-                def acts = _extractEmbeddedActions(rawHtml)
+                def acts = _extractEmbeddedActions(rawHtml, isRmRule, disabledRows)
                 if (acts) embeddedActions.addAll(acts)
+            }
+            for (t in marked.disabled) {
+                def entry = [text: t]
+                def row = disabledRows.find { it.text == t }
+                if (row) {
+                    disabledRows.remove(row)
+                    if (row.disableButton) entry.disableButton = row.disableButton
+                }
+                disabledActions << entry
             }
         }
         if (paragraphs) section.paragraphs = paragraphs
@@ -645,7 +689,7 @@ def toolGetAppConfig(args) {
     if (pageHrefs) result.page.hrefs = pageHrefs
     if (disabledActions) {
         result.disabledActions = disabledActions
-        result.disabledActionsNote = "These Rule Machine actions are DISABLED (marked ${_rmDisabledActionMark().trim()} in paragraphs, disabled:true in embeddedActions) and do not run. RM toggles them with the per-row disable<N> button on selectActions; they are not stored in settings.".toString()
+        result.disabledActionsNote = "These Rule Machine actions are DISABLED and do not run: marked ${_rmDisabledActionMark().trim()} in paragraphs, and on a pageName=selectActions (Rule-5.1) or selectActionsX (Button Rule-5.1) read also disabled:true on the row in embeddedActions, whose disable<N> button reads 'Enable Action'. disableButton names that button (N is the action index, not the row position). The button is a TOGGLE: read selectActions/selectActionsX first, click only when the row's state differs from the target, re-read to confirm, and never retry a click whose response was lost.".toString()
     }
 
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
@@ -3006,7 +3050,7 @@ A transport drop can lose the response while the hub still commits this write; v
             name: "hub_get_app_config",
             description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page. Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.). Read-only.
 
-Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions`, and flagged `disabled:true` on its selectActions row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
+Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
 
 Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]] Requires Read master.""",
             inputSchema: [
