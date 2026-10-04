@@ -134,7 +134,7 @@ class ProtectedAppsSettingsSpec extends ToolSpecBase {
         def error = thrown(IllegalArgumentException)
         error.message.contains('194')
         error.message.contains('protected')
-        error.message.contains('Hubitat app UI')
+        error.message.contains('Advanced page')
 
         where:
         [target, developer] << [[194, '194', '0194'], [false, true]].combinations()

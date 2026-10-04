@@ -55,6 +55,20 @@ class AdvancedOverridesPageSpec extends ToolSpecBase {
         logs.any { it.msg?.toLowerCase()?.contains('override') }
     }
 
+    def "the Protected apps picker lives on the Advanced page, not the main page"() {
+        given: 'page methods are not renderable here, so pin where the input is declared'
+        def source = new File('hubitat-mcp-server.groovy').getText('UTF-8')
+        def body = { String name ->
+            int start = source.indexOf("def ${name}() {")
+            source.substring(start, source.indexOf('\n}\n', start))
+        }
+
+        expect:
+        body('advancedOverridesPage').contains('input "protectedAppIds"')
+        !body('mainPage').contains('input "protectedAppIds"')
+        body('mainPage').contains('Protected apps')   // the Advanced link names it
+    }
+
     def "appButtonHandler ignores an unknown button without error"() {
         when:
         script.appButtonHandler("someUnknownButton")
