@@ -6,6 +6,7 @@ import spock.lang.Unroll
 class WatchdogV3ParitySpec extends WatchdogV3Harness {
     static final Map MANUAL_TOOLS = [
         hub_update_app: 'adminUpdateApp', hub_set_mcp_developer_mode: 'adminSetMcpDeveloperMode',
+        hub_update_mcp_settings: 'adminUpdateMcpSettings',
         hub_get_source: 'adminGetSource', hub_create_library: 'adminCreateLibrary',
         hub_update_library: 'adminUpdateLibrary', hub_delete_item: 'adminDeleteItem',
         hub_force_delete_app: 'adminForceDeleteInstalledApp', hub_purge_e2e_artifacts: 'adminPurgeE2eArtifacts',
@@ -74,7 +75,7 @@ class WatchdogV3ParitySpec extends WatchdogV3Harness {
         tool << ['hub_update_app', 'hub_create_library', 'hub_update_library', 'hub_delete_item',
                  'hub_force_delete_app', 'hub_purge_e2e_artifacts', 'hub_reboot', 'hub_set_app_disabled',
                  'hub_update_platform', 'hub_install_bundle', 'hub_delete_bundle', 'hub_write_file',
-                 'hub_create_backup', 'hub_set_mcp_developer_mode', 'hub_get_source']
+                 'hub_create_backup', 'hub_set_mcp_developer_mode', 'hub_update_mcp_settings', 'hub_get_source']
     }
 
     def 'a manual write prevents a reentrant package start and releases its claim afterwards'() {

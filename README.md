@@ -103,6 +103,8 @@ The app shows two endpoint URLs:
   https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN
   ```
 
+> **Access toggles**: both endpoints are on by default. **Enable local access** and **Enable cloud access** in the app let you turn either off on its own. A disabled endpoint returns HTTP 403 for every request, even with a valid token; turning it back on restores access with the same token and URL.
+
 > **Header auth**: clients that expect bearer-token auth can send the token as an `Authorization: Bearer YOUR_TOKEN` header instead of the `?access_token=` query parameter — the Hubitat platform accepts either. Platform behaviour, verified manually on firmware 2.5.1.135 against both the local endpoint and the cloud relay; the e2e suite pins it on whichever endpoint it targets (the cloud relay in CI).
 
 ### 3. Connect Your AI Client
@@ -852,7 +854,7 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 <details>
 <summary><b>Protected apps</b></summary>
 
-The **Protected apps** picker on the main app page blocks generic app, native-rule, and Dashboard mutations (Easy and legacy) for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Manage the selection in the Hubitat app UI and click **Done** to apply it.
+The **Protected apps** picker on the app's **Advanced** page blocks generic app, native-rule, and Dashboard mutations (Easy and legacy) for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Change the selection there, then return to the main page and click **Done** to apply it.
 
 </details>
 
@@ -1668,6 +1670,8 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.5.1** - chore: store .bat files as-is instead of normalizing line endings; feat: mark disabled Rule Machine actions in hub_get_app_config reads. PRs: [#500](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/500), [#492](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/492)
+- **v4.5.0** - fix: watchdog purge confirms file deletes by re-listing File Manager; feat: per-endpoint access toggles, Protected apps on the Advanced page, debug logging via the MCP log level. PRs: [#496](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/496), [#497](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/497)
 - **v4.4.8** - build(deps): bump the gradle-dependencies group with 2 updates ([#488](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/488), @app/dependabot); ci: replace E2E watchdog v2 with v3 (manual admin, package deployment, wedge reboot); ci: stop linting, parsing and testing the retired v1/v2 watchdogs; fix: keep durable state off the request path and cut device and e2e overhead. PRs: [#488](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/488), [#485](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/485), [#493](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/493), [#494](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/494)
 - **v4.4.7** - fix: DateTime hub variables, live rule locals, numeric device ids, post-update setup refresh, RM edit guards; docs: generate TOOL_GUIDE.md from the served tool guide; fix: hub_get_info appUpdate derives updateAvailable from versions (#474). PRs: [#480](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/480), [#481](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/481), [#475](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/475)
 - **v4.4.6** - fix: native-app device pickers, sub-pages and UI page checks; Room Lighting create. PRs: [#477](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/477)

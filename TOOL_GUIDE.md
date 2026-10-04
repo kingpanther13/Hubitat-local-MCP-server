@@ -340,6 +340,8 @@ For replace/add every id is validated against the full hub device list (discover
 
 If the hub's device inventory is incomplete (its device tree could not be read, or it disagrees with the picker feed), an id it lacks is reported as "could not validate" instead of unknown. Nothing is written, so retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
 
+**`enableLocalAccess` / `enableCloudAccess`** -- allow requests over the LAN endpoint / the Hubitat cloud endpoint (both ON by default). A disabled endpoint answers HTTP 403 to every request, even with a valid token; turning it back on restores access with the same token and URL. A call cannot turn off the connection it arrived on (that would lock the caller out) -- switch it off from the other connection or the app page on the hub. `hub_get_info` reports both as `localAccessEnabled` / `cloudAccessEnabled`.
+
 **Deliberately NOT allowlisted:**
 - `enableWrite` -- would disable this tool's own write path mid-session.
 - `enableDeveloperMode` -- lockout protection; must stay UI-only to disable.
@@ -877,7 +879,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 ## Installed-App & Native-Rule Tools
 
-Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule and Easy/legacy Dashboard mutations even with Developer Mode enabled. Creating children under protected parents is also refused. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list in the Hubitat UI and click Done to apply it.
+Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule and Easy/legacy Dashboard mutations even with Developer Mode enabled. Creating children under protected parents is also refused. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list on the app's Advanced page in the Hubitat UI, then click Done on the main page to apply it.
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 
@@ -993,9 +995,10 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
   hub_get_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
   hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}
 
-### hub_get_app_config (deferred internals: embeddedActions wire-format + includeSettings key encoding)
+### hub_get_app_config (deferred internals: embeddedActions wire-format, disabled RM actions, includeSettings key encoding)
 
 - **embeddedActions in RM 5.1**: the clickable wizard buttons (e.g. RM's Create/Edit/Delete Trigger) are exposed by the hub as `<div class='submitOnChange'>` elements, NOT as schema inputs. The `embeddedActions` field surfaces each button's `name` plus its `stateAttribute` so that `hub_set_rule` can drive the button.
+- **Disabled RM actions**: Rule Machine stores an action's disabled state in app state, not settings (`disable<N>` is a blank button input). On `mainPage` the only carrier is a red italic span around the action text; on the actions page the row's `disable<N>` button title (`Enable Action` instead of `Disable Action`) and its checkbox icon carry it too. That page is `selectActions` for Rule-5.1 and `selectActionsX` for Button Rule-5.1 (a Button Rule's own `selectActions` root page has no `disable<N>` buttons). hub_get_app_config marks only RM rule apps: the paragraph line is prefixed `[DISABLED]`, a top-level `disabledActions` lists `{text}` per disabled action (with `disabledActionsNote`), and on a `selectActions`/`selectActionsX` read the row's `embeddedActions` entry carries `disabled:true` and the `disabledActions` entry adds `disableButton` (e.g. `disable3`). An action without these marks is live. N in `disable<N>` is the action's INDEX — the number in that row's `disable<N>` / `cut<N>` button names in `embeddedActions` — not its row position: after an action is removed, the indexes keep their gap. The button is a TOGGLE, not a setter: a second identical click re-enables, and a click on a nonexistent button still reports success. So read `selectActions` (or `selectActionsX`) first, click only when the row's current state differs from the target, re-read to confirm, and never retry a click whose response was lost. Toggle with `hub_set_rule(appId=<id>, walkStep={page:'selectActions', operation:'click', click:{name:'disable<N>'}}, confirm=true)` (page `selectActionsX` for a Button Rule); `hub_set_app_disabled` disables the WHOLE rule instead.
 - **includeSettings raw-key encoding example**: large apps' raw app-internal settings keys use app-specific encoding — e.g. Room Lighting encodes per-device-per-scene keys as `dm~<deviceId>~<scene>`. (Set `includeSettings=true` only for power-user inspection; large apps can have 500-1000 such keys.)
 
 ### hub_list_apps (scope='instances' filter — category meanings)

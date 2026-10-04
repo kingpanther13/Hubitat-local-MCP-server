@@ -252,7 +252,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         given:
         enableHubSecurity()
         seedCachedCookie('JSESSIONID=cached')
-        settingsMap.debugLogging = true
+        settingsMap.mcpLogLevel = 'debug'
         script.log.messages.clear()
 
         and: 'followRedirects:false makes HTTPBuilder throw on the 302; the exception carries the Location'
@@ -269,7 +269,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         sawFollowRedirects == false
         resp.status == 302
         resp.location == '/installedapp/configure/9999/mainPage'
-        script.log.messages.any { it.contains('[hubrt] GET /installedapp/create/310') }
+        script.log.messages.any { it.contains('[MCP1] ') && it.contains('[hubrt] GET /installedapp/create/310') }
         !script.log.messages.any { it.contains('[hubrt]') && it.contains('FakeHttpException') }
     }
 

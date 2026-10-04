@@ -145,6 +145,28 @@ per-action; `<N>` is the action index unless noted.
   (same dash-index as `tCapab-<N>`/`tDev-<N>`/`tstate-<N>`). waitEvents does not
   NPE on a partial duration the way the trigger does, but all three are written
   (default 0) for a clean total-wait computation.
+- **Disabled actions (RM 5.1, fw 2.5.2)** — the per-row Disable button on
+  `selectActions` (Rule-5.1) / `selectActionsX` (Button Rule-5.1, whose root page
+  is also named `selectActions` but carries no `disable<N>` buttons) is button
+  `disable<N>`, where N is the action's INDEX — the same number as the row's
+  `cut<N>` / `chkBox<N>` / `I<N>` buttons and its `<N>.0.false` edit (`doAct`)
+  button — not its row position (after `removeAction` of index 2 on a 3-action
+  rule the rows are `disable1`, `disable3`; there is no `disable2`). The
+  `settings[disable<N>]` input stays `""`; the state lives in RM app state and is
+  NOT in `settings`. Its `submitOnChange` div's `title` flips between `Disable
+  Action` (icon `he-checkbox-unchecked`) and `Enable Action` (`he-checkbox-checked`).
+  The row text is wrapped in a red italic span —
+  `<span style='color:red'><i>Notify ...</i></span>` — on both the `mainPage` actions
+  paragraph and the `selectActions` row (`data-stateAttribute='doAct'` div); a live
+  action is plain text. On `selectActions` the button title and icon also carry the
+  state; on `mainPage` the span is the only carrier. The table header's legend uses
+  the same markup around the literal `Disabled Action` / `Disabled Actions`
+  (pluralized by count); `*BROKEN*` is red but not italic. Clicking `disable<N>`
+  via `/installedapp/btn` (no `stateAttribute`) TOGGLES it (live-verified; a second
+  click re-enables, and a click on a nonexistent `disable<N>` still reports
+  success). `hub_set_rule` walkStep is what clicks it; `hub_get_app_config` only
+  reads the span (`[DISABLED]` mark + `disabledActions`, with `disableButton` on a
+  `selectActions` read).
 - **String `*contains*` comparator** — for a STRING-typed variable or a
   free-valued Custom Attribute, the comparator field (`RelrDev_<N>` on the
   condition wizard, `ReltDev<N>` on the trigger row) offers `=`, `≠` (the

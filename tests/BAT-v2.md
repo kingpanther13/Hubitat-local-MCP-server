@@ -556,16 +556,6 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_set_variable` with `name: "vacationMode"` and `mesh_shared: true` (no `value` needed — mesh_shared may stand alone), reports `meshShared: true` and, when the read-back is readable, `meshShareConfirmed: true` (the variable now appears in `hub_get_hub_mesh` `sharedHubVariables`). Then `mesh_shared: false` to stop. `mesh_shared` applies to HUB variables only — a rule-only name is rejected by validation before any hub call (`isError`), as is a call with neither `value` nor `mesh_shared`. Sharing/unsharing is reversible (no `confirm`). Distinct from per-DEVICE sharing (`hub_update_device` `meshEnabled`).
 
-### T14l — read the hub network configuration (hub_get_info includeNetwork)
-
-```json
-{
-  "test_prompt": "Is my hub on DHCP or a static IP, what DNS servers is it using, and — if a static IP is saved — what are its saved IP, gateway, and subnet?"
-}
-```
-
-**Expected**: Calls `hub_get_info` with `includeNetwork: true` and reads the `network` block. Reports `ipMode` (`dhcp`/`static`, or `unknown` when the hub does not report it), `activeDnsServers`, and the SAVED static config `staticIp`/`staticGateway`/`staticSubnetMask` (reported whether or not static is the active mode; null on a DHCP-only hub — there is no current-gateway field on the endpoint), Ethernet autoneg, and the joined `wifiSsid`. The current LAN address is NOT in the block — it is the top-level `localIP` field. Read-only — no `confirm`; `includeNetwork` is opt-in, so a plain `hub_get_info` omits the block. The Wi-Fi PASSWORD is never returned (SSID only). On firmware without the endpoint (or an unreadable/empty/non-JSON body) the `network` block is `success:false` with an `error` + `note`, not a throw. The write counterpart is `hub_set_system_settings(network:...)`.
-
 ### T14l — link a device or variable a peer hub shares (hub_create_device / hub_create_variable mesh link)
 
 > **Conditional** — only runnable when a peer hub is actually sharing something (`hub_get_hub_mesh` `availableLinkedDevices[]` / `availableLinkedHubVariables[]` non-empty). Otherwise verify the validation contract only.
@@ -589,6 +579,16 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```
 
 **Expected**: Recognizes the DECORATED local name (`"<sourceVar> on <peerName>"`) as a Hub Mesh linked mirror and calls `hub_delete_variable` with `name` + `confirm: true`. When nothing real on this hub uses the mirror (`localLinkedHubVariables[]` row `inUseByApps:false`) it unlinks WITHOUT `force` — even though the hub's generic in-use registry marks the mirror in use (that registration is the mesh link itself, not a consumer) — and returns `{success:true, deleted:true, unlinked:true, source:"hub"}` with a `note` saying only this hub's local copy was removed and the source variable on the peer is untouched. When a real local app uses the mirror (`inUseByApps:true`) the unforced call is refused (`isError`) with a message naming BOTH that it is a linked mirror (peer untouched) AND that real apps will break; `force: true` unlinks anyway. An ordinary (non-mirror) in-use hub var is unchanged — still refused without `force` on the generic registry guard. Teardown ORDER: unlink on the linking hub(s) first, THEN unshare on the owner (`hub_set_variable(mesh_shared=false)`) — unsharing first strands the mirrors, and the unshare result carries a caution saying so. Confirm + a recent backup are still required (`requireDestructiveConfirm`).
+
+### T14n — read the hub network configuration (hub_get_info includeNetwork)
+
+```json
+{
+  "test_prompt": "Is my hub on DHCP or a static IP, what DNS servers is it using, and — if a static IP is saved — what are its saved IP, gateway, and subnet?"
+}
+```
+
+**Expected**: Calls `hub_get_info` with `includeNetwork: true` and reads the `network` block. Reports `ipMode` (`dhcp`/`static`, or `unknown` when the hub does not report it), `activeDnsServers`, and the SAVED static config `staticIp`/`staticGateway`/`staticSubnetMask` (reported whether or not static is the active mode; null on a DHCP-only hub — there is no current-gateway field on the endpoint), Ethernet autoneg, and the joined `wifiSsid`. The current LAN address is NOT in the block — it is the top-level `localIP` field. Read-only — no `confirm`; `includeNetwork` is opt-in, so a plain `hub_get_info` omits the block. The Wi-Fi PASSWORD is never returned (SSID only). On firmware without the endpoint (or an unreadable/empty/non-JSON body) the `network` block is `success:false` with an `error` + `note`, not a throw. The write counterpart is `hub_set_system_settings(network:...)`.
 
 ### T15 — hub_list_modes
 

@@ -326,7 +326,7 @@ boolean manualToolWrites(String toolName, Map args) {
     if (toolName == "hub_get_source") return args.noSave != true
     if (toolName == "hub_update_platform") return args.statusOnly != true
     if (toolName == "hub_manage_variables") return args.action in ["set", "hub_set_variable"]
-    return toolName in ["hub_update_app", "hub_set_mcp_developer_mode", "hub_create_library",
+    return toolName in ["hub_update_app", "hub_set_mcp_developer_mode", "hub_update_mcp_settings", "hub_create_library",
         "hub_update_library", "hub_delete_item", "hub_force_delete_app", "hub_purge_e2e_artifacts",
         "hub_reboot", "hub_set_app_disabled", "hub_install_bundle", "hub_delete_bundle",
         "hub_write_file", "hub_create_backup"]
@@ -787,6 +787,7 @@ def executeManualTool(String toolName, Map args) {
     switch (toolName) {
         case "hub_update_app":      return adminUpdateApp(args)
         case "hub_set_mcp_developer_mode": return adminSetMcpDeveloperMode(args)
+        case "hub_update_mcp_settings": return adminUpdateMcpSettings(args)
         case "hub_get_source":      return adminGetSource(args)
         case "hub_create_library":  return adminCreateLibrary(args)
         case "hub_update_library":  return adminUpdateLibrary(args)
@@ -1823,30 +1824,61 @@ def adminSetMcpDeveloperMode(args) {
     if (!id?.isInteger() || id.toInteger() <= 0 || args?.enabled != true) {
         throw new IllegalArgumentException("appId must be a positive installed-app ID and enabled must be true")
     }
-    String path = "/installedapp/configure/json/${id.toInteger()}"
+    def result = setMcpServerSettings(id.toInteger(), [enableDeveloperMode: true], [enableDeveloperMode: "bool"], "Developer Mode")
+    if (result.remove("updated") != null) result.developerModeEnabled = true
+    return result
+}
+
+// hub_update_mcp_settings: the main server's tool of the same name, reachable when the MCP server's
+// own endpoint is not (e.g. its cloud access is switched off). Same scalar allowlist minus
+// mcpLogLevel, whose server-side cache only the main tool refreshes.
+def adminUpdateMcpSettings(args) {
+    requireConfirm(args)
+    def id = args?.appId?.toString()
+    if (!id?.isInteger() || id.toInteger() <= 0) throw new IllegalArgumentException("appId must be a positive installed-app ID")
+    if (!(args.settings instanceof Map) || args.settings.isEmpty()) {
+        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}")
+    }
+    Map types = [debugLogging: "bool", maxCapturedStates: "number", loopGuardMax: "number", loopGuardWindowSec: "number",
+                 enableRead: "bool", enableCustomRuleEngine: "bool", useGateways: "bool", enableMandatoryBPS: "bool",
+                 bypassDeviceAllowlist: "bool", maxConcurrentWrites: "number", backupEveryRuleWrite: "bool",
+                 enableLocalAccess: "bool", enableCloudAccess: "bool"]
+    Map wanted = [:]
+    args.settings.each { key, value ->
+        String k = key.toString()
+        if (!types.containsKey(k)) throw new IllegalArgumentException("Setting '${k}' is not allowed. Allowed: ${types.keySet().sort().join(', ')}")
+        String s = value?.toString()
+        if (types[k] == "bool" && !(s in ["true", "false"])) throw new IllegalArgumentException("Setting '${k}' expects a boolean")
+        if (types[k] == "number" && !s?.isBigDecimal()) throw new IllegalArgumentException("Setting '${k}' expects a number")
+        wanted[k] = (types[k] == "bool") ? (s == "true") : s.toBigDecimal()
+    }
+    return setMcpServerSettings(id.toInteger(), wanted, types, "MCP server settings")
+}
+
+// Write settings on the standing MCP server's main page and verify them by read-back.
+private Map setMcpServerSettings(int id, Map wanted, Map types, String what) {
+    String path = "/installedapp/configure/json/${id}"
     def cfg = _parseJsonBody(hubGet(path, [:]))
-    // Only the standing MCP server may be bootstrapped; labels are user-editable.
-    if (!(cfg instanceof Map) || cfg.app?.id?.toString() != id.toInteger().toString() ||
+    // Only the standing MCP server may be changed; labels are user-editable.
+    if (!(cfg instanceof Map) || cfg.app?.id?.toString() != id.toString() ||
         cfg.app?.appType?.namespace != "mcp" || cfg.app?.appType?.name != "MCP Rule Server" ||
         cfg.app?.version == null || cfg.configPage?.name != "mainPage") {
         return [success: false, error: "Could not verify the MCP server's installed-app identity and settings page."]
     }
-    if (cfg.settings?.enableDeveloperMode?.toString() == "true") {
-        return [success: true, appId: id.toInteger(), developerModeEnabled: true, changed: false]
-    }
-    mcpAdminLog "Enabling Developer Mode on MCP server instance ${id} for E2E setup"
-    def body = [id: id.toInteger().toString(), version: cfg.app.version.toString(),
-                "settings[enableDeveloperMode]": "true", "enableDeveloperMode.type": "bool",
+    def landed = { Map c -> wanted.every { k, v -> c.settings?.get(k)?.toString() == v.toString() } }
+    if (landed(cfg)) return [success: true, appId: id, changed: false, updated: wanted]
+    mcpAdminLog "Setting ${wanted} on MCP server instance ${id} for E2E"
+    def body = [id: id.toString(), version: cfg.app.version.toString(),
                 currentPage: "mainPage", pageBreadcrumbs: "[]", formAction: "update"]
+    wanted.each { k, v -> body["settings[${k}]".toString()] = v.toString(); body["${k}.type".toString()] = types[k] }
     def response = hubPostForm("/installedapp/update/json", body)
-    // A lost POST response is ambiguous: the fresh setting decides whether it landed.
+    // A lost POST response is ambiguous: the fresh settings decide whether it landed.
     def observed = _parseJsonBody(hubGet(path, [:]))
-    if (observed instanceof Map && observed.app?.id?.toString() == id.toInteger().toString() &&
-        observed.settings?.enableDeveloperMode?.toString() == "true") {
-        return [success: true, appId: id.toInteger(), developerModeEnabled: true, changed: true]
+    if (observed instanceof Map && observed.app?.id?.toString() == id.toString() && landed(observed)) {
+        return [success: true, appId: id, changed: true, updated: wanted]
     }
-    return [success: false, appId: id.toInteger(),
-            error: "Developer Mode was not verified enabled after the settings POST (HTTP ${response?.status ?: 'no response'})."]
+    return [success: false, appId: id,
+            error: "${what} not verified after the settings POST (HTTP ${response?.status ?: 'no response'})."]
 }
 
 // hub_set_app_disabled: toggle an installed app's disabled flag (the admin UI's red-X) via
@@ -2555,6 +2587,9 @@ def getManualToolDefinitions() {
         [name: "hub_set_mcp_developer_mode", annotations: [title: "Enable MCP Developer Mode", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false],
          description: "Enable Developer Mode on the test hub's MCP server instance for E2E setup. Verifies the app code identity and reads the setting back. Only enabled:true is accepted; confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], enabled: [type: "boolean", enum: [true]], confirm: [type: "boolean"]], required: ["appId", "enabled", "confirm"]]],
+        [name: "hub_update_mcp_settings", annotations: [title: "Update MCP Settings", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false],
+         description: "Update the test hub MCP server's own settings -- the main server's hub_update_mcp_settings, for when its endpoint is unreachable (e.g. enableCloudAccess off). Allowed: debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess. Verifies the app identity and reads the settings back. confirm:true required.",
+         inputSchema: [type: "object", properties: [appId: [type: "string", description: "The MCP server's installed-app ID."], settings: [type: "object", description: "Map of setting key to new value."], confirm: [type: "boolean"]], required: ["appId", "settings", "confirm"]]],
         [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required. Updating this watchdog's own code is refused unless the MCP server's endpoint answers, because that server is the only path that could repair a bad watchdog update.",
          inputSchema: [type: "object", properties: [
             appId: [type: "string", description: "Apps Code CLASS id to update."],

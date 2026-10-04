@@ -415,7 +415,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Hub security retired (firmware cutoff):** ${state.hubSecurityRetired == true}",
             "- **Tool mode (useGateways):** ${settings.useGateways == null ? 'gateway (default)' : (settings.useGateways == false ? 'flat' : 'gateway')}",
             "- **MCP log level (UI setting):** ${settings.mcpLogLevel == null ? 'not set (effective level above)' : settings.mcpLogLevel.toString()}",
-            "- **Hubitat console logging:** ${eff(settings.debugLogging, false)}",
+            "- **MCP traffic logging:** ${eff(settings.debugLogging, false)}",
             "- **Disabled gateways:** ${disabledGateways ? disabledGateways.join(', ') : 'none (default)'}",
             "- **Disabled tools:** ${disabledTools ? disabledTools.join(', ') : 'none (default)'}",
             "- **Tools hidden from this client:** ${hiddenTools ? hiddenTools.join(', ') : 'none'}",

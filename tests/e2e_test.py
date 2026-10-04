@@ -1442,6 +1442,35 @@ class TestRunner:
             print(f"    [THROTTLE] watchdog bounce leg (disable={disable}) failed: {exc}")
             return False
 
+    def _watchdog_tool(self, name: str, arguments: dict) -> dict:
+        """Call one watchdog v3 tool and return its decoded result. Any unusable answer -- HTTP
+        error, JSON-RPC error, tool error, malformed body -- raises AssertionError."""
+        try:
+            resp = requests.post(self.watchdog_url, json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }, timeout=60)
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("error"):
+                raise AssertionError(f"watchdog {name} failed: {body['error']}")
+            result = body["result"]
+            if result.get("isError") is True:
+                raise AssertionError(f"watchdog {name} failed: {str(result)[:300]}")
+            decoded = json.loads(result["content"][0]["text"])
+        except AssertionError:
+            raise
+        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise AssertionError(f"watchdog {name} returned no usable result: {exc}") from exc
+        if not isinstance(decoded, dict):
+            raise AssertionError(f"watchdog {name} returned a non-object result")
+        return decoded
+
+    def _watchdog_tool_names(self) -> set[str]:
+        resp = requests.post(self.watchdog_url, json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, timeout=60)
+        return {tool.get("name") for tool in resp.json().get("result", {}).get("tools", [])}
+
     def _clear_load_throttle(self, reason: str) -> bool:
         """Attempt watchdog disable/enable; True verifies those flags, not recovery.
 
@@ -11659,18 +11688,25 @@ class TestRunner:
                     print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4f: installed_app_reads (3 tests) -- the thin app-summary mode of
-    # hub_get_app_config (/installedapp/json/<id>), the per-app events mode of
-    # hub_list_device_events (/installedapp/eventsJson/<id>), and the app-type
-    # catalog fields (menu tab + built-in vs community) on hub_list_apps(types).
+    # GROUP 4f: installed_app_reads (4 tests) -- the thin app-summary mode of
+    # hub_get_app_config (/installedapp/json/<id>) plus its RM disabled-action
+    # marking, its modeInputs projection, the app-type catalog fields (menu tab +
+    # built-in vs community) on hub_list_apps(types), and the per-app events mode of
+    # hub_list_device_events (/installedapp/eventsJson/<id>).
     # -----------------------------------------------------------------------
 
     @test("installed_app_reads")
     def test_get_app_config_summary_mode(self) -> None:
         # summary:true returns the thin identity payload WITHOUT the rendered config
         # page -- the cheap existence/identity probe for installed apps. Pin it on a
-        # throwaway RM rule so the identity fields are deterministic.
-        app_id = self._create_native_rule("CfgSummary")
+        # throwaway RM rule so the identity fields are deterministic. The same rule then
+        # carries the disabled-action marking checks (three actions, index 2 removed, so
+        # the rows are indices 1 and 3 and disable<N> is pinned to the index, not the row).
+        app_id = self._create_native_rule("CfgSummary", {"addActions": [
+            {"capability": "log", "message": "disabled-mark one"},
+            {"capability": "log", "message": "disabled-mark two"},
+            {"capability": "log", "message": "disabled-mark three"},
+        ]})
         try:
             result = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config",
@@ -11686,6 +11722,75 @@ class TestRunner:
             # The point of summary mode: no rendered config page rides along.
             assert not result.get("page") and not result.get("configPage"), \
                 f"summary:true must omit the rendered config page: {sorted(result.keys())}"
+
+            self._set_rule(app_id, {"removeAction": {"index": 2}}, strict=True)
+
+            def read(page: str | None = None) -> dict:
+                args = {"appId": str(app_id)}
+                if page:
+                    args["pageName"] = page
+                res = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": args})
+                assert res.get("success") is True, f"{page or 'mainPage'} read failed: {res}"
+                return res
+
+            def paragraphs_of(res: dict) -> list:
+                return [p for sect in ((res.get("page") or {}).get("sections") or [])
+                        for p in (sect.get("paragraphs") or [])]
+
+            def embedded_of(res: dict) -> dict:
+                return {a.get("name"): a for sect in ((res.get("page") or {}).get("sections") or [])
+                        for a in (sect.get("embeddedActions") or [])}
+
+            # (a) Nothing disabled yet: no list, no mark; the disable buttons follow the action
+            # index (1 and 3), not the row position.
+            main = read()
+            assert "disabledActions" not in main, f"live rule reported disabledActions: {main.get('disabledActions')}"
+            assert not any("[DISABLED]" in p for p in paragraphs_of(main)), \
+                f"live rule paragraph carries [DISABLED]: {paragraphs_of(main)}"
+            rows = read("selectActions")
+            assert "disabledActions" not in rows, f"live rule reported disabledActions: {rows.get('disabledActions')}"
+            assert not any("[DISABLED]" in p for p in paragraphs_of(rows)), \
+                f"live selectActions paragraph carries [DISABLED]: {paragraphs_of(rows)}"
+            buttons = embedded_of(rows)
+            assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 missing/wrong: {buttons}"
+            assert buttons.get("disable3", {}).get("title") == "Disable Action", f"disable3 missing/wrong: {buttons}"
+            assert "disable2" not in buttons, f"disable2 present after removing action index 2: {sorted(buttons)}"
+
+            # (b) RM's own per-row Disable button for action index 3. It is a toggle, so click once.
+            self._walk_setup_step(app_id, {"page": "selectActions", "operation": "click",
+                                           "click": {"name": "disable3"}}, False)
+
+            # (c) mainPage: the span is the only carrier there.
+            main = read()
+            disabled = main.get("disabledActions") or []
+            assert len(disabled) == 1 and "disabled-mark three" in str(disabled[0].get("text")), \
+                f"expected exactly the third action in disabledActions: {disabled}"
+            assert "[DISABLED]" in str(main.get("disabledActionsNote") or ""), \
+                f"disabledActionsNote missing or does not explain the mark: {main}"
+            lines = [ln for p in paragraphs_of(main) for ln in p.splitlines()]
+            three = [ln for ln in lines if "disabled-mark three" in ln]
+            one = [ln for ln in lines if "disabled-mark one" in ln]
+            assert len(three) == 1 and "[DISABLED]" in three[0], f"third action not marked: {lines}"
+            assert len(one) == 1 and "[DISABLED]" not in one[0], f"live first action marked: {lines}"
+            assert not any("<span" in p for p in paragraphs_of(main)), f"HTML leaked into paragraphs: {paragraphs_of(main)}"
+
+            # (d) selectActions: the row flag, the flipped button title, and the paired button name.
+            rows = read("selectActions")
+            embedded = [a for sect in ((rows.get("page") or {}).get("sections") or [])
+                        for a in (sect.get("embeddedActions") or [])]
+            flagged = [a for a in embedded if a.get("disabled") is True]
+            assert len(flagged) == 1, f"expected exactly one disabled:true row: {embedded}"
+            assert flagged[0].get("name") == "3.0.false", f"disabled row is not action index 3: {flagged}"
+            assert "disabled-mark three" in str(flagged[0].get("description")), f"disabled row text wrong: {flagged}"
+            buttons = embedded_of(rows)
+            assert buttons.get("disable3", {}).get("title") == "Enable Action", f"disable3 did not flip: {buttons}"
+            assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 changed: {buttons}"
+            listed = rows.get("disabledActions") or []
+            assert len(listed) == 1 and listed[0].get("disableButton") == "disable3", \
+                f"selectActions disabledActions must name disable3 exactly once: {listed}"
+            # The header legend ("Disabled Action" / "Disabled Actions") uses the same markup.
+            assert not any(re.fullmatch(r"Disabled Actions?", str(d.get("text")).strip()) for d in listed), \
+                f"selectActions legend reported as a disabled action: {listed}"
         finally:
             self._delete_native(app_id)
 
@@ -14288,6 +14393,74 @@ class TestRunner:
             assert read_settings() == before, "settings differ after self-admin restoration"
 
     @test("developer_mode")
+    def test_endpoint_access_toggles_block_their_own_transport(self) -> None:
+        """Each access toggle refuses valid-token requests on its own transport only, and turning it
+        back on restores the same token. Local is proven through watchdog v3's loopback peer check;
+        cloud through this suite's own cloud endpoint, switched back on through v3."""
+        if not (self.watchdog_url and self.server_app_id):
+            raise SkipTest("WATCHDOG_URL/HUBITAT_APP_ID not set")
+        if "hub_update_mcp_settings" not in self._watchdog_tool_names():
+            raise SkipTest("the standing watchdog predates hub_update_mcp_settings; run watchdog maintenance")
+
+        def update(settings: dict) -> Any:
+            return self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings", "args": {"settings": settings, "confirm": True}})
+
+        def peer_available() -> Any:
+            return (self._watchdog_tool("hub_get_info", {"peer": True}).get("peerEndpoint") or {}).get("available")
+
+        try:
+            # A call cannot switch off the connection it arrived on.
+            try:
+                update({"enableCloudAccess": False})
+                raise AssertionError("a cloud request switched off cloud access")
+            except (McpError, McpToolError) as exc:
+                assert "lock this client out" in str(exc), str(exc)
+            assert self.client.call_tool("hub_get_info", {})["cloudAccessEnabled"] is True
+
+            # Local off: v3's loopback request with the valid token is refused; cloud keeps working.
+            assert update({"enableLocalAccess": False}).get("success") is True
+            assert self.client.call_tool("hub_get_info", {})["localAccessEnabled"] is False
+            assert peer_available() is False, "the local endpoint still answered with local access off"
+            assert update({"enableLocalAccess": True}).get("success") is True
+            assert peer_available() is True, "the local endpoint did not answer after local access came back on"
+
+            # Cloud off (through v3): this suite's valid token is refused on /mcp and /health.
+            off = self._watchdog_tool("hub_update_mcp_settings", {
+                "appId": self.server_app_id, "settings": {"enableCloudAccess": False}, "confirm": True})
+            assert off.get("success") is True, f"v3 could not switch cloud access off: {off}"
+            resp = self.client.raw_request({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                            "params": {"name": "hub_get_info", "arguments": {}}})
+            assert resp.status_code == 403, f"/mcp with cloud access off: HTTP {resp.status_code}"
+            assert resp.json()["error"]["code"] == -32600
+            health = requests.get(f"{self.client._app_path_prefix}/health",
+                                  params={"access_token": self.client.access_token}, timeout=30)
+            assert health.status_code == 403, f"/health with cloud access off: HTTP {health.status_code}"
+        finally:
+            # Every later test needs cloud access back, so retry before giving up.
+            restore_error = None
+            for attempt in range(3):
+                try:
+                    restored = self._watchdog_tool("hub_update_mcp_settings", {
+                        "appId": self.server_app_id,
+                        "settings": {"enableLocalAccess": True, "enableCloudAccess": True}, "confirm": True})
+                    if restored.get("success") is True:
+                        restore_error = None
+                        break
+                    restore_error = restored
+                except AssertionError as exc:
+                    restore_error = exc
+                if attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+            if restore_error is not None:
+                raise RuntimeError("could not turn the MCP server's endpoints back on through the watchdog -- "
+                                   f"every later test will fail: {restore_error}")
+
+        info = self.client.call_tool("hub_get_info", {})
+        assert info["cloudAccessEnabled"] is True and info["localAccessEnabled"] is True, \
+            "the same token did not regain access after cloud access came back on"
+
+    @test("developer_mode")
     def test_t220_update_mcp_settings_boolean_flip(self) -> None:
         """T220: hub_update_mcp_settings flips a boolean setting end-to-end."""
         # debugLogging isn't surfaced in hub_get_info; just round-trip through
@@ -15248,7 +15421,7 @@ class TestRunner:
     @test("best_practice_gating")
     def test_bps_refusal_is_error_logged_at_error_and_debug_thresholds(self) -> None:
         """A rejected write is recoverable in the response, native logs, and MCP logs
-        even at the default error threshold. The deliberately invalid variable type
+        even at the default error threshold; at debug, hub-request timings are recorded too. The deliberately invalid variable type
         guarantees no mutation if the acknowledgment gate itself regresses."""
         # Main-app native-log reads use a 30-second MRTR snapshot cache. Protocol-era
         # headers do not control that cache, so a LegacyEraClient before/after pair
@@ -15317,6 +15490,15 @@ class TestRunner:
                     "Mandatory best-practice acknowledgment" in entry.get("message", "")
                     for entry in fresh_native
                 ), f"{threshold} threshold did not emit a fresh refusal to native logs: {fresh_native}"
+
+                if threshold == "debug":
+                    # Internal hub-request timings follow the MCP level as well.
+                    self.client.call_tool("hub_get_info", {})
+                    timings = self.client.call_tool("hub_get_logs", {
+                        "mode": "mcp", "level": "debug", "component": "hub-admin", "limit": 100})
+                    assert any(str(e.get("message", "")).startswith("[hubrt] ")
+                               for e in timings.get("entries", [])), \
+                        "debug threshold did not record [hubrt] hub-request timings in MCP logs"
         finally:
             self._set_bps(enableMandatoryBPS=False, mcpLogLevel="error")
 

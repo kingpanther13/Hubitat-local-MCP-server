@@ -624,6 +624,56 @@ def test_prepare_still_releases_a_hold_when_the_mcp_endpoint_check_gets_no_answe
     assert "::warning::The MCP endpoint check got no answer" in capsys.readouterr().out
 
 
+MAIN_URL = "https://cloud.hubitat.com/api/0f0f0f0f-aaaa-bbbb-cccc-121212121212/apps/38/mcp?access_token=t-1"
+
+
+class AccessHub:
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def call(self, url, name, args):
+        self.calls.append((name, args))
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+def test_prepare_turns_both_mcp_endpoints_back_on_after_releasing_the_hold(cli, monkeypatch, capsys):
+    module, hub, seen, _bundle = cli
+    original = hub.call
+
+    def call(url, name, args):
+        if name == "hub_update_mcp_settings":
+            seen["order"].append(("access", args))
+            return {"success": True, "changed": True}
+        return original(url, name, args)
+
+    hub.call = call
+    monkeypatch.setattr(module, "endpoints", lambda: (hub, "watchdog", MAIN_URL))
+    module.main(["prepare"])
+    assert seen["order"] == ["clear_hold", ("access", {"appId": "38", "settings": {"enableLocalAccess": True, "enableCloudAccess": True}, "confirm": True})]
+    assert "endpoints back on" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("reply", [
+    OSError("Endpoint did not return a usable response"),
+    {"success": False, "error": "Could not verify the MCP server's installed-app identity and settings page."},
+])
+def test_restoring_mcp_access_only_warns_when_it_fails(module, capsys, reply):
+    hub = AccessHub(reply)
+    module.restore_mcp_access(hub, "watchdog", MAIN_URL)
+    assert len(hub.calls) == 1
+    out = capsys.readouterr().out
+    assert "::warning::" in out and "access_token" not in out
+
+
+def test_restoring_mcp_access_needs_an_app_id(module, capsys):
+    hub = AccessHub({"success": True})
+    module.restore_mcp_access(hub, "watchdog", "main")
+    assert hub.calls == []
+    assert "::warning::MCP_URL names no app ID" in capsys.readouterr().out
+
+
 def test_an_endpoint_failure_never_prints_the_exception(cli, monkeypatch):
     module, _hub, _seen, _bundle = cli
 

@@ -235,7 +235,7 @@ def toolGetVariable(args) {
             ]
         }
     } catch (Exception e) {
-        logDebug("Hub variable '${name}' lookup threw ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "Hub variable '${name}' lookup threw ${e.class.simpleName}: ${e.message}")
     }
 
     if (found == null) {
@@ -331,7 +331,7 @@ def _primeHubVarsWizard(Integer appId, String context) {
         hubInternalGet("/installedapp/configure/json/${appId}")
         hubInternalGet("/installedapp/statusJson/${appId}")
     } catch (Exception e) {
-        logDebug("${context}: _primeHubVarsWizard for ${appId} threw ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "${context}: _primeHubVarsWizard for ${appId} threw ${e.class.simpleName}: ${e.message}")
     }
 }
 
@@ -391,7 +391,7 @@ def _findHubVariablesAppId() {
                         if (cfg?.app?.appType?.name != "Hub Variables") verified = false
                     }
                 } catch (Exception e) {
-                    logDebug("_findHubVariablesAppId: verify fetch for ${id} threw ${e.class.simpleName}: ${e.message}")
+                    mcpLog("debug", "hub-vars", "_findHubVariablesAppId: verify fetch for ${id} threw ${e.class.simpleName}: ${e.message}")
                 }
                 if (verified) {
                     atomicState.hubVarsAppId = id
@@ -402,7 +402,7 @@ def _findHubVariablesAppId() {
             }
         }
     } catch (Exception e) {
-        logDebug("_findHubVariablesAppId: /hub2/appsList walk threw ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "_findHubVariablesAppId: /hub2/appsList walk threw ${e.class.simpleName}: ${e.message}")
     }
 
     throw new IllegalStateException(
@@ -466,7 +466,7 @@ def toolCreateVariable(args) {
         }
     } catch (IllegalArgumentException reraise) { throw reraise }
     catch (Exception e) {
-        logDebug("hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
 
     def appId = _findHubVariablesAppId()
@@ -654,7 +654,7 @@ private Map _createVariablesBulk(variables) {
             // Pre-flight existence check (matches the single-create refusal).
             def existing = null
             try { existing = getGlobalVar(itemName) } catch (Exception e) {
-                logDebug("hub_create_variable bulk: getGlobalVar('${itemName}') threw ${e.class.simpleName}: ${e.message}")
+                mcpLog("debug", "hub-vars", "hub_create_variable bulk: getGlobalVar('${itemName}') threw ${e.class.simpleName}: ${e.message}")
             }
             if (existing != null) {
                 throw new IllegalArgumentException(
@@ -703,7 +703,7 @@ def _hubVarsFormFields(Integer appId) {
     try {
         return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "hubVar")?.configPage) ?: [:]).keySet() as Set
     } catch (Exception e) {
-        logDebug("_hubVarsFormFields(${appId}) could not read the form: ${e.message}")
+        mcpLog("debug", "hub-vars", "_hubVarsFormFields(${appId}) could not read the form: ${e.message}")
         return null
     }
 }
@@ -805,12 +805,12 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     int verifyAttempts = (dtValue != null) ? 16 : 8
     for (int attempt = 0; attempt < verifyAttempts; attempt++) {
         try { created = getGlobalVar(name) } catch (Exception e) {
-            logDebug("hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+            mcpLog("debug", "hub-vars", "hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
         if (created != null) break
         // Only wait after a missing read; DateTime commits receive a longer window.
         if (attempt < verifyAttempts - 1) {
-            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+            try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         }
     }
     if (created == null) {
@@ -821,7 +821,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     // Compare date and hour:minute only: RM stores local time, and its offset text is not ours to match.
     if (dtValue != null && created.value?.toString()?.take(16) != dtValue.take(16)) {
         try { setGlobalVar(name, dtValue) } catch (Exception e) {
-            logDebug("hub_create_variable: setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+            mcpLog("debug", "hub-vars", "hub_create_variable: setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
         created = getGlobalVar(name)
         if (created?.value?.toString()?.take(16) != dtValue.take(16)) {
@@ -898,7 +898,7 @@ def toolCreateConnector(args) {
         if (after?.deviceId != null) break
         // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
         if (v < 7) {
-            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+            try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         }
     }
     if (after?.deviceId == null) {
@@ -961,7 +961,7 @@ def toolRemoveConnector(args) {
         if (after?.deviceId == null) break
         // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
         if (v < 7) {
-            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+            try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         }
     }
     if (after?.deviceId != null) {
@@ -1011,7 +1011,7 @@ def toolSetVariable(Map args) {
         try { hv = getGlobalVar(name) } catch (Exception e) {
             lookupThrew = true
             lookupErr = e.message ?: e.toString()
-            logDebug("hub_set_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+            mcpLog("debug", "hub-vars", "hub_set_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
         if (lookupThrew) {
             throw new IllegalArgumentException(
@@ -1101,7 +1101,7 @@ private Map _setVariableValueLeg(name, value) {
             return [success: true, name: name, value: value, source: "hub"]
         }
     } catch (Exception e) {
-        logDebug("setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
     if (!state.ruleVariables) state.ruleVariables = [:]
     state.ruleVariables.put(name, value)
@@ -1130,7 +1130,7 @@ def toolDeleteHubVariable(args) {
     def hubVar = null
     try { hubVar = getGlobalVar(varName) }
     catch (Exception e) {
-        logDebug("hub_delete_variable: getGlobalVar('${varName}') threw ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "hub_delete_variable: getGlobalVar('${varName}') threw ${e.class.simpleName}: ${e.message}")
     }
     def isHubVar = (hubVar != null)
     def isRuleVar = state.ruleVariables?.containsKey(varName) ?: false
@@ -1164,7 +1164,7 @@ def toolDeleteHubVariable(args) {
         // Defensive: if the scan itself errors, fall through to apply normal force gate
         // rather than blocking deletion entirely. Log so investigators know the scan
         // didn't run.
-        logDebug("hub_delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "hub_delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
     }
     // Rule Machine and the other apps that register Hub Variable use with the hub are
     // not MCP children, so ask the hub itself. Unreadable means unknown, not unused.
@@ -1186,7 +1186,7 @@ def toolDeleteHubVariable(args) {
             hubVarsAppId = _findHubVariablesAppId()
             platformInUse = _hubVarPlatformInUse(hubVarsAppId, varName)
         } catch (Exception e) {
-            logDebug("hub_delete_variable: platform in-use check failed: ${e.class.simpleName}: ${e.message}")
+            mcpLog("debug", "hub-vars", "hub_delete_variable: platform in-use check failed: ${e.class.simpleName}: ${e.message}")
         }
         if (linkedMirrorRow != null) {
             def srcHub = linkedMirrorRow.sourceHubName?.toString() ?: 'the source hub'
@@ -1251,7 +1251,7 @@ def toolDeleteHubVariable(args) {
                 if (stillThere == null) break
                 // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
                 if (v < 7) {
-                    try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+                    try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
                 }
             }
             if (stillThere == null) break

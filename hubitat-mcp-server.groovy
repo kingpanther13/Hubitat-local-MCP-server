@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.4.8 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.5.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -235,12 +235,17 @@ def mainPage() {
     _protectedAppIds()
     dynamicPage(name: "mainPage", title: "MCP Rule Server", install: true, uninstall: true) {
         section("MCP Endpoint") {
+            input "enableLocalAccess", "bool", title: "Enable local access (LAN endpoint)",
+                  defaultValue: true, submitOnChange: true
+            input "enableCloudAccess", "bool", title: "Enable cloud access (Hubitat cloud endpoint)",
+                  defaultValue: true, submitOnChange: true
+            paragraph "A disabled endpoint rejects every request, even one with a valid token. Turning it back on restores access with the same token and URL. With both off, nothing outside the hub can reach this server; this page stays available in the hub UI."
             if (!state.accessToken) {
                 paragraph "Click 'Done' to generate access token, then reopen app to see endpoint URLs."
             } else {
-                paragraph "<b>Local Endpoint:</b>"
+                paragraph "<b>Local Endpoint:</b> ${_transportStatusLabel(settings.enableLocalAccess)}"
                 paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
-                paragraph "<b>Cloud Endpoint:</b>"
+                paragraph "<b>Cloud Endpoint:</b> ${_transportStatusLabel(settings.enableCloudAccess)}"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "Clients that expect header auth can instead send the token as <code>Authorization: Bearer &lt;token&gt;</code> (no <code>?access_token=</code> needed) -- the Hubitat platform accepts it on both endpoints."
                 paragraph "<b>App ID:</b> ${app.id}"
@@ -280,19 +285,8 @@ def mainPage() {
                 paragraph "<i>Write tools are OFF — the MCP client sees only read tools.</i>"
             }
             href name: "advancedOverrides", page: "advancedOverridesPage",
-                 title: "Advanced: Per-tool Overrides & expert settings",
-                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and configure Origin validation."
-        }
-
-        section("Protected apps") {
-            def choices = _protectedAppChoices()
-            input "protectedAppIds", "enum", title: "Protect installed apps from generic mutations",
-                  options: choices.options, multiple: true, required: false,
-                  description: "Selected apps cannot be edited, controlled, disabled, deleted, or have children created beneath them through generic app/native-rule/dashboard tools, even with Developer Mode on. Reads and dedicated Developer Mode maintenance remain available."
-            if (choices.inventoryUnavailable) {
-                paragraph "The installed-app list could not be loaded completely. Only the MCP server and previously protected apps are shown. Existing protection remains active; reopen this page to retry loading the full list."
-            }
-            paragraph "The MCP server is selected by default. You can remove it or clear the list; later updates preserve your choice. Click Done to apply protection changes."
+                 title: "Advanced: Per-tool Overrides, Protected apps & expert settings",
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), choose the apps protected from generic mutations, and configure Origin validation."
         }
 
         section("Best-Practice Guidance") {
@@ -396,8 +390,8 @@ def mainPage() {
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
                   defaultValue: "error", required: false
-            input "debugLogging", "bool", title: "Enable Hubitat Console Logging", defaultValue: false,
-                  description: "Logs to Hubitat's built-in log viewer"
+            input "debugLogging", "bool", title: "Log MCP request/response traffic", defaultValue: false,
+                  description: "Writes every MCP request, response and notification to Hubitat's log viewer. Other debug output follows the MCP Debug Log Level above."
             input "maxCapturedStates", "number", title: "Max Captured States",
                   description: "Maximum temporary legacy-rule captures (default: 20); lost on hub restart or app code reload",
                   defaultValue: 20, range: "1..100", required: false
@@ -510,6 +504,16 @@ def advancedOverridesPage() {
                 ".SumoSelect > .optWrapper > .options li.opt { height: auto !important; }" +
                 "</style>" +
                 "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
+        }
+        section("Protected apps") {
+            def choices = _protectedAppChoices()
+            input "protectedAppIds", "enum", title: "Protect installed apps from generic mutations",
+                  options: choices.options, multiple: true, required: false,
+                  description: "Selected apps cannot be edited, controlled, disabled, deleted, or have children created beneath them through generic app/native-rule/dashboard tools, even with Developer Mode on. Reads and dedicated Developer Mode maintenance remain available."
+            if (choices.inventoryUnavailable) {
+                paragraph "The installed-app list could not be loaded completely. Only the MCP server and previously protected apps are shown. Existing protection remains active; reopen this page to retry loading the full list."
+            }
+            paragraph "The MCP server is selected by default. You can remove it or clear the list; later updates preserve your choice. Return to the main page and click Done to apply protection changes."
         }
         def overrideOptions = buildOverrideOptions()
         section("Disable whole gateways") {
@@ -803,7 +807,7 @@ private Map _protectedAppChoices() {
 private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
     String id = _protectedAppId(targetId)
     if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
-        throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps in the MCP server's Hubitat app UI. Developer Mode does not bypass this protection for generic tools.")
+        throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps on the Advanced page of the MCP server's Hubitat app. Developer Mode does not bypass this protection for generic tools.")
     }
 }
 
@@ -919,6 +923,10 @@ def initialize() {
     }
 }
 
+private String _transportStatusLabel(value) {
+    return (value != false) ? "<span style='color: green;'>enabled</span>" : "<span style='color: red;'>disabled</span>"
+}
+
 // Saving new code does not call updated(), so the subscriptions, schedules and in-use
 // registrations initialize() owns would otherwise wait for the next Done click.
 private void _refreshSetupAfterUpdate() {
@@ -965,6 +973,10 @@ mappings {
 def hubResponseCapBytes() { 131072 }
 
 def handleHealth() {
+    if (!_transportEnabled()) {
+        return render(status: 403, contentType: "application/json",
+                      data: groovy.json.JsonOutput.toJson([status: "forbidden", error: _transportDisabledMessage()]))
+    }
     def ident = serverIdentity()
     return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson([
         status: "ok",
@@ -978,6 +990,7 @@ def handleHealth() {
 // HEM endpoint). GET returns a JSON-RPC-shaped 405 so a JSON-RPC client sees
 // a coherent error rather than an ad-hoc body.
 def handleMcpGet() {
+    if (!_transportEnabled()) return _transportDisabledResponse()
     return render(status: 405, contentType: "application/json",
                   data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600,
                       "This MCP endpoint is request-response only (POST). SSE/GET streaming is not supported.")))
@@ -986,6 +999,8 @@ def handleMcpGet() {
 // Transport contract: application-level JSON-RPC errors ride HTTP 200 -- do NOT convert them
 // to 4xx, legacy clients expect the error inside the body. Every non-200 is spec-mandated:
 //
+//   403 -- the transport this request arrived on (local or cloud) is switched off in the app
+//          settings (issue #453); checked before anything else, GET included.
 //   405 -- GET (handleMcpGet); POST-only by design.
 //   403 -- present Origin naming no known identity; ANY POST, either era. Null-id error body.
 //          GET never reaches it -- handleMcpGet answers 405 first.
@@ -1000,8 +1015,9 @@ def handleMcpGet() {
 // presence (see the era split below). Legacy revisions keep every pre-2026 behaviour,
 // batch included.
 def handleMcpRequest() {
+    if (!_transportEnabled()) return _transportDisabledResponse()
     // Streamable HTTP security MUST: validate Origin on every inbound POST to
-    // block DNS rebinding. First thing in the handler, so a rejected request costs
+    // block DNS rebinding. Right after the transport check, so a rejected request costs
     // nothing and touches no state -- not even the migration below. Runs in both
     // eras: this is a transport security control, not a protocol-revision feature.
     if (!_originAllowed()) {
@@ -1040,7 +1056,7 @@ def handleMcpRequest() {
         return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson(errResp))
     }
 
-    logDebug("MCP Request: ${requestBody.toString().take(500)}${requestBody.toString().length() > 500 ? '...[truncated]' : ''}")
+    logMcpTraffic("MCP Request: ${requestBody.toString().take(500)}${requestBody.toString().length() > 500 ? '...[truncated]' : ''}")
 
     // ---- Era split: the header's VALUE, never its presence ----
     // MCP-Protocol-Version has been REQUIRED since 2025-06-18, so a legacy client sends it too
@@ -1150,7 +1166,7 @@ def handleMcpRequest() {
         httpStatus = null
     }
 
-    logDebug("MCP Response: ${jsonResponse.take(500)}${jsonResponse.length() > 500 ? '...[' + jsonResponse.length() + ' bytes total]' : ''}")
+    logMcpTraffic("MCP Response: ${jsonResponse.take(500)}${jsonResponse.length() > 500 ? '...[' + jsonResponse.length() + ' bytes total]' : ''}")
     def renderArgs = [contentType: "application/json", data: jsonResponse]
     if (httpStatus != null) renderArgs.status = httpStatus
     return render(renderArgs)
@@ -1613,7 +1629,7 @@ def _unwrapPreserialized(item) {
 }
 
 def handleNotification(msg) {
-    logDebug("MCP Notification: ${msg.method}")
+    logMcpTraffic("MCP Notification: ${msg.method}")
 }
 
 
@@ -2276,6 +2292,21 @@ def handleToolsCallLegacy(msg) {
 def _isCloudRequest() {
     try { return request?.requestSource?.toString() == "cloud" }
     catch (Exception e) { return false }
+}
+
+// Issue #453: per-transport access toggles. Opt-out, not opt-in: the user already opted in by
+// enabling OAuth in Apps Code, which opens both endpoints. Only an explicit false blocks.
+def _transportEnabled() {
+    return settings[_isCloudRequest() ? "enableCloudAccess" : "enableLocalAccess"] != false
+}
+
+def _transportDisabledMessage() {
+    return "Forbidden: ${_isCloudRequest() ? 'cloud' : 'local'} access to this MCP server is disabled. Turn it on in the MCP Rule Server app on the hub."
+}
+
+def _transportDisabledResponse() {
+    return render(status: 403, contentType: "application/json",
+                  data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600, _transportDisabledMessage())))
 }
 
 // Relay time budget in ms. 0 disables self-budgeting; unset defaults to 6000. The check fires
@@ -4909,7 +4940,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
             ]
         ],
         hub_read_devices: [
@@ -6216,7 +6247,7 @@ def getVariableValue(name) {
         // Hub variable lookup failed — fall through to rule_engine namespace.
         // Logged at DEBUG so investigators can tell whether the lookup
         // genuinely missed (no such variable) or errored for some other reason.
-        logDebug("getVariableValue: hub lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
+        mcpLog("debug", "hub-vars", "getVariableValue: hub lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
     }
     return state.ruleVariables?.get(name)
 }
@@ -6934,7 +6965,7 @@ private boolean _hubFirmwareReadable() {
     try {
         return location?.hub?.firmwareVersionString?.toString()?.trim() as boolean
     } catch (Exception e) {
-        logDebug("Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
+        mcpLog("debug", "hub-admin", "Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
         return false
     }
 }
@@ -7203,7 +7234,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
 // endpoint is named here before some client sees the 502.
 private void _hubRtLog(String method, String path, long elapsedMs, String outcome) {
     String redacted = _redactSecretsInPath(path)
-    logDebug("[hubrt] ${method} ${redacted} (${elapsedMs}ms${outcome == 'ok' ? '' : ', ' + outcome})")
+    mcpLog("debug", "hub-admin", "[hubrt] ${method} ${redacted} (${elapsedMs}ms${outcome == 'ok' ? '' : ', ' + outcome})")
     long budget = _relayBudgetMs()
     if (budget > 0L && elapsedMs >= budget) {
         mcpLog("warn", "hub-admin", "[hubrt] slow internal ${method} ${redacted} took ${elapsedMs}ms (${outcome}), at or over the ${budget}ms cloud-relay budget -- a request that waits on it synchronously cannot be answered over the relay (see hub_get_tool_guide(section='slow_ops'))")
@@ -7284,7 +7315,7 @@ private Integer _resolveDirectAppId(String alias) {
         try {
             resp = hubInternalGetRaw(path)
         } catch (Exception e) {
-            logDebug("_resolveDirectAppId(${alias}): hop ${hop} GET ${path} threw ${e.toString()}")
+            mcpLog("debug", "hub-admin", "_resolveDirectAppId(${alias}): hop ${hop} GET ${path} threw ${e.toString()}")
             mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} GET threw ${e.class.simpleName}: ${e.message}")
             return null
         }
@@ -7292,7 +7323,7 @@ private Integer _resolveDirectAppId(String alias) {
         try { status = resp?.status as Integer } catch (Exception ignore) { status = null }
         def location = resp?.location?.toString()
         if (status == null || status < 300 || status >= 400 || !location) {
-            logDebug("_resolveDirectAppId(${alias}): hop ${hop} ${path} status=${status} location=${location} -- not a redirect")
+            mcpLog("debug", "hub-admin", "_resolveDirectAppId(${alias}): hop ${hop} ${path} status=${status} location=${location} -- not a redirect")
             mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} returned status=${status} instead of a redirect -- a 200 with no Location usually means the hub auto-followed an absolute Location (hubInternalGetRaw caveat)")
             return null
         }
@@ -7306,7 +7337,7 @@ private Integer _resolveDirectAppId(String alias) {
             path = "/installedapp/create/${create[0][1]}"
             continue
         }
-        logDebug("_resolveDirectAppId(${alias}): hop ${hop} unexpected Location ${location}")
+        mcpLog("debug", "hub-admin", "_resolveDirectAppId(${alias}): hop ${hop} unexpected Location ${location}")
         mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} redirected to an unexpected Location shape -- the direct/create/configure chain may have changed on this firmware (the debug-logging toggle surfaces the raw Location in the hub logs)")
         return null
     }
@@ -7481,7 +7512,7 @@ private void _rmNoteHubBreadcrumbs(appId, resp) {
             HUB_PAGE_BREADCRUMBS.put(appId.toString(), [page: page.group(1), crumbs: trail?.toString(), at: now()])
         }
     } catch (Exception noteExc) {
-        logDebug("_rmNoteHubBreadcrumbs: could not read the returned trail for app ${appId}: ${noteExc.message}")
+        mcpLog("debug", "rm-native", "_rmNoteHubBreadcrumbs: could not read the returned trail for app ${appId}: ${noteExc.message}")
     }
 }
 
@@ -7952,7 +7983,9 @@ def jsonRpcError(id, code, message, data = null) {
     return error
 }
 
-def logDebug(msg) {
+// Per-call MCP traffic stays out of mcpLog on purpose: at debug level it would flush the
+// 100-entry MCP history within about 50 calls. Read it through hub_get_logs mode=hub.
+def logMcpTraffic(msg) {
     if (settings.debugLogging) {
         log.debug msg
     }
@@ -9923,7 +9956,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.4.8"
+    return "4.5.1"
 }
 
 
@@ -10334,6 +10367,8 @@ Poll install progress with `statusOnly=true` (`status` is IDLE when none is runn
 For replace/add every id is validated against the full hub device list (discover ids via `hub_list_devices(scope='all')`, each carries an `mcpAuthorized` flag) -- one unknown id rejects the whole batch and nothing is written; `remove` does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless `allowEmpty:true`.
 
 If the hub's device inventory is incomplete (its device tree could not be read, or it disagrees with the picker feed), an id it lacks is reported as "could not validate" instead of unknown. Nothing is written, so retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
+
+**`enableLocalAccess` / `enableCloudAccess`** -- allow requests over the LAN endpoint / the Hubitat cloud endpoint (both ON by default). A disabled endpoint answers HTTP 403 to every request, even with a valid token; turning it back on restores access with the same token and URL. A call cannot turn off the connection it arrived on (that would lock the caller out) -- switch it off from the other connection or the app page on the hub. `hub_get_info` reports both as `localAccessEnabled` / `cloudAccessEnabled`.
 
 **Deliberately NOT allowlisted:**
 - `enableWrite` -- would disable this tool's own write path mid-session.
@@ -10878,7 +10913,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
 
-Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule and Easy/legacy Dashboard mutations even with Developer Mode enabled. Creating children under protected parents is also refused. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list in the Hubitat UI and click Done to apply it.
+Protected apps selected in the MCP server Hubitat app UI refuse generic app/native-rule and Easy/legacy Dashboard mutations even with Developer Mode enabled. Creating children under protected parents is also refused. The MCP instance is selected once on new installs and upgrades; later choices, including an empty list, persist. Reads and dedicated Developer Mode settings/package maintenance remain available. Change this list on the app's Advanced page in the Hubitat UI, then click Done on the main page to apply it.
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 
@@ -10994,9 +11029,10 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
   hub_get_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
   hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}
 
-### hub_get_app_config (deferred internals: embeddedActions wire-format + includeSettings key encoding)
+### hub_get_app_config (deferred internals: embeddedActions wire-format, disabled RM actions, includeSettings key encoding)
 
 - **embeddedActions in RM 5.1**: the clickable wizard buttons (e.g. RM's Create/Edit/Delete Trigger) are exposed by the hub as `<div class='submitOnChange'>` elements, NOT as schema inputs. The `embeddedActions` field surfaces each button's `name` plus its `stateAttribute` so that `hub_set_rule` can drive the button.
+- **Disabled RM actions**: Rule Machine stores an action's disabled state in app state, not settings (`disable<N>` is a blank button input). On `mainPage` the only carrier is a red italic span around the action text; on the actions page the row's `disable<N>` button title (`Enable Action` instead of `Disable Action`) and its checkbox icon carry it too. That page is `selectActions` for Rule-5.1 and `selectActionsX` for Button Rule-5.1 (a Button Rule's own `selectActions` root page has no `disable<N>` buttons). hub_get_app_config marks only RM rule apps: the paragraph line is prefixed `[DISABLED]`, a top-level `disabledActions` lists `{text}` per disabled action (with `disabledActionsNote`), and on a `selectActions`/`selectActionsX` read the row's `embeddedActions` entry carries `disabled:true` and the `disabledActions` entry adds `disableButton` (e.g. `disable3`). An action without these marks is live. N in `disable<N>` is the action's INDEX — the number in that row's `disable<N>` / `cut<N>` button names in `embeddedActions` — not its row position: after an action is removed, the indexes keep their gap. The button is a TOGGLE, not a setter: a second identical click re-enables, and a click on a nonexistent button still reports success. So read `selectActions` (or `selectActionsX`) first, click only when the row's current state differs from the target, re-read to confirm, and never retry a click whose response was lost. Toggle with `hub_set_rule(appId=<id>, walkStep={page:'selectActions', operation:'click', click:{name:'disable<N>'}}, confirm=true)` (page `selectActionsX` for a Button Rule); `hub_set_app_disabled` disables the WHOLE rule instead.
 - **includeSettings raw-key encoding example**: large apps' raw app-internal settings keys use app-specific encoding — e.g. Room Lighting encodes per-device-per-scene keys as `dm~<deviceId>~<scene>`. (Set `includeSettings=true` only for power-user inspection; large apps can have 500-1000 such keys.)
 
 ### hub_list_apps (scope='instances' filter — category meanings)
