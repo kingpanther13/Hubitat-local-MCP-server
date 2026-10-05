@@ -5649,13 +5649,13 @@ PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zi
         ],
         [
             name: "hub_call_device_swap",
-            description: """⚠️ DESTRUCTIVE: Swap a device — every app and rule that uses from_device_id runs on to_device_id's hardware afterwards, in one operation. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices' identities (label, name, network id, state): app references stay on from_device_id, which now IS the replacement, and to_device_id takes over the old device's identity.[[/FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Swap a device — apps and rules using from_device_id run on to_device_id's hardware afterwards. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices' identities (label, name, network id, state): app references stay on from_device_id, which now IS the replacement, and to_device_id takes over the old device's identity.[[/FLAT_TRIM]]
 
-Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the blast radius with hub_list_device_dependents(deviceId=from_device_id) — every app listed will drive the replacement; 3) confirm with the user.""",
+Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the blast radius with hub_list_device_dependents(deviceId=from_device_id) — every app listed moves to it; 3) confirm with the user.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    from_device_id: [type: "string", description: "Device the apps use today (from hub_list_devices). Its id keeps every app reference and takes on the replacement's identity."],
+                    from_device_id: [type: "string", description: "Device the apps use today (from hub_list_devices).[[FLAT_TRIM]] Its id keeps every app reference and takes on the replacement's identity.[[/FLAT_TRIM]]"],
                     to_device_id: [type: "string", description: "Replacement device ID. Must be capability-compatible — on mismatch the error lists the compatible candidates."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms a hub backup exists (<24h) and the user approved the swap."]
                 ],
