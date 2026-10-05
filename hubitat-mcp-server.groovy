@@ -551,6 +551,12 @@ def advancedOverridesPage() {
                   description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; positive values below 6000 use 6000; set below your MCP client's request timeout).",
                   defaultValue: 0, range: "0..300000", required: false
         }
+        section("Access tokens in responses") {
+            paragraph "App pages show their OAuth access tokens in plain text, including this server's own endpoint URLs and the URLs of apps such as Maker API. MCP clients read those pages, so the tokens reach the AI client and its transcripts. Turn this on to hide them from everything this server returns. Leave it off if you want the AI to read an endpoint URL for you, for example to set up another app."
+            input "redactAccessTokens", "bool", title: "Hide access tokens in MCP responses",
+                  description: "Leave OFF (default): tokens are returned as the hub shows them. ON: every access token in a tool result is replaced with ***redacted (access token)***.",
+                  defaultValue: false
+        }
         section("Native app edit backups") {
             paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and destructive Required Expression replacement still take a fresh snapshot."
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
@@ -4397,6 +4403,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
             mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}")
         }
     }
+    if (settings.redactAccessTokens == true) rendered = _redactAccessTokens(rendered)
     String jsonText
     try {
         jsonText = groovy.json.JsonOutput.toJson(rendered)
@@ -4435,6 +4442,28 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         return jsonRpcResult(id, body)
     }
     return [__preserialized: candidateJson]
+}
+
+// redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
+// an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
+// (app settings and state), and that same key inside JSON carried as a string (a file read or
+// an exported setting).
+private def _redactAccessTokens(value) {
+    String marker = "***redacted (access token)***"
+    if (value instanceof Map) {
+        return value.collectEntries { k, v ->
+            boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
+            [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
+        }
+    }
+    if (value instanceof List) return value.collect { _redactAccessTokens(it) }
+    if (value instanceof CharSequence) {
+        String text = value.toString()
+        if (!text.toLowerCase().contains("access")) return value
+        return text.replaceAll(/(?i)(access_token=)[^&\s"'<>#]+/, '$1' + marker)
+                   .replaceAll(/(?i)("access_?token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2')
+    }
+    return value
 }
 
 // True when a partial-commit loop should pause and hand back a resumable

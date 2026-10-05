@@ -11843,6 +11843,46 @@ class TestRunner:
             assert "appid" in blob or "deviceid" in blob or "exclusive" in blob, \
                 f"mutual-exclusivity refusal does not name the conflicting params: {exc}"
 
+    @test("installed_app_reads")
+    def test_redact_access_tokens_toggle(self) -> None:
+        # The server's own app page shows its endpoint URLs with the live access token.
+        # redactAccessTokens (default OFF) must hide it from the read. Assertion messages
+        # never include page text, so a failure cannot print the token.
+        marker = "***redacted (access token)***"
+
+        def set_redact(on: bool) -> None:
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"redactAccessTokens": on}, "confirm": True},
+            })
+
+        def page_text() -> str:
+            res = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": str(self.client.app_id)}})
+            assert res.get("success") is True, "server app page read failed"
+            return " ".join(p for sect in ((res.get("page") or {}).get("sections") or [])
+                            for p in (sect.get("paragraphs") or []))
+
+        set_redact(False)
+        try:
+            tokens = re.findall(r"access_token=([^&\s\"'<>#]+)", page_text())
+            assert tokens and not any(t.startswith("***") for t in tokens), \
+                "server app page shows no access_token endpoint URL with redactAccessTokens off"
+            set_redact(True)
+            hidden = page_text()
+            assert f"access_token={marker}" in hidden, \
+                "redactAccessTokens on: endpoint URLs missing or not marked as redacted"
+            assert not any(t in hidden for t in tokens), \
+                "redactAccessTokens on: the access token is still in the page read"
+        finally:
+            unwinding = sys.exc_info()[0] is not None
+            try:
+                set_redact(False)
+            except Exception as exc:
+                if not unwinding:
+                    raise
+                print(f"  [WARN] could not restore redactAccessTokens=false: {exc}")
+
     # -----------------------------------------------------------------------
     # GROUP 4g: device_swap (1 test) -- hub_call_device_swap child-device
     # ineligibility: an MCP-created virtual switch must be refused by the

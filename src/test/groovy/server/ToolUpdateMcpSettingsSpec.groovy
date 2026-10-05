@@ -608,6 +608,26 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         value << [true, false]
     }
 
+    @spock.lang.Unroll
+    def "writes redactAccessTokens=#value as the response token-redaction toggle"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [redactAccessTokens: value],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.updated == [redactAccessTokens: value]
+        sharedAppStub.settingsStore['redactAccessTokens'] == [type: 'bool', value: value]
+
+        where:
+        value << [true, false]
+    }
+
     def "mixed batch with bad mcpLogLevel rejects ALL keys (atomic validation)"() {
         // The critical safety property — without per-key validation, debugLogging would
         // have landed before mcpLogLevel's enum check fired inside toolSetLogLevel.
