@@ -373,7 +373,7 @@ private Map _toolRestoreSourceBackup(args) {
     }
     if (earlyResult != null) return earlyResult
     if (ruleSnapshot != null) {
-        try { return _rmRestoreFromBackup(entry, ruleSnapshot) }
+        try { return _rmRestoreFromBackup(entry, ruleSnapshot, args?.preserveRuleId == true) }
         catch (Exception e) {
             mcpLogError("hub-admin", "RM rule restore failed for key ${args.backupKey}", e)
             return [success: false, error: e.message, backupKey: args.backupKey, type: "rm-rule"]
@@ -1033,18 +1033,19 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_restore_backup",
-            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
+            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate; a rule backup restores as an exact App Cloner copy with a NEW id unless preserveRuleId:true). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
 A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 """,
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "Which backup to restore; default source."],
+                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "Default source."],
                     backupKey: [type: "string", description: "scope=source: backupKey from hub_list_backups (e.g. app_123)."],
                     fileName: [type: "string", description: "scope=hub_local: backup name from hub_list_backups."],
-                    path: [type: "string", description: "scope=hub_cloud: the cloud backup `path` from hub_list_backups."],
+                    path: [type: "string", description: "scope=hub_cloud: `path` from hub_list_backups."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf to upload+restore."],
+                    preserveRuleId: [type: "boolean", description: "Keep the rule id.[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay instead of the default exact App Cloner re-import as a new app.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
                 ],
                 required: ["confirm"]

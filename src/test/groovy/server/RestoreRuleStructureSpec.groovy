@@ -130,7 +130,6 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
     def "a rule restore leaves a deleted device out of the replay and says so"() {
         given:
         def written = [:]
-        script.metaClass._requireUnprotectedAppMutation = { id, String what -> }
         script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
         script.metaClass._rmUpdateAppSettings = { Integer id, Map s, Map schema -> written.putAll(s) }
         script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> [:] }
@@ -156,7 +155,6 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
 
     def "a rule restore whose triggers do not match the backup is NOT reported as success"() {
         given:
-        script.metaClass._requireUnprotectedAppMutation = { id, String what -> }
         script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
         script.metaClass._rmUpdateAppSettings = { Integer id, Map s, Map schema -> }
         script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> [:] }
@@ -175,5 +173,147 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.partial == true
         out.error.contains("triggers/actions do not match the backup")
         out.missingTriggers*.text == ["A turns off"]
+    }
+
+    // -------- native App Cloner backup + restore --------
+
+    private Map nativeSnapshot(Map extra = [:]) {
+        [ruleId: 100, appType: "rule_machine",
+         nativeExport: '{"deviceReplacements":{"8":{"deviceLabel":"A"}},"appReplacements":{"100":{"appLabel":"r"}},"appData":{}}',
+         configJson: [app: [id: 100], configPage: [sections: []], settings: [tstate1: "on"]],
+         statusJson: [appSettings: [[name: "tstate1", type: "enum"]]]] + extra
+    }
+
+    private Map nativeStubs(Map opts = [:]) {
+        def rec = [imports: [], deletes: [], enables: [], replays: []]
+        script.metaClass.toolImportNativeApp = { Map a -> rec.imports << a; opts.importResult ?: [success: true, newAppId: 200, stagedDisabled: [200]] }
+        script.metaClass.toolDeleteNativeApp = { Map a -> rec.deletes << a.appId; opts.deleteResult ?: [success: true, backup: [backupKey: "rm-rule_100_pre"]] }
+        script.metaClass.toolSetAppDisabled = { Map a -> rec.enables << a.appId; [success: true] }
+        script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
+        script.metaClass._rmUpdateAppSettings = { Integer id, Map st, Map schema -> rec.replays << st }
+        script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> [:] }
+        script.metaClass._rmReconcileRuleStructure = { Integer id, Map snap -> [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100},"configPage":{"sections":[]},"settings":{}}' }
+        hubGet.register('/device/fullJson/8') { params -> opts.deviceGone ? '{}' : '{"device":{"id":8}}' }
+        return rec
+    }
+
+    def "a backup with an App Cloner export restores as an exact new app and the old rule is deleted"() {
+        given:
+        def rec = nativeStubs()
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "mcp-rm-backup-100-x.json"], nativeSnapshot())
+
+        then:
+        out.success == true
+        out.restoredVia == "nativeImport"
+        out.ruleId == 200
+        out.originalRuleId == 100
+        out.recreated == true
+        out.replacedRuleBackup == "rm-rule_100_pre"
+        out.note.contains("NEW app 200")
+        rec.imports.size() == 1
+        rec.imports[0].stageDisabled == true
+        rec.imports[0].parentHintAppId == 100
+        rec.deletes == [100]
+        rec.enables == [200]
+        rec.replays.isEmpty()
+    }
+
+    def "an app that was disabled at backup time comes back disabled"() {
+        given:
+        def rec = nativeStubs()
+
+        when:
+        script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(configJson: [app: [id: 100, disabled: true], configPage: [sections: []], settings: [:]]))
+
+        then:
+        rec.deletes == [100]
+        rec.enables.isEmpty()
+    }
+
+    def "preserveRuleId restores in place by settings replay"() {
+        given:
+        def rec = nativeStubs()
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), true)
+
+        then:
+        out.ruleId == 100
+        out.restoredVia == null
+        rec.imports.isEmpty()
+        rec.deletes.isEmpty()
+        rec.replays == [[tstate1: "on"]]
+    }
+
+    def "an export that names a deleted device falls back to the settings replay"() {
+        given:
+        def rec = nativeStubs(deviceGone: true)
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        out.ruleId == 100
+        rec.imports.isEmpty()
+        rec.replays.size() == 1
+    }
+
+    def "a failed import deletes nothing"() {
+        given:
+        def rec = nativeStubs(importResult: [success: false, error: "no new child"])
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        out.success == false
+        out.error.contains("no new child")
+        rec.deletes.isEmpty()
+        rec.replays.isEmpty()
+    }
+
+    def "an old rule that will not delete leaves the copy disabled and says so"() {
+        given:
+        def rec = nativeStubs(deleteResult: [success: false, hubMessage: "has children"])
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        out.success == false
+        out.partial == true
+        out.ruleId == 200
+        out.error.contains("has children")
+        out.note.contains("DISABLED")
+        rec.enables.isEmpty()
+    }
+
+    def "a rule backup carries the App Cloner export, except for a rule with a Required Expression"() {
+        given:
+        def uploads = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads[fn] = new String(b, "UTF-8") }
+        def exportCalls = []
+        script.metaClass._rmNativeExportForBackup = { Integer id -> exportCalls << id; [json: '{"appReplacements":{}}'] }
+        hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100,"label":"r","appType":{"name":"Rule-5.1"}},"configPage":{"sections":[]},"settings":{}}' }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            groovy.json.JsonOutput.toJson([appSettings: [], appState: [[name: "eval", value: tokens ? ["0": tokens] : [:]]]])
+        }
+
+        when:
+        script._rmBackupRuleSnapshot(100, "pre-test")
+        def snap = new groovy.json.JsonSlurper().parseText(uploads.values().first())
+
+        then:
+        (snap.nativeExport != null) == exported
+        exportCalls.size() == (exported ? 1 : 0)
+        exported || snap.nativeExportSkipped.contains("Required Expression")
+
+        where:
+        tokens || exported
+        []     || true
+        [1]    || false
     }
 }

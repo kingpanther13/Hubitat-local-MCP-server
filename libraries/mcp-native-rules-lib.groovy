@@ -4110,7 +4110,7 @@ private String _rmEditOpLabel(Map args) {
 
 // Shared disabled-app refusal, so the wording cannot drift between the sites that need it.
 // IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
-private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
+void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     if (_rmIsAppDisabled(appId) != true) return
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
 }
@@ -4154,7 +4154,7 @@ private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
 // wrote and never committed. Its structural pre-flight is skipped: the row is not part of the
 // rule's block structure (it never reached the compiled list), and refusing to remove it would
 // strand exactly the orphan the rollback exists to clear.
-private Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean rollbackOwnRow = false) {
+Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean rollbackOwnRow = false) {
     // Single statusJson fetch shared by all three pre-flight checks below;
     // before the refactor each helper (_rmCollectActionIndices,
     // _rmGetStateEditAct, structural pre-flight) called _rmFetchStatusJson
@@ -4285,7 +4285,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean rollbackOw
 // budget of 10s. The 10s budget covers typical and slow hub propagation;
 // on retry exhaustion the throw directs the caller to verify via
 // hub_get_app_config since the deletion may complete post-response.
-private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
+Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     def beforeIndices = _rmCollectTriggerIndices(appId)
     if (!beforeIndices.contains(triggerIdx)) {
         throw new IllegalArgumentException("removeTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}. RM is not touched.")
@@ -9456,6 +9456,18 @@ private Map _rmBackupRuleSnapshotLocked(Integer ruleId, String reason) {
         }
     }
 
+    if (detectedAppType != "visual_rule" && config != null) {
+        // The cloner renders no export for a rule with a committed Required Expression (live, fw 2.5.2.129).
+        def evalState = (status?.appState instanceof List) ? (status.appState as List).find { it instanceof Map && it.name == "eval" }?.value : null
+        if (evalState instanceof Map && (evalState as Map)["0"] instanceof List && !((evalState as Map)["0"] as List).isEmpty()) {
+            snapshot.nativeExportSkipped = "the rule has a Required Expression, which Hubitat's App Cloner does not export"
+        } else {
+            def nat = _rmNativeExportForBackup(ruleId)
+            if (nat?.json) snapshot.nativeExport = nat.json
+            else if (nat?.error || nat?.skipped) snapshot.nativeExportSkipped = (nat.error ?: nat.skipped).toString()
+        }
+    }
+
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -13487,7 +13499,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
 // existing-RE edit-mode detection and the replace-RE delete-verification so
 // both read the page through the identical lens (a committed RE renders the
 // cancelST/editST controls, a deleted one no longer shows them).
-private Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
+Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
     def cfg = _rmFetchConfigJson(appId, pageName, cache)
     return (cfg?.configPage?.sections ?: []).collectMany { sec ->
         (sec?.input ?: []).collect { it?.name?.toString() }
@@ -13801,7 +13813,7 @@ private boolean _rmTokTrimTo(Integer appId, List target, Map cache = null) {
 
 // Remove conditions from the Required Expression's condition pool (Manage Conditions'
 // deleteCon). Used only for conditions this edit created. Returns the ids whose settings are gone.
-private List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
+List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
     if (!ids) return []
     // RM ignores deleteCon until Manage Conditions is opened from STPage the way the UI does (pred:true).
     try {
@@ -13893,11 +13905,12 @@ private Map _rmConditionTexts(Map state) {
 // Triggers (capabstrue), actions (actionList) and the condition pool (capabsfalse) live in RM app
 // state, which a settings replay cannot write. Remove what the live rule has beyond the snapshot
 // through RM's own delete paths, and name what the snapshot has that the live rule still lacks.
-private Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
+Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     def appState = snapshot?.statusJson?.appState
     if (!(appState instanceof List)) return [:]
     def snap = [:]
     appState.each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
+    if (!["capabstrue", "capabsfalse", "actionList"].any { snap.containsKey(it) }) return [:]
     def trigs = { Map st -> (st?.capabstrue instanceof Map) ? (st.capabstrue as Map).keySet().collect { it.toString() } : [] }
     def conds = { Map st -> (st?.capabsfalse instanceof Map) ? (st.capabsfalse as Map).keySet().collect { it.toString() } : [] }
     def acts = { Map st -> (st?.actionList instanceof List) ? (st.actionList as List).collect { it.toString() } : [] }
@@ -13962,7 +13975,7 @@ private List _rmRenderExpression(List toks, Map texts) {
     }
 }
 
-private Map _rmReadRuleState(Integer appId) {
+Map _rmReadRuleState(Integer appId) {
     try {
         def text = hubInternalGet("/app/ruleBuilderJson/${appId}")
         def parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null
@@ -14031,12 +14044,13 @@ private boolean _rmReplayValueMatches(Object current, Object want) {
 // Make the rule's Required Expression match a backup snapshot. Returns [:] when the snapshot has
 // no expression state to compare (older snapshots), else requiredExpressionRestored true|false
 // (+ requiredExpressionRemoved when the snapshot had none and the live rule did).
-private Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
+Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
     def appState = snapshot?.statusJson?.appState
     if (!(appState instanceof List)) return [:]
     def snapState = [:]
     appState.each { if (it instanceof Map && it.name != null) snapState.put(it.name.toString(), it.value) }
     def snapSettings = (snapshot?.configJson?.settings ?: [:]) as Map
+    if (!snapState.containsKey("eval") && !snapSettings.containsKey("useST")) return [:]
     def snapTokens = (snapState.eval instanceof Map && (snapState.eval as Map)["0"] instanceof List) ? new ArrayList((snapState.eval as Map)["0"] as List) : []
     boolean snapHasRE = snapSettings.useST?.toString() == "true" && !snapTokens.isEmpty()
     def snapRendered = _rmRenderExpression(snapTokens, _rmConditionTexts(snapState))

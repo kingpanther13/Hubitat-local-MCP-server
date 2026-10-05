@@ -420,6 +420,41 @@ def toolExportNativeApp(args) {
     }
     def sourceLabel = sourceCfg.app.label?.toString() ?: "app-${sourceAppId}"
 
+    def exported = _appClonerExportJson(sourceAppId)
+    String jsonContent = exported.json
+    Integer clonerAppId = exported.clonerAppId
+    def result = [
+        success: true,
+        sourceAppId: sourceAppId,
+        sourceLabel: sourceLabel,
+        clonerAppId: clonerAppId,
+        contentLength: jsonContent.length(),
+        jsonContent: jsonContent,
+        note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to hub_import_native_app to re-create the rule."
+    ]
+    if (saveAs) {
+        try {
+            uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
+            result.savedAs = saveAs
+            String hubIp = null
+            try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
+            if (hubIp) {
+                result.savedUrl = "http://${hubIp}/local/${saveAs}"
+            } else {
+                // Don't emit a literally-broken http://<HUB_IP>/... URL — flag
+                // the lookup failure instead.
+                mcpLog("warn", "rm-native", "hub_export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
+            }
+        } catch (Exception fileErr) {
+            result.saveError = fileErr.message
+            mcpLog("warn", "rm-native", "hub_export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
+        }
+    }
+    return result
+}
+
+// Hubitat's App Cloner export of one app: [json, clonerAppId]. Throws when the cloner renders none.
+Map _appClonerExportJson(Integer sourceAppId) {
     def initRes = _appClonerInit(sourceAppId)
     Integer clonerAppId = initRes.clonerAppId
     String referrer = initRes.referrer
@@ -467,35 +502,7 @@ def toolExportNativeApp(args) {
             }
             throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")
         }
-
-        def result = [
-            success: true,
-            sourceAppId: sourceAppId,
-            sourceLabel: sourceLabel,
-            clonerAppId: clonerAppId,
-            contentLength: jsonContent.length(),
-            jsonContent: jsonContent,
-            note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to hub_import_native_app to re-create the rule."
-        ]
-        if (saveAs) {
-            try {
-                uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
-                result.savedAs = saveAs
-                String hubIp = null
-                try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
-                if (hubIp) {
-                    result.savedUrl = "http://${hubIp}/local/${saveAs}"
-                } else {
-                    // Don't emit a literally-broken http://<HUB_IP>/... URL — flag
-                    // the lookup failure instead.
-                    mcpLog("warn", "rm-native", "hub_export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
-                }
-            } catch (Exception fileErr) {
-                result.saveError = fileErr.message
-                mcpLog("warn", "rm-native", "hub_export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
-            }
-        }
-        return result
+        return [json: jsonContent, clonerAppId: clonerAppId]
     } finally {
         // Reap the transient cloner on every path (success or throw) so repeated
         // exports don't accumulate hidden 'Export/Import/Clone' apps (BUG-8).
@@ -811,7 +818,79 @@ private Map _rmReadBackupSnapshot(Map entry) {
     return snapshot as Map
 }
 
-private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
+// Hubitat's App Cloner export of an app, kept in its backup so a restore can bring back app
+// state (triggers, actions, expression) that a settings replay cannot.
+Map _rmNativeExportForBackup(Integer appId) {
+    try {
+        return [json: _appClonerExportJson(appId).json]
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "Backup for app ${appId}: App Cloner export failed (${e.message}); this backup restores by settings replay")
+        return [error: e.message ?: e.toString()]
+    }
+}
+
+// Restore through Hubitat's own App Cloner import: an exact copy (settings and app state) as a NEW
+// app, then the old app is deleted. Returns null to fall back to the settings replay when the
+// import cannot be seeded or the export names a device that no longer exists (an import would not
+// reuse it).
+private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exists, String fileName) {
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(snapshot.nativeExport.toString()) } catch (Exception e) { return null }
+    def gone = [:]
+    def deadDevices = ((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])
+        .collect { it.toString() }.findAll { _rmDeviceGone(it, gone) }
+    if (deadDevices) {
+        mcpLog("info", "rm-native", "Restore of app ${savedId}: device(s) ${deadDevices} no longer exist, so the App Cloner import is skipped for the settings replay")
+        return null
+    }
+    Integer hint = exists ? savedId : null
+    if (hint == null) {
+        try {
+            def kids = _appClonerSnapshotChildren(_discoverParentAppId(snapshot?.appType ?: "rule_machine"))
+            hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
+        } catch (Exception e) {
+            hint = null
+        }
+        if (hint == null) return null
+    }
+    def imp = toolImportNativeApp([jsonContent: snapshot.nativeExport, parentHintAppId: hint, stageDisabled: true, confirm: true])
+    Integer newId = imp?.newAppId as Integer
+    if (imp?.success != true || newId == null) {
+        return [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, restoredVia: "nativeImport",
+                error: "The App Cloner import of the backup did not produce a new app: ${imp?.error ?: imp?.note}".toString(),
+                note: "Nothing was deleted. Retry, or pass preserveRuleId:true to restore rule ${savedId} in place by settings replay.".toString()]
+    }
+    def out = [success: true, type: "rm-rule", ruleId: newId, originalRuleId: savedId, recreated: true,
+               restoredVia: "nativeImport", backupFile: fileName]
+    if (exists) {
+        def del = toolDeleteNativeApp([appId: savedId, confirm: true])
+        if (del?.success != true) {
+            out.success = false
+            out.partial = true
+            out.error = "The backup was imported as app ${newId}, but the old rule ${savedId} could not be deleted: ${del?.hubMessage ?: del?.error}".toString()
+            out.note = "App ${newId} is the restored copy and is left DISABLED so the two never run together. Delete rule ${savedId} (hub_delete_native_app, force:true if it has children), then enable ${newId} with hub_set_app_disabled(disabled=false).".toString()
+            return out
+        }
+        out.replacedRuleBackup = del?.backup?.backupKey
+    }
+    // The import is staged disabled; leave it disabled only when the app was disabled at backup time.
+    if (snapshot?.configJson?.app?.disabled != true) {
+        def failed = (imp.stagedDisabled ?: [newId]).findAll { id ->
+            toolSetAppDisabled([appId: id, disabled: false])?.success != true
+        }
+        if (failed) {
+            out.success = false
+            out.partial = true
+            out.error = "The backup was restored as app ${newId}, but app(s) ${failed} could not be re-enabled.".toString()
+        }
+    }
+    out.note = ("Restored with Hubitat's App Cloner import as a NEW app ${newId} -- an exact copy of the backup, triggers and actions included" +
+        (exists ? "; the old rule ${savedId} was deleted" : "") +
+        ". Update anything that referenced rule ${savedId} (Run Rule actions, dashboards). Pass preserveRuleId:true to restore in place by settings replay instead.").toString()
+    return out
+}
+
+private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean preserveRuleId = false) {
     def fileName = entry.fileName
     Map snapshot = preparedSnapshot != null ? preparedSnapshot : _rmReadBackupSnapshot(entry)
     def savedId = snapshot.ruleId as Integer
@@ -849,6 +928,10 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
     def reg = _appTypeRegistry()[savedAppType]
     if (!reg) {
         throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
+    }
+    if (!preserveRuleId && snapshot?.nativeExport) {
+        def nativeOut = _rmRestoreViaNativeImport(snapshot, savedId, exists, fileName?.toString())
+        if (nativeOut != null) return nativeOut
     }
 
     def ruleId

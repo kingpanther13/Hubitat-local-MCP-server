@@ -7943,7 +7943,8 @@ class TestRunner:
         # such restore reported "applied partially". No other e2e restores an RM rule with a
         # device in it, so this was invisible until a live home hub showed it. The log action added
         # after the snapshot lives in RM state, which the replay cannot touch: the restore must
-        # remove it rather than report success over a rule that still has it.
+        # remove it rather than report success over a rule that still has it. preserveRuleId keeps
+        # this on the in-place replay path (the default restores through the App Cloner import).
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("RestorePicker", {
             "addActions": [{"capability": "switch", "action": "off", "deviceIds": [sw]}],
@@ -7958,7 +7959,7 @@ class TestRunner:
             assert backup_key, f"addAction returned no backupKey: {added}"
             restored = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
             assert restored.get("success") is True, \
                 f"in-place restore of a rule with a device picker failed: {restored}"
             assert restored.get("recreated") is False and str(restored.get("ruleId")) == str(app_id), \
@@ -7984,14 +7985,17 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
-    def test_rm_rule_restore_names_a_trigger_it_cannot_rebuild(self) -> None:
-        # Triggers live in RM state (capabstrue), so replaying a removed trigger's settings does not
-        # bring it back: the restore must say which trigger is missing instead of success:true.
+    def test_rm_rule_restore_brings_back_a_removed_trigger(self) -> None:
+        # Triggers live in RM state (capabstrue), so replaying a removed trigger's settings cannot
+        # bring it back. In place (preserveRuleId) the restore must NAME the missing trigger rather
+        # than report success; by default it restores through Hubitat's App Cloner import, an exact
+        # copy as a new rule that has the trigger again, and deletes the old rule.
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("RestoreTrig", {
             "addTriggers": [{"capability": "Switch", "deviceIds": [sw], "state": "on"},
                             {"capability": "Switch", "deviceIds": [sw], "state": "off"}],
         })
+        new_id = None
         try:
             removed = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
@@ -7999,15 +8003,32 @@ class TestRunner:
             assert removed.get("success") is True, f"removeTrigger that takes the snapshot failed: {removed}"
             backup_key = (removed.get("backup") or {}).get("backupKey")
             assert backup_key, f"removeTrigger returned no backupKey: {removed}"
+
+            in_place = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
+            assert in_place.get("success") is False and in_place.get("partial") is True, \
+                f"an in-place restore that could not bring the removed trigger back reported success: {in_place}"
+            assert any("turns off" in str(m.get("text")) for m in (in_place.get("missingTriggers") or [])), \
+                f"the in-place restore did not name the missing 'turns off' trigger: {in_place}"
+
             restored = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
                 "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
-            assert restored.get("success") is False and restored.get("partial") is True, \
-                f"a restore that could not bring the removed trigger back reported success: {restored}"
-            missing = restored.get("missingTriggers") or []
-            assert any("turns off" in str(m.get("text")) for m in missing), \
-                f"the restore did not name the missing 'turns off' trigger: {restored}"
+            new_id = restored.get("ruleId")
+            assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
+                f"the default restore did not go through the App Cloner import: {restored}"
+            assert new_id and str(new_id) != str(app_id) and str(restored.get("originalRuleId")) == str(app_id), \
+                f"the native restore should create a new rule in place of {app_id}: {restored}"
+            blob = str(self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(new_id)}})).lower()
+            assert "turns on" in blob and "turns off" in blob, \
+                f"the restored rule does not carry both triggers: {blob[:600]}"
+            assert not self._app_still_present(app_id), \
+                f"the old rule {app_id} is still installed after the native restore"
         finally:
+            if new_id:
+                self._delete_native(new_id)
             self._delete_native(app_id)
 
     @test("native_apps")
