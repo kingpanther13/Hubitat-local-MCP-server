@@ -7941,7 +7941,9 @@ class TestRunner:
         # snapshot stores a picker as the {id: label} map configure/json renders, and the replay
         # used to post that map's toString as the device list: the hub answered 500 and every
         # such restore reported "applied partially". No other e2e restores an RM rule with a
-        # device in it, so this was invisible until a live home hub showed it.
+        # device in it, so this was invisible until a live home hub showed it. The log action added
+        # after the snapshot lives in RM state, which the replay cannot touch: the restore must
+        # remove it rather than report success over a rule that still has it.
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("RestorePicker", {
             "addActions": [{"capability": "switch", "action": "off", "deviceIds": [sw]}],
@@ -7972,6 +7974,39 @@ class TestRunner:
             health = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
             assert health.get("ok") is True, f"rule unhealthy after restore: {health}"
+            assert str(added.get("actionIndex")) in [str(i) for i in (restored.get("removedActions") or [])], \
+                f"the action added after the snapshot was not removed by the restore: {restored}"
+            blob = str(self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}}))
+            assert "restore-picker probe" not in blob, \
+                f"the post-snapshot log action is still on the rule after the restore: {blob[:600]}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_names_a_trigger_it_cannot_rebuild(self) -> None:
+        # Triggers live in RM state (capabstrue), so replaying a removed trigger's settings does not
+        # bring it back: the restore must say which trigger is missing instead of success:true.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("RestoreTrig", {
+            "addTriggers": [{"capability": "Switch", "deviceIds": [sw], "state": "on"},
+                            {"capability": "Switch", "deviceIds": [sw], "state": "off"}],
+        })
+        try:
+            removed = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": int(app_id), "confirm": True, "removeTrigger": {"index": 2}}})
+            assert removed.get("success") is True, f"removeTrigger that takes the snapshot failed: {removed}"
+            backup_key = (removed.get("backup") or {}).get("backupKey")
+            assert backup_key, f"removeTrigger returned no backupKey: {removed}"
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
+            assert restored.get("success") is False and restored.get("partial") is True, \
+                f"a restore that could not bring the removed trigger back reported success: {restored}"
+            missing = restored.get("missingTriggers") or []
+            assert any("turns off" in str(m.get("text")) for m in missing), \
+                f"the restore did not name the missing 'turns off' trigger: {restored}"
         finally:
             self._delete_native(app_id)
 

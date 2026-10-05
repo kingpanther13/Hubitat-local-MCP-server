@@ -111,6 +111,36 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
         fake.posts.isEmpty()
     }
 
+    def "a live expression that cannot be read is not reported as matching a snapshot without one"() {
+        given:
+        script.metaClass._rmCollectPageInputNames = { Integer id, String page -> throw new RuntimeException("timeout") }
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snapshot([], [:], [:], false))
+
+        then:
+        out.requiredExpressionRestored == false
+        out.requiredExpressionError.contains("could not be read")
+    }
+
+    def "a failed rebuild over a live expression trims back to the original"() {
+        given: "the snapshot's second condition has no saved capability, so its slot cannot be filled"
+        fake.seedSwitch(1, "on").withTokens([1])
+        def snap = snapshot([2, "OR", 3],
+            [rCapab_2: "Mode", modes2: ["3"], modes3: ["4"]],
+            ["2": "Mode is 3", "3": "Mode is 4"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == false
+        out.originalPreserved == true
+        out.requiredExpressionError.contains("left in place")
+        fake.tokens == [1]
+        fake.mode == "committed"
+    }
+
     def "a snapshot without expression state is not second-guessed"() {
         expect:
         script._rmRestoreRequiredExpression(100, [statusJson: [appSettings: []], configJson: [settings: [:]]]) == [:]

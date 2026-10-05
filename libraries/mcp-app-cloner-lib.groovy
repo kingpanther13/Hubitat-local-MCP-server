@@ -917,6 +917,10 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
     }
     def skippedMaps = []
+    // A device deleted since the backup must not go back into a picker: RM's pages then dereference
+    // a null device and stop rendering (seen live on fw 2.5.2.129).
+    def deviceGone = [:]
+    def skippedDevices = []
     replaySettings = replaySettings.collectEntries { k, v ->
         String key = k.toString()
         boolean isPicker = _isDevicePickerType(savedSchema.get(key)?.type)
@@ -927,7 +931,16 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
             return [(key): v]
         }
         def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : _devicePickerIds(v)
-        return [(key): (ids instanceof List ? ids.collect { it?.toString() } : ids)]
+        if (ids instanceof List) {
+            ids = ids.collect { it?.toString() }
+            def gone = ids.findAll { _rmDeviceGone(it, deviceGone) }
+            if (gone) {
+                skippedDevices << [key: key, ids: gone]
+                ids = ids - gone
+                if (!ids) return [:]
+            }
+        }
+        return [(key): ids]
     }
     String step = "settings replay"
     try {
@@ -961,9 +974,14 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         backupFile: fileName,
         settingsApplied: replaySettings.keySet().toList(),
         settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] }
-            + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] },
+            + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] }
+            + skippedDevices.collect { sd -> [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] },
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
+    if (skippedDevices) {
+        out.partial = true
+        out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements with hub_set_rule if the rule needs them.".toString()
+    }
     if (skippedMaps) {
         out.partial = true
         out.note = "${out.note} ${skippedMaps.size()} saved setting(s) could NOT be replayed (see settingsSkipped): ${skippedMaps.join(', ')}. Inspect with hub_get_app_config(appId=${ruleId}) and set them by hand if the rule needs them.".toString()
@@ -977,10 +995,25 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         reOutcome = [requiredExpressionRestored: false, requiredExpressionError: reExc.message ?: reExc.toString()]
     }
     if (reOutcome) out.putAll(reOutcome)
+    def structure
+    try {
+        structure = _rmReconcileRuleStructure(ruleId, snapshot)
+    } catch (Exception stExc) {
+        structure = [structureRestored: false, structureError: stExc.message ?: stExc.toString()]
+    }
+    if (structure) out.putAll(structure)
+    if (structure?.structureRestored == false) {
+        out.success = false
+        out.partial = true
+        out.error = "Settings were restored, but the rule's triggers/actions do not match the backup: ${structure.structureError}".toString()
+        out.note = "${out.note} Triggers and actions live in Rule Machine state, which a settings replay cannot rebuild -- add the missing ones with hub_set_rule(addTriggers / addActions), checking hub_get_app_config(appId=${ruleId}) against hub_get_backup.".toString()
+    } else if (structure?.removedTriggers || structure?.removedActions || structure?.removedConditionIds) {
+        out.note = "${out.note} Removed what the backup did not have (triggers ${structure.removedTriggers ?: []}, actions ${structure.removedActions ?: []}, conditions ${structure.removedConditionIds ?: []}).".toString()
+    }
     if (reOutcome?.requiredExpressionRestored == false) {
         out.success = false
         out.partial = true
-        out.error = "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}".toString()
+        out.error = [out.error, "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}"].findAll { it }.join(" ").toString()
         out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_set_rule(addRequiredExpression or replaceRequiredExpression).".toString()
     } else if (reOutcome?.requiredExpressionRemoved == true) {
         out.note = "${out.note} The backup had no Required Expression, so the rule's expression was removed.".toString()
@@ -988,6 +1021,25 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         out.note = "${out.note} Required Expression confirmed to match the backup.".toString()
     }
     return out
+}
+
+// True only when the hub positively says the device is gone (404 or an empty object). An empty or
+// unreadable answer keeps the id: dropping a live device from a restore is worse than keeping it.
+private boolean _rmDeviceGone(String id, Map cache) {
+    if (!id) return false
+    if (cache.containsKey(id)) return cache.get(id) as boolean
+    boolean gone = false
+    try {
+        def txt = hubInternalGet("/device/fullJson/${id}")
+        if (txt) {
+            def parsed = new groovy.json.JsonSlurper().parseText(txt)
+            gone = (parsed instanceof Map) && parsed.isEmpty()
+        }
+    } catch (Exception e) {
+        gone = (e.message ?: "").contains("404")
+    }
+    cache.put(id, gone)
+    return gone
 }
 
 def _getAllToolDefinitions_partAppCloner() {

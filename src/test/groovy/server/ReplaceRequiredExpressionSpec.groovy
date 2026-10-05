@@ -53,7 +53,10 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         and: "the edit went through the token editor and never clicked Delete Required Expression"
         !fake.clicks().contains("cancelST")
         def attrs = fake.clickAttrs()
-        attrs.indexOf("1/insertTok") < attrs.indexOf("0/deleteToken")
+        def insertAt = attrs.indexOf("1/insertTok")
+        def deleteAt = attrs.indexOf("0/deleteToken")
+        insertAt >= 0 && deleteAt >= 0
+        insertAt < deleteAt
         fake.clicks().containsAll(["editST", "editToken", "hasAll", "doneToken", "doneST", "updateRule"])
 
         and: "the replaced condition stays in the pool, unused (as with an edit in the RM UI)"

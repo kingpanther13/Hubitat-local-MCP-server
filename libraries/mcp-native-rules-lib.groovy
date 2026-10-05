@@ -13883,10 +13883,74 @@ private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String e
 // token editor. Confirmation compares the rendered expression (condition texts + operators).
 
 // condition id (String) -> condition text, from RM's capabsfalse / capabstrue state maps.
+// capabsfalse is the condition pool; capabstrue holds the TRIGGER texts, keyed by trigger index.
 private Map _rmConditionTexts(Map state) {
     def out = [:]
-    ["capabsfalse", "capabstrue"].each { k ->
-        if (state?.get(k) instanceof Map) (state.get(k) as Map).each { id, txt -> out.put(id?.toString(), txt?.toString()) }
+    if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt -> out.put(id?.toString(), txt?.toString()) }
+    return out
+}
+
+// Triggers (capabstrue), actions (actionList) and the condition pool (capabsfalse) live in RM app
+// state, which a settings replay cannot write. Remove what the live rule has beyond the snapshot
+// through RM's own delete paths, and name what the snapshot has that the live rule still lacks.
+private Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
+    def appState = snapshot?.statusJson?.appState
+    if (!(appState instanceof List)) return [:]
+    def snap = [:]
+    appState.each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
+    def trigs = { Map st -> (st?.capabstrue instanceof Map) ? (st.capabstrue as Map).keySet().collect { it.toString() } : [] }
+    def conds = { Map st -> (st?.capabsfalse instanceof Map) ? (st.capabsfalse as Map).keySet().collect { it.toString() } : [] }
+    def acts = { Map st -> (st?.actionList instanceof List) ? (st.actionList as List).collect { it.toString() } : [] }
+    def live = _rmReadRuleState(appId)
+    if (live == null) return [structureRestored: false, structureError: "the rule's triggers and actions could not be read after the restore"]
+
+    def removed = [triggers: [], actions: [], conditions: []]
+    def failures = []
+    (trigs(live) - trigs(snap)).each { idx ->
+        try { _rmRemoveTrigger(appId, idx as Integer); removed.triggers << idx }
+        catch (Exception e) { failures << "trigger ${idx} (${e.message})".toString() }
+    }
+    // Last row first, so removing a row never shifts one still to be removed.
+    (acts(live) - acts(snap)).reverse().each { idx ->
+        try { _rmDeleteAction(appId, idx as Integer); removed.actions << idx }
+        catch (Exception e) { failures << "action ${idx} (${e.message})".toString() }
+    }
+    def liveTokens = (live.eval instanceof Map && (live.eval as Map)["0"] instanceof List) ? (live.eval as Map)["0"] as List : []
+    def inExpr = _rmTokenConditionIds(liveTokens).collect { it.toString() }
+    def extraConds = conds(live) - conds(snap) - inExpr
+    if (extraConds) removed.conditions = _rmDeleteExpressionConditions(appId, extraConds.collect { it as Integer }).collect { it.toString() }
+    if (removed.triggers || removed.actions || removed.conditions) {
+        try { _rmClickAppButton(appId, "updateRule") } catch (Exception e) { failures << "updateRule (${e.message})".toString() }
+    }
+
+    def after = _rmReadRuleState(appId)
+    if (after == null) return [structureRestored: false, structureError: "the rule's triggers and actions could not be read after the restore"]
+    def snapTrigText = (snap.capabstrue instanceof Map) ? snap.capabstrue as Map : [:]
+    def out = [structureRestored: true]
+    if (removed.triggers) out.removedTriggers = removed.triggers
+    if (removed.actions) out.removedActions = removed.actions
+    if (removed.conditions) out.removedConditionIds = removed.conditions
+    def problems = []
+    def missingTrigs = trigs(snap) - trigs(after)
+    def missingActs = acts(snap) - acts(after)
+    def extraTrigs = trigs(after) - trigs(snap)
+    def extraActs = acts(after) - acts(snap)
+    def extraLeft = conds(after) - conds(snap) - inExpr
+    if (missingTrigs) {
+        out.missingTriggers = missingTrigs.collect { [index: it, text: snapTrigText.get(it)?.toString()] }
+        problems << "the backup's trigger(s) ${missingTrigs.collect { snapTrigText.get(it) ?: it }.join('; ')} are not on the rule".toString()
+    }
+    if (missingActs) {
+        out.missingActions = missingActs
+        problems << "the backup's action row(s) ${missingActs.join(', ')} are not on the rule".toString()
+    }
+    if (extraTrigs || extraActs || extraLeft) {
+        out.extraRemaining = [triggers: extraTrigs, actions: extraActs, conditions: extraLeft].findAll { k, v -> v }
+        problems << "items the backup did not have could not be removed (${failures ? failures.join('; ') : out.extraRemaining})".toString()
+    }
+    if (problems) {
+        out.structureRestored = false
+        out.structureError = problems.join("; ")
     }
     return out
 }
@@ -13980,7 +14044,9 @@ private Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
     if (!snapHasRE) {
         // Nothing to rebuild; only a live expression the snapshot did not have needs removing.
         boolean liveHasRE
-        try { liveHasRE = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage")) } catch (Exception e) { return [:] }
+        try { liveHasRE = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage")) } catch (Exception e) {
+            return [requiredExpressionRestored: false, requiredExpressionError: "the rule's Required Expression page could not be read after the restore (${e.message})"]
+        }
         if (!liveHasRE) return [:]
         try {
             _rmTokClick(appId, "cancelST", "cancelST")
@@ -14061,12 +14127,22 @@ private Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
                 requiredExpressionError: "the rebuilt expression reads '${_rmRenderExpression(afterTokens, _rmConditionTexts(after ?: [:])).join(' ')}', not the snapshot's '${snapRendered.join(' ')}'"]
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore: rebuilding the Required Expression of app ${appId} failed: ${e.message}")
+        boolean preserved = false
         try {
             def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage"))
             if (names.contains("cancelCapab")) names = _rmPageInputNames(_rmTokClick(appId, "cancelCapab", "cancelCapab"))
             if (names.contains("cancelInsert")) _rmTokClick(appId, "cancelInsert", "cancelInsert")
+            if (liveCommitted) {
+                // Tokens appended after the live expression come back off, so the rule keeps its pre-restore gate.
+                preserved = _rmTokTrimTo(appId, liveTokens as List)
+                _rmTokLeaveEditor(appId)
+                _rmClickAppButton(appId, "updateRule")
+            }
         } catch (Exception ignored) { }
-        return [requiredExpressionRestored: false, requiredExpressionError: "rebuilding the Required Expression failed (${e.message})"]
+        def out = [requiredExpressionRestored: false,
+                   requiredExpressionError: "rebuilding the Required Expression failed (${e.message})${preserved ? '; the pre-restore expression was left in place' : (liveCommitted ? '; the live expression may be partly rebuilt -- inspect it with hub_get_app_config' : '')}".toString()]
+        if (liveCommitted) out.originalPreserved = preserved
+        return out
     }
 }
 
