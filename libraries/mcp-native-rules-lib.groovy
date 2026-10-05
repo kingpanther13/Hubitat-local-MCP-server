@@ -13009,7 +13009,35 @@ private Integer _rmWalkNewConditionSlot(Integer appId, Map cond, int i, Map ctx)
     return cIdx
 }
 
+// An add that fails with nothing committed switches "Required Expression" back off when it was the
+// one to switch it on, so a refused add never leaves the rule with an empty gate enabled.
 private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preValidated = false, boolean skipExistingRECheck = false) {
+    Boolean useSTBefore = null
+    try { useSTBefore = _rmFetchConfigJson(appId)?.settings?.useST?.toString() == "true" } catch (Exception ignored) { }
+    def out
+    try {
+        out = _rmAddRequiredExpressionWalk(appId, exprSpec, preValidated, skipExistingRECheck)
+    } catch (Exception e) {
+        _rmUndoUseSTAfterFailedAdd(appId, useSTBefore)
+        throw e
+    }
+    if (out?.success != true) _rmUndoUseSTAfterFailedAdd(appId, useSTBefore)
+    return out
+}
+
+private void _rmUndoUseSTAfterFailedAdd(Integer appId, Boolean useSTBefore) {
+    if (useSTBefore != false) return
+    try {
+        if (_rmFetchConfigJson(appId)?.settings?.useST?.toString() != "true") return
+        def toks = _rmReadExpressionTokens(appId)
+        if (toks == null || !toks.isEmpty()) return
+        _rmWriteSettingOnPage(appId, "mainPage", "useST", false, [], "bool", [])
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "addRequiredExpression: switching Required Expression back off on app ${appId} after the failed add failed (${e.message})")
+    }
+}
+
+Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec, boolean preValidated, boolean skipExistingRECheck) {
     // Pure-input-shape validation (conditions/operator/operators rules, deviceId
     // normalization, deviceId existence -- the last hits the hub once per deviceId).
     // Shared with the in-place replace path so both reject a malformed spec identically.

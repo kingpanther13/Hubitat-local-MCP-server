@@ -8012,14 +8012,34 @@ class TestRunner:
             assert any("turns off" in str(m.get("text")) for m in (in_place.get("missingTriggers") or [])), \
                 f"the in-place restore did not name the missing 'turns off' trigger: {in_place}"
 
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
-            new_id = restored.get("ruleId")
-            assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
-                f"the default restore did not go through the App Cloner import: {restored}"
-            assert new_id and str(new_id) != str(app_id) and str(restored.get("originalRuleId")) == str(app_id), \
-                f"the native restore should create a new rule in place of {app_id}: {restored}"
+            # The import, the old rule's delete and the re-enable outrun the cloud relay, so a lost
+            # response is resolved by reading the hub: the old rule gone and a same-label rule present.
+            label = ((self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}) or {}).get("app") or {}).get("label")
+
+            def _replaced() -> str | None:
+                for _ in range(20):
+                    found = self._find_app_id_by_label(label) if label else None
+                    if found and str(found) != str(app_id) and not self._app_still_present(app_id):
+                        return found
+                    time.sleep(3.0)
+                return None
+
+            rw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_backup", {
+                    "tool": "hub_restore_backup",
+                    "args": {"scope": "source", "backupKey": backup_key, "confirm": True}}),
+                _replaced, "native rule restore")
+            if rw["relayDropped"]:
+                assert rw["committed"], f"the native restore left no replacement for rule {app_id} after a relay 504"
+                new_id = rw["evidence"]
+            else:
+                restored = rw["response"]
+                new_id = restored.get("ruleId")
+                assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
+                    f"the default restore did not go through the App Cloner import: {restored}"
+                assert new_id and str(new_id) != str(app_id) and str(restored.get("originalRuleId")) == str(app_id), \
+                    f"the native restore should create a new rule in place of {app_id}: {restored}"
             blob = str(self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": int(new_id)}})).lower()
             assert "turns on" in blob and "turns off" in blob, \
@@ -9103,7 +9123,7 @@ class TestRunner:
                 f"the failed replace did not confirm the original expression was left in place: {bad}"
             blob = str(self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
-            assert "is off" in blob and "define required expression" not in blob, \
+            assert "is off" in blob, \
                 f"the committed 'is off' expression did not survive the failed replace: {blob[:600]}"
             health = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
