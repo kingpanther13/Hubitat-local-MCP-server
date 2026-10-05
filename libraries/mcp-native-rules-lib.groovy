@@ -13994,7 +13994,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     def missingTrigs = trigs(snap) - trigs(after)
     def missingActs = acts(snap) - acts(after)
     def extraTrigs = trigs(after) - trigs(snap)
-    def extraActs = acts(after) - acts(snap)
+    def extraActsLeft = acts(after) - acts(snap)
     def extraLeft = conds(after) - conds(snap) - inExpr
     if (missingTrigs) {
         out.missingTriggers = missingTrigs.collect { [index: it, text: snapTrigText.get(it)?.toString()] }
@@ -14004,8 +14004,8 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
         out.missingActions = missingActs
         problems << "the backup's action row(s) ${missingActs.join(', ')} are not on the rule".toString()
     }
-    if (extraTrigs || extraActs || extraLeft) {
-        out.extraRemaining = [triggers: extraTrigs, actions: extraActs, conditions: extraLeft].findAll { k, v -> v }
+    if (extraTrigs || extraActsLeft || extraLeft) {
+        out.extraRemaining = [triggers: extraTrigs, actions: extraActsLeft, conditions: extraLeft].findAll { k, v -> v }
         problems << "items the backup did not have could not be removed (${failures ? failures.join('; ') : out.extraRemaining})".toString()
     }
     if (problems) {
