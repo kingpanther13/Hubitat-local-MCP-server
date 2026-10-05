@@ -17,7 +17,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         calls = []
         script.metaClass._rmRemoveTrigger = { Integer appId, Integer idx -> calls << "trigger ${idx}".toString(); [success: true] }
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> calls << "action ${idx}".toString(); [success: true] }
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip = false -> calls << "action ${idx}".toString(); [success: true] }
         script.metaClass._rmDeleteExpressionConditions = { Integer appId, Collection ids -> calls << "conditions ${ids}".toString(); ids as List }
         script.metaClass._rmClickAppButton = { Integer appId, String btn, String attr = null, String page = null, Map cache = null -> calls << btn; [status: 200] }
     }
@@ -48,6 +48,52 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.removedActions == ["3", "2"]
         out.removedConditionIds == ["4"]
         calls == ["trigger 2", "action 3", "action 2", "conditions [4]", "updateRule"]
+    }
+
+    def "an extra IF/END-IF pair is removed as a set, past the per-row balance refusal"() {
+        given: "rows 2 (IF) and 3 (END-IF) were added after the backup"
+        def flags = []
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip -> flags << [idx, skip]; [success: true] }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            groovy.json.JsonOutput.toJson([appSettings: [[name: "actSubType.1", value: "getLogMsg"],
+                                                        [name: "actSubType.2", value: "getIfThen"],
+                                                        [name: "actSubType.3", value: "getEndIf"]], appState: []])
+        }
+        script.metaClass._rmOrderedActionIndices = { Integer appId -> [1, 2, 3] }
+        def snap = snapshotState(actionList: ["1"])
+        liveStates([[actionList: ["1", "2", "3"]], [actionList: ["1"]]])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        out.structureRestored == true
+        flags == [[3, true], [2, true]]
+    }
+
+    def "a set of extra rows that would unbalance the rule keeps the per-row refusal"() {
+        given: "only the END-IF (row 3) is extra; its IF (row 2) is in the backup"
+        def flags = []
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip ->
+            flags << [idx, skip]
+            if (!skip) throw new IllegalArgumentException("removing it would introduce a new structural-balance issue")
+            [success: true]
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            groovy.json.JsonOutput.toJson([appSettings: [[name: "actSubType.2", value: "getIfThen"],
+                                                        [name: "actSubType.3", value: "getEndIf"]], appState: []])
+        }
+        script.metaClass._rmOrderedActionIndices = { Integer appId -> [2, 3] }
+        def snap = snapshotState(actionList: ["2"])
+        liveStates([[actionList: ["2", "3"]]])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        flags == [[3, false]]
+        out.structureRestored == false
+        out.extraRemaining == [actions: ["3"]]
     }
 
     def "a condition the live expression uses is never removed, even when the backup's pool lacks its id"() {
@@ -259,6 +305,20 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.ruleId == 100
         rec.imports.isEmpty()
         rec.replays.size() == 1
+    }
+
+    def "a restored copy that will not re-enable says how to re-enable it"() {
+        given:
+        def rec = nativeStubs()
+        script.metaClass.toolSetAppDisabled = { Map a -> [success: false] }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        out.success == false
+        out.partial == true
+        out.note.contains("hub_set_app_disabled(disabled=false)")
     }
 
     def "a failed import deletes nothing"() {

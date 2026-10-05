@@ -4150,11 +4150,11 @@ void _rmRejectDisabledAppEdit(Integer appId, String opName) {
 // observed in live-hub runs; on retry exhaustion the throw directs the
 // caller to verify via hub_get_app_config since the deletion may complete
 // post-response. See source comment below for the original race description.
-// `rollbackOwnRow` is set ONLY by the in-flight rollback below, for a row this same call just
-// wrote and never committed. Its structural pre-flight is skipped: the row is not part of the
-// rule's block structure (it never reached the compiled list), and refusing to remove it would
-// strand exactly the orphan the rollback exists to clear.
-Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean rollbackOwnRow = false) {
+// `skipStructuralCheck` skips the per-row balance refusal for a caller that has already checked
+// balance itself: the in-flight rollback below (a row this call wrote and never committed, so it
+// is not part of the block structure) and a restore removing a whole set of rows whose combined
+// removal leaves the rule balanced (each half of an IF/END-IF pair alone would be refused).
+Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralCheck = false) {
     // Single statusJson fetch shared by all three pre-flight checks below;
     // before the refactor each helper (_rmCollectActionIndices,
     // _rmGetStateEditAct, structural pre-flight) called _rmFetchStatusJson
@@ -4189,7 +4189,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean rollbackOwnRow = f
     // UI-built closer skip the refusal and silently unbalance the rule.
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
     def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
-    if (sType in structuralSubTypes && !rollbackOwnRow) {
+    if (sType in structuralSubTypes && !skipStructuralCheck) {
         // Both sides walk the rule's OWN actions. A leftover settings row is not
         // part of the rule's structure, and the set-diff does not reliably cancel
         // it out: a stale closer can absorb the imbalance a real deletion creates,
@@ -13923,9 +13923,28 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
         try { _rmRemoveTrigger(appId, idx as Integer); removed.triggers << idx }
         catch (Exception e) { failures << "trigger ${idx} (${e.message})".toString() }
     }
-    // Last row first, so removing a row never shifts one still to be removed.
-    (acts(live) - acts(snap)).reverse().each { idx ->
-        try { _rmDeleteAction(appId, idx as Integer); removed.actions << idx }
+    // Rows go one at a time, last first, so removing one never shifts one still to be removed. The
+    // per-row balance refusal would block each half of an extra IF/END-IF pair, so balance is
+    // checked once for the whole set and the per-row check skipped only when the set leaves the
+    // rule no less balanced than it is now.
+    def extraActs = acts(live) - acts(snap)
+    boolean setBalanced = false
+    if (extraActs) {
+        try {
+            def ordered = _rmOrderedActionIndices(appId)
+            if (ordered != null) {
+                def byName = (_rmFetchStatusJson(appId)?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+                def removing = extraActs.collect { it as Integer } as Set
+                def issuesNow = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(byName, ([] as Set), ordered))
+                def after = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(byName, removing, ordered))
+                setBalanced = (after - issuesNow).isEmpty()
+            }
+        } catch (Exception e) {
+            mcpLog("warn", "rm-native", "restore: block balance check for app ${appId} failed (${e.message}); extra rows are removed one by one under the per-row check")
+        }
+    }
+    extraActs.reverse().each { idx ->
+        try { _rmDeleteAction(appId, idx as Integer, setBalanced); removed.actions << idx }
         catch (Exception e) { failures << "action ${idx} (${e.message})".toString() }
     }
     def liveTokens = (live.eval instanceof Map && (live.eval as Map)["0"] instanceof List) ? (live.eval as Map)["0"] as List : []

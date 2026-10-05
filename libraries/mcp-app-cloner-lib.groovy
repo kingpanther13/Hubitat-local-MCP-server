@@ -874,11 +874,13 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         out.replacedRuleBackup = del?.backup?.backupKey
     }
     // The import is staged disabled; leave it disabled only when the app was disabled at backup time.
+    def reenableFailed = []
     if (snapshot?.configJson?.app?.disabled != true) {
         def failed = (imp.stagedDisabled ?: [newId]).findAll { id ->
             toolSetAppDisabled([appId: id, disabled: false])?.success != true
         }
         if (failed) {
+            reenableFailed = failed
             out.success = false
             out.partial = true
             out.error = "The backup was restored as app ${newId}, but app(s) ${failed} could not be re-enabled.".toString()
@@ -886,7 +888,8 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     }
     out.note = ("Restored with Hubitat's App Cloner import as a NEW app ${newId} -- an exact copy of the backup, triggers and actions included" +
         (exists ? "; the old rule ${savedId} was deleted" : "") +
-        ". Update anything that referenced rule ${savedId} (Run Rule actions, dashboards). Pass preserveRuleId:true to restore in place by settings replay instead.").toString()
+        ". Update anything that referenced rule ${savedId} (Run Rule actions, dashboards). Pass preserveRuleId:true to restore in place by settings replay instead." +
+        (reenableFailed ? " Re-enable app(s) ${reenableFailed} with hub_set_app_disabled(disabled=false)." : "")).toString()
     return out
 }
 

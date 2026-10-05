@@ -9243,7 +9243,7 @@ private List _rmCoerceActionIndices(List raw) {
  * The rule's action indices in display order, straight from the compiled
  * rule. Null when the compiled state is unreadable or carries no list.
  */
-private List _rmOrderedActionIndices(Integer appId) {
+List _rmOrderedActionIndices(Integer appId) {
     _rmCoerceActionIndices(_ruleCompiledState(appId)?.actionList)
 }
 
