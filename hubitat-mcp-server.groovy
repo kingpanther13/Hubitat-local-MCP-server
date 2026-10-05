@@ -552,9 +552,9 @@ def advancedOverridesPage() {
                   defaultValue: 0, range: "0..300000", required: false
         }
         section("Access tokens in responses") {
-            paragraph "App pages show their OAuth access tokens in plain text, including this server's own endpoint URLs and the URLs of apps such as Maker API. MCP clients read those pages, so the tokens reach the AI client and its transcripts. Turn this on to hide them from everything this server returns. Leave it off if you want the AI to read an endpoint URL for you, for example to set up another app."
+            paragraph "App pages show their OAuth access tokens in plain text, including this server's own endpoint URLs and the URLs of apps such as Maker API. MCP clients read those pages, so the tokens reach the AI client and its transcripts. Turn this on to hide them in what this server returns. Leave it off if you want the AI to read an endpoint URL for you, for example to set up another app."
             input "redactAccessTokens", "bool", title: "Hide access tokens in MCP responses",
-                  description: "Leave OFF (default): tokens are returned as the hub shows them. ON: every access token in a tool result is replaced with ***redacted (access token)***.",
+                  description: "Leave OFF (default): tokens are returned as the hub shows them. ON: access_token= URL values and accessToken / access_token fields in tool results are replaced with ***redacted (access token)***.",
                   defaultValue: false
         }
         section("Native app edit backups") {
