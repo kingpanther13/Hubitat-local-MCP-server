@@ -2888,22 +2888,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         atomicStateMap.predClearPending?.get("100") == true
     }
 
-    def "replaceRequiredExpression restore preserves the deferred predCapabs-clear flag when no backup exists"() {
-        // A rollback that cannot restore anything must keep its recovery intent.
-        given:
-        enableWrite()
-        atomicStateMap.predClearPending = ["100": true]
-
-        when: "the restore runs with no usable backup handle (null fileName -> early return)"
-        def result = script._rmRestoreCommittedREFromBackup(100, [fileName: null], "boom")
-
-        then: "the restore reports the RE was NOT restored (no backup to restore from)"
-        result.requiredExpressionRestored == false
-
-        and: "the deferred clear remains available for a later recovery attempt"
-        atomicStateMap.predClearPending?.get("100") == true
-    }
-
     def "toolDeleteNativeApp force-delete drops the deferred predCapabs-clear flag"() {
         // F. A deleted rule can't carry a deferred clear, so toolDeleteNativeApp drops the flag on a
         // successful delete (both force and soft paths; lib ~12528/~12551) -- otherwise a later rule

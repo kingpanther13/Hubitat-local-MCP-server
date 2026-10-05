@@ -8984,12 +8984,11 @@ class TestRunner:
     @test("native_apps")
     def test_set_rule_replace_required_expression(self) -> None:
         # hub_set_rule edit -> replaceRequiredExpression: change a committed Required
-        # Expression IN PLACE (same appId, no clone). Proves the cancelST delete +
-        # rebuild path end-to-end on a live hub: the new condition replaces the old one
-        # and renders, requiredExpressionReplaced=true, the rule stays healthy. The
-        # destructive-window safety (validate-before-delete, post-delete auto-restore) is
-        # covered by Spock + the orchestrator both-ways; that path can't be triggered
-        # deterministically from the e2e surface (see the note at the end of this test).
+        # Expression IN PLACE (same appId, no clone) through RM's token editor. Then (issue #503)
+        # a replace with a state the Switch capability does not offer must back out and leave the
+        # committed expression in place, and (issue #504) restoring the pre-replace backup must
+        # bring the ORIGINAL expression back -- the settings replay alone cannot, since RM keeps
+        # the expression in app state.
         sw = int(self.get_test_switch_id())
         app_id, created = self._create_native_rule("ReplRE", {
             "addRequiredExpression": {"conditions": [
@@ -9033,17 +9032,41 @@ class TestRunner:
             # health and the destructive delete+rebuild's health check (this assert's whole point) false-passes.
             self._cache_write_health(app_id, result)
             self._assert_rule_healthy(app_id)
+            pre_replace_key = (result.get("backup") or {}).get("backupKey")
+
+            # A condition the live page rejects backs out: nothing is replaced and the "is off"
+            # expression stays committed (the rule is never left ungated).
+            bad = self._call_slow_rule({
+                "appId": app_id,
+                "replaceRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "definitely_not_a_valid_state"}]},
+            })
+            assert bad.get("success") is False and bad.get("requiredExpressionReplaced") is False, \
+                f"a replace with an invalid state should fail without replacing: {bad}"
+            assert bad.get("originalPreserved") is True, \
+                f"the failed replace did not confirm the original expression was left in place: {bad}"
+            blob = str(self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
+            assert "is off" in blob and "define required expression" not in blob, \
+                f"the committed 'is off' expression did not survive the failed replace: {blob[:600]}"
+            health = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
+            assert health.get("ok") is True and (health.get("predicate") or {}).get("hasPredicate") is True, \
+                f"rule is not healthy and gated after the failed replace: {health}"
+
+            # Restoring the pre-replace backup brings the original "is on" expression back.
+            assert pre_replace_key, f"the replace returned no backup handle: {result}"
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": pre_replace_key, "confirm": True}})
+            assert restored.get("success") is True and restored.get("requiredExpressionRestored") is True, \
+                f"restoring the pre-replace backup did not bring the Required Expression back: {restored}"
+            blob = str(self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
+            assert "is on" in blob and "is off" not in blob, \
+                f"the restored rule does not render the original 'is on' expression: {blob[:600]}"
         finally:
             self._delete_native(app_id)
-        # NOTE on the failure-restore path: replaceRequiredExpression auto-restores the
-        # pre-op backup when the post-delete rebuild fails (requiredExpressionRestored
-        # true/false). That path needs a spec that PASSES pre-validation (so the cancelST
-        # delete fires) yet FAILS the live walk (so the rebuild doesn't bake) -- e.g. an
-        # invalid state for a valid device. Whether such a spec fails-to-bake is firmware/
-        # render dependent and historically flaky (BAT T651 hedges the same way), so it is
-        # NOT asserted here. The restore branches are covered deterministically by the
-        # Spock ReplaceRequiredExpressionSpec (restore-success, restore-fail, validate-
-        # before-delete) plus the orchestrator both-ways proof.
 
     @test("native_apps")
     def test_set_rule_setvariable_from_device_and_math(self) -> None:
@@ -9636,6 +9659,10 @@ class TestRunner:
                 f"rule does not render all three Temperature conditions: {blob[:800]}"
             assert "AND" in blob, \
                 f"rule does not render the AND joining operator: {blob[:800]}"
+            # RM renders the less-than comparator as a raw `<` inside span markup; the tag
+            # stripper must keep it (issue #508).
+            assert "< 80" in blob, \
+                f"the rendered config dropped the '< 80' comparator: {blob[:800]}"
         finally:
             self._delete_native(app_id)
 
@@ -11929,6 +11956,61 @@ class TestRunner:
         self.created_device_dnis.append(dni)
         return dev_id, dni
 
+    @test("device_swap")
+    def test_call_device_swap_exchanges_identities(self) -> None:
+        # Issue #505: the hub's Swap Device exchanges the two device records' identities (label,
+        # name, network id, state) and leaves every app reference on its id. The tool must verify
+        # that exchange -- the old dependent-count check reported failure after every real swap,
+        # and its retry hint swapped the devices back. Free-standing throwaway switches come from
+        # hub_create_device (BAT_E2E_ labels, so the purge reclaims them if this test dies).
+        type_id = self._driver_type_id("Virtual Switch")
+        made = []
+        try:
+            for suffix in ("Source", "Target"):
+                created = self.client.call_tool("hub_manage_devices", {
+                    "tool": "hub_create_device",
+                    "args": {"deviceTypeId": type_id, "label": f"{PREFIX}Swap_{suffix}", "confirm": True}})
+                assert created.get("deviceId"), f"could not create the swap fixture: {created}"
+                made.append(str(created["deviceId"]))
+            src, tgt = made
+            app_id = self._create_native_rule("SwapRule", {
+                "addTriggers": [{"capability": "Switch", "deviceIds": [int(src)], "state": "on"}]})
+            try:
+                before = {d: self.client.call_tool("hub_read_devices", {
+                    "tool": "hub_get_device", "args": {"deviceId": d, "mode": "configuration",
+                                                       "fields": ["label", "deviceNetworkId"]}}) for d in made}
+                result = self.client.call_tool("hub_manage_devices", {
+                    "tool": "hub_call_device_swap",
+                    "args": {"from_device_id": src, "to_device_id": tgt, "confirm": True}})
+                assert result.get("success") is True and result.get("identityExchanged") is True, \
+                    f"swap of two free-standing switches did not report the identity exchange: {result}"
+                assert result.get("swapped") == {"from": src, "to": tgt}, result
+                assert (result.get("appsRewired") or 0) >= 1, result
+                assert (result.get("fromDevice") or {}).get("label") == f"{PREFIX}Swap_Target", result
+                assert (result.get("toDevice") or {}).get("label") == f"{PREFIX}Swap_Source", result
+                after_src = self.client.call_tool("hub_read_devices", {
+                    "tool": "hub_get_device", "args": {"deviceId": src, "mode": "configuration",
+                                                       "fields": ["label", "deviceNetworkId"]}})
+                src_dni_after = next((f.get("value") for f in after_src.get("editableFields") or []
+                                      if f.get("name") == "deviceNetworkId"), None)
+                tgt_dni_before = next((f.get("value") for f in before[tgt].get("editableFields") or []
+                                       if f.get("name") == "deviceNetworkId"), None)
+                assert src_dni_after and src_dni_after == tgt_dni_before, \
+                    f"device {src} did not take over the target's network id: before={before[tgt]} after={after_src}"
+                cfg = self._get_persisted_rule_config(app_id).get("settings") or {}
+                trig = next((v for k, v in cfg.items() if str(k) == "tDev1"), None)
+                assert isinstance(trig, dict) and src in {str(k) for k in trig}, \
+                    f"the rule's trigger left device {src}: {trig!r}"
+            finally:
+                self._delete_native(app_id)
+        finally:
+            for dev in made:
+                try:
+                    self.client.call_tool("hub_manage_destructive_ops", {
+                        "tool": "hub_delete_device", "args": {"deviceId": dev, "confirm": True}})
+                except Exception as exc:  # the BAT_E2E_ purge reclaims a leftover
+                    print(f"    [CLEANUP] swap fixture {dev} not deleted: {exc}")
+
     def _swap_device_instance_ids(self) -> set[str]:
         """Ids of installed 'Swap Device' app instances (the transient instances the
         direct/swapDevice alias creates on every resolve). A single un-cursored
@@ -11947,20 +12029,14 @@ class TestRunner:
 
     @test("device_swap")
     def test_call_device_swap_child_device_ineligibility(self) -> None:
-        # WHY there is no happy-path swap scenario here: the hub's built-in Swap
-        # Device app offers only FREE-STANDING devices in its pickers (and oldDev
-        # additionally lists only devices referenced by at least one app) -- devices
-        # owned as another app's child/component device appear in NEITHER list
-        # (verified live on fw 2.5.0.143). Every device this suite can create goes
-        # through hub_manage_virtual_device -> addChildDevice, i.e. is an MCP child
-        # device and therefore permanently ineligible; free-standing fixtures cannot
-        # be created through the MCP tool surface, and the suite must not touch
-        # non-BAT devices. The full swap round-trip is therefore BAT/manual-only
-        # (tests/BAT-v2.md T642, with hub-UI-created free-standing switches). This
-        # scenario still exercises the whole chain end-to-end: the direct-alias
-        # resolver (transient Swap Device instance creation), the wizard
-        # configure/json fetch, the oldDev eligibility pre-check, the structured
-        # error envelope, and the transient-instance cleanup.
+        # The hub's built-in Swap Device app offers only FREE-STANDING devices in its pickers
+        # (and oldDev additionally lists only devices referenced by at least one app) -- devices
+        # owned as another app's child/component device appear in NEITHER list (verified live on
+        # fw 2.5.0.143). hub_manage_virtual_device creates MCP child devices, so this scenario
+        # pins the eligibility refusal: the direct-alias resolver (transient Swap Device instance
+        # creation), the wizard configure/json fetch, the oldDev eligibility pre-check, the
+        # structured error envelope, and the transient-instance cleanup. The success path uses
+        # hub_create_device fixtures (test_call_device_swap_exchanges_identities).
         id_a, dni_a = self._create_swap_switch(f"{PREFIX}Swap_A")
         id_b, dni_b = self._create_swap_switch(f"{PREFIX}Swap_B")
         try:

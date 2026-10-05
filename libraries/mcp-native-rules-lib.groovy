@@ -113,7 +113,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     replaceRequiredExpression: [
                         type: "object",
-                        description: """Replace the rule's existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). The whole spec is validated BEFORE the destructive delete (a malformed spec leaves the existing expression intact), and any post-delete failure auto-restores the pre-op backup (requiredExpressionRestored) — a failed replace is always reported, never silent data loss."""
+                        description: """Replace the rule's existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). The new expression is built after the existing one in RM's expression editor and the old one is removed only once the new one is complete, so a failed build leaves the original in place (originalPreserved:true); a failure after the switch (rejected updateRule, new health problems) rolls back to the original (requiredExpressionRestored). The replaced conditions stay listed as unused under Manage Conditions."""
                     ],
 
                     addActions: [
@@ -12877,6 +12877,20 @@ private Map _rmValidateRequiredExpressionSpec(Map exprSpec, String label, boolea
                 throw new IllegalArgumentException("${pathPrefix}[${i}] is not a Map")
             }
             def m = condRaw as Map
+            // Mode names / ids resolve against the hub's modes without touching the rule, so an
+            // unknown mode fails here rather than mid-walk.
+            if (m.capability?.toString()?.trim()?.equalsIgnoreCase("Mode")) {
+                def modeKeys = (m.modeIds != null) ? m.modeIds : m.state
+                if (modeKeys != null && !(location?.modes ?: []).isEmpty()) {
+                    def keyList = (modeKeys instanceof Collection) ? (modeKeys as Collection) : [modeKeys]
+                    try {
+                        def bad = _rmBadModeIds(_rmResolveModeIds(keyList), null).bad
+                        if (bad) throw new IllegalArgumentException("Unknown mode id(s) ${bad.join(', ')}")
+                    } catch (IllegalArgumentException modeExc) {
+                        throw new IllegalArgumentException("${pathPrefix}[${i}]: ${modeExc.message}")
+                    }
+                }
+            }
             if (m.subExpression instanceof Map) {
                 def sub = (m.subExpression as Map).conditions
                 if (sub instanceof List) {
@@ -12920,6 +12934,68 @@ private Map _rmValidateRequiredExpressionSpec(Map exprSpec, String label, boolea
 // STPage wire-format internals and spec shape: docs/rm_wire_format.md#_rmAddRequiredExpression.
 //
 // Returns: [success, conditionIndices, settingsApplied, settingsSkipped]
+// One new condition slot on STPage, after the selector that opens it (`cond=a` in the add walker,
+// a `*` token in the token editor): read the slot index RM assigned, validate the capability
+// against the live option list, then walk the condition's fields to hasAll. Appends the slot to
+// ctx.conditionIndices. The caller owns cancelling an in-flight condition on a throw.
+private Integer _rmWalkNewConditionSlot(Integer appId, Map cond, int i, Map ctx) {
+    def cap = cond.capability?.toString()?.trim()
+    // Step 1: discover the RM-assigned condition slot index (cIdx). The cond=a
+    // write allocates a new rCapab_<N>/rDev_<N>/... slot (N firmware-assigned,
+    // read from the schema). Its echo settles to the new-condition form and is
+    // cached, so this read hits it -- no extra round-trip. The rCapab guard below
+    // throws the actionable "got cond, doneST" dump if cond=a silently no-ops.
+    def navResp = _rmFetchConfigJson(appId, "STPage", ctx.cache as Map)
+    def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+    def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+    if (!rCapabInput) {
+        throw new IllegalStateException("addRequiredExpression: rCapab_<N> not in STPage schema after ${ctx.selector ?: 'cond=a'}; got ${stInputs.collect { it?.name }.findAll { it }.join(', ')}")
+    }
+    def m = rCapabInput.name.toString() =~ /rCapab_(\d+)/
+    def cIdx = m ? ((m[0] as List)[1] as Integer) : null
+    if (cIdx == null) {
+        throw new IllegalStateException("addRequiredExpression: couldn't parse condition index from '${rCapabInput.name}'")
+    }
+    (ctx.conditionIndices as List) << cIdx
+    // Step 2: validate the capability value against the schema option list.
+    def capOptions = (rCapabInput.options ?: []) as List
+    def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
+    if (!capCanonical) {
+        def suggestion = _rmSuggestTriggerCapability(cap, capOptions)
+        def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
+        throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list.${didYouMean} Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+    }
+    // Steps 3-N: write the capability, devices, comparator chain, and state
+    // in the correct progressive-disclosure order, then click hasAll.
+    // Snapshot the skipped list size so we can stamp condIdx onto every
+    // walker-side skipped entry after the walk returns. _rmRevealStep and
+    // writeST do not carry condIdx themselves; without this stamping,
+    // multi-field-per-condition degradations (e.g. static-schema test
+    // stubs or firmware-version mismatches) inflate the per-condition
+    // count reported in repairHints (e.g. "7 conditions" for 7 skipped
+    // entries that all belonged to the same in-flight condition).
+    def skipped = ctx.skipped as List
+    def skippedBefore = skipped.size()
+    _rmWalkConditionReveal(appId, [
+        writeST: ctx.writeST,
+        cancelInFlightCondition: ctx.cancelInFlightCondition,
+        condIdx: i,
+        cap: cap,
+        capCanonical: capCanonical,
+        hrefParams: ctx.hrefParams,
+        applied: ctx.applied,
+        skipped: ctx.skipped,
+        cache: ctx.cache
+    ], cond, cIdx)
+    for (int sIdx = skippedBefore; sIdx < skipped.size(); sIdx++) {
+        def sEntry = skipped[sIdx]
+        if (sEntry instanceof Map && sEntry.condIdx == null) {
+            sEntry.condIdx = i
+        }
+    }
+    return cIdx
+}
+
 private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preValidated = false, boolean skipExistingRECheck = false) {
     // Pure-input-shape validation (conditions/operator/operators rules, deviceId
     // normalization, deviceId existence -- the last hits the hub once per deviceId).
@@ -13133,58 +13209,16 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
                 writeST(hrefParams, "cond", "a", "cond")
                 cancelledByWalker = false
                 try {
-                    // Step 1: discover the RM-assigned condition slot index (cIdx). The cond=a
-                    // write allocates a new rCapab_<N>/rDev_<N>/... slot (N firmware-assigned,
-                    // read from the schema). Its echo settles to the new-condition form and is
-                    // cached, so this read hits it -- no extra round-trip. The rCapab guard below
-                    // throws the actionable "got cond, doneST" dump if cond=a silently no-ops.
-                    def navResp = _rmFetchConfigJson(appId, "STPage", rmCache)
-                    def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-                    def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
-                    if (!rCapabInput) {
-                        throw new IllegalStateException("addRequiredExpression: rCapab_<N> not in STPage schema after cond=a; got ${stInputs.collect { it?.name }.findAll { it }.join(', ')}")
-                    }
-                    def m = rCapabInput.name.toString() =~ /rCapab_(\d+)/
-                    def cIdx = m ? ((m[0] as List)[1] as Integer) : null
-                    if (cIdx == null) {
-                        throw new IllegalStateException("addRequiredExpression: couldn't parse condition index from '${rCapabInput.name}'")
-                    }
-                    conditionIndices << cIdx
-                    // Step 2: validate the capability value against the schema option list.
-                    def capOptions = (rCapabInput.options ?: []) as List
-                    def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
-                    if (!capCanonical) {
-                        def suggestion = _rmSuggestTriggerCapability(cap, capOptions)
-                        def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
-                        throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list.${didYouMean} Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
-                    }
-                    // Steps 3-N: write the capability, devices, comparator chain, and state
-                    // in the correct progressive-disclosure order, then click hasAll.
-                    // Snapshot the skipped list size so we can stamp condIdx onto every
-                    // walker-side skipped entry after the walk returns. _rmRevealStep and
-                    // writeST do not carry condIdx themselves; without this stamping,
-                    // multi-field-per-condition degradations (e.g. static-schema test
-                    // stubs or firmware-version mismatches) inflate the per-condition
-                    // count reported in repairHints (e.g. "7 conditions" for 7 skipped
-                    // entries that all belonged to the same in-flight condition).
-                    def skippedBefore = skipped.size()
-                    _rmWalkConditionReveal(appId, [
+                    _rmWalkNewConditionSlot(appId, cond, i, [
                         writeST: writeST,
                         cancelInFlightCondition: cancelInFlightCondition,
-                        condIdx: i,
-                        cap: cap,
-                        capCanonical: capCanonical,
                         hrefParams: hrefParams,
                         applied: applied,
                         skipped: skipped,
-                        cache: rmCache
-                    ], cond, cIdx)
-                    for (int sIdx = skippedBefore; sIdx < skipped.size(); sIdx++) {
-                        def sEntry = skipped[sIdx]
-                        if (sEntry instanceof Map && sEntry.condIdx == null) {
-                            sEntry.condIdx = i
-                        }
-                    }
+                        cache: rmCache,
+                        conditionIndices: conditionIndices,
+                        selector: "cond=a"
+                    ])
                 } catch (Exception perCondExc) {
                     // Only cancel if the walker did not already do so before throwing.
                     // _rmWalkConditionReveal calls cancelInFlightCondition() before every
@@ -13637,249 +13671,447 @@ private Map _rmFinalizeRequiredExpressionWrite(Integer appId, Map innerResult, M
     // the batch loop captures + STRIPS it before the response.
     if (deferUpdateRule && verb == "replaced" && envelope.requiredExpressionReplaced == true) {
         envelope._deferredRERestore = [backup: backup,
-            baselineHealth: (finalizeOpts?.baselineHealth instanceof Map) ? finalizeOpts.baselineHealth : null]
+            baselineHealth: (finalizeOpts?.baselineHealth instanceof Map) ? finalizeOpts.baselineHealth : null] +
+            ((finalizeOpts?.deferredRestoreExtra instanceof Map) ? (finalizeOpts.deferredRestoreExtra as Map) : [:])
     }
     return envelope
 }
 
-// Restore a deleted committed Required Expression from a pre-op backup and report the
-// recovery outcome HONESTLY. Shared by both restore windows that can fire after the
-// destructive cancelST delete already happened: the standalone helper's restoreAfterDelete
-// closure, and the patches[] batch-end finalize (when a DEFERRED replace op committed but the
-// batch-end updateRule failed, or a sole-op batch regressed health). Both need the identical
-// read-back-gated restore -- factoring it here keeps them from drifting.
+// ---- Required Expression token editor -------------------------------------------------------
 //
-// Returns restore-outcome fields merged ON TOP of `carry` (so a trusted requiredExpression-
-// Restored / error authored here always wins over forwarded diagnostics). Honesty rules:
-// - no usable backup -> restored:false, "DELETED ... no backup".
-// - _rmRestoreFromBackup RETURNS success:false (partial replay) -> restored:false.
-// - recreate-under-new-id -> restored:false + requiredExpressionRestoredAs.
-// - replay succeeded but the committed-RE tell does NOT re-render -> restored:false
-// (the rule may be left UNGATED -- never a false restored:true).
-// - replay + read-back both confirm -> restored:true.
-// - restore threw -> restored:false, "DELETED ... auto-restore ALSO failed".
-private Map _rmRestoreCommittedREFromBackup(Integer appId, Map backup, String errMsg, Map carry = [:]) {
-    // Keep recovery intent until rollback is confirmed; a newer mark belongs to another edit.
-    def observedGeneration = _rmPendingPredClearSnapshot().get(appId.toString())
-    if (backup?.fileName == null) {
-        // No usable backup handle -- cannot auto-restore. Say so loudly; the old RE
-        // is gone and the caller must recover by hand.
-        mcpLog("warn", "rm-native", "replaceRequiredExpression: post-delete failure on app ${appId} and NO pre-op backup was available to auto-restore -- the original Required Expression is DELETED: ${errMsg}")
-        return carry + [
-            requiredExpressionRestored: false,
-            error: "${errMsg} The original Required Expression was DELETED and no backup was available to auto-restore -- rebuild it via hub_set_rule(addRequiredExpression=...) or hub_restore_backup an earlier snapshot."
-        ]
+// RM 5.1.8 keeps a committed Required Expression in app state as a flat token list
+// (state.eval['0']): condition ids (Integers) and operator / paren tokens (Strings). STPage's
+// "Edit Required Expression" (editST) + "Edit Expression" (editToken) opens a token editor whose
+// buttons are /installedapp/btn clicks named by token index: insertTok (insert at that index;
+// index == token count appends), deleteToken (delete that token), plus doneToken / doneST to
+// close it. An inserted token is picked from the newToken<k> enum: an operator / paren, an
+// existing condition id, or `*` (New Condition), which opens the same rCapab_<N> condition form
+// the add walker drives. Live-verified on 2.5.2.129 (wire captured from the UI and replayed).
+//
+// Two hub behaviors the helpers absorb:
+// - A token-editor button takes effect on the NEXT render of STPage, so every click is followed
+//   by an STPage fetch before state is read.
+// - Cancelling a condition opened from a `*` token (cancelCapab) leaves a blank **Broken
+//   Condition** token at the end of the expression and a broken condition in the pool. Rolling
+//   back deletes the token and removes the condition.
+
+// The committed Required Expression tokens (state.eval['0']), or null when ruleBuilderJson cannot
+// be read. A rule without an expression reads as an empty list.
+private List _rmReadExpressionTokens(Integer appId) {
+    def text
+    try { text = hubInternalGet("/app/ruleBuilderJson/${appId}") } catch (Exception e) { return null }
+    if (!text) return null
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(text) } catch (Exception e) { return null }
+    if (!(parsed instanceof Map)) return null
+    def toks = (parsed.eval instanceof Map) ? parsed.eval["0"] : null
+    return (toks instanceof List) ? new ArrayList(toks as List) : []
+}
+
+// A token as the newToken picker spells it: condition ids as their number, operators verbatim.
+private String _rmTokenValue(Object tok) {
+    return tok?.toString()?.trim()
+}
+
+private boolean _rmTokensEqual(List a, List b) {
+    if (a == null || b == null || a.size() != b.size()) return false
+    for (int i = 0; i < a.size(); i++) {
+        if (_rmTokenValue(a[i]) != _rmTokenValue(b[i])) return false
     }
-    try {
-        // _rmRestoreFromBackup does not always THROW on failure: a mid-restore
-        // settings-replay error returns a Map with success:false (the rule exists
-        // but its settings are incomplete). Treat that returned-failure the same
-        // as a thrown one -- a partial restore is NOT a recovered Required
-        // Expression, so it must report restored:false, never a false restored:true.
-        def restoreResult = _rmRestoreFromBackup(backup)
-        if (restoreResult instanceof Map && restoreResult.success == false) {
-            def restoreErr = restoreResult.error ?: "restore reported failure without detail"
-            mcpLog("error", "rm-native", "replaceRequiredExpression: post-delete failure on app ${appId} AND auto-restore did not complete (${restoreErr}) -- the original Required Expression is DELETED: ${errMsg}")
-            return carry + [
-                requiredExpressionRestored: false,
-                error: "${errMsg} The original Required Expression was DELETED and auto-restore did not complete (${restoreErr}) -- manually restore via hub_restore_backup(backupKey='${backup.backupKey}')."
-            ]
-        }
-        // RECREATE path: _rmRestoreFromBackup's exists-probe can transiently fail and
-        // recreate the rule under a NEW appId (recreated:true + a different ruleId).
-        // The original appId is then a husk and the restored expression lives on the
-        // new id -- reporting a clean in-place requiredExpressionRestored:true would
-        // lie to the caller (their appId is dead). Surface the new id and steer them
-        // to it instead of claiming an in-place recovery.
-        if (restoreResult instanceof Map && restoreResult.recreated == true
-                && restoreResult.ruleId != null && restoreResult.ruleId != appId) {
-            def newId = restoreResult.ruleId
-            mcpLog("warn", "rm-native", "replaceRequiredExpression: post-delete failure on app ${appId}; auto-restore RECREATED the rule under a new id ${newId} (the original app ${appId} could not be reused) -- the original appId is dead: ${errMsg}")
-            return carry + [
-                requiredExpressionRestored: false,
-                requiredExpressionRestoredAs: newId,
-                error: "${errMsg} The original app ${appId} could NOT be restored in place -- auto-restore recreated the rule under a new id ${newId} (the original appId is now dead). Use the new rule ${newId}; delete the husk app ${appId} via hub_delete_native_app(appId=${appId})."
-            ]
-        }
-        // READ-BACK before claiming restored:true. _rmRestoreFromBackup reports
-        // success purely from its settings-replay + updateRule click NOT throwing -- it
-        // never re-reads to confirm the Required Expression gate actually re-rendered.
-        // A replay that wrote the RE field values but did not re-activate the gate would
-        // otherwise be reported as restored:true while the rule is silently UNGATED. So
-        // re-read STPage and require the committed-RE tell (the same tell the pre-delete
-        // check used) before trusting the in-place restore. If the tell is absent, the
-        // RE did not come back -- report restored:false so the caller knows to recover.
-        // A read-back fetch that itself throws leaves the RE unconfirmable, which is
-        // treated as restored:false (defensive: never crash the restore report, never
-        // over-claim a recovery we could not verify).
-        def reConfirmed = false
-        try {
-            def confirmNames = _rmCollectPageInputNames(appId, "STPage")
-            reConfirmed = _rmIsCommittedRETell(confirmNames)
-        } catch (Exception confirmExc) {
-            mcpLog("warn", "rm-native", "replaceRequiredExpression: post-restore read-back of STPage failed for app ${appId} (${confirmExc.message ?: confirmExc}) -- cannot confirm the Required Expression re-activated; reporting restored:false to be safe")
-        }
-        if (!reConfirmed) {
-            mcpLog("error", "rm-native", "replaceRequiredExpression: auto-restore from backup ${backup.backupKey} replayed for app ${appId} but the committed Required Expression could NOT be confirmed back on STPage -- the rule may be left UNGATED: ${errMsg}")
-            return carry + [
-                requiredExpressionRestored: false,
-                error: "${errMsg} Auto-restore from backup ${backup.backupKey} replayed but the original Required Expression could NOT be confirmed re-activated (the rule may be left UNGATED). Verify via hub_get_app_config(appId=${appId}, includeSettings=true) and manually restore via hub_restore_backup(backupKey='${backup.backupKey}') if the gate is missing."
-            ]
-        }
-        try {
-            _rmDropPredClearPending(appId, observedGeneration)
-        } catch (Exception cleanupError) {
-            mcpLog("warn", "rm-native", "Required Expression restored for app ${appId}, but its pending predicate-clear record could not be removed: ${cleanupError.message}; the recovery record is retained")
-        }
-        mcpLog("info", "rm-native", "replaceRequiredExpression: post-delete failure on app ${appId}; auto-restored the original Required Expression from backup ${backup.backupKey} (re-activation confirmed on STPage): ${errMsg}")
-        return carry + [
-            requiredExpressionRestored: true,
-            error: "${errMsg} The replace failed during the rebuild; the original Required Expression was restored from backup ${backup.backupKey}."
-        ]
-    } catch (Exception restoreExc) {
-        mcpLog("error", "rm-native", "replaceRequiredExpression: post-delete failure on app ${appId} AND auto-restore failed (${restoreExc.message ?: restoreExc}) -- the original Required Expression is DELETED: ${errMsg}")
-        return carry + [
-            requiredExpressionRestored: false,
-            error: "${errMsg} The original Required Expression was DELETED and auto-restore ALSO failed (${restoreExc.message ?: restoreExc}) -- manually restore via hub_restore_backup(backupKey='${backup.backupKey}')."
-        ]
+    return true
+}
+
+// Condition ids in a token list (numeric tokens).
+private List _rmTokenConditionIds(List toks) {
+    return (toks ?: []).findAll { _rmTokenValue(it)?.isInteger() }.collect { _rmTokenValue(it) as Integer }
+}
+
+// Click a token-editor / STPage button and render STPage so the click takes effect. Returns the
+// rendered page.
+private Map _rmTokClick(Integer appId, String name, String stateAttr, Map cache = null) {
+    _rmClickAppButton(appId, name, stateAttr, "STPage", cache)
+    return _rmFetchConfigJson(appId, "STPage", cache)
+}
+
+private Set _rmPageInputNames(Map cfg) {
+    return ((cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        .collect { it?.name?.toString() }.findAll { it }) as Set
+}
+
+// Open the token editor on a rule with a committed Required Expression. Throws when it does not
+// open (nothing in the expression has changed at that point).
+private void _rmTokEnterEditor(Integer appId, Map cache = null) {
+    _rmTokClick(appId, "editST", "editST", cache)
+    def names = _rmPageInputNames(_rmTokClick(appId, "editToken", "editToken", cache))
+    if (!names.contains("doneToken")) {
+        throw new IllegalStateException("the Required Expression token editor did not open (STPage shows ${names.sort().join(', ')})")
     }
 }
 
-// Replace an existing Required Expression on an RM 5.1 rule IN PLACE (same appId).
-//
-// REFERENCE PATTERN for destructive in-place edits: (1) validate the WHOLE new spec
-// UP FRONT, before the first destructive click, so a malformed spec fails with the old
-// state intact; (2) snapshot just before the destructive step (lazily, so a pre-delete
-// refusal pays nothing); (3) wrap EVERY post-destruction failure path -- the rebuild,
-// the post-commit health DELTA, and the trailing finalize click -- in one restore window
-// (restoreAfterDelete) that puts the snapshot back and reports the recovery outcome
-// honestly (restored true/false, or the recreated-under-new-id case). The read-back-gated
-// restore core is factored into _rmRestoreCommittedREFromBackup, shared with the patches[]
-// batch-end finalize (a DEFERRED replace whose single batch-end updateRule failed -- its
-// destructive window closes at the batch end, not per-op, so the batch owns that restore).
-//
-// Full-formula replace, matching addRequiredExpression's whole-expression semantics:
-// a committed RE lands STPage on the committed-expression controls (cancelST "Delete
-// Required Expression", editST, the conditions on a separate selectConditions sub-page).
-// cancelST removes the whole Required Expression and returns the rule to the no-RE state.
-// The new condition(s) are then built by delegating to _rmAddRequiredExpression, which
-// navigates fresh from mainPage and reaches the cond new-condition selector cleanly.
-//
-// DESTRUCTIVE-WINDOW CONTRACT. cancelST is immediately destructive: the committed gate is
-// gone the instant the click lands. Two invariants protect the caller's data:
-// - The ENTIRE spec is validated BEFORE the first click (_rmValidateRequiredExpressionSpec),
-// so a malformed spec fails with the OLD Required Expression still intact.
-// - After cancelST succeeds, ANY failure auto-restores the pre-op `backup` snapshot and
-// reports requiredExpressionRestored:true|false so the caller knows whether data was
-// recovered. The covered window extends through the TRAILING finalize: the rebuild,
-// the trailing updateRule click, AND the post-commit health DELTA are all inside it
-// (finalize runs via _rmFinalizeRequiredExpressionWrite with restoreAfterDelete), so a
-// rejected trailing updateRule or a health REGRESSION the replace introduced (new
-// issues vs the pre-delete baseline -- a ghost-ifThen clear that left an IF(**Broken
-// Condition**) wrapper, say) restores the original rather than leaving the OLD
-// expression destroyed-and-broken. A pre-existing, unrelated imbalance present BEFORE
-// the replace does NOT trigger a restore (the baseline-health delta filters it out).
-//
-// Precondition: a committed Required Expression MUST already exist. If none does, returns
-// success:false + requiredExpressionMissing:true steering the caller to addRequiredExpression
-// -- never silently an add.
-//
-// `backupOrProvider` is the pre-op snapshot used for the auto-restore. It is EITHER a
-// materialized manifest entry (Map with fileName/backupKey -- the top-level dispatcher
-// already backed up before any edit) OR a zero-arg Closure that takes the snapshot
-// lazily. The closure form lets the patches[] loop defer the snapshot (a config+status
-// fetch + File-Manager write) until the replace is actually about to delete -- a
-// pre-delete refusal (missing-RE / STPage-read-fail) never deletes, so it should not pay
-// for a snapshot. The closure is resolved exactly once, right before the destructive
-// cancelST click, after the pre-delete gates pass. When absent, a post-delete failure
-// reports requiredExpressionRestored:false.
-//
-// Success returns the finalized envelope (_rmFinalizeRequiredExpressionWrite: the trailing
-// updateRule click + health check + the full add-shape envelope) plus
-// requiredExpressionReplaced:true (it means a NEW expression is COMMITTED, not merely that
-// the old one was deleted -- false on any rebuild failure). The dispatcher only adds
-// appId/backup/partial on top.
-//
-// `deferFinalize` (set by the patches[] batch loop) tells the trailing finalize to defer
-// its updateRule click and its whole-rule-health restore to the batch end. The classic
-// wizard fires updateRule ONCE per batch (the batch-end click bakes every op's writes from
-// a fully-loaded state); a per-op updateRule + a per-op whole-rule-health restore would
-// both double-fire updateRule mid-batch AND could roll the rule back mid-batch on a
-// sibling-induced transient imbalance. The per-op destructive-window safety that genuinely
-// belongs to THIS op (validate-before-delete, plus restore-this-op's-snapshot when the
-// REBUILD ITSELF fails) is kept regardless of deferFinalize. The standalone (non-batch)
-// path leaves it false and finalizes fully, gated by the baseline-health delta.
-//
-// WHY destructive (delete + rebuild + restore) rather than an in-place editST edit: the
-// in-place RE-edit / delete gesture through the SmartApp settings/button handler does not
-// route cleanly on RM 5.1.8 -- editing the committed expression's conditions in place was
-// found blocked by handler routing -- so the supported path is to delete the whole
-// expression (cancelST), rebuild it fresh via the same validated add walker, and protect
-// the destructive window with the validate-before-delete guard + the auto-restore safety
-// net below.
-private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object backupOrProvider = null, boolean deferFinalize = false) {
-    // Step 0. Validate the ENTIRE new-conditions spec UP FRONT, before any click.
-    // The cancelST delete is immediately destructive -- the committed gate is gone the
-    // instant it is clicked. So a malformed spec MUST fail here, with the OLD Required
-    // Expression still intact, rather than after the delete. Same validator the add
-    // path uses (conditions/operator/operators rules, deviceId normalization, deviceId
-    // existence). Throws IllegalArgumentException -> isError validation result.
-    _rmValidateRequiredExpressionSpec(exprSpec, "replaceRequiredExpression")
+// Close the token editor and the Required Expression page: doneToken returns to the expression
+// view, doneST commits it. The caller fires updateRule.
+private void _rmTokLeaveEditor(Integer appId, Map cache = null) {
+    def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage", cache))
+    if (names.contains("doneToken")) _rmTokClick(appId, "doneToken", "doneToken", cache)
+    _rmTokClick(appId, "doneST", "doneST", cache)
+}
 
-    // The backup is resolved lazily (Step 2, just before the destructive click) when a
-    // provider closure is supplied, so a pre-delete refusal does not take a snapshot.
-    // An already-materialized Map is used as-is. `backup` is null until resolved; all
-    // pre-delete refusals run with no snapshot (they need none -- the RE stays intact).
-    def backupProvider = (backupOrProvider instanceof Closure) ? backupOrProvider : null
-    def backup = (backupOrProvider instanceof Map) ? (backupOrProvider as Map) : null
+// Append one token at `position` (the current token count). For `*` the condition form is left
+// open for the caller to walk.
+private void _rmTokAppend(Integer appId, int position, String value, Closure writeST, Map hrefParams, Map cache = null) {
+    def cfg = _rmTokClick(appId, position.toString(), "insertTok", cache)
+    def field = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        .find { it?.name?.toString()?.startsWith("newToken") }
+    if (!field) {
+        throw new IllegalStateException("the token editor did not offer a new token at position ${position} (STPage shows ${_rmPageInputNames(cfg).sort().join(', ')})")
+    }
+    // The picker's option VALUES (an operator / paren, a condition id, or `*`), whatever container
+    // the page uses for them.
+    def opts = field.options
+    def offered = (opts instanceof Map) ? opts.keySet().collect { it?.toString() } :
+        ((opts instanceof List) ? opts.collectMany { o ->
+            (o instanceof Map) ? (o.containsKey("value") ? [o.value?.toString()] : o.keySet().collect { it?.toString() }) : [o?.toString()]
+        } : [])
+    offered = offered.findAll { it }
+    if (offered && !offered.contains(value)) {
+        throw new IllegalStateException("token '${value}' is not offered by the expression editor (offered: ${offered.join(', ')})")
+    }
+    def wr = writeST(hrefParams, field.name.toString(), value, "token(${value})")
+    if (!(wr instanceof Map) || wr.persisted != true) {
+        throw new IllegalStateException("the expression editor did not accept token '${value}' at position ${position}")
+    }
+}
 
-    // After the cancelST click succeeds, the rule is ungated and the old expression
-    // is gone. Any subsequent failure (the rebuild returns success:false, or throws,
-    // or a post-delete re-read fails) leaves the rule WORSE than before unless we put
-    // the original back. This restores the pre-op snapshot the dispatcher took and
-    // reports honestly whether the data was recovered. errMsg states what failed;
-    // restoredFields are merged onto the returned envelope.
-    def restoreAfterDelete = { String errMsg, Map extraFields = [:] ->
-        // Layering, safety-first: the delegate's diagnostic `extraFields` go UNDERNEATH
-        // the safety keys (extraFields + safe), so a future/forwarded extraFields key
-        // named success/requiredExpressionReplaced/error can never clobber the failure
-        // verdict. The branch-specific restore outcome (requiredExpressionRestored +
-        // the final error text) is authored here and layered ON TOP last -- it is
-        // trusted and MUST win. partial:true so a deleted-then-restored recovery surfaces
-        // partial consistently across every direct-restore branch, matching the finalize-
-        // path restore (which wraps partial:true at the dispatcher) -- the dispatcher
-        // coalesces partial off this outcome.
-        def safe = [success: false, requiredExpressionReplaced: false, partial: true, error: errMsg]
-        def base = (extraFields ?: [:]) + safe
-        // wizardStuck parity with the add path: when the destructive build left the
-        // STPage wizard half-open (a cancelCapab cleanup click failed mid-walk), the
-        // caller needs the same wizardStuck:true + cancelCapab restoreHint the
-        // addRequiredExpression dispatcher surfaces via _rmBuildUpdateErrorResponse --
-        // otherwise the next write trips the stuck wizard. The tell rides in the errMsg
-        // (the thrown delegate message) or an explicit extraFields.wizardStuck. Layered
-        // UNDER safe so the failure verdict still wins; merged into every return branch.
-        def wizardStuck = (errMsg?.contains("wizardStuck") || errMsg?.contains("cancelCapab cleanup failed")
-                           || extraFields?.wizardStuck == true)
-        def wizardExtras = wizardStuck ? [
-            wizardStuck: true,
-            wizardStuckHint: "The STPage wizard may have been left half-open by a failed mid-walk cleanup. Before your next write, call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) to close it."
-        ] : [:]
-        // The read-back-gated restore-and-confirm core is shared with the patches[] batch-end
-        // restore (a deferred replace whose batch-end updateRule failed). carry = base +
-        // wizardExtras: the trusted requiredExpressionRestored/error authored in the helper
-        // layers ON TOP, so the failure verdict + wizardStuck hint still ride out.
-        return _rmRestoreCommittedREFromBackup(appId, backup, errMsg, base + wizardExtras)
+// Inside the token editor: drop every token past target.size() (tokens this edit appended,
+// including the blank token a cancelled condition leaves), then report whether the live tokens
+// equal `target`.
+private boolean _rmTokTrimTo(Integer appId, List target, Map cache = null) {
+    for (int guard = 0; guard < 60; guard++) {
+        def live = _rmReadExpressionTokens(appId)
+        if (live == null) return false
+        if (_rmTokensEqual(live, target)) return true
+        if (live.size() <= target.size()) return false
+        _rmTokClick(appId, target.size().toString(), "deleteToken", cache)
+    }
+    return false
+}
+
+// Remove conditions from the Required Expression's condition pool (Manage Conditions'
+// deleteCon). Used only for conditions this edit created. Returns the ids whose settings are gone.
+private List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
+    if (!ids) return []
+    ids.each { id ->
+        try {
+            _rmClickAppButton(appId, id.toString(), "deleteCon", "selectConditions", null)
+            _rmFetchConfigJson(appId, "selectConditions")
+        } catch (Exception e) {
+            mcpLog("warn", "rm-native", "Required Expression edit: removing condition ${id} from app ${appId} failed (${e.message})")
+        }
+    }
+    def remaining
+    try { remaining = _rmFetchSettingsByName(appId)?.keySet() as Set } catch (Exception e) { remaining = null }
+    if (remaining == null) return []
+    return ids.findAll { !remaining.contains("rCapab_${it}".toString()) }.collect { it as Integer }
+}
+
+// Set the committed Required Expression to exactly `target` (condition ids already in the rule's
+// pool plus operator / paren tokens), then commit and confirm. Rolls a replace back in place.
+// Returns [restored: Boolean, error: String?].
+private Map _rmTokSetExpression(Integer appId, List target) {
+    def cache = [:]
+    def hrefParams = [unUsed: null]
+    def writeST = { Map params, String key, Object value, String label = null ->
+        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, params, key, value, cache)
+    }
+    try {
+        def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage", cache))
+        if (names.contains("cancelCapab")) names = _rmPageInputNames(_rmTokClick(appId, "cancelCapab", "cancelCapab", cache))
+        if (names.contains("cancelInsert")) names = _rmPageInputNames(_rmTokClick(appId, "cancelInsert", "cancelInsert", cache))
+        if (!names.contains("doneToken")) {
+            if (names.contains("editToken")) _rmTokClick(appId, "editToken", "editToken", cache)
+            else _rmTokEnterEditor(appId, cache)
+        }
+        for (int guard = 0; guard < 60; guard++) {
+            def live = _rmReadExpressionTokens(appId)
+            if (live == null) throw new IllegalStateException("the rule's expression state could not be read")
+            if (live.isEmpty()) break
+            _rmTokClick(appId, "0", "deleteToken", cache)
+        }
+        target.eachWithIndex { tok, i -> _rmTokAppend(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
+        _rmTokLeaveEditor(appId, cache)
+        _rmClickAppButton(appId, "updateRule")
+        def live = _rmReadExpressionTokens(appId)
+        def committed = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
+        if (_rmTokensEqual(live, target) && committed) return [restored: true]
+        return [restored: false, error: "the rule's expression reads ${live} after the rollback (expected ${target})"]
+    } catch (Exception e) {
+        mcpLog("error", "rm-native", "Required Expression rollback on app ${appId} failed: ${e.message}")
+        return [restored: false, error: e.message ?: e.toString()]
+    }
+}
+
+// Roll a replaced Required Expression back to `origTokens` and report it in the replace envelope's
+// terms. Shared by the standalone replace (a post-commit failure) and the patches[] batch end.
+private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String errMsg, Map carry = [:]) {
+    def r = _rmTokSetExpression(appId, origTokens)
+    if (r.restored == true) {
+        mcpLog("warn", "rm-native", "replaceRequiredExpression: rolled app ${appId} back to its original Required Expression: ${errMsg}")
+        return carry + [requiredExpressionRestored: true,
+            error: "${errMsg} The original Required Expression was put back and confirmed."]
+    }
+    mcpLog("error", "rm-native", "replaceRequiredExpression: rollback of app ${appId} failed (${r.error}): ${errMsg}")
+    return carry + [requiredExpressionRestored: false,
+        error: "${errMsg} Putting the original Required Expression back ALSO failed (${r.error}); the rule may be left without its gate. Inspect it with hub_get_app_config(appId=${appId}) and rebuild it with addRequiredExpression if it is gone."]
+}
+
+// ---- Restoring a Required Expression from a rule backup ------------------------------------
+//
+// A backup's settings replay cannot bring a Required Expression back: RM keeps the committed
+// expression in app state (eval / capabs), which no endpoint writes. The snapshot does carry that
+// state (statusJson.appState) plus every condition's settings, so the expression is rebuilt
+// through the same wizard the add and replace paths use: each snapshot condition is re-walked into
+// a new slot from its saved settings, and operator / paren tokens are re-inserted through the
+// token editor. Confirmation compares the rendered expression (condition texts + operators).
+
+// condition id (String) -> condition text, from RM's capabsfalse / capabstrue state maps.
+private Map _rmConditionTexts(Map state) {
+    def out = [:]
+    ["capabsfalse", "capabstrue"].each { k ->
+        if (state?.get(k) instanceof Map) (state.get(k) as Map).each { id, txt -> out.put(id?.toString(), txt?.toString()) }
+    }
+    return out
+}
+
+private List _rmRenderExpression(List toks, Map texts) {
+    return (toks ?: []).collect { t ->
+        def v = _rmTokenValue(t)
+        (v?.isInteger()) ? (texts?.get(v) ?: "#${v}".toString()) : v
+    }
+}
+
+private Map _rmReadRuleState(Integer appId) {
+    try {
+        def text = hubInternalGet("/app/ruleBuilderJson/${appId}")
+        def parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null
+        return (parsed instanceof Map) ? (parsed as Map) : null
+    } catch (Exception e) {
+        return null
+    }
+}
+
+// Re-walk one saved condition slot into the slot the wizard just opened: write each revealed field
+// of the new slot from the snapshot's value for the same field of slot `srcIdx` (one field per
+// render, in page order), then click hasAll. Returns the new slot index.
+private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcIdx, Closure writeST, Map cache) {
+    Integer newIdx = null
+    def written = [] as Set
+    for (int iter = 0; iter < 30; iter++) {
+        def inputs = (_rmFetchConfigJson(appId, "STPage", cache)?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        if (newIdx == null) {
+            def rc = inputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+            def m = rc ? (rc.name.toString() =~ /^rCapab_(\d+)$/) : null
+            if (!m || !m.matches()) throw new IllegalStateException("no new condition slot opened (STPage shows ${inputs.collect { it?.name }.findAll { it }.join(', ')})")
+            newIdx = (m[0] as List)[1] as Integer
+        }
+        def next = null
+        def nextValue = null
+        for (inp in inputs) {
+            def name = inp?.name?.toString()
+            if (!name || written.contains(name) || inp?.type?.toString() == "button") continue
+            def nm = name =~ /^(.*?[A-Za-z])(_?)(\d+)$/
+            if (!nm.matches() || ((nm[0] as List)[3] as Integer) != newIdx) continue
+            def srcKey = "${(nm[0] as List)[1]}${(nm[0] as List)[2]}${srcIdx}".toString()
+            def v = srcSettings.get(srcKey)
+            if (v == null || v == "" || (v instanceof Collection && v.isEmpty()) || (v instanceof Map && v.isEmpty())) continue
+            next = name
+            nextValue = (v instanceof Map) ? (v as Map).keySet().collect { it?.toString() } : v
+            break
+        }
+        if (next != null) {
+            def wr = writeST([unUsed: null], next, nextValue, next)
+            if (!(wr instanceof Map) || wr.persisted != true) throw new IllegalStateException("the wizard did not accept ${next}=${nextValue} for the restored condition")
+            written << next
+            continue
+        }
+        if (inputs.any { it?.name?.toString() == "hasAll" }) {
+            _rmClickAppButton(appId, "hasAll", null, "STPage", cache)
+            _rmFetchConfigJson(appId, "STPage", cache)
+            return newIdx
+        }
+        throw new IllegalStateException("the restored condition (from slot ${srcIdx}) could not be completed; STPage shows ${inputs.collect { it?.name }.findAll { it }.join(', ')}")
+    }
+    throw new IllegalStateException("the restored condition (from slot ${srcIdx}) did not complete within the wizard step limit")
+}
+
+// Make the rule's Required Expression match a backup snapshot. Returns [:] when the snapshot has
+// no expression state to compare (older snapshots), else requiredExpressionRestored true|false
+// (+ requiredExpressionRemoved when the snapshot had none and the live rule did).
+private Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
+    def appState = snapshot?.statusJson?.appState
+    if (!(appState instanceof List)) return [:]
+    def snapState = [:]
+    appState.each { if (it instanceof Map && it.name != null) snapState.put(it.name.toString(), it.value) }
+    def snapSettings = (snapshot?.configJson?.settings ?: [:]) as Map
+    def snapTokens = (snapState.eval instanceof Map && (snapState.eval as Map)["0"] instanceof List) ? new ArrayList((snapState.eval as Map)["0"] as List) : []
+    boolean snapHasRE = snapSettings.useST?.toString() == "true" && !snapTokens.isEmpty()
+    def snapRendered = _rmRenderExpression(snapTokens, _rmConditionTexts(snapState))
+
+    if (!snapHasRE) {
+        // Nothing to rebuild; only a live expression the snapshot did not have needs removing.
+        boolean liveHasRE
+        try { liveHasRE = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage")) } catch (Exception e) { return [:] }
+        if (!liveHasRE) return [:]
+        try {
+            _rmTokClick(appId, "cancelST", "cancelST")
+            _rmClickAppButton(appId, "updateRule")
+            boolean gone = !_rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
+            return gone ? [requiredExpressionRestored: true, requiredExpressionRemoved: true] :
+                [requiredExpressionRestored: false, requiredExpressionError: "the snapshot has no Required Expression but removing the live one did not take"]
+        } catch (Exception e) {
+            return [requiredExpressionRestored: false, requiredExpressionError: "removing the live Required Expression failed (${e.message})"]
+        }
+    }
+    def liveState = _rmReadRuleState(appId)
+    if (liveState == null) return [requiredExpressionRestored: false, requiredExpressionError: "the rule's expression state could not be read after the restore"]
+    def liveTokens = (liveState.eval instanceof Map && (liveState.eval as Map)["0"] instanceof List) ? (liveState.eval as Map)["0"] as List : []
+    boolean liveCommitted
+    try { liveCommitted = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage")) } catch (Exception e) {
+        return [requiredExpressionRestored: false, requiredExpressionError: "the rule's Required Expression page could not be read after the restore (${e.message})"]
+    }
+    if (liveCommitted && _rmRenderExpression(liveTokens, _rmConditionTexts(liveState)) == snapRendered) {
+        return [requiredExpressionRestored: true]
     }
 
-    // Step 1. Require an existing committed Required Expression. On RM 5.1.8 a
-    // committed RE lands STPage on the committed-expression controls: cancelST
-    // ("Delete Required Expression") and editST are rendered, the conditions live
-    // on a separate selectConditions sub-page, and the inline cond new-condition
-    // selector is withheld. The reliable tell is cancelST + editST present with NO
-    // inline cond/rCapab_ selector. If that tell is absent the rule has no RE to
-    // replace -- refuse loudly and steer the caller to addRequiredExpression rather
-    // than silently adding one (which would mask the wrong-tool mistake). PRE-delete
-    // refusals all leave the existing RE intact (no restore needed).
+    def cache = [:]
+    def writeST = { Map params, String key, Object value, String label = null ->
+        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, params, key, value, cache)
+    }
+    def hrefParams = [unUsed: null]
+    try {
+        def built = []      // snapshot token index -> rebuilt token
+        int firstCond = snapTokens.findIndexOf { _rmTokenValue(it)?.isInteger() }
+        int oldCount
+        if (liveCommitted) {
+            oldCount = liveTokens.size()
+            _rmTokEnterEditor(appId, cache)
+        } else {
+            // No committed expression to edit: build the first condition with the new-expression
+            // selector, commit it, then edit the rest in.
+            oldCount = 0
+            def w = writeST(hrefParams, "cond", "a", "cond")
+            if (!(w instanceof Map) || w.persisted != true) throw new IllegalStateException("the new-expression selector did not open")
+            def first = _rmReplayConditionSlot(appId, snapSettings, _rmTokenValue(snapTokens.get(firstCond)) as Integer, writeST, cache)
+            writeST(hrefParams, "hasRule", "button", "hasRule")
+            _rmTokClick(appId, "doneST", "doneST", cache)
+            _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams, cache)
+            _rmClickAppButton(appId, "updateRule")
+            built = [first]
+            if (snapTokens.size() > 1) _rmTokEnterEditor(appId, cache)
+        }
+        if (liveCommitted || snapTokens.size() > 1) {
+            // Tokens before the first condition (a leading paren or NOT) go in front of it; the rest
+            // append. With an old expression present, everything appends after it.
+            def prefix = liveCommitted ? [] : (firstCond > 0 ? snapTokens[0..<firstCond] : [])
+            def rest = liveCommitted ? snapTokens : snapTokens.subList(firstCond + 1, snapTokens.size())
+            prefix.eachWithIndex { tok, i -> _rmTokAppend(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
+            int position = oldCount + built.size() + prefix.size()
+            rest.each { tok ->
+                def v = _rmTokenValue(tok)
+                if (v?.isInteger()) {
+                    _rmTokAppend(appId, position, "*", writeST, hrefParams, cache)
+                    _rmCacheInvalidate(cache, appId)
+                    _rmReplayConditionSlot(appId, snapSettings, v as Integer, writeST, cache)
+                } else {
+                    _rmTokAppend(appId, position, v, writeST, hrefParams, cache)
+                }
+                position++
+            }
+            oldCount.times { _rmTokClick(appId, "0", "deleteToken", cache) }
+            _rmTokLeaveEditor(appId, cache)
+            _rmClickAppButton(appId, "updateRule")
+        }
+        def after = _rmReadRuleState(appId)
+        def afterTokens = (after?.eval instanceof Map && (after.eval as Map)["0"] instanceof List) ? (after.eval as Map)["0"] as List : []
+        boolean committed = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
+        if (committed && _rmRenderExpression(afterTokens, _rmConditionTexts(after ?: [:])) == snapRendered) {
+            return [requiredExpressionRestored: true]
+        }
+        return [requiredExpressionRestored: false,
+                requiredExpressionError: "the rebuilt expression reads '${_rmRenderExpression(afterTokens, _rmConditionTexts(after ?: [:])).join(' ')}', not the snapshot's '${snapRendered.join(' ')}'"]
+    } catch (Exception e) {
+        mcpLog("error", "rm-native", "restore: rebuilding the Required Expression of app ${appId} failed: ${e.message}")
+        try {
+            def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage"))
+            if (names.contains("cancelCapab")) names = _rmPageInputNames(_rmTokClick(appId, "cancelCapab", "cancelCapab"))
+            if (names.contains("cancelInsert")) _rmTokClick(appId, "cancelInsert", "cancelInsert")
+        } catch (Exception ignored) { }
+        return [requiredExpressionRestored: false, requiredExpressionError: "rebuilding the Required Expression failed (${e.message})"]
+    }
+}
+
+// The token sequence a replace spec builds, in order: [cond: Map, condIdx: Integer] for each
+// condition and [tok: String] for every operator and paren. Validates sub-expression operators.
+private List _rmRequiredExpressionTokenPlan(List conditions, String operator, List opsList, String path = "conditions") {
+    def plan = []
+    conditions.eachWithIndex { c, i ->
+        if (i > 0) plan << [tok: (opsList ? opsList[i - 1] : operator)?.toString()]
+        def cond = c as Map
+        if (cond.subExpression instanceof Map) {
+            def sub = cond.subExpression as Map
+            def subConds = sub.conditions
+            if (!(subConds instanceof List) || subConds.isEmpty()) {
+                throw new IllegalArgumentException("${path}[${i}].subExpression.conditions must be a non-empty List")
+            }
+            def subOp = sub.operator?.toString()?.toUpperCase()
+            def subOps = (sub.operators instanceof List) ? (sub.operators as List).collect { it?.toString()?.toUpperCase() } : null
+            if (subOp && !(subOp in ["AND", "OR", "XOR"])) {
+                throw new IllegalArgumentException("${path}[${i}].subExpression.operator must be AND/OR/XOR (got '${subOp}')")
+            }
+            if (subOps != null && (subOps.size() != subConds.size() - 1 || subOps.any { !(it in ["AND", "OR", "XOR"]) })) {
+                throw new IllegalArgumentException("${path}[${i}].subExpression.operators must hold ${subConds.size() - 1} AND/OR/XOR value(s)")
+            }
+            if (subConds.size() > 1 && !subOp && !subOps) {
+                throw new IllegalArgumentException("${path}[${i}].subExpression with ${subConds.size()} conds requires operator or operators")
+            }
+            plan << [tok: "("]
+            plan.addAll(_rmRequiredExpressionTokenPlan(subConds as List, subOp, subOps, "${path}[${i}].subExpression.conditions"))
+            plan << [tok: ")"]
+        } else {
+            plan << [cond: cond, condIdx: i]
+        }
+    }
+    return plan
+}
+
+// Replace an existing Required Expression on an RM 5.1 rule IN PLACE (same appId), without ever
+// leaving the rule ungated by a failed edit.
+//
+// Flow, all through RM's own token editor: read the committed tokens, open the editor, APPEND the
+// new expression after the old one (each condition walked by the same validated walker the add
+// path uses), delete the old tokens, close the editor, then finalize (updateRule + health). A
+// failure while appending trims the editor back to the original tokens, removes the conditions it
+// created, and commits the original again -- nothing was ever deleted. A failure AFTER the new
+// expression is in place (rejected updateRule, a health regression) rolls the expression back to
+// the original tokens: the original conditions are still in the rule's pool, since a replace
+// removes only the old TOKENS. Those old conditions stay listed under Manage Conditions as
+// unused -- the same as editing the expression in the RM UI; they do not affect evaluation.
+//
+// `backupOrProvider` is the pre-op snapshot (a Map) or a zero-arg Closure taking it lazily, kept
+// for the caller's own rollback handle. `deferFinalize` (patches[] batches) defers the trailing
+// updateRule and the health rollback to the batch end, which reverts this op via
+// _deferredRERestore.origTokens.
+private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object backupOrProvider = null, boolean deferFinalize = false) {
+    // Validate the whole spec and derive the token plan before any click.
+    def validated = _rmValidateRequiredExpressionSpec(exprSpec, "replaceRequiredExpression")
+    def plan = _rmRequiredExpressionTokenPlan(exprSpec.conditions as List, validated.operator as String, validated.opsList as List)
+    plan.each { item ->
+        if (item.cond != null) {
+            def cap = (item.cond as Map).capability?.toString()?.trim()
+            if (!cap) throw new IllegalArgumentException("replaceRequiredExpression: every condition needs a capability")
+            _rmRejectUnwalkableConditionCapability(cap)
+        }
+    }
+
     def preNames
     try {
         preNames = _rmCollectPageInputNames(appId, "STPage")
@@ -13889,9 +14121,6 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
             error: "replaceRequiredExpression: could not read STPage to confirm an existing Required Expression for app ${appId} (${preExc.message ?: preExc}). The hub may be under load or the session expired -- retry, or inspect via hub_get_app_config(appId=${appId}, includeSettings=true)."
         ]
     }
-    // The replace path uses the two-field tell (cancelST + editST, no inline
-    // new-condition selector), intentionally narrower than the add path's three-field
-    // stopOnST-requiring variant -- see _rmIsCommittedRETell for why the two differ.
     if (!_rmIsCommittedRETell(preNames)) {
         return [
             success: false,
@@ -13899,165 +14128,160 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
             error: "replaceRequiredExpression: no committed Required Expression to replace on app ${appId}. Use addRequiredExpression to create one. Inspect the current expression via hub_get_app_config(appId=${appId}, includeSettings=true)."
         ]
     }
-
-    // Resolve a lazy backup provider NOW -- all pre-delete gates have passed and the
-    // destructive click is next, so this is the point at which a snapshot is worth its
-    // cost. (A materialized Map backup was already taken by the top-level dispatcher; a
-    // provider closure is the patches[] loop deferring its per-op snapshot to here.) The
-    // restoreAfterDelete closure captures `backup` by reference, so assigning it here is
-    // visible to every subsequent failure branch. If the snapshot itself fails REFUSE
-    // before the delete -- the RE is still intact (all pre-delete gates passed), so
-    // proceeding into cancelST with no backup would convert a recoverable op into
-    // guaranteed data loss on the next failure. The RE is unchanged; the caller retries.
-    if (backupProvider != null && backup == null) {
-        def made
-        try {
-            made = backupProvider.call()
-        } catch (Exception snapExc) {
-            mcpLog("warn", "rm-native", "replaceRequiredExpression: pre-delete backup snapshot failed for app ${appId} (${snapExc.message ?: snapExc}) -- refusing before the destructive delete; the Required Expression is unchanged")
-            return [
-                success: false,
-                error: "replaceRequiredExpression: could not take the pre-op backup before the destructive delete for app ${appId} (${snapExc.message ?: snapExc}); the Required Expression is UNCHANGED -- retry, or take a manual hub backup first."
-            ]
-        }
-        backup = (made instanceof Map) ? (made as Map) : null
-        if (backup == null) {
-            mcpLog("warn", "rm-native", "replaceRequiredExpression: pre-delete backup snapshot returned no usable handle for app ${appId} -- refusing before the destructive delete; the Required Expression is unchanged")
-            return [
-                success: false,
-                error: "replaceRequiredExpression: the pre-op backup did not produce a usable handle before the destructive delete for app ${appId}; the Required Expression is UNCHANGED -- retry, or take a manual hub backup first."
-            ]
-        }
+    def origTokens = _rmReadExpressionTokens(appId)
+    if (!origTokens) {
+        return [
+            success: false,
+            error: "replaceRequiredExpression: could not read the current Required Expression of app ${appId} (ruleBuilderJson). Nothing was changed -- retry, or inspect via hub_get_app_config(appId=${appId})."
+        ]
     }
 
-    // Baseline health, captured WHILE the old expression and the rest of the rule are
-    // still intact (last point before the destructive cancelST click). The trailing
-    // finalize gates its restore on the DELTA against this baseline, not absolute health:
-    // a rule that already carries an unrelated pre-existing imbalance (e.g. a half-built
-    // IF/Repeat action block -- ok=false but EXPECTED mid-construction) must NOT have a
-    // successful replace rolled back. Only health problems NEW vs this baseline attribute
-    // the break to the replace. _rmCheckRuleHealth swallows its own fetch errors and never
-    // throws (a failed read returns a degraded ok:false verdict), so a direct call is safe.
+    def backup = (backupOrProvider instanceof Map) ? (backupOrProvider as Map) : null
+    if (backupOrProvider instanceof Closure) {
+        try {
+            def made = (backupOrProvider as Closure).call()
+            backup = (made instanceof Map) ? (made as Map) : null
+        } catch (Exception snapExc) {
+            mcpLog("warn", "rm-native", "replaceRequiredExpression: pre-op backup snapshot failed for app ${appId} (${snapExc.message ?: snapExc}) -- continuing; the edit itself never removes the original expression before the new one is in place")
+        }
+    }
     def baselineHealth = _rmCheckRuleHealth(appId)
 
-    // Outer safety net for the WHOLE post-delete region: the explicit branches below
-    // route their known failures (click throw, re-read throw, silent reject, rebuild
-    // throw/non-Map/structured-fail, finalize) through restoreAfterDelete. This catch
-    // covers any OTHER throw that escapes them once the destructive cancelST may have
-    // landed -- without it such a throw would propagate to the dispatcher's catch, which
-    // assumes every throw is PRE-delete and would wrongly report the RE "intact" while it
-    // was actually deleted. Routing through restoreAfterDelete restores the pre-op backup
-    // and returns the honest deleted/restored envelope. (Pre-delete throws -- Step 0
-    // validation, the STPage read, the missing-RE refusal, the backup resolution -- stay
-    // ABOVE this try, so they still propagate and the dispatcher's "intact" message holds.)
-    try {
-    // Step 2. Click cancelST ("Delete Required Expression") to remove the whole
-    // committed expression. THIS IS THE DESTRUCTIVE STEP -- the committed gate is
-    // gone the instant the click lands. From here on, EVERY failure path auto-restores
-    // the pre-op backup. Deleting clears useST and returns the rule to the no-RE state
-    // so the subsequent delegate (which navigates fresh from mainPage) reaches the cond
-    // new-condition selector cleanly. The deleted condition's underlying settings (e.g.
-    // rCapab_<N>/modes<N>/rDev_<N>/state_<N>) linger in the pool but are not part of any
-    // active formula. NOTE: these orphan slots are deliberately NOT cleared. After the
-    // rebuild the new formula re-uses condition slot indices, and the orphan slots are
-    // not reliably distinguishable from the active ones on the firmware wire format
-    // (index re-use varies by firmware; a slot-name match could clear an ACTIVE slot).
-    // Clearing them risks corrupting the live formula for a purely cosmetic gain (the
-    // orphans render nowhere and do not affect evaluation), so they are left in place.
-    // Safe orphan-slot identification is the prerequisite for ever clearing them.
-    try {
-        _rmClickAppButton(appId, "cancelST", "cancelST", "STPage")
-    } catch (Exception deleteExc) {
-        // The click itself threw. A thrown click usually means the POST never
-        // committed (>=400 or transport error), so the RE is most likely intact --
-        // but cancelST's destructiveness makes that uncertain, so restore to be
-        // safe rather than report a maybe-deleted RE as a benign no-op.
-        return restoreAfterDelete("replaceRequiredExpression: cancelST (Delete Required Expression) click failed for app ${appId} (${deleteExc.message ?: deleteExc}).")
+    def rmCache = [:]
+    def applied = []
+    def skipped = []
+    def conditionIndices = []
+    def hrefParams = [unUsed: null]
+    def writeST = { Map params, String fieldKey, Object fieldValue, String label = null ->
+        def wr = _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, params, fieldKey, fieldValue, rmCache)
+        if (wr?.persisted) {
+            applied << (label ?: fieldKey)
+        } else if (wr?.verifyFetchFailed) {
+            skipped << [key: fieldKey, label: (label ?: fieldKey), reason: "verification_fetch_failed", value: fieldValue, verifyError: wr?.verifyError]
+        } else {
+            skipped << [key: fieldKey, label: (label ?: fieldKey), reason: "silent_rejection", value: fieldValue, schemaUnchanged: true, available: wr?.afterKeys]
+        }
+        return wr
     }
-    // Verify the delete took before rebuilding. A committed RE that survives the
-    // click (cancelST still rendered) means the delete was silently rejected -- the
-    // delegate would then trip the add path's existing-RE guard and refuse. Confirm
-    // the committed-RE controls are gone via STPage; a STPage re-read that throws goes
-    // straight to restore (the delete already landed, so the RE is most likely gone).
-    def afterDelete
-    try {
-        afterDelete = _rmCollectPageInputNames(appId, "STPage")
-    } catch (Exception afterDeleteExc) {
-        // cancelST POST returned 200 (no throw above) but the confirming re-read
-        // failed. The expression is almost certainly already deleted -- restore.
-        return restoreAfterDelete("replaceRequiredExpression: could not re-read STPage after the delete for app ${appId} (${afterDeleteExc.message ?: afterDeleteExc}).")
-    }
-    // Mirror the pre-check's FULL guard set (the two-field committed-RE tell): a hybrid
-    // render that shows both the committed-expression controls AND a cond / rCapab_
-    // selector is the deleting-and-rebuilding transition, NOT a survived RE, so it must
-    // not be misread as "the delete did not take." _rmIsCommittedRETell's !newCondSelector
-    // half rules out that hybrid; without it, such a render would spuriously restore.
-    if (_rmIsCommittedRETell(afterDelete)) {
-        return restoreAfterDelete("replaceRequiredExpression: cancelST did not clear the committed Required Expression on app ${appId} (STPage still shows the committed-expression controls: ${afterDelete.sort().join(', ')}); the delete may have been silently rejected or the firmware flow may have changed.")
+    def cancelledByWalker = false
+    def cancelInFlightCondition = {
+        cancelledByWalker = true
+        try { _rmTokClick(appId, "cancelCapab", "cancelCapab", rmCache) }
+        catch (Exception cancelExc) {
+            mcpLog("warn", "rm-native", "replaceRequiredExpression: cancelCapab failed on app ${appId} (${cancelExc.message})")
+        }
     }
 
-    // Step 3. Delegate the new condition build to the validated add walker. With the
-    // old RE deleted, _rmAddRequiredExpression navigates fresh from mainPage, sets
-    // useST, reaches the cond new-condition selector, and walks the new condition(s)
-    // -- single OR multi-condition (incl. nested subExpressions) -- exactly as a fresh
-    // add, sealing via hasRule/doneST and the sub-page Done. The old RE is already
-    // deleted here, so a failed rebuild MUST auto-restore.
-    def addResult
+    // Back out of a failed edit: close any open condition / insert, trim the editor to the original
+    // tokens, commit, and remove the conditions this edit created. The original expression was
+    // never removed, so this only undoes the appended tail.
+    def abortEdit = { String why ->
+        boolean preserved = false
+        def removed = []
+        try {
+            def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage", rmCache))
+            if (names.contains("cancelCapab")) names = _rmPageInputNames(_rmTokClick(appId, "cancelCapab", "cancelCapab", rmCache))
+            if (names.contains("cancelInsert")) _rmTokClick(appId, "cancelInsert", "cancelInsert", rmCache)
+            boolean trimmed = _rmTokTrimTo(appId, origTokens, rmCache)
+            _rmTokLeaveEditor(appId, rmCache)
+            def created = conditionIndices.findAll { !(_rmTokenConditionIds(origTokens).contains(it)) }
+            removed = _rmDeleteExpressionConditions(appId, created)
+            _rmClickAppButton(appId, "updateRule")
+            def live = _rmReadExpressionTokens(appId)
+            preserved = trimmed && _rmTokensEqual(live, origTokens) && _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
+        } catch (Exception cleanupExc) {
+            mcpLog("error", "rm-native", "replaceRequiredExpression: backing out of the failed edit on app ${appId} failed (${cleanupExc.message})")
+        }
+        def out = [success: false, requiredExpressionReplaced: false, originalPreserved: preserved,
+                   conditionIndices: conditionIndices, settingsApplied: applied, settingsSkipped: skipped]
+        if (removed) out.removedConditionIds = removed
+        if (preserved) {
+            out.error = "replaceRequiredExpression: ${why} The original Required Expression was left in place (nothing was replaced)."
+        } else {
+            out.partial = true
+            out.error = "replaceRequiredExpression: ${why} Backing out of the edit could not be confirmed -- the original Required Expression may not be intact. Inspect it with hub_get_app_config(appId=${appId}) before anything else, and rebuild it with addRequiredExpression if it is gone."
+        }
+        return out
+    }
+
     try {
-        // preValidated=true: Step 0 already ran the identical validator (incl. the
-        // deviceId existence probe), so the delegate skips re-probing every deviceId.
-        // skipExistingRECheck=true: the post-delete verify just above already confirmed
-        // the committed-RE controls are gone, so the delegate's Step-1b STPage re-read is
-        // redundant -- skip it to save one size-sensitive STPage fetch.
-        addResult = _rmAddRequiredExpression(appId, exprSpec, true, true)
+        _rmTokEnterEditor(appId, rmCache)
+    } catch (Exception enterExc) {
+        try { _rmTokLeaveEditor(appId, rmCache); _rmClickAppButton(appId, "updateRule") } catch (Exception ignored) { }
+        return [success: false, requiredExpressionReplaced: false, originalPreserved: true,
+                error: "replaceRequiredExpression: could not open the Required Expression editor on app ${appId} (${enterExc.message ?: enterExc}). Nothing was changed."]
+    }
+
+    def newTokens = []
+    int position = origTokens.size()
+    try {
+        plan.each { item ->
+            if (item.tok != null) {
+                _rmTokAppend(appId, position, item.tok as String, writeST, hrefParams, rmCache)
+                newTokens << item.tok
+                position++
+                return
+            }
+            _rmTokAppend(appId, position, "*", writeST, hrefParams, rmCache)
+            // Read the opened condition form from a fresh render, not the write's echo.
+            _rmCacheInvalidate(rmCache, appId)
+            cancelledByWalker = false
+            try {
+                def cIdx = _rmWalkNewConditionSlot(appId, item.cond as Map, item.condIdx as Integer, [
+                    writeST: writeST, cancelInFlightCondition: cancelInFlightCondition, hrefParams: hrefParams,
+                    applied: applied, skipped: skipped, cache: rmCache, conditionIndices: conditionIndices,
+                    selector: "a new-condition token"
+                ])
+                _rmFetchConfigJson(appId, "STPage", null)
+                newTokens << cIdx
+                position++
+            } catch (Exception condExc) {
+                if (!cancelledByWalker) cancelInFlightCondition()
+                throw condExc
+            }
+        }
+        // Every appended token must be live before the old ones go.
+        def appended = _rmReadExpressionTokens(appId)
+        if (!_rmTokensEqual(appended, origTokens + newTokens)) {
+            throw new IllegalStateException("the expression reads ${appended} after appending (expected ${origTokens + newTokens})")
+        }
     } catch (Exception buildExc) {
-        return restoreAfterDelete("replaceRequiredExpression: the new condition build threw for app ${appId} (${buildExc.message ?: buildExc}).")
+        return abortEdit("the new expression could not be built for app ${appId} (${buildExc.message ?: buildExc}).")
     }
-    if (!(addResult instanceof Map)) {
-        return restoreAfterDelete("replaceRequiredExpression: the new condition build returned no result for app ${appId}.")
+
+    // The new expression is complete after the original: remove the original tokens.
+    try {
+        origTokens.size().times { _rmTokClick(appId, "0", "deleteToken", rmCache) }
+        def live = _rmReadExpressionTokens(appId)
+        if (!_rmTokensEqual(live, newTokens)) {
+            throw new IllegalStateException("the expression reads ${live} after removing the original tokens (expected ${newTokens})")
+        }
+        _rmTokLeaveEditor(appId, rmCache)
+        if (!_rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))) {
+            throw new IllegalStateException("STPage did not return to the committed-expression view")
+        }
+    } catch (Exception swapExc) {
+        def restoreOut = _rmRevertRequiredExpression(appId, origTokens,
+            "replaceRequiredExpression: switching app ${appId} to the new expression failed (${swapExc.message ?: swapExc}).",
+            [success: false, requiredExpressionReplaced: false, partial: true,
+             conditionIndices: conditionIndices, settingsApplied: applied, settingsSkipped: skipped])
+        def created = conditionIndices.findAll { !(_rmTokenConditionIds(origTokens).contains(it)) }
+        def removed = _rmDeleteExpressionConditions(appId, created)
+        if (removed) restoreOut.removedConditionIds = removed
+        return restoreOut
     }
-    def addMap = addResult as Map
-    if (addMap.success == false) {
-        // The rebuild ran but did not produce a live new expression (hubRenderError /
-        // verificationFetchFailed / etc.). The old RE is deleted -- restore it and
-        // forward the delegate's own diagnostic fields so the caller sees WHY the
-        // rebuild failed. requiredExpressionAlreadyExists is NOT forwarded: the RE was
-        // deleted before delegating, so the delegate's existing-RE guard cannot trip.
-        def diag = [:]
-        if (addMap.hubRenderError != null) diag.hubRenderError = addMap.hubRenderError
-        if (addMap.verificationFetchFailed != null) diag.verificationFetchFailed = addMap.verificationFetchFailed
-        if (addMap.settingsApplied != null) diag.settingsApplied = addMap.settingsApplied
-        if (addMap.settingsSkipped != null) diag.settingsSkipped = addMap.settingsSkipped
-        if (addMap.repairHints != null) diag.repairHints = addMap.repairHints
-        // Forward wizardStuck so restoreAfterDelete surfaces the cancelCapab recovery hint
-        // even on a structured (non-throwing) delegate failure that left the wizard open.
-        if (addMap.wizardStuck == true) diag.wizardStuck = true
-        def innerErr = addMap.error ? " Rebuild error: ${addMap.error}" : ""
-        return restoreAfterDelete("replaceRequiredExpression: the new condition build did not commit a live expression for app ${appId}.${innerErr}", diag)
+    // Parity with the add path: the next addAction clears the stale predCapabs first.
+    _rmMarkPredClearPending(appId)
+
+    def revert = { String errMsg, Map extraFields = [:] ->
+        def safe = [success: false, requiredExpressionReplaced: false, partial: true, error: errMsg]
+        return _rmRevertRequiredExpression(appId, origTokens, errMsg, (extraFields ?: [:]) + safe)
     }
-    // Success: a new RE was committed. Finalize INSIDE the destructive window -- the
-    // trailing updateRule click and the health check are part of the covered window, so
-    // a rejected trailing updateRule OR a health REGRESSION (new issues vs the pre-delete
-    // baseline) auto-restores the pre-op backup via restoreAfterDelete, exactly like the
-    // other post-delete failure branches. A clean finalize stamps
-    // requiredExpressionReplaced:true. Done here (not in the dispatcher) so the delete and
-    // its trailing finalize share one restore window -- the old expression is never left
-    // destroyed-and-broken.
-    //
-    // baselineHealth gates the restore on a DELTA (a pre-existing unrelated imbalance must
-    // not roll a clean replace back). deferFinalize (batch mode) skips the per-op
-    // updateRule click and the whole-rule-health restore -- the batch-end click owns
-    // updateRule and rule-level health; the per-op rebuild-failure restores above still
-    // apply inside a batch.
-    return _rmFinalizeRequiredExpressionWrite(appId, addMap, backup, "replaced", true, restoreAfterDelete,
-        [baselineHealth: baselineHealth, deferUpdateRule: deferFinalize])
-    } catch (Exception postDeleteExc) {
-        // An unexpected throw none of the explicit post-delete branches handled. The
-        // cancelST delete may already have landed, so route through restoreAfterDelete:
-        // it restores the pre-op backup and returns the honest deleted/restored envelope
-        // rather than letting the dispatcher mislabel a deleted RE as "intact".
-        return restoreAfterDelete("replaceRequiredExpression: unexpected post-delete failure for app ${appId} (${postDeleteExc.message ?: postDeleteExc}).")
-    }
+    def inner = [success: true, partial: !skipped.isEmpty() && skipped.any { it instanceof Map && !(it.reason in _rmInformationalSkippedReasons()) },
+                 conditionIndices: conditionIndices, settingsApplied: applied, settingsSkipped: skipped, repairHints: []]
+    return _rmFinalizeRequiredExpressionWrite(appId, inner, backup, "replaced", true, revert,
+        [baselineHealth: baselineHealth, deferUpdateRule: deferFinalize,
+         deferredRestoreExtra: [origTokens: origTokens]])
 }
 
 // _applyNativeAppEdit — the shared edit engine for an EXISTING app (appId
@@ -15391,28 +15615,19 @@ def _applyNativeAppEdit(args) {
                             continue
                         }
                         seenReplaceRE = true
-                        // Per-op snapshot, NOT the pre-batch `backup`: replaceRequiredExpression
-                        // auto-restores its backup on a post-delete failure. Handing it the
-                        // pre-batch snapshot would roll the whole rule back to before this batch,
-                        // silently reverting earlier ops that already succeeded. A fresh snapshot
-                        // captures those earlier ops, so a failed replace restores only to the
-                        // just-before-this-op state -- the failed op becomes a no-op and the
-                        // preceding siblings are preserved. The dispatcher's pre-batch `backup`
-                        // stays the user's full-batch rollback handle. The snapshot is passed as a
-                        // LAZY provider so a pre-delete refusal (missing-RE / STPage-read-fail) --
-                        // which never deletes -- does not pay for a config+status fetch + File-
-                        // Manager write; the helper materializes it only when about to delete.
-                        def opBackupProvider = { _rmBackupRuleSnapshot(appId, "pre-patch-replaceRequiredExpression") }
+                        // No per-op snapshot: a failed replace backs out through the token editor
+                        // (the original expression is never removed before the new one is in place),
+                        // and a batch-end rollback reverts to this op's original tokens. The
+                        // dispatcher's pre-batch `backup` stays the user's full-batch rollback handle.
                         // deferFinalize=true: the batch-end updateRule click (below) fires
                         // ONCE for the whole batch, so the replace op must NOT fire its own
                         // trailing updateRule here, and rule-level health is the batch's
                         // concern -- so the replace skips its whole-rule-health restore
                         // mid-batch too (it could otherwise roll the rule back on a transient
-                        // imbalance a sibling op left, before the batch completes). The per-op
-                        // destructive-window safety that IS per-op (validate-before-delete +
-                        // restore-this-op's-snapshot when the REBUILD itself fails) is kept.
-                        def replRes = _rmReplaceRequiredExpression(appId, pm.replaceRequiredExpression as Map, opBackupProvider, true)
-                        // Capture the deferred-restore context (per-op snapshot + pre-delete
+                        // imbalance a sibling op left, before the batch completes). A failed
+                        // build still backs out per-op inside the helper.
+                        def replRes = _rmReplaceRequiredExpression(appId, pm.replaceRequiredExpression as Map, null, true)
+                        // Capture the deferred-restore context (original tokens + pre-edit
                         // baseline) for any replace op that COMMITTED a new RE, then STRIP it from
                         // the patch entry (internal-only -- never on the wire). The batch-end
                         // finalize restores on the batch-end updateRule failure, or -- for a sole-op
@@ -15420,7 +15635,8 @@ def _applyNativeAppEdit(args) {
                         // the batch-end fold the restore outcome back onto the right entry.
                         if (replRes instanceof Map && replRes._deferredRERestore instanceof Map) {
                             def ctx = (replRes._deferredRERestore as Map)
-                            deferredReReplaces << [resultIndex: patchResults.size(), backup: ctx.backup, baselineHealth: ctx.baselineHealth]
+                            deferredReReplaces << [resultIndex: patchResults.size(), backup: ctx.backup, baselineHealth: ctx.baselineHealth,
+                                                   origTokens: ctx.origTokens]
                             replRes = (replRes as Map).findAll { k, v -> k != "_deferredRERestore" }
                         }
                         patchResults << ([op: "replaceRequiredExpression"] + replRes)
@@ -15621,7 +15837,7 @@ def _applyNativeAppEdit(args) {
                 def why = updateRuleFailed ?
                     "the batch-end updateRule click was rejected, so the replaced Required Expression is not live" :
                     "the replacement introduced new rule-health problems that were not present before"
-                def restoreOutcome = _rmRestoreCommittedREFromBackup(appId, ctx.backup as Map,
+                def restoreOutcome = _rmRevertRequiredExpression(appId, (ctx.origTokens ?: []) as List,
                     "replaceRequiredExpression (in patches batch): ${why}.")
                 def idx = ctx.resultIndex as Integer
                 if (idx != null && idx >= 0 && idx < patchResults.size() && patchResults[idx] instanceof Map) {
@@ -15759,22 +15975,18 @@ def _applyNativeAppEdit(args) {
     }
 
     if (replaceRequiredExpressionSpec) {
-        // In-place Required Expression replace. Deletes the whole committed expression
-        // (cancelST), then delegates the new condition build to the same structured
-        // walker addRequiredExpression uses, then finalizes (trailing updateRule +
-        // health) -- ALL inside the helper's restore window, so a post-commit health
-        // flip or rejected updateRule auto-restores the pre-op backup (the old
-        // expression is never left destroyed-and-broken). The helper returns its own
+        // In-place Required Expression replace through RM's token editor: the new expression is
+        // appended after the old one and the old tokens are removed only once it is complete, so
+        // a failed build leaves the original in place; a post-commit failure (rejected updateRule,
+        // health regression) rolls back to the original tokens. The helper returns its own
         // fully-assembled envelope; the dispatcher only owns appId/backup/partial.
         def replResult
         try {
             replResult = _rmReplaceRequiredExpression(appId, replaceRequiredExpressionSpec, backup)
         } catch (Exception e) {
-            // A throw here is pre-delete input validation (validation-refusal class) -- the helper
-            // validates the spec before the destructive cancelST click, so a throw
-            // means the OLD Required Expression is still intact (no data lost). Suppress
-            // the rollback restoreHint: nothing was deleted, so a "roll back via backup"
-            // hint would mislead the caller into restoring an intact rule.
+            // A throw here is input validation before any click, so the Required Expression is
+            // untouched. Suppress the rollback restoreHint: a "roll back via backup" hint would
+            // mislead the caller into restoring an intact rule.
             mcpLogError("rm-native", "replaceRequiredExpression failed for app ${appId}", e)
             def errResp = _rmBuildUpdateErrorResponse(appId, e.message, backup, "STPage")
             // wizardStuck (+ the cancelCapab restoreHint) still rides through
@@ -15782,13 +15994,12 @@ def _applyNativeAppEdit(args) {
             // with the addRequiredExpression branch. Only the misleading rollback hint
             // on the pure pre-delete validation throw is replaced.
             if (errResp?.wizardStuck != true) {
-                errResp.restoreHint = "No changes were made -- the Required Expression is intact (the spec was validated before the destructive delete). No rollback is needed."
+                errResp.restoreHint = "No changes were made -- the Required Expression is intact (the spec was rejected before the rule was touched). No rollback is needed."
             }
             return errResp
         }
-        // The helper owns the full envelope -- success (finalized in-window), pre-delete
-        // refusal (requiredExpressionMissing / silent-delete-reject, RE intact), and
-        // post-delete failure (deleted-then-auto-restored or could-not-restore, carrying
+        // The helper owns the full envelope -- success, refusal (requiredExpressionMissing, RE
+        // intact), a backed-out build (originalPreserved), and a post-commit rollback (carrying
         // requiredExpressionRestored). Spread-forward so a future helper key is never
         // silently dropped; the dispatcher overrides only the keys it owns (appId/backup)
         // and ORs partial so an inner partial is never masked.

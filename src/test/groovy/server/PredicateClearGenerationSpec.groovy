@@ -39,16 +39,6 @@ class PredicateClearGenerationSpec extends ToolSpecBase {
         }
     }
 
-    private Map backupEntry() {
-        [backupKey: 'rm-rule_100_before', type: 'rm-rule', id: 100, ruleId: 100, fileName: 'before.json']
-    }
-
-    private byte[] backupBytes() {
-        JsonOutput.toJson([schemaVersion: 1, ruleId: 100, appType: 'rule_machine', appLabel: 'r',
-            configJson: [configPage: [sections: [[input: []]]], settings: [:]],
-            statusJson: [appSettings: []]]).getBytes('UTF-8')
-    }
-
     @Unroll
     def 'deferred clear preserves a newer generation when the ghost operation fails=#fails and token=#token'() {
         given:
@@ -99,66 +89,6 @@ class PredicateClearGenerationSpec extends ToolSpecBase {
         token << ['first-generation', true]
     }
 
-    @Unroll
-    def 'failed Required Expression rollback retains recovery intent for #failure'() {
-        given:
-        atomicStateMap.predClearPending = ['100': 'first-generation']
-        installPages(failure != 'confirmation')
-        script.metaClass.downloadHubFile = { String name ->
-            if (failure == 'download') throw new IOException('backup unavailable')
-            backupBytes()
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
-            if (failure == 'replay' && body.name == 'updateRule') throw new IOException('updateRule failed')
-            [status: 200, location: null, data: '']
-        }
-
-        when:
-        def result = script._rmRestoreCommittedREFromBackup(100,
-            failure == 'missing backup' ? [:] : backupEntry(), 'rebuild failed')
-
-        then:
-        result.requiredExpressionRestored == false
-        atomicStateMap.predClearPending.get('100') == 'first-generation'
-        script._rmPendingPredClearSnapshot().get('100') == 'first-generation'
-
-        where:
-        failure << ['missing backup', 'download', 'replay', 'confirmation']
-    }
-
-    @Unroll
-    def 'confirmed rollback clears only its observed token=#token with concurrent mark=#concurrent'() {
-        given:
-        atomicStateMap.predClearPending = ['100': token]
-        installPages()
-        Object duringRestore = null
-        String newer = null
-        script.metaClass.downloadHubFile = { String name ->
-            duringRestore = script._rmPendingPredClearSnapshot().get('100')
-            backupBytes()
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
-            if (body.name == 'updateRule' && concurrent) {
-                script._rmMarkPredClearPending(100)
-                newer = script._rmPendingPredClearSnapshot().get('100')
-            }
-            [status: 200, location: null, data: '']
-        }
-
-        when:
-        def result = script._rmRestoreCommittedREFromBackup(100, backupEntry(), 'rebuild failed')
-
-        then:
-        duringRestore == token
-        result.requiredExpressionRestored == true
-        !concurrent || newer != null
-        atomicStateMap.predClearPending.get('100') == (concurrent ? newer : null)
-        script._rmPendingPredClearSnapshot().get('100') == (concurrent ? newer : null)
-
-        where:
-        [concurrent, token] << [[false, true], ['first-generation', true, null]].combinations()
-    }
-
     def 'deferred clear remains best effort when predicate bookkeeping cannot persist'() {
         given:
         def backing = new FailingPredicateState()
@@ -179,28 +109,6 @@ class PredicateClearGenerationSpec extends ToolSpecBase {
         then:
         noExceptionThrown()
         buttons.contains('actionCancel')
-        backing.predClearPending.get('100') == 'first-generation'
-        peer._rmPendingPredClearSnapshot().get('100') == 'first-generation'
-    }
-
-    def 'confirmed rollback stays successful when predicate bookkeeping cannot persist'() {
-        given:
-        def backing = new FailingPredicateState()
-        backing.put('predClearPending', ['100': 'first-generation'])
-        def peer = newCompiledScriptInstance([app: new TestChildApp(id: 1L),
-            state: stateMap, atomicState: backing])
-        installPages()
-        peer.metaClass.downloadHubFile = { String name -> backupBytes() }
-        peer.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
-            [status: 200, location: null, data: '']
-        }
-        backing.@fail = true
-
-        when:
-        def result = peer._rmRestoreCommittedREFromBackup(100, backupEntry(), 'rebuild failed')
-
-        then:
-        result.requiredExpressionRestored == true
         backing.predClearPending.get('100') == 'first-generation'
         peer._rmPendingPredClearSnapshot().get('100') == 'first-generation'
     }

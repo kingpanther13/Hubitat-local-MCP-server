@@ -72,11 +72,13 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
      * the post-click verify (the last entry repeats; '' makes
      * _rmFetchConfigJson throw = instance likely gone — logging only, the
      * cleanup delete fires on every post-click path regardless).
-     * fixture.beforeCount / afterCount: /device/fullJson/101 appsUsingCount
-     * on the 1st / subsequent reads; the sentinel 'unreadable' returns an
-     * empty body so _deviceSwapDependentCount degrades to null. Returns the
-     * recorded call sequence (resolve / write / fetch / click / count /
-     * delete steps, in order).
+     * fixture.beforeCount: /device/fullJson/101 appsUsingCount (the blast
+     * radius); 'unreadable' makes the before-click 101 read empty.
+     * fixture.outcome: how the two devices read back after the swap click --
+     * 'exchanged' (default: each carries the other's label + network id, as
+     * the live hub does), 'unchanged', 'inconsistent', or 'unreadable'.
+     * Returns the recorded call sequence (resolve / write / fetch / click /
+     * snap / delete steps, in order).
      */
     private List wireSwapStubs(Map fixture) {
         def calls = []
@@ -104,8 +106,10 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             calls << [step: 'write', appId: appId, page: pageName, key: key, value: value]
             applied << key
         }
+        def clicked = [false]
         script.metaClass._rmClickAppButton = { Integer appId, String btn, String stateAttr = null, String pageName = null ->
             calls << [step: 'click', appId: appId, btn: btn, page: pageName]
+            clicked[0] = true
             [status: 200]
         }
         def fetchCount = 0
@@ -115,13 +119,26 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             def bodies = (fixture.fetches ?: []) as List
             bodies[Math.min(fetchCount, bodies.size()) - 1]
         }
-        def countReads = 0
-        hubGet.register('/device/fullJson/101') { params ->
-            countReads++
-            calls << [step: 'count', n: countReads]
-            def count = (countReads == 1 ? fixture.beforeCount : fixture.afterCount)
-            if (count == 'unreadable') return ''   // empty body -> _deviceSwapDependentCount returns null
-            JsonOutput.toJson([appsUsing: [], appsUsingCount: count])
+        def identity = { String id, boolean after ->
+            def source = [dni: 'DNI-A', createTime: 't1', label: 'BAT Swap Source']
+            def target = [dni: 'DNI-B', createTime: 't2', label: 'BAT Swap Target']
+            def mine = (id == '101') ? source : target
+            def other = (id == '101') ? target : source
+            def outcome = fixture.outcome ?: 'exchanged'
+            if (!after || outcome == 'unchanged') return mine
+            if (outcome == 'inconsistent') return target
+            return other
+        }
+        ['101', '202'].each { String id ->
+            hubGet.register("/device/fullJson/${id}".toString()) { params ->
+                boolean after = clicked[0]
+                calls << [step: 'snap', id: id, after: after]
+                if (after && fixture.outcome == 'unreadable') return ''
+                if (!after && id == '101' && fixture.beforeCount == 'unreadable') return ''
+                def i = identity(id, after)
+                JsonOutput.toJson([appsUsing: [], appsUsingCount: (id == '101' ? fixture.beforeCount : 0),
+                                   device: [id: id, deviceNetworkId: i.dni, createTime: i.createTime, label: i.label]])
+            }
         }
         return calls
     }
@@ -135,7 +152,6 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def compat = [['202': 'BAT Swap Target'], ['303': 'Other Compatible']]
         def calls = wireSwapStubs(
             beforeCount: 3,
-            afterCount: 0,
             fetches: [
                 pageJson(),                                               // before any write: oldDev eligibility check
                 pageJson(newDevOptions: compat),                          // after oldDev: compatibility check
@@ -147,24 +163,28 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         when:
         def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
 
-        then: 'success envelope reports the swap, verified, and the before/after dependent counts'
+        then: 'success is verified by the identity exchange the hub performs, and reports the post-swap devices'
         result.success == true
         result.verified == true
+        result.identityExchanged == true
         result.swapped == [from: '101', to: '202']
         result.appsRewired == 3
-        result.remainingDependents == 0
-        result.note.contains('hub_list_device_dependents')
+        !result.containsKey('remainingDependents')
+        result.fromDevice == [id: '101', label: 'BAT Swap Target', deviceNetworkId: 'DNI-B']
+        result.toDevice == [id: '202', label: 'BAT Swap Source', deviceNetworkId: 'DNI-A']
+        result.note.contains('exchanged the two devices')
+        result.note.contains('swap them back')
 
-        and: 'the wizard ran in exactly the contract order — eligibility fetch BEFORE the first write, cleanup delete between the post-click verify and the after-count'
-        calls.collect { it.step } == ['count', 'resolve', 'fetch', 'write', 'fetch', 'write', 'fetch', 'click', 'fetch', 'delete', 'count']
-        calls[1].path == '/installedapp/direct/swapDevice'
-        calls[3].key == 'oldDev'
-        calls[3].value == '101'
-        calls[3].page == 'mainPage'
-        calls[5].key == 'newDev'
-        calls[5].value == '202'
-        calls[7].btn == 'swapDev'
-        calls[7].appId == SWAP_APP_ID
+        and: 'the wizard ran in exactly the contract order — identities read BEFORE the resolve, cleanup delete before the read-back'
+        calls.collect { it.step } == ['snap', 'snap', 'resolve', 'fetch', 'write', 'fetch', 'write', 'fetch', 'click', 'fetch', 'delete', 'snap', 'snap']
+        calls[2].path == '/installedapp/direct/swapDevice'
+        calls[4].key == 'oldDev'
+        calls[4].value == '101'
+        calls[4].page == 'mainPage'
+        calls[6].key == 'newDev'
+        calls[6].value == '202'
+        calls[8].btn == 'swapDev'
+        calls[8].appId == SWAP_APP_ID
 
         and: 'the delete fires even though the verify fetch said the instance self-removed — idempotent, and skipping it on a misread is what leaks instances'
         calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
@@ -178,7 +198,6 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def withButton = pageJson(newDevOptions: compat, buttons: ['swapDev'])
         def calls = wireSwapStubs(
             beforeCount: 2,
-            afterCount: 0,
             fetches: [
                 pageJson(),                                               // eligibility check
                 pageJson(newDevOptions: compat),
@@ -211,7 +230,6 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def compat = [['202': 'BAT Swap Target']]
         wireSwapStubs(
             beforeCount: 1,
-            afterCount: 0,
             fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), '']
         )
 
@@ -230,70 +248,14 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     // -------- post-click verification outcomes --------
 
-    def "clicked but dependents did not drop: success:false 'still reference' envelope and the cleanup delete still fired"() {
-        given: 'both counts read fine but the after-count never drops'
+    def "clicked but neither device changed identity: success:false, nothing swapped, cleanup delete still fired"() {
+        given:
         enableWriteWithBackup()
         registerDevices()
         def compat = [['202': 'BAT Swap Target']]
         def calls = wireSwapStubs(
             beforeCount: 3,
-            afterCount: 3,
-            fetches: [
-                pageJson(),                                               // eligibility check
-                pageJson(newDevOptions: compat),
-                pageJson(newDevOptions: compat, buttons: ['swapDev']),
-                ''                                                        // post-click verify: instance gone
-            ]
-        )
-
-        when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
-
-        then: 'the click landed but verification failed loud'
-        result.success == false
-        result.error.contains('still reference')
-        result.error.contains('(was 3)')
-        result.note.contains('hub_list_device_dependents')
-
-        and: 'the swap action was clicked and the cleanup delete fired anyway'
-        calls.findAll { it.step == 'click' }*.btn == ['swapDev']
-        calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
-    }
-
-    def "degraded verification: after-count unreadable through a successful click -> success:true, verified:false, degraded note, remainingDependents absent"() {
-        given:
-        enableWriteWithBackup()
-        registerDevices()
-        def compat = [['202': 'BAT Swap Target']]
-        def calls = wireSwapStubs(
-            beforeCount: 2,
-            afterCount: 'unreadable',
-            fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), '']
-        )
-
-        when:
-        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
-
-        then: 'success is reported but explicitly machine-readably unverified'
-        result.success == true
-        result.verified == false
-        result.note.contains('degraded')
-        result.appsRewired == 2
-        !result.containsKey('remainingDependents')
-
-        and: 'the click happened and the cleanup delete still fired'
-        calls.findAll { it.step == 'click' }*.btn == ['swapDev']
-        calls.any { it.step == 'delete' }
-    }
-
-    def "degraded verification: before-count unreadable -> success:true, verified:false, appsRewired absent"() {
-        given:
-        enableWriteWithBackup()
-        registerDevices()
-        def compat = [['202': 'BAT Swap Target']]
-        wireSwapStubs(
-            beforeCount: 'unreadable',
-            afterCount: 0,
+            outcome: 'unchanged',
             fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), '']
         )
 
@@ -301,11 +263,41 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
 
         then:
-        result.success == true
+        result.success == false
+        result.error.contains('nothing was swapped')
+        result.note.contains('hub_get_device')
+
+        and:
+        calls.findAll { it.step == 'click' }*.btn == ['swapDev']
+        calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
+    }
+
+    def "an unconfirmable swap (#outcome) is a failure that warns against retrying"() {
+        given:
+        enableWriteWithBackup()
+        registerDevices()
+        def compat = [['202': 'BAT Swap Target']]
+        def calls = wireSwapStubs(
+            beforeCount: beforeCount,
+            outcome: outcome,
+            fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), '']
+        )
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == false
         result.verified == false
-        result.note.contains('degraded')
-        !result.containsKey('appsRewired')
-        result.remainingDependents == 0
+        result.error.contains(errorText)
+        result.note.contains('Do NOT simply retry')
+        calls.any { it.step == 'delete' }
+
+        where:
+        beforeCount  | outcome        || errorText
+        2            | 'unreadable'   || 'could not be read back'
+        'unreadable' | 'exchanged'    || 'could not be read back'
+        2            | 'inconsistent' || 'did not cleanly trade'
     }
 
     // -------- ineligible source (oldDev eligibility pre-check) --------
@@ -316,7 +308,6 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         registerDevices()
         def calls = wireSwapStubs(
             beforeCount: 0,
-            afterCount: 0,
             fetches: [pageJson(oldDevOptions: [['202': 'BAT Swap Target'], ['303': 'Other Referenced']])]
         )
 
@@ -348,7 +339,6 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         registerDevices()
         def calls = wireSwapStubs(
             beforeCount: 3,
-            afterCount: 3,
             fetches: [
                 pageJson(),                                               // eligibility check passes (101 offered)
                 pageJson(newDevOptions: [['303': 'Other Compatible'], ['404': 'Another Option']])
@@ -381,7 +371,6 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def compat = [['202': 'BAT Swap Target']]
         def calls = wireSwapStubs(
             beforeCount: 3,
-            afterCount: 3,
             fetches: [
                 pageJson(),                                               // eligibility check
                 pageJson(newDevOptions: compat),
@@ -410,7 +399,6 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def compat = [['202': 'BAT Swap Target']]
         def calls = wireSwapStubs(
             beforeCount: 3,
-            afterCount: 3,
             fetches: [
                 pageJson(),                                               // eligibility check
                 pageJson(newDevOptions: compat),
@@ -435,7 +423,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         given:
         enableWriteWithBackup()
         registerDevices()
-        def calls = wireSwapStubs(resolveBroken: true, beforeCount: 3, afterCount: 3, fetches: [])
+        def calls = wireSwapStubs(resolveBroken: true, beforeCount: 3, fetches: [])
 
         when:
         def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
@@ -527,7 +515,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         given: 'the eligibility check passes but the oldDev write comes back skipped'
         enableWriteWithBackup()
         registerDevices()
-        def calls = wireSwapStubs(beforeCount: 1, afterCount: 1, fetches: [pageJson()])
+        def calls = wireSwapStubs(beforeCount: 1, fetches: [pageJson()])
         script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
             calls << [step: 'write', key: key]
             skipped << [key: 'oldDev', reason: 'rejected']
@@ -553,7 +541,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         enableWriteWithBackup()
         registerDevices()
         def compat = [['202': 'BAT Swap Target']]
-        def calls = wireSwapStubs(beforeCount: 1, afterCount: 1, fetches: [pageJson(), pageJson(newDevOptions: compat)])
+        def calls = wireSwapStubs(beforeCount: 1, fetches: [pageJson(), pageJson(newDevOptions: compat)])
         script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
             calls << [step: 'write', key: key]
             if (key == 'newDev') skipped << [key: 'newDev', reason: 'rejected']
@@ -613,25 +601,37 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
     }
 
-    // -------- _deviceSwapDependentCount response shapes --------
-    // Direct helper tests (Groovy doesn't enforce `private` for direct calls
-    // from specs). null = "count unreadable" -> the tool degrades to
-    // verified:false instead of failing a swap that already committed.
+    // -------- identity snapshot + outcome helpers --------
 
     @spock.lang.Unroll
-    def "_deviceSwapDependentCount: #label"() {
+    def "_deviceSwapSnapshot: #label"() {
         given:
         hubGet.register('/device/fullJson/55') { params -> body }
 
         expect:
-        script._deviceSwapDependentCount('55') == expected
+        script._deviceSwapSnapshot('55') == expected
 
         where:
-        label                                            | body                                              | expected
-        'empty response -> null'                         | ''                                                | null
-        'non-Map JSON -> null'                           | '[1,2,3]'                                         | null
-        'appsUsingCount absent -> appsUsing.size()'      | '{"appsUsing":[{"id":1},{"id":2}]}'               | 2
-        'non-numeric appsUsingCount -> appsUsing.size()' | '{"appsUsing":[{"id":1}],"appsUsingCount":"42+"}' | 1
+        label                                  | body                                                                                 | expected
+        'empty response -> null'               | ''                                                                                   | null
+        'non-Map JSON -> null'                 | '[1,2,3]'                                                                            | null
+        'count from appsUsing when no count'   | '{"appsUsing":[{"id":1},{"id":2}],"device":{"deviceNetworkId":"X","label":"L"}}'     | [dependents: 2, dni: 'X', createTime: null, label: 'L']
+        'non-numeric appsUsingCount ignored'   | '{"appsUsing":[{"id":1}],"appsUsingCount":"42+"}'                                    | [dependents: 1, dni: null, createTime: null, label: null]
+    }
+
+    @spock.lang.Unroll
+    def "_deviceSwapIdentityOutcome: #label"() {
+        expect:
+        script._deviceSwapIdentityOutcome(fb, tb, fa, ta) == expected
+
+        where:
+        label                              | fb                      | tb                      | fa                      | ta                      || expected
+        'network ids traded'               | [dni: 'A']              | [dni: 'B']              | [dni: 'B']              | [dni: 'A']              || 'exchanged'
+        'network ids kept'                 | [dni: 'A']              | [dni: 'B']              | [dni: 'A']              | [dni: 'B']              || 'unchanged'
+        'only one side moved'              | [dni: 'A']              | [dni: 'B']              | [dni: 'B']              | [dni: 'B']              || 'inconsistent'
+        'no dni -> createTime decides'     | [createTime: '1']       | [createTime: '2']       | [createTime: '2']       | [createTime: '1']       || 'exchanged'
+        'a read failed'                    | null                    | [dni: 'B']              | [dni: 'B']              | [dni: 'A']              || 'unreadable'
+        'nothing comparable'               | [:]                     | [:]                     | [:]                     | [:]                     || 'unreadable'
     }
 
     // --- hub_call_device_replace (toolCallDeviceReplace) ---

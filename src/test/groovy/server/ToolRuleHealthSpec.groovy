@@ -319,6 +319,30 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
     // ---------- shape-check (not status-check) ----------
 
+    @spock.lang.Unroll
+    def "auto: useST on with #desc -> ungated issue=#flagged"() {
+        given: "the rule switched Use Required Expression on; eval['0'] is its committed expression"
+        seedHealthy(100, [eval: evalState])
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: useST]])
+        }
+
+        when:
+        def health = script._rmCheckRuleHealth(100)
+
+        then:
+        health.ok == !flagged
+        health.issues.any { it.contains("runs UNGATED") } == flagged
+
+        where:
+        desc                                   | useST  | evalState              || flagged
+        'no committed expression'              | "true" | [:]                    || true
+        'an empty expression'                  | "true" | ["0": []]              || true
+        'a committed expression'               | "true" | ["0": [1]]             || false
+        'only IF expressions in actions'       | "true" | ["1": ["2"]]           || true
+        'Use Required Expression off'          | ""     | [:]                    || false
+    }
+
     def "auto: empty {} (nonexistent id) is ignored as a JSON source and falls back to HTML"() {
         given:
         settingsMap.enableRead = true

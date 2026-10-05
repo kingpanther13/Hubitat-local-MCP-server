@@ -968,6 +968,25 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         out.partial = true
         out.note = "${out.note} ${skippedMaps.size()} saved setting(s) could NOT be replayed (see settingsSkipped): ${skippedMaps.join(', ')}. Inspect with hub_get_app_config(appId=${ruleId}) and set them by hand if the rule needs them.".toString()
     }
+    // A Required Expression lives in RM app state, which the settings replay cannot write: bring it
+    // back to the snapshot's expression explicitly, and never report success over a missing gate.
+    def reOutcome
+    try {
+        reOutcome = _rmRestoreRequiredExpression(ruleId, snapshot)
+    } catch (Exception reExc) {
+        reOutcome = [requiredExpressionRestored: false, requiredExpressionError: reExc.message ?: reExc.toString()]
+    }
+    if (reOutcome) out.putAll(reOutcome)
+    if (reOutcome?.requiredExpressionRestored == false) {
+        out.success = false
+        out.partial = true
+        out.error = "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}".toString()
+        out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_set_rule(addRequiredExpression or replaceRequiredExpression).".toString()
+    } else if (reOutcome?.requiredExpressionRemoved == true) {
+        out.note = "${out.note} The backup had no Required Expression, so the rule's expression was removed.".toString()
+    } else if (reOutcome?.requiredExpressionRestored == true) {
+        out.note = "${out.note} Required Expression confirmed to match the backup.".toString()
+    }
     return out
 }
 

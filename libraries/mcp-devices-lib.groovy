@@ -5150,8 +5150,13 @@ def toolCallDeviceSwap(args) {
         }
     }
 
-    // Before-count is the verification baseline AND the reported blast radius.
-    def beforeCount = _deviceSwapDependentCount(fromId)
+    // The hub's Swap Device exchanges the two device records' identities (label, name, DNI,
+    // state, create time) and leaves every app reference on its id, so verification compares
+    // each device's identity before and after the click. The before-count is the reported
+    // blast radius: the apps that referenced from_device_id now drive the replacement.
+    def fromBefore = _deviceSwapSnapshot(fromId)
+    def toBefore = _deviceSwapSnapshot(toId)
+    def beforeCount = fromBefore?.dependents
     mcpLog("info", "device-swap", "Swap requested: ${fromId} -> ${toId}; ${beforeCount == null ? 'unknown' : beforeCount} dependent app(s) before swap")
 
     def appId = _resolveDirectAppId("swapDevice")
@@ -5247,22 +5252,28 @@ def toolCallDeviceSwap(args) {
         }
         _deviceSwapCleanup(appId)
 
-        def afterCount = _deviceSwapDependentCount(fromId)
-        if (beforeCount != null && afterCount != null && beforeCount > 0 && afterCount >= beforeCount) {
+        def fromAfter = _deviceSwapSnapshot(fromId)
+        def toAfter = _deviceSwapSnapshot(toId)
+        def outcome = _deviceSwapIdentityOutcome(fromBefore, toBefore, fromAfter, toAfter)
+        if (outcome == "unchanged") {
             return [success: false,
-                    error: "Swap action was clicked but ${afterCount} app(s) still reference device ${fromId} (was ${beforeCount}).",
-                    note: "The hub accepted the click but the dependents count did not drop. Inspect with hub_list_device_dependents(deviceId=${fromId}) before retrying -- some references may not be swappable."]
+                    error: "The Swap Device action was clicked but neither device changed identity -- nothing was swapped.",
+                    note: "Both devices kept their own label and network id. Check that both still exist and are compatible (hub_get_device), then retry."]
         }
-        mcpLog("info", "device-swap", "Swap ${fromId} -> ${toId} complete; dependents ${beforeCount} -> ${afterCount}; transient instance ${instanceGone ? 'self-removed (verify fetch threw)' : 'survived the click'}; cleanup delete issued either way")
+        if (outcome != "exchanged") {
+            return [success: false, verified: false,
+                    error: "The Swap Device action was clicked but the swap could not be confirmed (${outcome == 'unreadable' ? 'a device could not be read back' : 'the two devices did not cleanly trade identities'}).",
+                    note: "Inspect devices ${fromId} and ${toId} with hub_get_device before doing anything else. Do NOT simply retry: if the swap did take, running it again swaps the devices back."]
+        }
+        mcpLog("info", "device-swap", "Swap ${fromId} -> ${toId} complete; identities exchanged; transient instance ${instanceGone ? 'self-removed (verify fetch threw)' : 'survived the click'}; cleanup delete issued either way")
         def result = [success: true,
                       swapped: [from: fromId, to: toId],
-                      verified: (beforeCount != null && afterCount != null),
-                      note: "Every app that referenced ${fromId} now uses ${toId}. Verify with hub_list_device_dependents(deviceId=${toId}) and spot-check the most critical automations."]
+                      identityExchanged: true,
+                      verified: true,
+                      fromDevice: [id: fromId, label: fromAfter.label, deviceNetworkId: fromAfter.dni],
+                      toDevice: [id: toId, label: toAfter.label, deviceNetworkId: toAfter.dni],
+                      note: "The hub exchanged the two devices' identities. Every app that referenced device ${fromId} still references id ${fromId}, which now carries the replacement's label ('${fromAfter.label}'), network id and hardware. Device ${toId} now carries the old device's identity ('${toAfter.label}') and can be removed once you confirm the automations behave. Running the swap again would swap them back."]
         if (beforeCount != null) result.appsRewired = beforeCount
-        if (afterCount != null) result.remainingDependents = afterCount
-        if (beforeCount == null || afterCount == null) {
-            result.note += " Before/after dependent counts could not be read from /device/fullJson, so the count verification is degraded."
-        }
         return result
     } catch (Exception e) {
         mcpLogError("device-swap", "hub_call_device_swap ${fromId} -> ${toId} failed", e)
@@ -5344,22 +5355,41 @@ def toolCallDeviceReplace(args) {
     }
 }
 
-private Integer _deviceSwapDependentCount(String deviceId) {
+// One /device/fullJson read per device: the dependent count (blast radius) plus the identity
+// fields the swap exchanges. Null when the read fails.
+private Map _deviceSwapSnapshot(String deviceId) {
     try {
         def responseText = hubInternalGet("/device/fullJson/${deviceId}")
         if (!responseText) return null
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)
         if (!(parsed instanceof Map)) return null
         def appsUsing = (parsed.appsUsing instanceof List) ? parsed.appsUsing : []
+        Integer dependents = appsUsing.size()
         try {
-            return (parsed.appsUsingCount != null) ? (parsed.appsUsingCount as Integer) : appsUsing.size()
-        } catch (NumberFormatException ignored) {
-            return appsUsing.size()
-        }
+            if (parsed.appsUsingCount != null) dependents = parsed.appsUsingCount as Integer
+        } catch (NumberFormatException ignored) { }
+        def dev = (parsed.device instanceof Map) ? parsed.device : [:]
+        return [dependents: dependents, dni: dev.deviceNetworkId?.toString(),
+                createTime: dev.createTime?.toString(), label: dev.label?.toString()]
     } catch (Exception e) {
-        mcpLog("warn", "device-swap", "dependent-count read failed for device ${deviceId} (${e.message}) -- before/after verification degraded")
+        mcpLog("warn", "device-swap", "snapshot read failed for device ${deviceId} (${e.message}) -- swap verification degraded")
         return null
     }
+}
+
+// exchanged | unchanged | unreadable | inconsistent. Network ids are unique per device, so a
+// clean swap is each device now carrying the other's network id (create time as the fallback
+// identity when a network id is missing).
+private String _deviceSwapIdentityOutcome(Map fromBefore, Map toBefore, Map fromAfter, Map toAfter) {
+    if (fromBefore == null || toBefore == null || fromAfter == null || toAfter == null) return "unreadable"
+    for (key in ["dni", "createTime"]) {
+        def fb = fromBefore[key], tb = toBefore[key], fa = fromAfter[key], ta = toAfter[key]
+        if (fb == null || tb == null || fa == null || ta == null || fb == tb) continue
+        if (fa == tb && ta == fb) return "exchanged"
+        if (fa == fb && ta == tb) return "unchanged"
+        return "inconsistent"
+    }
+    return "unreadable"
 }
 
 // Raw input descriptor lookup on a configure/json page. _rmCollectInputSchema
@@ -5619,13 +5649,13 @@ PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zi
         ],
         [
             name: "hub_call_device_swap",
-            description: """⚠️ DESTRUCTIVE: Swap a device — replace from_device_id with to_device_id across ALL apps and rules that reference it, in one operation.
+            description: """⚠️ DESTRUCTIVE: Swap a device — every app and rule that uses from_device_id runs on to_device_id's hardware afterwards, in one operation. The hub exchanges the two devices' identities (label, name, network id, state): app references stay on from_device_id, which now IS the replacement, and to_device_id takes over the old device's identity. Running it again swaps them back.
 
-Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the blast radius with hub_list_device_dependents(deviceId=from_device_id) — every app listed gets rewired; 3) confirm with the user.""",
+Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the blast radius with hub_list_device_dependents(deviceId=from_device_id) — every app listed will drive the replacement; 3) confirm with the user.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    from_device_id: [type: "string", description: "Device ID whose references will be replaced everywhere (from hub_list_devices)."],
+                    from_device_id: [type: "string", description: "Device the apps use today (from hub_list_devices). Its id keeps every app reference and takes on the replacement's identity."],
                     to_device_id: [type: "string", description: "Replacement device ID. Must be capability-compatible — on mismatch the error lists the compatible candidates."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms a hub backup exists (<24h) and the user approved the swap."]
                 ],
