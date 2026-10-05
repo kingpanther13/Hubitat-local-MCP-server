@@ -1856,8 +1856,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // RM renders the comparator as a raw `<` inside span markup (captured from a hub log line);
         // a bare `<[^>]+>` tag pattern swallowed "< 100<span ...>" as one tag (issue #508).
         def cond = "IF (Variable local<span style='color:black'>(0)</span> is ${cmp} 100<span style='color:green'>(T)</span><span style='color:green'> [TRUE]</span>) THEN"
-        def html = "${cond}
-" +
+        def html = "${cond}\n" +
             "<input type='hidden' name='1.0.true.type' value='button'>" +
             "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>${cond}</div>"
         hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
