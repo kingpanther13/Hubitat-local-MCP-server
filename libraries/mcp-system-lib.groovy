@@ -37,11 +37,11 @@ def _platformUpdateFromHub2(hub2) {
         return [available: null, currentVersion: fw ?: hubVer,
                 note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
     }
-    // Firmware 2.5.2.129+ reports alerts only as alertItems and drops the update flag, so its
-    // absence there says nothing about a pending update.
-    if (pa == null && alerts.alertItems instanceof List) {
+    // A missing update flag says nothing about a pending update. Firmware 2.5.2.129+ reports alerts
+    // only as alertItems and never sends the flag.
+    if (pa == null) {
         return [available: null, currentVersion: fw ?: hubVer,
-                note: "This firmware has no pending-update flag in its hub data. A pending update shows as one of the hub's alerts (hub_get_info with includeHealthAlerts=true) and on Settings > Check for Updates in the Hubitat web UI."]
+                note: "The hub data has no pending-update flag. A pending update shows as one of the hub's alerts (hub_get_info with includeHealthAlerts=true) and on Settings > Check for Updates in the Hubitat web UI."]
     }
     boolean avail = (pa == true)
     def out = [available: avail, currentVersion: fw ?: hubVer]

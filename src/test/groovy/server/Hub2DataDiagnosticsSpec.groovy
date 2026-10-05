@@ -371,6 +371,13 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         script._healthAlertsFromHub2([alerts: [alertItems: []]]).active == []
     }
 
+    def "an alerts map without the update flag reports platformUpdate as unreadable, never false"() {
+        expect:
+        def pu = script._platformUpdateFromHub2([version: '2.5.1.181', alerts: [hubLowMemory: false]])
+        pu.available == null
+        pu.note.contains('no pending-update flag')
+    }
+
     def "hub_get_info reads the Zigbee channel from the hub data map when the Hub object lacks it"() {
         given:
         def hub = hubOnFirmware('2.5.2.129')

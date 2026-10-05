@@ -6677,7 +6677,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         def modeNames = _rmResolveModeNames(actionSpec.perMode.keySet())
         fields = ["delayModes.@N": modeIds]
         modeNames.eachWithIndex { mname, i ->
-            def cfg = actionSpec.perMode[modeIds[i]] ?: actionSpec.perMode[mname] ?: actionSpec.perMode[(modeIds[i] as Integer)]
+            def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, modeIds[i]) }?.value
             if (cfg instanceof Map) {
                 if (cfg.hours != null)   fields["delayHour${mname}.@N"]   = cfg.hours
                 if (cfg.minutes != null) fields["delayMinute${mname}.@N"] = cfg.minutes
