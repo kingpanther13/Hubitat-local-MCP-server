@@ -5649,7 +5649,7 @@ PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zi
         ],
         [
             name: "hub_call_device_swap",
-            description: """⚠️ DESTRUCTIVE: Swap a device — every app and rule that uses from_device_id runs on to_device_id's hardware afterwards, in one operation. The hub exchanges the two devices' identities (label, name, network id, state): app references stay on from_device_id, which now IS the replacement, and to_device_id takes over the old device's identity. Running it again swaps them back.
+            description: """⚠️ DESTRUCTIVE: Swap a device — every app and rule that uses from_device_id runs on to_device_id's hardware afterwards, in one operation. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices' identities (label, name, network id, state): app references stay on from_device_id, which now IS the replacement, and to_device_id takes over the old device's identity.[[/FLAT_TRIM]]
 
 Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the blast radius with hub_list_device_dependents(deviceId=from_device_id) — every app listed will drive the replacement; 3) confirm with the user.""",
             inputSchema: [

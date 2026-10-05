@@ -113,7 +113,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     replaceRequiredExpression: [
                         type: "object",
-                        description: """Replace the rule's existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). The new expression is built after the existing one in RM's expression editor and the old one is removed only once the new one is complete, so a failed build leaves the original in place (originalPreserved:true); a failure after the switch (rejected updateRule, new health problems) rolls back to the original (requiredExpressionRestored). The replaced conditions stay listed as unused under Manage Conditions."""
+                        description: """Replace the rule's existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). A failed build leaves the original in place (originalPreserved:true); a failure after the switch rolls back to the original (requiredExpressionRestored).[[FLAT_TRIM]] The new expression is built after the existing one in RM's expression editor and the old one is removed only once the new one is complete. The replaced conditions stay listed as unused under Manage Conditions.[[/FLAT_TRIM]]"""
                     ],
 
                     addActions: [
@@ -12882,10 +12882,11 @@ private Map _rmValidateRequiredExpressionSpec(Map exprSpec, String label, boolea
             if (m.capability?.toString()?.trim()?.equalsIgnoreCase("Mode")) {
                 def modeKeys = (m.modeIds != null) ? m.modeIds : m.state
                 if (modeKeys != null && !(location?.modes ?: []).isEmpty()) {
-                    def keyList = (modeKeys instanceof Collection) ? (modeKeys as Collection) : [modeKeys]
+                    // Names only: an integer id is checked against the live mode picker during the walk.
+                    def names = ((modeKeys instanceof Collection) ? (modeKeys as Collection) : [modeKeys])
+                        .findAll { it != null && !it.toString().isInteger() }
                     try {
-                        def bad = _rmBadModeIds(_rmResolveModeIds(keyList), null).bad
-                        if (bad) throw new IllegalArgumentException("Unknown mode id(s) ${bad.join(', ')}")
+                        if (names) _rmResolveModeIds(names)
                     } catch (IllegalArgumentException modeExc) {
                         throw new IllegalArgumentException("${pathPrefix}[${i}]: ${modeExc.message}")
                     }
@@ -13916,6 +13917,7 @@ private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcId
         def next = null
         def nextValue = null
         for (inp in inputs) {
+            // A field that already holds the saved value (a reused slot) needs no write.
             def name = inp?.name?.toString()
             if (!name || written.contains(name) || inp?.type?.toString() == "button") continue
             def nm = name =~ /^(.*?[A-Za-z])(_?)(\d+)$/
@@ -13923,8 +13925,10 @@ private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcId
             def srcKey = "${(nm[0] as List)[1]}${(nm[0] as List)[2]}${srcIdx}".toString()
             def v = srcSettings.get(srcKey)
             if (v == null || v == "" || (v instanceof Collection && v.isEmpty()) || (v instanceof Map && v.isEmpty())) continue
+            def want = (v instanceof Map) ? (v as Map).keySet().collect { it?.toString() } : v
+            if (inp.value != null && _rmReplayValueMatches(inp.value, want)) { written << name; continue }
             next = name
-            nextValue = (v instanceof Map) ? (v as Map).keySet().collect { it?.toString() } : v
+            nextValue = want
             break
         }
         if (next != null) {
@@ -13941,6 +13945,15 @@ private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcId
         throw new IllegalStateException("the restored condition (from slot ${srcIdx}) could not be completed; STPage shows ${inputs.collect { it?.name }.findAll { it }.join(', ')}")
     }
     throw new IllegalStateException("the restored condition (from slot ${srcIdx}) did not complete within the wizard step limit")
+}
+
+private boolean _rmReplayValueMatches(Object current, Object want) {
+    def norm = { o ->
+        if (o instanceof Map) return (o as Map).keySet().collect { it?.toString() }.sort()
+        if (o instanceof Collection) return (o as Collection).collect { it?.toString() }.sort()
+        return [o?.toString()]
+    }
+    return norm(current) == norm(want)
 }
 
 // Make the rule's Required Expression match a backup snapshot. Returns [:] when the snapshot has

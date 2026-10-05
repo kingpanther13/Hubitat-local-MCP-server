@@ -164,10 +164,18 @@ class FakeRmExpressionEditor {
         condIdx = null
     }
 
+    // RM opens a new condition past every slot that still has settings (a deleted condition's
+    // settings linger, and a settings replay can write them back).
+    int allocateSlot() {
+        int top = settings.keySet().collect { k -> def m = (k =~ /^rCapab_(\d+)$/); m.matches() ? ((m[0] as List)[1] as Integer) : 0 }.max() ?: 0
+        nextSlot = Math.max(nextSlot, top + 1)
+        return nextSlot++
+    }
+
     void write(String key, Object value) {
         if (key == "newToken0" && mode == "insert") {
             if (value == "*") {
-                condIdx = nextSlot++
+                condIdx = allocateSlot()
                 condFromToken = true
                 mode = "cond"
             } else {
@@ -178,7 +186,7 @@ class FakeRmExpressionEditor {
             return
         }
         if (key == "cond" && value == "a" && mode == "noRE") {
-            condIdx = nextSlot++
+            condIdx = allocateSlot()
             condFromToken = false
             mode = "cond"
             return

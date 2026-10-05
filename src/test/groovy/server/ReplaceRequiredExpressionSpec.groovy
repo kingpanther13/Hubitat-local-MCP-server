@@ -142,12 +142,12 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
 
         when:
         script._rmReplaceRequiredExpression(100, [conditions: [[capability: "Switch", deviceIds: [8], state: "on"],
-            [subExpression: [conditions: [[capability: "Mode", modeIds: ["9"]]]]]], operator: "AND"])
+            [subExpression: [conditions: [[capability: "Mode", state: "Holiday"]]]]], operator: "AND"])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("subExpression.conditions[0]")
-        ex.message.contains("9")
+        ex.message.contains("Unknown mode 'Holiday'")
         fake.posts.isEmpty()
     }
 
