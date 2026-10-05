@@ -5471,6 +5471,17 @@ class TestRunner:
             assert default_first_key and default_second_key == default_first_key, \
                 f"same-rule edits should reuse one recent baseline by default: first={res}, second={wrapped}"
 
+            # The baseline file keeps only the app type's identity, never its OAuth client
+            # credentials. The message names keys only, so a failure cannot print a secret.
+            backup_file = (res.get("backup") or {}).get("fileName")
+            assert backup_file, f"addAction result names no backup file: {res.get('backup')}"
+            raw = self.client.call_tool("hub_manage_files", {
+                "tool": "hub_read_file", "args": {"fileName": backup_file}})
+            snapshot = json.loads(raw.get("content") or "{}")
+            app_type = ((snapshot.get("configJson") or {}).get("app") or {}).get("appType")
+            assert isinstance(app_type, dict) and app_type.get("name") and set(app_type) <= {"name", "namespace"}, \
+                f"rule backup appType should hold only name/namespace: keys={sorted(app_type or {})}"
+
             # One live rule proves the opt-in strict mode without making the rest of
             # E2E pay the per-write File Manager cost. Restore OFF in finally.
             self.client.call_tool("hub_manage_mcp", {
