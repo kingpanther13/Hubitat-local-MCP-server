@@ -9658,8 +9658,9 @@ private List _uiNavigationViolations(Map schema, Map values) {
     schema?.each { rawName, meta ->
         def name = rawName.toString()
         if (meta?.disabled == true || meta?.type == "button") return
-        def v = values?.get(name)
-        def empty = _uiValueIsEmpty(v)
+        // The page pre-fills an unset input with its defaultValue, so navigation and Done see it alike.
+        def v = _uiValueOrDefault(values?.get(name), meta as Map)
+        def empty = _uiValueIsEmpty(v, meta as Map)
         def title = _uiPlainTitle(meta?.title) ?: name
         if (empty) {
             if (meta?.required == true) problems << [name: name, title: title, problem: "required but empty"]
@@ -9705,18 +9706,42 @@ private String _uiEmailPattern() {
 // pre-fills. A Done built without it posts "" where the UI posts the default (a Room Lighting
 // "illuminance rises" condition then saves lux=null instead of the page's 100).
 private _uiValueOrDefault(v, Map meta) {
-    return (_uiValueIsEmpty(v) && meta?.defaultValue != null) ? meta.defaultValue : v
+    return (_uiValueIsEmpty(v, meta) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
 
-// Empty as the browser sees it: no value, a blank string, no selected options, no devices.
-// Multi-selects reach here as a List, a JSON-array string ("[]" from statusJson), or a device
-// id->label Map, depending on which read built the values.
-private boolean _uiValueIsEmpty(v) {
+// Empty as the browser sees it (appUI.js jsonSubmit). Selects and device pickers are empty with no
+// selection; they reach here as a List, a JSON-array string ("[]" from statusJson), or a device
+// id->label Map. A number input's whitespace sanitizes to "". Any other input is empty only at zero
+// length, so required text holding "null", "[]" or "  " passes, as in the browser.
+private boolean _uiValueIsEmpty(v, Map meta = null) {
     if (v == null) return true
     if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
     if (v instanceof Map) return v.isEmpty()
+    def t = meta?.type?.toString()
+    if (t != null && t != "enum" && !_isDevicePickerType(t)) {
+        return (t in ["number", "decimal"]) ? v.toString().trim().isEmpty() : v.toString().isEmpty()
+    }
     def s = v.toString().trim()
     return s.isEmpty() || s == "[]" || s == "null"
+}
+
+// A classic-app device picker: `capability.<name>` or a driver-specific `device.<DriverName>`.
+private boolean _isDevicePickerType(type) {
+    def t = type?.toString()
+    return t != null && (t.startsWith("capability.") || t.startsWith("device."))
+}
+
+// A device picker value as the id list the update endpoint takes. configure/json renders it as an
+// {id: label} Map, and statusJson can carry it as the List's text ("[728]" or "[728, 730]").
+private _devicePickerIds(v) {
+    if (v instanceof Map) return v.keySet().collect { it?.toString() }
+    if (v instanceof CharSequence) {
+        def s = v.toString().trim()
+        if (s.startsWith("[") && s.endsWith("]")) {
+            return s.substring(1, s.length() - 1).split(",").collect { it.trim().replaceAll(/^"|"$/, "") }.findAll { it }
+        }
+    }
+    return v
 }
 
 private Map _uiRangeBounds(range) {
@@ -9778,7 +9803,7 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         def key = rawKey.toString()
         def meta = schema?."${key}"
         def typeHint = meta?.type
-        def isCapability = typeHint?.startsWith("capability.")
+        def isCapability = _isDevicePickerType(typeHint)
         def isEnum = typeHint == "enum"
         // ALWAYS trust the schema's multiple flag. The earlier code coerced
         // isMulti=true whenever value was a List for capability.* fields,
@@ -9792,9 +9817,9 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         // Capability multi: CSV ("8,9"). Enum multi: JSON-array ('["X","Y"]').
         // Everything else: toString.
         def serialized
-        // A device picker reads back from configure/json as an {id: label} map; the update
-        // endpoint takes the ids. Sent as the map's toString ("[9:Lamp]") the hub answers 500.
-        def val = (rawVal instanceof Map && isCapability) ? rawVal.keySet().collect { it?.toString() } : rawVal
+        // The update endpoint takes a device picker's ids; sent as a map's or list's text
+        // ("[9:Lamp]", "[728]") the hub answers 500.
+        def val = isCapability ? _devicePickerIds(rawVal) : rawVal
         if (val instanceof List) {
             if (isEnum) {
                 serialized = groovy.json.JsonOutput.toJson(val.collect { it?.toString() }.findAll { it != null })
@@ -11339,7 +11364,7 @@ Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Ins
 `walkStep` is the lowest-level escape hatch: drive the RM wizard when the high-level `addTrigger`/`addAction` helpers don't cover the capability you need (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, features added in a later firmware). Each single-step call returns a structured snapshot -- schema before/after, schema diff (inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, action/trigger list-count change (disambiguates 'committed' from 'broke and lost the row'), and a health check.
 
 Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}, navigate?:{targetPage}, validateEnum?:<bool>, hrefContext?:{fromPage,hrefName,hrefParams?,hrefIndex?}, steps?:[...]}` where `page` is e.g. `selectTriggers`/`selectActions`/`doActPage`/`mainPage`/`periodic` and `operation` is one of:
-- `drive` -- **preferred**: run an ordered `steps=[...]` list (each item a single-step spec) in ONE call. The tool performs them in sequence, carrying the page forward across `navigate`/`done`, and stops at the first failed step (`stopOnError=false` to continue). A step that omits `page` inherits the page the previous step ended on. Returns `{steps:[{step, operation, page, success, diff, valueEcho, silentRejection, commitSignal, opResult, health}, ...], stepsRequested, stepsRun, lastStepOperation, success, health}`; on a halt the aggregate also carries a top-level `error` + `repairHints` naming the failed step. A finished drive fails when a step fails (the top-level `error` and `repairHints` name it) or when the rule ends with a structural issue the drive introduced, listed in `structuralIssues` (for example a block it opened and never closed: add the closer, or restore). Structural issues that were already present before the drive are listed in `preExistingStructuralIssues` and do not fail it, so building inside an already-open block across calls is allowed. That exemption needs a structural baseline read before the first step; if the read fails, pre-existing issues cannot be told apart from new ones and fail the drive, and the result carries `baselineUnavailable` with the reason, so compare with `hub_get_rule_health` before re-running. `healthUnverified:true` (with `success:false` and `partial:true`) marks a finished drive with at least one mutating step whose final health check the time budget skipped: its steps are committed, so check `hub_get_rule_health` rather than re-running the drive. A drive the budget pauses between steps instead returns `status:'in_progress'` with `stepsRemaining`. End the drive with a `done` step to fire the mainPage Done finalize (the `updateRule`-equivalent that re-initializes subscriptions) — the same finalize a single-step `done` gets. This automates the manual loop below.
+- `drive` -- **preferred**: run an ordered `steps=[...]` list (each item a single-step spec) in ONE call. The tool performs them in sequence, carrying the page forward across `navigate`/`done`, and stops at the first failed step (`stopOnError=false` to continue). A step that omits `page` inherits the page the previous step ended on. Returns `{steps:[{step, operation, page, success, diff, valueEcho, silentRejection, commitSignal, opResult, health}, ...], stepsRequested, stepsRun, lastStepOperation, success, health}`; on a halt the aggregate also carries a top-level `error` + `repairHints` naming the failed step. A finished drive fails when a step fails (the top-level `error` and `repairHints` name it) or when the rule ends with a structural issue the drive introduced, listed in `structuralIssues` (for example a block it opened and never closed: add the closer, or restore). Structural issues that were already present before the drive are listed in `preExistingStructuralIssues` and do not fail it, so building inside an already-open block across calls is allowed. That exemption needs a structural baseline read before the first step; if the read fails, pre-existing issues cannot be told apart from new ones and fail the drive, and the result carries `baselineUnavailable` with the reason, so compare with `hub_get_rule_health` before re-running. `healthUnverified:true` (with `success:false` and `partial:true`) marks a finished drive with at least one mutating step whose final health check the time budget skipped: its steps are committed, so check `hub_get_rule_health` rather than re-running the drive. A drive the budget pauses between steps instead returns `status:'in_progress'` with `stepsRemaining`. End the drive with a `done` step to fire the mainPage Done finalize (the `updateRule`-equivalent that re-initializes subscriptions) — the same finalize a single-step `done` gets. A drive finalizes only when every step ran and succeeded; one ending in `done` that failed, was paused, or ran past a failure under `stopOnError=false` returns `mainPageDoneSkipped:true` and leaves the app's update lifecycle unrun. This automates the manual loop below.
 - `introspect` -- fetch schema; no mutation.
 - `write` -- write one field's value (exactly one key per call; `hrefContext` for sub-pages).
 - `click` -- click a regular button (`cancelCapab`, `hasAll`, `moreCond`, ...).

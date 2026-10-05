@@ -558,4 +558,28 @@ class HubInternalRetrySpec extends ToolSpecBase {
         !seen.path.contains('?')
         seen.query == [deviceId: '777', label: 'Garage Bridge']
     }
+
+    @spock.lang.Unroll
+    def "hubInternalPostForm records the trail an update/json answer returns and the next submit from that page reuses it (#form)"() {
+        given: 'the first answer renders offMeansPage with its trail; later answers render nothing'
+        def bodies = []
+        httpPostHandler = { Map params, Closure cb ->
+            bodies << params.body
+            cb.call([status: 200, headers: [:], data: bodies.size() == 1 ? answer : '{"status":"success"}'])
+        }
+
+        when: 'a submit whose answer renders offMeansPage, then a navigation leaving offMeansPage'
+        script.hubInternalPostForm('/installedapp/update/json', [id: '2518', formAction: 'update'])
+        script._rmNavigateToPage(2518, 'offMeansPage', 'mainPage')
+
+        then: 'the navigation posts the trail the hub returned, not its own fallback'
+        bodies.size() == 2
+        bodies[1].currentPage == 'offMeansPage'
+        bodies[1].pageBreadcrumbs == expected
+
+        where:
+        form           | answer                                                                                                                  | expected
+        'URL-encoded'  | '{"status":"success","pageBreadcrumbs":"%5B%22mainPage%22%5D","configPage":{"name":"offMeansPage","sections":[]}}'     | '%5B%22mainPage%22%5D'
+        'JSON-escaped' | '{"status":"success","pageBreadcrumbs":"[\\"mainPage\\",\\"x\\"]","configPage":{"name":"offMeansPage","sections":[]}}' | '["mainPage","x"]'
+    }
 }

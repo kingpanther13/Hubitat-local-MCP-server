@@ -909,14 +909,14 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
     def skippedMaps = []
     replaySettings = replaySettings.collectEntries { k, v ->
         String key = k.toString()
-        boolean isPicker = savedSchema.get(key)?.type?.toString()?.startsWith("capability.") == true
+        boolean isPicker = _isDevicePickerType(savedSchema.get(key)?.type)
         if (!isPicker) {
             // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
             // its keys; rewriting it silently would be a value change reported as applied.
             if (v instanceof Map) { skippedMaps << key; return [:] }
             return [(key): v]
         }
-        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : ((v instanceof Map) ? v.keySet().toList() : v)
+        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : _devicePickerIds(v)
         return [(key): (ids instanceof List ? ids.collect { it?.toString() } : ids)]
     }
     String step = "settings replay"

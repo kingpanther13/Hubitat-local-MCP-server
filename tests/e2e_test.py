@@ -7012,10 +7012,13 @@ class TestRunner:
                 {"page": "offMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
             assert off.get("success") is False and "required but empty" in str((off.get("steps") or [{}])[-1].get("error")), \
                 f"Done with an empty required input must be refused: {off}"
-            # The same refusal as a single step posts nothing, so it must not steer toward a backup restore.
+            # A drive whose last Done was refused is not finalized: no mainPage Done, no update lifecycle.
+            assert off.get("mainPageDoneSkipped") is True and "mainPageDoneFailed" not in off, \
+                f"a refused drive must not run the mainPage Done finalize: {off}"
+            # The same refusal as a single step submits nothing, so it must not steer toward a backup restore.
             single = call_native({"walkStep": {"page": "offMeansPage", "operation": "done",
                                                "hrefContext": {"fromPage": "mainPage"}}})
-            assert single.get("success") is False and "the app was not touched" in str(single.get("restoreHint")), \
+            assert single.get("success") is False and "no Done was sent" in str(single.get("restoreHint")), \
                 f"a refused Done must report that nothing was submitted: {single}"
             # The {id: label} map form is accepted by walkStep too, and echoes as the committed id.
             fixed = call_native({"walkStep": {"operation": "drive", "steps": [
@@ -9802,18 +9805,32 @@ class TestRunner:
             assert bulk_kept in page and repl_kept not in page, \
                 f"a replaceActions refused before the clear must leave the existing list intact: {page}"
 
-            # Fail-closed replacement: an item refused only inside its add (an unknown switch verb passes
-            # the pre-clear checks) stops the batch after the clear, so only the clean first replacement
-            # item remains; skipping finalisation is not a rollback.
-            repl_stop = self._rm_stop_call(app_id, {"replaceActions": [
+            # An argument the builder alone checked (an unknown switch verb) is refused before the clear
+            # too, so the existing list survives.
+            verb_refused = self._rm_stop_call(app_id, {"replaceActions": [
                 {"capability": "log", "message": repl_kept},
                 {"capability": "switch", "action": "blink", "deviceIds": [int(self.get_test_switch_id())]},
+            ]})
+            assert verb_refused.get("success") is False and not verb_refused.get("removedIndices") \
+                and "replaceActions[1]: Unknown switch action 'blink'" in str(verb_refused.get("error", "")), \
+                f"an unknown verb must be refused before anything is cleared: {verb_refused}"
+            page = self._rule_page_text(app_id)
+            assert bulk_kept in page and repl_kept not in page, \
+                f"a replaceActions refused for its arguments must leave the existing list intact: {page}"
+
+            # Fail-closed replacement: an item refused only inside its add (a fileDelete whose file the
+            # hub does not have is checked against the editor's live file list) stops the batch after
+            # the clear, so only the clean first replacement item remains; skipping finalisation is not
+            # a rollback.
+            repl_stop = self._rm_stop_call(app_id, {"replaceActions": [
+                {"capability": "log", "message": repl_kept},
+                {"capability": "fileDelete", "fileName": f"{PREFIX}missing_file.txt"},
                 {"capability": "log", "message": repl_skipped},
             ]})
             added = repl_stop.get("addedActions") or []
             assert len(added) == 3 and added[0].get("success") is not False \
                 and not added[0].get("partial") and added[1].get("success") is False \
-                and "Unknown switch action 'blink'" in str(added[1].get("error", "")), \
+                and "is not a file on the hub" in str(added[1].get("error", "")), \
                 f"expected a clean replacement item, then the refusal, then the skipped tail: {repl_stop}"
             self._assert_bulk_stop(repl_stop, "replaceActions[1]", added[2:])
             page = self._rule_page_text(app_id)
