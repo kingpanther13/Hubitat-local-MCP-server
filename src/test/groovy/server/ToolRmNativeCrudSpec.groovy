@@ -5588,12 +5588,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the gate itself was consulted and let it through"
         hubGet.calls.any { it.path == '/installedapp/json/100' }
 
-        // Downstream execution, not just non-blocking: the wizard is entered and reaches its
-        // config-page read. That read is deliberately unstubbed, so the run dies THERE rather
+        // Downstream execution, not just non-blocking: the add goes on to discover the next action
+        // index from statusJson. That read is deliberately unstubbed, so the run dies THERE rather
         // than at the gate -- which is why nothing is posted. Asserting the read (instead of
         // only posts.isEmpty()) is what distinguishes "let through" from "blocked earlier".
-        and: "execution reached the wizard's config-page fetch"
-        hubGet.calls.any { it.path?.startsWith('/installedapp/configure/json/100') }
+        and: "execution reached the action-index read"
+        hubGet.calls.any { it.path == '/installedapp/statusJson/100' }
 
         and: "and it wrote nothing on the way out, having died at that unstubbed read"
         posts.isEmpty()
