@@ -37,6 +37,12 @@ def _platformUpdateFromHub2(hub2) {
         return [available: null, currentVersion: fw ?: hubVer,
                 note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
     }
+    // Firmware 2.5.2.129+ reports alerts only as alertItems and drops the update flag, so its
+    // absence there says nothing about a pending update.
+    if (pa == null && alerts.alertItems instanceof List) {
+        return [available: null, currentVersion: fw ?: hubVer,
+                note: "This firmware does not report a pending update in its hub data; hub_update_firmware checks the hub's update server live."]
+    }
     boolean avail = (pa == true)
     def out = [available: avail, currentVersion: fw ?: hubVer]
     if (avail) out.availableVersion = alerts.platformUpdateVersion?.toString()
@@ -45,13 +51,17 @@ def _platformUpdateFromHub2(hub2) {
 
 // healthAlerts block: the hub's own active health determinations from /hub2/hubData -- complementary
 // to, NOT duplicating, the locally-derived memory/temp/DB warnings. `active` lists the currently-
-// firing alert flags; `details` is the full alert map (every flag + the hub's message strings). The
-// platform-update fields are surfaced separately (platformUpdate), so they are dropped here.
+// firing alerts; `details` is the full alert map. Firmware 2.5.2.129+ reports alerts as
+// alertItems [{key, message, dismissible, ...}] and drops the per-alert boolean flags older firmware
+// sends, so `active` comes from the item keys when present. The platform-update fields are surfaced
+// separately (platformUpdate), so they are dropped here.
 def _healthAlertsFromHub2(hub2) {
     if (!(hub2 instanceof Map)) return null
     def alerts = (hub2.alerts instanceof Map) ? ([:] + hub2.alerts) : [:]
     alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
-    def active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
+    def active = (alerts.alertItems instanceof List) ?
+        (alerts.alertItems as List).findAll { it instanceof Map && it.key }.collect { it.key.toString() }.unique().sort() :
+        alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
     return [safeMode: hub2.safeMode == true, active: active, details: alerts]
 }
 
@@ -85,8 +95,11 @@ def toolGetHubInfo(args = null) {
     try { info.platformHardwareId = hub?.hardwareID } catch (Exception e) { info.platformHardwareId = null }
     info.model = _hubHardwareModel()
     try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
-    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable" }
-    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable" }
+    // The Hub object has no zigbeeChannel property on current firmware; its data map carries the channel.
+    def zbChannel = null
+    try { zbChannel = hub?.zigbeeChannel } catch (Exception e) { zbChannel = null }
+    if (zbChannel == null) { try { zbChannel = hub?.data?.zigbeeChannel } catch (Exception e) { zbChannel = null } }
+    info.zigbeeChannel = zbChannel ?: "unavailable"
     try { info.zigbeeId = hub?.zigbeeId } catch (Exception e) { info.zigbeeId = "unavailable" }
     try { info.type = hub?.type } catch (Exception e) { info.type = "unavailable" }
 

@@ -185,7 +185,7 @@ def toolGetZwaveDetails(args) {
     def result = [:]
 
     // Basic Z-Wave info from hub object
-    try { result.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { result.zwaveVersion = "unavailable" }
+    try { result.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { result.zwaveVersion = null }
 
     // Extended Z-Wave info via internal API
     // Firmware 2.3.7.1+ uses /hub/zwaveDetails/json; older uses /hub2/zwaveInfo
@@ -220,6 +220,8 @@ def toolGetZwaveDetails(args) {
         result.source = "sdk_only"
         result.note = "Extended Z-Wave info unavailable from all endpoints. Showing basic info from hub SDK."
     }
+    // The Hub object has no zwaveVersion property on current firmware; the details JSON carries the radio firmware.
+    if (result.zwaveVersion == null) result.zwaveVersion = (result.zwaveData instanceof Map ? result.zwaveData.firmwareVersion : null) ?: "unavailable"
 
     if (args?.include_topology) result.topology = _fetchRadioTopology("zwave")
 
@@ -264,7 +266,7 @@ def toolGetZigbeeDetails(args) {
     def result = [:]
 
     // Basic Zigbee info from hub object
-    try { result.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { result.zigbeeChannel = "unavailable" }
+    try { result.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { result.zigbeeChannel = null }
     try { result.zigbeeId = hub?.zigbeeId } catch (Exception e) { result.zigbeeId = "unavailable" }
 
     // Extended Zigbee info via internal API
@@ -300,6 +302,7 @@ def toolGetZigbeeDetails(args) {
         result.source = "sdk_only"
         result.note = "Extended Zigbee info unavailable from all endpoints. Showing basic info from hub SDK."
     }
+    if (result.zigbeeChannel == null) result.zigbeeChannel = (result.zigbeeData instanceof Map ? result.zigbeeData.channel : null) ?: "unavailable"
 
     if (args?.include_topology) result.topology = _fetchRadioTopology("zigbee")
 

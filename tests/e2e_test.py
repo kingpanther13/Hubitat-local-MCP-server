@@ -12459,6 +12459,9 @@ class TestRunner:
         assert isinstance(loc, dict), f"hub_list_backups(scope=hub_local) returned {type(loc).__name__}"
         assert "hubLocalBackups" in loc or "hubBackupErrors" in loc, \
             f"scope=hub_local missing hubLocalBackups/hubBackupErrors: {sorted(loc.keys())}"
+        for entry in loc.get("hubLocalBackups") or []:
+            assert entry.get("size") is not None and isinstance(entry.get("fullBackup"), bool), \
+                f"a local backup entry must carry its size and fullBackup flag: {entry}"
 
         cloud = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {"scope": "hub_cloud"}})
         assert isinstance(cloud, dict), f"hub_list_backups(scope=hub_cloud) returned {type(cloud).__name__}"
@@ -12768,7 +12771,9 @@ class TestRunner:
         assert "platformUpdate" in result, f"hub_get_info missing platformUpdate: {sorted(result)}"
         pu = result["platformUpdate"]
         assert "currentVersion" in pu, f"platformUpdate missing currentVersion: {pu}"
-        assert isinstance(pu.get("available"), bool), \
+        # Firmware 2.5.2.129+ no longer reports a pending update in /hub2/hubData; available is then
+        # null with a note, never a guessed false.
+        assert isinstance(pu.get("available"), bool) or (pu.get("available") is None and pu.get("note")), \
             f"platformUpdate.available not resolved -- /hub2/hubData unreadable? {pu}"
         if pu["available"]:
             assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
@@ -13205,6 +13210,11 @@ class TestRunner:
         # platform-update fields are surfaced via platformUpdate, not duplicated in the alert details
         assert "platformUpdateAvailable" not in ha["details"], \
             f"platformUpdate leaked into healthAlerts.details: {sorted(ha['details'])}"
+        # Firmware 2.5.2.129+ reports alerts only as alertItems: every item must surface in active.
+        items = ha["details"].get("alertItems")
+        if isinstance(items, list):
+            keys = sorted({str(i["key"]) for i in items if isinstance(i, dict) and i.get("key")})
+            assert ha["active"] == keys, f"healthAlerts.active must list the alert item keys {keys}: {ha}"
 
     @test("system_tools")
     def test_hub_get_info_update_reads(self) -> None:

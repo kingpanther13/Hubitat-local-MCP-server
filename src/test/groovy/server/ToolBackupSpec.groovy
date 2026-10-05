@@ -57,6 +57,24 @@ class ToolBackupSpec extends ToolSpecBase {
         r.hubCloudBackups == null
     }
 
+    def "scope=hub_local reads the hub's fileSize and marks full local backups"() {
+        given: "the 2.5.2 list shape: size as fileSize, plus the full-backup fields"
+        hubGet.register('/hub2/localBackups') { params ->
+            '[{"name":"db.lzf","fileSize":"3 MB","platformVersion":"2.5.2.129","fullBackup":false,"hasZWave":false,"hasZigbee":false,"createTime":"t1","createTimeOrig":"t1"},' +
+            '{"name":"full_x.tar.gz","fileSize":"40 MB","platformVersion":"2.5.2.129","fullBackup":true,"hasZWave":true,"hasZigbee":true,"createTime":"t2","createTimeOrig":"t2"}]'
+        }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub_local'])
+
+        then:
+        r.hubLocalBackups.collect { it['size'] } == ['3 MB', '40 MB']
+        r.hubLocalBackups.collect { it.fullBackup } == [false, true]
+        r.hubLocalBackups[1].hasZigbee == true
+        r.hubLocalBackups[1].hasZWave == true
+        r.hubLocalBackups[0].platformVersion == '2.5.2.129'
+    }
+
     def "scope=hub_cloud fetches /hub2/cloudBackups into hubCloudBackups"() {
         when:
         def r = script.toolListItemBackups([scope: 'hub_cloud'])
@@ -210,6 +228,20 @@ class ToolBackupSpec extends ToolSpecBase {
         r.type == 'hub-db'
         r.location == 'hub_local'
         r.message.toLowerCase().contains('reboot')
+    }
+
+    def "scope=hub_local refuses a full local backup before anything is sent"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+
+        when:
+        script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('is a full local backup')
+        !hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' }
     }
 
     def "scope=hub_local without confirm throws the destructive gate"() {

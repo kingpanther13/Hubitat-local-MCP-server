@@ -1187,6 +1187,18 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Read tools are disabled')
     }
 
+    def "hub_get_radio_details takes the radio fields from the details JSON when the Hub object lacks them"() {
+        given: "a hub like firmware 2.5.2, whose Hub object has no zigbeeChannel or zwaveVersion"
+        settingsMap.enableRead = true
+        sharedLocation.hub = new TestHub()
+        hubGet.register('/hub/zigbeeDetails/json') { params -> JsonOutput.toJson([channel: 25, panId: 'C341']) }
+        hubGet.register('/hub/zwaveDetails/json') { params -> JsonOutput.toJson([firmwareVersion: '7.22.1', enabled: true]) }
+
+        expect:
+        script.toolGetZigbeeDetails([:]).zigbeeChannel == 25
+        script.toolGetZwaveDetails([:]).zwaveVersion == '7.22.1'
+    }
+
     def "hub_get_radio_details zigbee returns channel + zigbeeId + parsed details"() {
         given:
         settingsMap.enableRead = true
