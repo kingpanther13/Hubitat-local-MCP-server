@@ -264,6 +264,15 @@ def toolGetItemSource(String type, String idParam, args) {
     }
 }
 
+// A tag starts with a name, a closing slash or a declaration (`<span`, `</i>`, `<!--`). Rule
+// Machine renders a less-than comparator as a raw, unescaped `<` ("is < 100<span ...>(T)</span>"),
+// so a bare `<[^>]+>` swallowed the comparator and value as one tag and the condition read "is (T)".
+private String _htmlTagRegex() {
+    // Assigned first: the hub's Groovy 2.4 parses a slashy literal right after `return` as division.
+    def regex = /<\/?[A-Za-z!][^>]*>/
+    return regex
+}
+
 private String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
@@ -273,7 +282,7 @@ private String stripAppConfigHtml(value) {
     // Local Variables `lvTable` page). Only blocks containing ; or : inside the
     // braces are removed, so prose like "{x}" is preserved.
     if (s.contains("<")) {
-        s = s.replaceAll(/<[^>]+>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
+        s = s.replaceAll(_htmlTagRegex(), "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
     }
     // Decode the common HTML entities Hubitat escapes user-typed names with: a
     // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
@@ -390,7 +399,7 @@ private List _extractEmbeddedActions(String html, boolean markDisabled = false, 
             div.description = stripAppConfigHtml(innerRaw) ?: null
             div.disabledText = disabledText
         } else {
-            def inner = innerRaw.replaceAll(/<[^>]+>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
+            def inner = innerRaw.replaceAll(_htmlTagRegex(), "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
             div.description = inner ?: null
         }
         divs << div

@@ -8769,14 +8769,20 @@ class TestRunner:
 
         # A Boolean variable has no comparator field: both the Required Expression (STPage) and an
         # IF action (doActPage) write its true/false value directly. A second small rule keeps the
-        # String fixture above untouched.
-        bool_var = self._ensure_perm_variables("bool_flag")["bool_flag"]
+        # String fixture above untouched. The same rule carries a Number `<` IF: RM renders a
+        # less-than comparator as a raw, unescaped '<' and the config read's tag strip used to
+        # swallow "< 100" as a tag, so the rendered condition lost its comparator and value.
+        perm = self._ensure_perm_variables("bool_flag", "sv_number")
+        bool_var, num_var = perm["bool_flag"], perm["sv_number"]
         bool_app, bool_created = self._create_native_rule("BoolVarCond", {
             "addRequiredExpression": {"conditions": [{"capability": "Variable", "variable": bool_var, "value": True}]},
             "addActions": [
                 {"capability": "ifThen", "expression": {"conditions": [
                     {"capability": "Variable", "variable": bool_var, "value": False}]}},
                 {"capability": "log", "message": "E2E boolean branch"},
+                {"capability": "endIf"},
+                {"capability": "ifThen", "expression": {"conditions": [
+                    {"capability": "Variable", "variable": num_var, "comparator": "<", "value": 100}]}},
                 {"capability": "endIf"},
             ],
         }, return_result=True)
@@ -8785,11 +8791,22 @@ class TestRunner:
                 assert (bool_created.get("requiredExpression") or {}).get("success") is not False, \
                     f"Boolean Required Expression reported failure: {bool_created}"
                 assert all(a.get("success") is not False for a in (bool_created.get("actions") or [])), \
-                    f"Boolean IF action reported failure: {bool_created}"
-            bool_settings = self._get_persisted_rule_config(bool_app).get("settings") or {}
+                    f"Boolean / less-than IF actions reported failure: {bool_created}"
+            bool_cfg = self._get_persisted_rule_config(bool_app)
+            bool_settings = bool_cfg.get("settings") or {}
             states = self._variable_condition_states(bool_settings, bool_var)
             assert sorted(states) == ["false", "true"], \
                 f"the Boolean RE (true) and IF (false) values did not persist on their variable slots: {bool_settings}"
+            lt_slots = [str(key).split("_", 1)[1] for key, value in bool_settings.items()
+                        if str(key).startswith("RelrDev_") and str(value) == "<"]
+            assert any(str(bool_settings.get(f"state_{slot}")) == "100" for slot in lt_slots), \
+                f"the less-than IF did not persist its comparator and value: {bool_settings}"
+            # The rendered mainPage paragraph is what an MCP client reads; the raw '<' must survive.
+            page_text = "\n".join(
+                str(paragraph) for section in (bool_cfg.get("page") or {}).get("sections") or []
+                for paragraph in section.get("paragraphs") or [])
+            assert "is < 100" in page_text and "<span" not in page_text, \
+                f"the less-than condition lost its comparator/value in the rendered paragraph: {page_text!r}"
             self._assert_rule_healthy(bool_app)
         finally:
             self._delete_native(bool_app)

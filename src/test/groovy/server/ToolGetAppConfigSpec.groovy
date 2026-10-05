@@ -25,6 +25,8 @@ import support.ToolSpecBase
  *  - RM disabled actions: red italic span -> [DISABLED] paragraph mark, disabledActions
  *    [{text, disableButton}] list, embeddedActions disabled:true; legend span and *BROKEN*
  *    marker excluded; non-RM apps untouched
+ *  - RM less-than comparator: RM's raw '<' is not a tag opener, "is < 100" survives both the
+ *    paragraph and the selectActions embeddedActions strip
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
  * the same tool through {@code mcpDriver.callTool} so the production
@@ -1819,6 +1821,47 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         !result.containsKey('disabledActions')
         !result.containsKey('disabledActionsNote')
+    }
+
+    def "a less-than comparator rendered as a raw '<' survives the paragraph tag strip"() {
+        given:
+        settingsMap.enableRead = true
+        // Live RM 5.1.8 mainPage text for `IF (Variable local < 100)`: the comparator is an
+        // unescaped '<' followed by the value and the condition's truth span. A bare <[^>]+>
+        // strip ate "< 100<span style='color:green'>" as one tag and the row read "is (T)".
+        def html = "IF (Variable local<span style='color:black'>(0)</span> is < 100<span style='color:green'>(T)</span> [TRUE]) THEN\n" +
+            "\tSet local to (local<span style='color:black'>(0)</span> + 1)\n" +
+            "END-IF\n" +
+            "IF (Variable local<span style='color:black'>(0)</span> is > 5<span style='color:red'>(F)</span> [FALSE]) THEN\n" +
+            "END-IF"
+        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(html) }
+
+        when:
+        def para = script.toolGetAppConfig([appId: 35]).page.sections[0].paragraphs[0]
+
+        then: 'both comparators and values are kept, every tag is gone'
+        para.contains('IF (Variable local(0) is < 100(T) [TRUE]) THEN')
+        para.contains('IF (Variable local(0) is > 5(F) [FALSE]) THEN')
+        para.contains('\tSet local to (local(0) + 1)')
+        !para.contains('<span')
+        !para.contains('</span>')
+    }
+
+    def "a less-than comparator survives the selectActions embeddedActions row strip"() {
+        given:
+        settingsMap.enableRead = true
+        // The selectActions row text goes through the embeddedActions strip, not the paragraph one.
+        def html = "<input type='hidden' name='1.0.false.type' value='button'>" +
+            "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>" +
+            "IF (Variable local<span style='color:black'>(0)</span> is < 100<span style='color:green'>(T)</span> [TRUE]) THEN</div>"
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
+
+        when:
+        def rows = script.toolGetAppConfig([appId: 35, pageName: 'selectActions']).page.sections[0].embeddedActions
+
+        then:
+        rows.size() == 1
+        rows[0].description == 'IF (Variable local(0) is < 100(T) [TRUE]) THEN'
     }
 
     def "selectActions embeddedActions flag the disabled action row with disabled:true"() {
