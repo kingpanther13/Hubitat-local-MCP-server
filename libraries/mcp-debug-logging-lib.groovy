@@ -425,6 +425,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
+            "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",
             "- **Keep recent errors for bug reports:** ${eff(settings.retainReportErrors, false)}",
             "- **Max captured states:** ${effNum(settings.maxCapturedStates, getMaxCapturedStates())}",
             "- **Loop guard max executions:** ${effNum(settings.loopGuardMax, settings.loopGuardMax ?: 30)}",

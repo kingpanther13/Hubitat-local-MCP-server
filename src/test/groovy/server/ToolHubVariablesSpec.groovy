@@ -2188,6 +2188,39 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         script._hubVarPlatformInUse(null, 'GT1') == null
     }
 
+    @spock.lang.Unroll
+    def "_hubVarPlatformInUseStatus distinguishes unreadable from not-listed: '#name' -> #expected"() {
+        given:
+        def row = { String n, boolean used ->
+            used ? "<tr style='color:black'><td><div><a href='#' data-stateAttribute='inUse' aria-label='Show In Use Apps for ${n}' style='color:orange'>${n}</a></div></td><td>Number</td></tr>" :
+                   "<tr style='color:black'><td>${n}</td><td>Number</td></tr>"
+        }
+        def page = groovy.json.JsonOutput.toJson([configPage: [sections: [[body: [[type: 'paragraph',
+            description: "<table>${row('GT1', true)}${row('Idle', false)}</table>".toString()]]]]]])
+        hubGet.register('/installedapp/configure/json/1424') { params -> page }
+
+        expect:
+        script._hubVarPlatformInUseStatus(1424, name) == expected
+
+        where:
+        name      | expected
+        'GT1'     | 'inUse'      // Show-In-Use marker present
+        'Idle'    | 'notInUse'   // plain row present
+        'Missing' | 'notListed'  // page read fine, variable absent
+        null      | 'unreadable' // no var name
+    }
+
+    def "_hubVarPlatformInUseStatus is unreadable when the page GET throws, and the Boolean wrapper collapses both unknowns to null"() {
+        given:
+        hubGet.register('/installedapp/configure/json/1424') { params -> throw new RuntimeException('401') }
+
+        expect: 'the throwing GET is unreadable'
+        script._hubVarPlatformInUseStatus(1424, 'GT1') == 'unreadable'
+
+        and: 'the Boolean wrapper maps unreadable AND notListed both to null (delete-variable path unchanged)'
+        script._hubVarPlatformInUse(1424, 'GT1') == null
+    }
+
     // ---- hub_get_variable includeDependents ----
     // The reveal fixture mirrors the live capture off firmware 2.5.1.183: the per-variable reveal link
     // (title='Show In Use Apps for <name>'), the revealed-panel marker (<b><name></b> is in use by these
@@ -2306,7 +2339,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         buttonClicks.isEmpty()
     }
 
-    def "hub_get_variable includeDependents reports dependentsError when the Hub Variables page is unreadable"() {
+    def "hub_get_variable includeDependents reports a distinct 'page unreadable' dependentsError when the Hub Variables page cannot be read"() {
         given:
         script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
@@ -2315,14 +2348,37 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         when:
         def result = script.toolGetVariable([name: 'zzProbe', includeDependents: true])
 
-        then: 'the base read still succeeds; the dependents failure is reported IN the response'
+        then: 'the base read still succeeds; the dependents failure names the unreadable page specifically'
         result.source == 'hub'
         !result.containsKey('appsUsing')
         result.dependentsError.contains('in-use registry')
+        result.dependentsError.contains('the Hub Variables page was unreadable')
+        !result.dependentsError.contains('not listed')
+    }
+
+    def "hub_get_variable includeDependents reports a distinct 'not listed' dependentsError when the page reads but omits the variable"() {
+        given: 'the page reads fine, but names neither the in-use marker nor a plain row for this variable'
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            wrapCfg("<table><tr><td>someOtherVar</td><td>Number</td></tr></table>")
+        }
+
+        when:
+        def result = script.toolGetVariable([name: 'zzProbe', includeDependents: true])
+
+        then: 'the not-listed case is a DISTINCT dependentsError text, not the page-unreadable one'
+        result.source == 'hub'
+        !result.containsKey('appsUsing')
+        result.dependentsError.contains('in-use registry')
+        result.dependentsError.contains('the variable is not listed on the Hub Variables page')
+        !result.dependentsError.contains('unreadable')
     }
 
     def "hub_get_variable includeDependents treats a reveal that did not load as UNKNOWN, not empty"() {
         given: 'the variable is marked in-use (reveal link present) but the reveal panel never renders'
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, component: component, msg: msg] }
         script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
         // Page carries the "Show In Use Apps for probe" marker (so platformInUse=true) but NO revealed
@@ -2338,10 +2394,15 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then: 'zero anchors with no loaded panel is UNKNOWN -> dependentsError, NOT appsUsing:[]'
         !result.containsKey('appsUsing')
         result.dependentsError.contains('in-use registry')
+
+        and: 'the never-rendered reveal is logged as a warning'
+        logs.any { it.level == 'warn' && it.component == 'variables' && it.msg.contains('never rendered') }
     }
 
     def "hub_get_variable includeDependents returns UNKNOWN when in-use but the panel lists no parseable consumers"() {
         given: 'platformInUse=true and the panel for THIS variable renders, but with zero consumer anchors'
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, component: component, msg: msg] }
         script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
         script.metaClass._findHubVariablesAppId = { -> 1424 }
         script.metaClass._primeHubVarsWizard = { Integer appId, String context -> }
@@ -2358,6 +2419,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then: 'a rendered-but-empty panel is a contradiction -> UNKNOWN, NOT appsUsing:[]'
         !result.containsKey('appsUsing')
         result.dependentsError.contains('in-use registry')
+
+        and: 'the empty-panel contradiction is logged as a warning'
+        logs.any { it.level == 'warn' && it.component == 'variables' && it.msg.contains('no consumer anchors parsed') }
     }
 
     def "hub_get_variable includeDependents ignores a reveal panel that names a different variable (parallel-call safety)"() {

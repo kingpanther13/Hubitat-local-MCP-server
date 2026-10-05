@@ -4,7 +4,7 @@
 
 Security fixes are provided for the current release of MCP Rule Server, installed and updated through Hubitat Package Manager. Older releases are not supported; update to the current release to receive fixes. The package requires Hubitat firmware `2.3.0+`.
 
-Security policy last updated: 2026-09-27.
+Security policy last updated: 2026-10-05.
 
 ## Permission Model
 
@@ -16,6 +16,8 @@ Every MCP tool is gated by two universal master toggles, **Read** and **Write**,
 Both masters are enforced centrally at the dispatch chokepoint; only an explicit OFF blocks (unset = ON). The destructive/sensitive write tools additionally require `confirm=true` plus a hub backup within 24h, independent of the Write master. These two masters replace the former separate "Hub Admin Read", "Hub Admin Write", and "Built-in App Tools" toggles.
 
 **Advanced per-tool / per-gateway overrides (deny-only).** Individual tools or whole gateways can be disabled below the masters (Settings > Advanced: Per-tool Overrides). These can only turn tools OFF; a disabled tool drops from `tools/list` and `hub_search_tools` and a cached call returns a distinct "…is disabled in Advanced settings (Per-tool Overrides)…" error.
+
+**Access tokens in responses.** Hubitat shows each app's OAuth access token on its app page, and `hub_get_app_config` returns those pages as the hub renders them, including this server's own endpoint URLs and the URLs of apps such as Maker API. The **Hide access tokens in MCP responses** setting (Advanced page, off by default) replaces access tokens in tool results with `***redacted (access token)***`: `access_token=` URL parameters, string values under `accessToken` / `access_token` keys, and those keys inside JSON carried as a string. A token an app shows in any other form, such as bare text, is not recognized and passes through. Leave the setting off when the AI should read an endpoint URL for you.
 
 **Protected apps.** The app's **Protected apps** picker reserves selected installed-app instances from generic app, native-rule, and Dashboard mutations, even with Developer Mode enabled. The MCP instance is selected automatically on installation and on the first request after upgrading. You can change that selection in the Hubitat app UI, including clearing it; click **Done** to apply the change. Later updates preserve your choice. Reads remain available. Keeping the MCP instance selected also prevents the generic editor from changing this protection setting. Dedicated Developer Mode settings and package-maintenance tools retain their existing permissions; the protected-app list is not editable through `hub_update_mcp_settings`. This is an installed-app mutation boundary, not a sandbox for arbitrary code deployed through authorized developer tools.
 

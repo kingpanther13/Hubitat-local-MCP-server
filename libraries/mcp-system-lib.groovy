@@ -27,15 +27,21 @@ def _platformUpdateFromHub2(hub2) {
     def fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
     def hubVer = (hub2 instanceof Map) ? hub2.version?.toString() : null
-    // available:null is the schema's documented "unreadable" signal -- honor it for BOTH a missing
-    // /hub2/hubData AND a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
-    // platformUpdateAvailable), so a malformed/changed payload can never masquerade as a confident
-    // "no update available".
+    // available:null is the schema's documented "unreadable" signal -- honor it for a missing
+    // /hub2/hubData, a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
+    // platformUpdateAvailable), and an alert block without the update flag, so none can masquerade
+    // as a confident "no update available".
     def alerts = (hub2 instanceof Map && hub2.alerts instanceof Map) ? hub2.alerts : null
     def pa = alerts?.platformUpdateAvailable
     if (alerts == null || (pa != null && !(pa instanceof Boolean))) {
         return [available: null, currentVersion: fw ?: hubVer,
                 note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
+    }
+    // A missing update flag says nothing about a pending update. Firmware 2.5.2.129+ reports alerts
+    // only as alertItems and never sends the flag.
+    if (pa == null) {
+        return [available: null, currentVersion: fw ?: hubVer,
+                note: "The hub data has no pending-update flag. A pending update shows as one of the hub's alerts (hub_get_info with includeHealthAlerts=true) and on Settings > Check for Updates in the Hubitat web UI."]
     }
     boolean avail = (pa == true)
     def out = [available: avail, currentVersion: fw ?: hubVer]
@@ -45,13 +51,17 @@ def _platformUpdateFromHub2(hub2) {
 
 // healthAlerts block: the hub's own active health determinations from /hub2/hubData -- complementary
 // to, NOT duplicating, the locally-derived memory/temp/DB warnings. `active` lists the currently-
-// firing alert flags; `details` is the full alert map (every flag + the hub's message strings). The
-// platform-update fields are surfaced separately (platformUpdate), so they are dropped here.
+// firing alerts; `details` is the full alert map. Firmware 2.5.2.129+ reports alerts as
+// alertItems [{key, message, dismissible, ...}] and drops the per-alert boolean flags older firmware
+// sends, so `active` comes from the item keys when present. The platform-update flag fields are
+// surfaced separately (platformUpdate), so they are dropped here.
 def _healthAlertsFromHub2(hub2) {
     if (!(hub2 instanceof Map)) return null
     def alerts = (hub2.alerts instanceof Map) ? ([:] + hub2.alerts) : [:]
     alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
-    def active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
+    def active = (alerts.alertItems instanceof List) ?
+        (alerts.alertItems as List).findAll { it instanceof Map && it.key }.collect { it.key.toString() }.unique().sort() :
+        alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
     return [safeMode: hub2.safeMode == true, active: active, details: alerts]
 }
 
@@ -85,8 +95,19 @@ def toolGetHubInfo(args = null) {
     try { info.platformHardwareId = hub?.hardwareID } catch (Exception e) { info.platformHardwareId = null }
     info.model = _hubHardwareModel()
     try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
-    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable" }
-    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable" }
+    // Firmware 2.5.2's Hub object has neither radio property (reading one throws). Its data map carries
+    // the channel as "0x19 (25)"; the decimal is reported, as hub_get_radio_details does. zwaveVersion
+    // is included only where the Hub object provides it.
+    def zbChannel = null
+    try { zbChannel = hub?.zigbeeChannel } catch (Exception e) { zbChannel = null }
+    if (zbChannel == null) {
+        def dataChannel = null
+        try { dataChannel = hub?.data?.zigbeeChannel } catch (Exception e) { dataChannel = null }
+        def decimal = (dataChannel?.toString() =~ /\((\d+)\)/)
+        zbChannel = decimal.find() ? (decimal.group(1) as Integer) : dataChannel
+    }
+    info.zigbeeChannel = zbChannel ?: "unavailable"
+    try { def zv = hub?.zwaveVersion; if (zv != null) info.zwaveVersion = zv } catch (Exception e) { }
     try { info.zigbeeId = hub?.zigbeeId } catch (Exception e) { info.zigbeeId = "unavailable" }
     try { info.type = hub?.type } catch (Exception e) { info.type = "unavailable" }
 

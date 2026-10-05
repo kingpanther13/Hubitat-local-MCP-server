@@ -130,7 +130,17 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
                 def m = (k.toString() =~ /^settings\[(.+)\]$/)
                 if (m.find()) navValues.put(m[0][1], v)
             }
-            _requireUiNavigationValid(clonerAppId, "leaving cloner page '${currentPage}'".toString(), _rmCollectInputSchema(navCfg.configPage as Map), navValues)
+            def navSchema = _rmCollectInputSchema(navCfg.configPage as Map)
+            _requireUiNavigationValid(clonerAppId, "leaving cloner page '${currentPage}'".toString(), navSchema, navValues)
+            // The page submits an unset input's defaultValue with the navigation; send what the check accepted.
+            def defaults = navSchema.findAll { k, meta ->
+                meta?.disabled != true && meta?.type != "button" && meta?.defaultValue != null && _uiValueIsEmpty(navValues.get(k), meta as Map)
+            }.collectEntries { k, meta -> [(k): meta.defaultValue] }
+            if (defaults) {
+                def defaultBody = _rmBuildSettingsBody(clonerAppId, defaults, navSchema)
+                defaultBody.remove("id")
+                body.putAll(defaultBody)
+            }
         }
     }
     // URL-encode manually — HTTPBuilder's Map auto-encoder mangles backslash
@@ -909,14 +919,14 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
     def skippedMaps = []
     replaySettings = replaySettings.collectEntries { k, v ->
         String key = k.toString()
-        boolean isPicker = savedSchema.get(key)?.type?.toString()?.startsWith("capability.") == true
+        boolean isPicker = _isDevicePickerType(savedSchema.get(key)?.type)
         if (!isPicker) {
             // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
             // its keys; rewriting it silently would be a value change reported as applied.
             if (v instanceof Map) { skippedMaps << key; return [:] }
             return [(key): v]
         }
-        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : ((v instanceof Map) ? v.keySet().toList() : v)
+        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : _devicePickerIds(v)
         return [(key): (ids instanceof List ? ids.collect { it?.toString() } : ids)]
     }
     String step = "settings replay"

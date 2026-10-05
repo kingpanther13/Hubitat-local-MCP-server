@@ -1314,20 +1314,35 @@ def toolDeleteHubVariable(args) {
     return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
 }
 
-// Whether the Hub Variables page marks this variable as in use: the hub renders a
-// "Show In Use Apps" button for a registered variable and plain text otherwise.
-// Returns null when the page cannot be read or does not list the variable.
-Boolean _hubVarPlatformInUse(Integer hubVarsAppId, String varName) {
-    if (hubVarsAppId == null || !varName) return null
+// How the Hub Variables page marks this variable: the hub renders a "Show In Use Apps" button for a
+// registered variable and a plain table row otherwise. Returns a distinguishing status so callers can
+// tell an unreadable page apart from a variable that simply is not listed:
+//   "inUse"      - the Show-In-Use marker is present
+//   "notInUse"   - the plain <td>var</td> row is present (registered, no consumers)
+//   "unreadable" - appId/var missing, the GET threw, or the page body was empty
+//   "notListed"  - the page read fine but names neither marker (the variable is not on the page)
+String _hubVarPlatformInUseStatus(Integer hubVarsAppId, String varName) {
+    if (hubVarsAppId == null || !varName) return "unreadable"
     def text
     try { text = hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString() }
-    catch (Exception e) { return null }
-    if (!text) return null
+    catch (Exception e) { return "unreadable" }
+    if (!text) return "unreadable"
     def escaped = varName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
     def forms = [varName, escaped].unique()
-    if (forms.any { text.contains("Show In Use Apps for ${it}'".toString()) }) return true
-    if (forms.any { text.contains("<td>${it}</td>".toString()) }) return false
-    return null
+    if (forms.any { text.contains("Show In Use Apps for ${it}'".toString()) }) return "inUse"
+    if (forms.any { text.contains("<td>${it}</td>".toString()) }) return "notInUse"
+    return "notListed"
+}
+
+// Whether the Hub Variables page marks this variable as in use. Thin Boolean wrapper over
+// _hubVarPlatformInUseStatus: true (in use), false (listed but not in use), null (unreadable OR not
+// listed -- both collapse to "unknown" for callers that only need the tri-state).
+Boolean _hubVarPlatformInUse(Integer hubVarsAppId, String varName) {
+    switch (_hubVarPlatformInUseStatus(hubVarsAppId, varName)) {
+        case "inUse": return true
+        case "notInUse": return false
+        default: return null
+    }
 }
 
 String _hubVarDeleteCoverageNote() {
@@ -1350,12 +1365,16 @@ Map _hubVarInUseApps(Integer hubVarsAppId, String varName) {
         return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}'.",
                 note: "The Settings > Hub Variables app could not be located; verify it is enabled and retry. See hub_get_tool_guide(section='variables')."]
     }
-    Boolean inUse = _hubVarPlatformInUse(hubVarsAppId, varName)
-    if (inUse == null) {
-        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}'.",
-                note: "The Settings > Hub Variables page was unreadable or did not list the variable; verify it exists (hub_list_variables) and retry. See hub_get_tool_guide(section='variables')."]
+    String inUseStatus = _hubVarPlatformInUseStatus(hubVarsAppId, varName)
+    if (inUseStatus == "unreadable") {
+        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the Hub Variables page was unreadable).",
+                note: "Retry; if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
     }
-    if (!inUse) return [apps: []]   // registered but no consumers
+    if (inUseStatus == "notListed") {
+        return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the variable is not listed on the Hub Variables page).",
+                note: "Verify it exists (hub_list_variables) and retry. See hub_get_tool_guide(section='variables')."]
+    }
+    if (inUseStatus == "notInUse") return [apps: []]   // registered but no consumers
 
     // The reveal panel is a single shared wizard toggle, so a parallel includeDependents call for a
     // different variable can race its panel into our re-fetch. Only trust a panel whose marker names
@@ -1400,12 +1419,14 @@ Map _hubVarInUseApps(Integer hubVarsAppId, String varName) {
                 note: "Retry; if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
     }
     if (!panelForThisVar) {
+        mcpLog("warn", "variables", "hub_get_variable includeDependents: reveal panel for '${varName}' never rendered after polling")
         return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (the reveal panel did not render).",
                 note: "Retry (the reveal lands asynchronously); if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
     }
     if (apps.isEmpty()) {
         // The registry marked the variable in use and its panel rendered, yet no consumer anchors
         // parsed -- a contradiction, so report UNKNOWN rather than a false "no consumers".
+        mcpLog("warn", "variables", "hub_get_variable includeDependents: '${varName}' marked in use but no consumer anchors parsed from the reveal")
         return [error: "Could not read the hub's in-use registry for Hub Variable '${varName}' (marked in use, but no consumer apps parsed from the reveal).",
                 note: "Read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."]
     }

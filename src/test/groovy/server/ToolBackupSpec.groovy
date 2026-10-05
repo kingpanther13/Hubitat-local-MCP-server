@@ -66,6 +66,26 @@ class ToolBackupSpec extends ToolSpecBase {
         !r.schedule.keySet().any { it.toLowerCase().contains('password') }
     }
 
+    def "scope=hub_local reads the hub's fileSize and marks full local backups"() {
+        given: "the 2.5.2 list shape: size as fileSize, plus the full-backup fields"
+        hubGet.register('/hub2/localBackups') { params ->
+            '[{"name":"db.lzf","fileSize":"3 MB","platformVersion":"2.5.2.129","fullBackup":false,"hasZWave":false,"hasZigbee":false,"createTime":"t1","createTimeOrig":"t1"},' +
+            '{"name":"full_x.tar.gz","fileSize":"40 MB","platformVersion":"2.5.2.129","fullBackup":true,"hasZWave":true,"hasZigbee":true,"createTime":"t2","createTimeOrig":"t2"}]'
+        }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub_local'])
+
+        then: 'the fileSize/full-backup marking holds AND the schedule still folds in'
+        r.hubLocalBackups.collect { it['size'] } == ['3 MB', '40 MB']
+        r.hubLocalBackups.collect { it.fullBackup } == [false, true]
+        r.hubLocalBackups[1].hasZigbee == true
+        r.hubLocalBackups[1].hasZWave == true
+        r.hubLocalBackups[0].platformVersion == '2.5.2.129'
+        r.schedule.localBackupFrequency == 1
+        r.schedule.hour == 3
+    }
+
     def "scope=hub_cloud fetches /hub2/cloudBackups into hubCloudBackups and folds in the schedule"() {
         when:
         def r = script.toolListItemBackups([scope: 'hub_cloud'])
@@ -289,6 +309,68 @@ class ToolBackupSpec extends ToolSpecBase {
         r.type == 'hub-db'
         r.location == 'hub_local'
         r.message.toLowerCase().contains('reboot')
+    }
+
+    def "scope=hub_local refuses a full local backup before anything is sent"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+
+        when:
+        script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('is a full local backup')
+        !hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' }
+    }
+
+    @spock.lang.Unroll
+    def "scope=hub_local full-backup check: #label"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/localBackups') { params ->
+            if (listBody == null) throw new RuntimeException("list unreadable")
+            listBody
+        }
+
+        when:
+        Exception refusal = null
+        try { script.toolRestoreItemBackup([scope: 'hub_local', fileName: fileName, confirm: true]) }
+        catch (IllegalArgumentException e) { refusal = e }
+
+        then:
+        (refusal != null) == refused
+        hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' } == !refused
+
+        where:
+        label                                     | fileName      | listBody                                    | refused
+        'the list marks it full (any name)'       | 'odd.lzf'     | '[{"name":"odd.lzf","fullBackup":true}]'    | true
+        'the list wins over a .tar.gz name'       | 'db.tar.gz'   | '[{"name":"db.tar.gz","fullBackup":false}]' | false
+        'list unreadable, .tar.gz name'           | 'x.tar.gz'    | null                                        | true
+        'list unreadable, .lzf name'              | 'x.lzf'       | null                                        | false
+        'list readable without it, .tar.gz name'  | 'gone.tar.gz' | '[]'                                        | true
+    }
+
+    @spock.lang.Unroll
+    def "the full-backup refusal reaches a client as an isError result (useGateways=#useGateways)"() {
+        given:
+        enableWrite()
+        settingsMap.useGateways = useGateways
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+
+        when:
+        def r = useGateways ?
+            script.handleGateway('hub_manage_backup', 'hub_restore_backup', [scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true]) :
+            script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('is a full local backup')
+        !hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' }
+
+        where:
+        useGateways << [true, false]
     }
 
     def "scope=hub_local without confirm throws the destructive gate"() {

@@ -8,11 +8,10 @@ import me.biocomp.hubitat_ci.api.common_api.Hub
  * server. {@code @AutoImplement} fills the Hub interface with default null/zero
  * returns; this class adds the handful of properties the MCP server actually
  * reads — some declared on the Hub interface ({@code zigbeeId}, {@code uptime})
- * and some not ({@code zwaveVersion}, {@code zigbeeChannel}), which Hubitat's
- * real Hub class exposes at runtime but eighty20results' {@code Hub} interface
- * stub doesn't declare. The latter are accessible via dynamic Groovy property
- * dispatch on concrete TestHub instances even though they aren't part of the
- * interface contract — mirroring how the real hub runtime behaves.
+ * and some not ({@code zwaveVersion}, {@code zigbeeChannel}). The real Hub class on
+ * firmware 2.5.2 does NOT have those two (reading them throws), so the server falls
+ * back to {@code data.zigbeeChannel} and the radio details JSON; leave them null to
+ * exercise that path. {@code data} mirrors {@code hub.data}, the hub's data map.
  *
  * As of hubitat_ci v0.28.6 (the tag pinned in build.gradle), Hub declares
  * getZigbeeId()/getUptime()/getFirmwareVersionString()/getLocalIP() but does NOT
@@ -37,6 +36,8 @@ class TestHub implements Hub {
     // location.hub.hardwareID — internal platform id ("000D" on both a C-7 and a C-8 Pro).
     // hub_get_info surfaces it as platformHardwareId; the real model comes from /hub/details/json.
     String hardwareID
+    // location.hub.data — the hub's data map; firmware 2.5.2 carries zigbeeChannel here ("0x19 (25)").
+    Map data
 
     // --- RUNTIME-ONLY (not on Hub interface — property-access only, resolved
     // via Groovy's dynamic property dispatch when tools read e.g.
