@@ -350,6 +350,9 @@ abstract class HarnessSpec extends Specification {
         // Committed backup/recovery views must not leak between test app instances.
         (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).clear()
         (scriptStaticField('PRED_CLEAR_STORES') as Map).clear()
+        // The hub's last returned pageBreadcrumbs trail per app; a leftover entry would steer a later
+        // feature's submit off the caller's fallback trail.
+        (scriptStaticField('HUB_PAGE_BREADCRUMBS') as Map).clear()
         // The corpus fingerprint memo is a scalar, so it needs a set rather than a clear.
         // A leftover value would make a later spec's search read a warm key for a catalog
         // that spec had already changed.

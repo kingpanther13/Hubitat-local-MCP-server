@@ -49,6 +49,13 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         alerts: [platformUpdateAvailable: true, platformUpdateVersion: '2.5.0.153', hubLowMemory: false]
     ])
 
+    // Firmware 2.5.2.129 alert shape (issue 490): no per-alert flags, no update flag, only alertItems.
+    @Shared String HUB2_ALERT_ITEMS = JsonOutput.toJson([
+        version: '2.5.2.129', safeMode: false,
+        alerts: [alertItems: [[key: 'hubLowMemory', message: 'Hub is low on memory', dismissible: false]],
+                 alertMessages: [:], headerMessages: [], databaseSize: 33, lastCloudBackupMessage: 'Cloud backup successful']
+    ])
+
     // Valid JSON object but the alerts block is the wrong shape (a list) -- a firmware shape change.
     @Shared String HUB2_ALERTS_MALFORMED = JsonOutput.toJson([
         version: '2.5.0.143', safeMode: false, alerts: ['not', 'a', 'map']
@@ -338,6 +345,52 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         // ...but the platform-update fields are surfaced separately, not duplicated here
         !result.healthAlerts.details.containsKey('platformUpdateAvailable')
         !result.healthAlerts.details.containsKey('platformUpdateVersion')
+    }
+
+    def "on the 2.5.2.129 alert shape, active lists the alert item keys and platformUpdate says it cannot tell"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { params -> HUB2_ALERT_ITEMS }
+
+        when:
+        def result = script.toolGetHubInfo([includeHealthAlerts: true])
+
+        then: "the alert is reported, not lost with the flags"
+        result.healthAlerts.active == ['hubLowMemory']
+        result.healthAlerts.details.alertItems.size() == 1
+
+        and: "no update flag is not the same as no update"
+        result.platformUpdate.available == null
+        result.platformUpdate.currentVersion == '2.5.2.129'
+        result.platformUpdate.note.contains('Check for Updates')
+    }
+
+    def "alertItems with no key are skipped and duplicate keys are listed once"() {
+        expect:
+        script._healthAlertsFromHub2([alerts: [alertItems: [[key: 'b'], [message: 'no key'], [key: 'a'], [key: 'b']]]]).active == ['a', 'b']
+        script._healthAlertsFromHub2([alerts: [alertItems: []]]).active == []
+    }
+
+    def "an alerts map without the update flag reports platformUpdate as unreadable, never false"() {
+        expect:
+        def pu = script._platformUpdateFromHub2([version: '2.5.1.181', alerts: [hubLowMemory: false]])
+        pu.available == null
+        pu.note.contains('no pending-update flag')
+    }
+
+    def "hub_get_info reads the Zigbee channel from the hub data map when the Hub object lacks it"() {
+        given:
+        def hub = hubOnFirmware('2.5.2.129')
+        hub.data = [zigbeeChannel: '0x19 (25)']
+        sharedLocation.hub = hub
+        hubGet.register('/hub2/hubData') { params -> HUB2_ALERT_ITEMS }
+
+        when:
+        def result = script.toolGetHubInfo([:])
+
+        then:
+        result.zigbeeChannel == 25
+        !result.containsKey('zwaveVersion')
     }
 
     def "hub_get_metrics folds in the full healthAlerts block alongside the trend metrics"() {

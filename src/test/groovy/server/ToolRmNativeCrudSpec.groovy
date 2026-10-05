@@ -1856,6 +1856,53 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.settingsSkipped.find { it.key == "notAPicker" }?.reason?.contains("device-picker schema")
     }
 
+    def "a restore replays a driver-specific device.* picker as ids, from its map or its list text"() {
+        // Issue 489: only capability.* counted as a device picker, so a device.<Driver> selection was
+        // skipped as a non-picker map (or posted as "[728]" and 500ed) and lost on restore.
+        given:
+        enableWrite()
+        def snapshot = [
+            schemaVersion: 1, ruleId: 364, reason: "pre-test", timestamp: 1000,
+            timestampIso: "2026-01-01T00:00:00Z", appLabel: "diag",
+            configJson: [
+                app: [id: 364, label: "diag"],
+                configPage: [sections: [[title: "", input: [[name: "probeDevices", type: "device.VirtualSwitch", multiple: true],
+                                                            [name: "seeded", type: "device.VirtualSwitch", multiple: true]]]]],
+                settings: [probeDevices: ["555": "BAT-Sw-A"], seeded: "[728, 730]"]
+            ],
+            statusJson: [appSettings: [
+                [name: "probeDevices", type: "device.VirtualSwitch", multiple: true, value: null, deviceIdsForDeviceList: []],
+                [name: "seeded", type: "device.VirtualSwitch", multiple: true, value: "[728, 730]", deviceIdsForDeviceList: []]
+            ]]
+        ]
+        def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_364_w": [type: "rm-rule", id: 364, ruleId: 364,
+                              fileName: "mcp-rm-backup-364-w.json", reason: "pre-test",
+                              appLabel: "diag", timestamp: 1000, sourceLength: snapshotBytes.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshotBytes }
+        hubGet.register('/installedapp/configure/json/364') { params -> ruleConfigJson(364, "diag", []) }
+        hubGet.register('/installedapp/statusJson/364') { params -> statusJson(364, []) }
+        def posted = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posted << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: "rm-rule_364_w", confirm: true])
+
+        then:
+        result.success == true
+        !result.settingsSkipped?.any { it.key in ["probeDevices", "seeded"] }
+        def replay = posted.find { it.path == "/installedapp/update/json" }?.body
+        replay["settings[probeDevices]"] == "555"
+        replay["settings[seeded]"] == "728,730"
+        replay["deviceList"] in ["probeDevices", "seeded"]
+    }
+
     def "a restore into a DISABLED rule is refused before any write, like an edit"() {
         given:
         enableWrite()
@@ -2568,9 +2615,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.path == "/installedapp/update/json" && it.body?."settings[localFile.1]" == "notes.txt" }
     }
 
-    def "seam: _rmAddAction fires the deferred predCapabs clear at its entry (ghost POSTs precede the action's own writes; flag dropped)"() {
-        // TEST A. Pins the _rmAddAction entry seam (lib ~4295): a real (non-discover) addAction
-        // calls _rmRunPendingPredCapabsClear FIRST, so the deferred ghost ifThen sequence
+    def "seam: _rmAddAction fires the deferred predCapabs clear before its first write (ghost POSTs precede the action's own writes; flag dropped)"() {
+        // TEST A. Pins the _rmAddAction seam: once its argument checks pass, a real (non-discover)
+        // addAction calls _rmRunPendingPredCapabsClear before any write, so the deferred ghost ifThen sequence
         // (condActs/getIfThen + actionCancel) lands on the wire BEFORE the action bakes its own
         // doActPage writes (messageActs/getLogMsg), and the predClearPending flag is consumed.
         given:
@@ -3371,6 +3418,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["patches[0].replaceActions[0]:", "numOp 'bogus' is not supported"]
         "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["patches[0].replaceActions[0]:", "numOp is only supported with 'value'"]
         "not a spec object"    | "switch on"                                                          | ["patches[0].replaceActions[0] must be an action spec object"]
+        "dimmer without level" | [capability: "dimmer", action: "setLevel"]                           | ["patches[0].replaceActions[0]:", "dimmer.setLevel requires 'level'"]
     }
 
     @spock.lang.Unroll
@@ -4739,6 +4787,25 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error.contains("wanted false")
     }
 
+    def "modifyAction refuses an unknown pause/resume verb before it removes the action"() {
+        // Issue 489 class: the verb was checked only by the re-add, after the delete had removed the row.
+        given:
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"], "pR.1": "false"])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 2)
+
+        when:
+        script._rmModifyAction(100, 1, [action: "Pause"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Unknown pauseRule action 'Pause'")
+        ex.message.contains("RM is not touched")
+        !(ma.clicks as List).any { it.stateAttribute == "delAct" }
+        specs.isEmpty()
+    }
+
     // ---------- modifyAction post-delete failure paths through the public dispatcher ----------
 
     def "_rmModifyPostDeleteMsg neutralizes a nested not-touched sentinel and names the leg and restore path"() {
@@ -5540,12 +5607,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the gate itself was consulted and let it through"
         hubGet.calls.any { it.path == '/installedapp/json/100' }
 
-        // Downstream execution, not just non-blocking: the wizard is entered and reaches its
-        // config-page read. That read is deliberately unstubbed, so the run dies THERE rather
+        // Downstream execution, not just non-blocking: the add goes on to discover the next action
+        // index from statusJson. That read is deliberately unstubbed, so the run dies THERE rather
         // than at the gate -- which is why nothing is posted. Asserting the read (instead of
         // only posts.isEmpty()) is what distinguishes "let through" from "blocked earlier".
-        and: "execution reached the wizard's config-page fetch"
-        hubGet.calls.any { it.path?.startsWith('/installedapp/configure/json/100') }
+        and: "execution reached the action-index read"
+        hubGet.calls.any { it.path == '/installedapp/statusJson/100' }
 
         and: "and it wrote nothing on the way out, having died at that unstubbed read"
         posts.isEmpty()
@@ -10793,6 +10860,136 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // single-step done gets the same finalize; this pins that a drive ending in done does too.
         result.lastStepOperation == "done"
         posts.any { it.path == "/installedapp/update/json" && it.body?._action_update == "Done" && it.body?.currentPage == "mainPage" }
+    }
+
+    def "walkStep drive whose final Done is refused does not fire the mainPage Done finalize"() {
+        // Issue 489: lastStepOperation names the last step that RAN, so a refused final Done
+        // used to finalize anyway and run the app's update lifecycle on a failed drive.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"], required: true]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "introspect"],
+                [page: "selectTriggers", operation: "done"]
+            ]],
+            confirm: true
+        ])
+
+        then: "the refused Done fails the drive and nothing is finalized"
+        result.success == false
+        result.lastStepOperation == "done"
+        result.steps[1].success == false
+        result.steps[1].error.contains("tCapab1")
+        result.mainPageDoneSkipped == true
+        !result.containsKey("mainPageDoneFailed")
+        !posts.any { it.path == "/installedapp/update/json" && it.body?._action_update == "Done" }
+        !posts.any { it.path == "/installedapp/update/json" && it.body?._action_previous == "Done" }
+    }
+
+    def "walkStep drive with an earlier failed step under stopOnError=false does not finalize even when its last Done succeeds"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        // Non-echoing post: the write never round-trips, so step 1 fails on valueEcho.
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", stopOnError: false, steps: [
+                [page: "selectTriggers", operation: "write", write: [tCapab1: "Switch"]],
+                [page: "selectTriggers", operation: "done"]
+            ]],
+            confirm: true
+        ])
+
+        then: "the sub-page Done ran, but the failed drive is not finalized"
+        result.success == false
+        result.steps[0].success == false
+        result.steps[1].success == true
+        result.mainPageDoneSkipped == true
+        posts.any { it.path == "/installedapp/update/json" && it.body?._action_previous == "Done" }
+        !posts.any { it.path == "/installedapp/update/json" && it.body?._action_update == "Done" && it.body?.currentPage == "mainPage" }
+    }
+
+    def "walkStep drive halted before its requested final Done reports mainPageDoneSkipped with a recovery hint"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        // Non-echoing post: the write fails on valueEcho, so the drive halts before its Done.
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "write", write: [tCapab1: "Switch"]],
+                [page: "selectTriggers", operation: "done"]
+            ]],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.stepsRun == 1
+        result.lastStepOperation == "write"
+        result.mainPageDoneSkipped == true
+        result.repairHints.any { it.contains("walkStep {page:'mainPage', operation:'done'}") }
+        !posts.any { it.body?._action_update == "Done" }
+    }
+
+    def "walkStep drive whose requested last step is not done never reports mainPageDoneSkipped"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", type: "enum", value: "Switch"]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true,
+            walkStep: [operation: "drive", steps: [[page: "selectTriggers", operation: "done"], [page: "selectTriggers", operation: "introspect"]]]])
+
+        then:
+        !result.containsKey("mainPageDoneSkipped")
     }
 
     def "walkStep drive whose trailing mainPage Done fails flips success:false with a repairHint"() {
@@ -36542,6 +36739,135 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.isEmpty()
     }
 
+    @spock.lang.Unroll
+    def "create refuses an action whose builder argument check fails, before the rule is created: #label"() {
+        // Issue 489: these checks used to run only in the wizard builder, after the create made the rule.
+        given:
+        enableWrite()
+        def posts = stubCreateShell(974)
+        def created = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            created << path; [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+
+        when:
+        script.toolSetRule([name: "refused-create-args", addAction: spec, confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("actions[0]: ${expected}")
+        e.message.contains("No rule was created.")
+        created.isEmpty()
+        posts.isEmpty()
+
+        where:
+        label                        | spec                                                              | expected
+        'dimmer.setLevel no level'   | [capability: "dimmer", action: "setLevel", deviceIds: [8]]        | "dimmer.setLevel requires 'level'"
+        'dimmer.toggle no level'     | [capability: "dimmer", action: "toggle", deviceIds: [8]]          | "dimmer.toggle requires 'level'"
+        'color.setColor no color'    | [capability: "color", action: "setColor", deviceIds: [8]]         | "color.setColor requires 'colorName'"
+        'color.toggleColor no name'  | [capability: "color", action: "toggleColor", level: 50]           | "color.toggleColor requires 'colorName'"
+        'color.toggleColor no level' | [capability: "color", action: "toggleColor", colorName: "Red"]    | "color.toggleColor requires 'level'"
+        'setColorTemp no kelvin'     | [capability: "colorTemp", action: "setColorTemp"]                 | "colorTemp.setColorTemp requires 'kelvin'"
+        'toggleColorTemp no kelvin'  | [capability: "colorTemp", action: "toggleColorTemp"]              | "colorTemp.toggleColorTemp requires 'kelvin'"
+        'unknown switch action'      | [capability: "switch", action: "blink", deviceIds: [8]]           | "Unknown switch action 'blink'"
+        'unsupported capability'     | [capability: "teleport"]                                          | "Unsupported capability 'teleport'"
+    }
+
+    @spock.lang.Unroll
+    def "create refuses a variable action whose target cannot exist, before the rule is created: #label"() {
+        given:
+        enableWrite()
+        def posts = stubCreateShell(974)
+        def created = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            created << path; [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+        script.metaClass.getAllGlobalVars = { -> [counter: [type: "integer", value: 1]] }
+
+        when:
+        script.toolSetRule([name: "refused-create-var", addActions: [[capability: "log", message: "x"], spec], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("actions[1]: ${expected}")
+        e.message.contains("No rule was created.")
+        created.isEmpty()
+        posts.isEmpty()
+
+        where:
+        label                         | spec                                                          | expected
+        'a new rule has no locals'    | [capability: "setLocalVariable", variable: "x", value: 1]     | "setLocalVariable: variable 'x' not found"
+        'unknown hub variable'        | [capability: "setVariable", variable: "nope", value: 1]       | "setVariable: variable 'nope' not found"
+    }
+
+    def "an add inside a batch does not claim the rule is untouched when its arguments are refused"() {
+        given: "earlier items of a batch may already be written, so the refusal must not carry the sentinel"
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        script._rmAddAction(100, [capability: "dimmer", action: "setLevel"], true)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("dimmer.setLevel requires 'level'")
+        !e.message.contains("RM is not touched")
+    }
+
+    def "a refused standalone add writes nothing and leaves a pending predCapabs clear for the next add"() {
+        given:
+        atomicStateMap.predClearPending = ["100": true]
+        hubGet.register('/installedapp/json/100') { params -> '{"id":100,"disabled":false}' }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "dimmer", action: "setLevel"])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("RM is not touched")
+        posts.isEmpty()
+        (atomicStateMap.predClearPending as Map)["100"] == true
+    }
+
+    def "action pre-flight keeps the supported alternatives to the missing arguments"() {
+        when: "a level variable instead of a level, and a raw HSV colour instead of a colour name"
+        script._rmPrevalidateActionSpecList([
+            [capability: "dimmer", action: "setLevel", levelVariable: "lv"],
+            [capability: "color", action: "setColor", rawSettings: ["colorH.@N": '{"hue":10}']]
+        ], "actions", null)
+
+        then:
+        noExceptionThrown()
+    }
+
+    def "replaceActions refuses a builder argument failure before clearActions, so the existing actions survive"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "messageActs"]]) }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true,
+            replaceActions: [[capability: "dimmer", action: "setLevel"]]])
+
+        then: "refused as a pre-flight, with nothing removed and no wizard write"
+        result.success == false
+        result.error.contains("replaceActions[0]: dimmer.setLevel requires 'level'")
+        result.restoreHint?.contains("Pre-flight refusal")
+        !result.containsKey("removedIndices")
+        posts.isEmpty()
+    }
+
     def "create fail-closed: a genuinely partial action stops later actions and finalisation"() {
         given:
         enableWrite()
@@ -47356,6 +47682,26 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "_rmBuildSettingsBody sends a device.* picker as its id list: #label"() {
+        given:
+        def schema = [probeDevices: [name: "probeDevices", type: "device.VirtualSwitch", multiple: true]]
+
+        when:
+        def body = script._rmBuildSettingsBody(100, [probeDevices: value], schema)
+
+        then:
+        body["settings[probeDevices]"] == expected
+        body["probeDevices.type"] == "device.VirtualSwitch"
+        body["deviceList"] == "probeDevices"
+
+        where:
+        label                    | value                              | expected
+        'the configure/json map' | ["555": "BAT-Sw-A", "556": "B"]    | "555,556"
+        'a list'                 | ["555"]                            | "555"
+        "statusJson's list text" | "[728, 730]"                       | "728,730"
+    }
+
+    @spock.lang.Unroll
     def "_uiNavigationViolations mirrors the UI's page checks: #label"() {
         expect:
         script._uiNavigationViolations([f: meta], [f: value])*.problem == expected
@@ -47364,7 +47710,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         label                                        | meta                                                         | value   | expected
         'required device picker, no devices'         | [type: 'capability.switch', multiple: true, required: true] | [:]     | ['required but empty']
         'required enum, "[]" as statusJson stores it' | [type: 'enum', multiple: true, required: true]             | '[]'    | ['required but empty']
-        'required text, blank'                       | [type: 'text', required: true]                              | '  '    | ['required but empty']
+        'required text, zero length'                 | [type: 'text', required: true]                              | ''      | ['required but empty']
+        'required text, whitespace (browser keeps)'  | [type: 'text', required: true]                              | '  '    | []
+        'required text, the word null'               | [type: 'text', required: true]                              | 'null'  | []
+        'required text, the text []'                 | [type: 'text', required: true]                              | '[]'    | []
+        'required number, whitespace'                | [type: 'number', required: true]                            | '  '    | ['required but empty']
+        'required device.* picker, no devices'       | [type: 'device.VirtualSwitch', multiple: true, required: true] | '[]' | ['required but empty']
+        'required number, unset, has a default'      | [type: 'number', required: true, defaultValue: 7]           | null    | []
         'required text, filled'                      | [type: 'text', required: true]                              | 'x'     | []
         'optional empty number passes'               | [type: 'number']                                            | ''      | []
         'number below the implicit min 0'            | [type: 'number']                                            | '-1'    | ['-1 is below the minimum 0']
@@ -47407,6 +47759,69 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def e = thrown(IllegalStateException)
         e.message.contains("illumsOff (Illuminance Sensors that rise): required but empty")
         !posts.any { it.body?._action_previous == "Done" }
+    }
+
+    def "a walkStep Done opens its sub-page once, and a refused Done says the page was opened but nothing submitted"() {
+        // Issue 489: the walker's BEFORE render and the Done each navigated into the page (two page
+        // renders), and the refusal claimed the app was untouched.
+        given:
+        enableWrite()
+        def page = { boolean filled ->
+            JsonOutput.toJson([app: [id: 650, name: "Room Lights", version: 3, appType: [name: "Room Lights", namespace: "hubitat"]],
+                configPage: [name: "offMeansPage", install: false, error: null, sections: [[title: "", input: [
+                    [name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, required: true, title: "Illuminance Sensors that rise"]
+                ]]]], settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/configure/json/650') { params -> ruleConfigJson(650, "rl", []) }
+        hubGet.register('/installedapp/configure/json/650/offMeansPage') { params -> page(false) }
+        hubGet.register('/installedapp/statusJson/650') { params ->
+            statusJson(650, [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, value: null]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: body.keySet().any { it.toString().startsWith("_action_href_") } ? page(false) : '']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([appId: 650, confirm: true,
+            walkStep: [page: "offMeansPage", operation: "done", hrefContext: [fromPage: "mainPage"]]])
+
+        then: "one navigation into the page, no Done posted"
+        result.success == false
+        result.error.contains("illumsOff")
+        posts.count { p -> p.body.keySet().any { it.toString().startsWith("_action_href_") } } == 1
+        !posts.any { it.body?._action_previous == "Done" || it.body?._action_update == "Done" }
+
+        and: "the hint separates the withheld submit from the page render that already ran"
+        result.restoreHint.contains("no settings were written and no Done was sent")
+        result.restoreHint.contains("The page was still opened")
+        !result.restoreHint.contains("the app was not touched")
+    }
+
+    def "navigation that a default lets through also saves that default, as the page submits it"() {
+        given: "a page whose required number is unset but defaults to 7"
+        hubGet.register('/installedapp/configure/json/660/defPage') { params ->
+            JsonOutput.toJson([app: [id: 660, name: "Diag", version: 2, appType: [name: "Diag", namespace: "x"]],
+                configPage: [name: "defPage", error: null, sections: [[title: "", input: [
+                    [name: "defNum", type: "number", required: true, defaultValue: 7, title: "Default number"],
+                    [name: "otherText", type: "text", required: false]
+                ]]]], settings: [otherText: "keep"], childApps: []])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmNavigateToPage(660, "defPage", "mainPage", 0, "name", null, null, null, false, true)
+
+        then: "the navigation posts the default, and nothing for the input that already has a value"
+        posts.size() == 1
+        posts[0].body["settings[defNum]"] == "7"
+        posts[0].body["defNum.type"] == "number"
+        !posts[0].body.containsKey("settings[otherText]")
     }
 
     def "_rmSubmitMainPageDone returns done:false uiBlocked instead of posting a Done the UI would refuse"() {
@@ -47547,6 +47962,43 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !(result.opResult.skipped ?: []).any { it.reason == "silent_rejection" }
     }
 
+    @spock.lang.Unroll
+    def "walkStep writes a driver-specific device.* picker's map as its ids and echoes the stored ids: #label"() {
+        given:
+        enableWrite()
+        def committed = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/probePage') { params ->
+            ruleConfigJson(100, "r", [[name: "probeDevices", type: "device.VirtualSwitch", multiple: true]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [asText ?
+                [name: "probeDevices", type: "device.VirtualSwitch", multiple: true, value: committed ? "[" + committed.join(", ") + "]" : null, deviceIdsForDeviceList: []] :
+                [name: "probeDevices", type: "device.VirtualSwitch", multiple: true, value: null, deviceIdsForDeviceList: committed]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def sent = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            def ids = body["settings[probeDevices]"]
+            if (ids) { sent << ids; committed.clear(); committed.addAll(ids.toString().split(",").collect { it as Integer }) }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([appId: 100, confirm: true,
+            walkStep: [page: "probePage", operation: "write", write: [probeDevices: ["555": "BAT-Sw-A"]]]])
+
+        then: "the map is sent as ids (its text form 500s the hub), and the echo reads the stored ids"
+        sent == ["555"]
+        result.valueEcho.match == true
+        result.silentRejection == false
+
+        where:
+        label                            | asText
+        'ids in deviceIdsForDeviceList'  | false
+        'ids only as the value text'     | true
+    }
+
     def "a walkStep done the page refuses says nothing was submitted instead of pointing at a backup restore"() {
         given:
         enableWrite()
@@ -47567,7 +48019,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains("motions (Motion Sensors that become active): required but empty")
-        result.restoreHint.contains("the app was not touched")
+        result.restoreHint.contains("nothing needs to be restored")
+        result.restoreHint.contains("no Done was sent")
         !posts.any { it.body?._action_previous == "Done" }
     }
 
@@ -47647,6 +48100,29 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.path == "/installedapp/update/json" && it.body["settings[roomDevsL]"] == "11,386" }
     }
 
+    def "a settings object on a driver-specific device.* input is sent as ids, not refused"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "probeDevices", type: "device.VirtualSwitch", multiple: true]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "probeDevices", type: "device.VirtualSwitch", multiple: true, value: null, deviceIdsForDeviceList: [555]]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([appId: 100, settings: [probeDevices: ["555": "BAT-Sw-A"]], confirm: true])
+
+        then:
+        !result.error?.toString()?.contains("only device inputs accept")
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[probeDevices]"] == "555" && it.body["deviceList"] == "probeDevices" }
+    }
+
     // Live repro: patches:[{settings:{origLabel:{a:"b"}}}] saved the label as "{a=b}" and reported success.
     def "a patches settings object on a non-device input is refused before its write"() {
         given:
@@ -47714,9 +48190,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         script._rmPageBreadcrumbs(2518, "offMeansPage", 'X') == 'X'
-
-        cleanup:
-        script.HUB_PAGE_BREADCRUMBS.clear()
     }
 
     def "pageBreadcrumbs carry forward unescapes a JSON-escaped trail (RM back-navigation to mainPage)"() {
@@ -47729,9 +48202,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the whole trail is kept, unescaped -- not cut at the first escaped quote"
         script._rmPageBreadcrumbs(2524, "mainPage", 'X') == '["mainPage"]'
-
-        cleanup:
-        script.HUB_PAGE_BREADCRUMBS.clear()
     }
 
     def "pageBreadcrumbs carry forward ignores answers without a rendered page and never throws"() {
@@ -47743,9 +48213,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         script.HUB_PAGE_BREADCRUMBS.isEmpty()
         script._rmPageBreadcrumbs(2518, "offMeansPage", 'X') == 'X'
-
-        cleanup:
-        script.HUB_PAGE_BREADCRUMBS.clear()
     }
 
 

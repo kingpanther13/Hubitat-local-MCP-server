@@ -755,7 +755,13 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
         try {
             def raw = hubInternalGet("/hub2/localBackups")
             def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
-            out.local = (parsed instanceof List) ? parsed.collect { [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.size] } : []
+            // fullBackup entries (.tar.gz: database + File Manager + radio data) are listed with the
+            // database-only .lzf ones but restore only through Hubitat's full-restore flow.
+            out.local = (parsed instanceof List) ? parsed.collect {
+                [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.fileSize != null ? it.fileSize : it.size,
+                 fullBackup: it.fullBackup == true, hasZWave: it.hasZWave == true, hasZigbee: it.hasZigbee == true,
+                 platformVersion: it.platformVersion]
+            } : []
         } catch (Exception e) { mcpLogError("hub-admin", "list local hub backups failed", e); out.errors << "local: ${e.message}" }
     }
     if (wantCloud) {
@@ -769,6 +775,20 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
     return out
 }
 
+// A full local backup as the hub lists it (fullBackup:true); the .tar.gz name decides when the list
+// is unreadable or does not list the file.
+private boolean _isFullLocalHubBackup(String fileName) {
+    try {
+        def raw = hubInternalGet("/hub2/localBackups")
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        def entry = (parsed instanceof List) ? parsed.find { it instanceof Map && it.name?.toString() == fileName } : null
+        if (entry != null) return entry.fullBackup == true
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "_isFullLocalHubBackup: local backup list unreadable (${e.message}); deciding from the file name")
+    }
+    return fileName.toLowerCase().endsWith(".tar.gz")
+}
+
 // Hub-DB restore. BOTH reboot the hub. Confirm-gated by the caller (toolRestoreItemBackup).
 // Wire format verified against vue-hub2.min.js:
 //   local: GET /hub2/restoreLocalBackup?fileName=<name>
@@ -779,6 +799,9 @@ private _restoreHubBackup(String location, Map args) {
         def parsed
         if (location == "hub_local") {
             if (!args.fileName) throw new IllegalArgumentException("scope=hub_local restore requires fileName (from hub_list_backups scope=hub_local)")
+            if (_isFullLocalHubBackup(args.fileName.toString())) {
+                throw new IllegalArgumentException("'${args.fileName}' is a full local backup (database, File Manager files and radio data). Hubitat restores those only through its own full-restore flow, never as a database restore, so nothing was sent. Pick a database-only backup (fullBackup:false in hub_list_backups scope=hub_local), or restore this one from Settings > Backup and Restore in the Hubitat web UI.")
+            }
             def raw = hubInternalGet("/hub2/restoreLocalBackup", [fileName: args.fileName.toString()], 120)
             parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         } else {

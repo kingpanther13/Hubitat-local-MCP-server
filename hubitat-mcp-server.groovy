@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.5.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.5.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -550,6 +550,12 @@ def advancedOverridesPage() {
             input "lanBudgetMs", "number", title: "LAN time budget (ms, minimum 6000, 0 = off)",
                   description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; positive values below 6000 use 6000; set below your MCP client's request timeout).",
                   defaultValue: 0, range: "0..300000", required: false
+        }
+        section("Access tokens in responses") {
+            paragraph "App pages show their OAuth access tokens in plain text, including this server's own endpoint URLs and the URLs of apps such as Maker API. MCP clients read those pages, so the tokens reach the AI client and its transcripts. Turn this on to hide them in what this server returns. Leave it off if you want the AI to read an endpoint URL for you, for example to set up another app."
+            input "redactAccessTokens", "bool", title: "Hide access tokens in MCP responses",
+                  description: "Leave OFF (default): tokens are returned as the hub shows them. ON: access_token= URL values and accessToken / access_token fields in tool results are replaced with ***redacted (access token)***.",
+                  defaultValue: false
         }
         section("Native app edit backups") {
             paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and destructive Required Expression replacement still take a fresh snapshot."
@@ -4408,6 +4414,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
             mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}")
         }
     }
+    if (settings.redactAccessTokens == true) rendered = _redactAccessTokens(rendered)
     String jsonText
     try {
         jsonText = groovy.json.JsonOutput.toJson(rendered)
@@ -4446,6 +4453,28 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         return jsonRpcResult(id, body)
     }
     return [__preserialized: candidateJson]
+}
+
+// redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
+// an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
+// (app settings and state), and that same key inside JSON carried as a string (a file read or
+// an exported setting).
+private def _redactAccessTokens(value) {
+    String marker = "***redacted (access token)***"
+    if (value instanceof Map) {
+        return value.collectEntries { k, v ->
+            boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
+            [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
+        }
+    }
+    if (value instanceof List) return value.collect { _redactAccessTokens(it) }
+    if (value instanceof CharSequence) {
+        String text = value.toString()
+        if (!text.toLowerCase().contains("access")) return value
+        return text.replaceAll(/(?i)(access_token=)[^&\s"'<>#]+/, '$1' + marker)
+                   .replaceAll(/(?i)("access_?token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2')
+    }
+    return value
 }
 
 // True when a partial-commit loop should pause and hand back a resumable
@@ -9700,8 +9729,9 @@ private List _uiNavigationViolations(Map schema, Map values) {
     schema?.each { rawName, meta ->
         def name = rawName.toString()
         if (meta?.disabled == true || meta?.type == "button") return
-        def v = values?.get(name)
-        def empty = _uiValueIsEmpty(v)
+        // The page pre-fills an unset input with its defaultValue, so navigation and Done see it alike.
+        def v = _uiValueOrDefault(values?.get(name), meta as Map)
+        def empty = _uiValueIsEmpty(v, meta as Map)
         def title = _uiPlainTitle(meta?.title) ?: name
         if (empty) {
             if (meta?.required == true) problems << [name: name, title: title, problem: "required but empty"]
@@ -9747,18 +9777,42 @@ private String _uiEmailPattern() {
 // pre-fills. A Done built without it posts "" where the UI posts the default (a Room Lighting
 // "illuminance rises" condition then saves lux=null instead of the page's 100).
 private _uiValueOrDefault(v, Map meta) {
-    return (_uiValueIsEmpty(v) && meta?.defaultValue != null) ? meta.defaultValue : v
+    return (_uiValueIsEmpty(v, meta) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
 
-// Empty as the browser sees it: no value, a blank string, no selected options, no devices.
-// Multi-selects reach here as a List, a JSON-array string ("[]" from statusJson), or a device
-// id->label Map, depending on which read built the values.
-private boolean _uiValueIsEmpty(v) {
+// Empty as the browser sees it (appUI.js jsonSubmit). Enum selects and device pickers are empty with
+// no selection; they reach here as a List, a JSON-array string ("[]" from statusJson), or a device
+// id->label Map. A number input's whitespace sanitizes to "". Any other typed input is empty only at
+// zero length, so required text holding "null", "[]" or "  " passes, as in the browser.
+private boolean _uiValueIsEmpty(v, Map meta = null) {
     if (v == null) return true
     if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
     if (v instanceof Map) return v.isEmpty()
+    def t = meta?.type?.toString()
+    if (t != null && t != "enum" && !_isDevicePickerType(t)) {
+        return (t in ["number", "decimal"]) ? v.toString().trim().isEmpty() : v.toString().isEmpty()
+    }
     def s = v.toString().trim()
     return s.isEmpty() || s == "[]" || s == "null"
+}
+
+// A classic-app device picker: `capability.<name>` or a driver-specific `device.<DriverName>`.
+private boolean _isDevicePickerType(type) {
+    def t = type?.toString()
+    return t != null && (t.startsWith("capability.") || t.startsWith("device."))
+}
+
+// A device picker value as the id list the update endpoint takes. configure/json renders it as an
+// {id: label} Map, and statusJson can carry it as the List's text ("[728]" or "[728, 730]").
+private _devicePickerIds(v) {
+    if (v instanceof Map) return v.keySet().collect { it?.toString() }
+    if (v instanceof CharSequence) {
+        def s = v.toString().trim()
+        if (s.startsWith("[") && s.endsWith("]")) {
+            return s.substring(1, s.length() - 1).split(",").collect { it.trim().replaceAll(/^"|"$/, "") }.findAll { it }
+        }
+    }
+    return v
 }
 
 private Map _uiRangeBounds(range) {
@@ -9820,7 +9874,7 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         def key = rawKey.toString()
         def meta = schema?."${key}"
         def typeHint = meta?.type
-        def isCapability = typeHint?.startsWith("capability.")
+        def isDevicePicker = _isDevicePickerType(typeHint)
         def isEnum = typeHint == "enum"
         // ALWAYS trust the schema's multiple flag. The earlier code coerced
         // isMulti=true whenever value was a List for capability.* fields,
@@ -9834,9 +9888,9 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         // Capability multi: CSV ("8,9"). Enum multi: JSON-array ('["X","Y"]').
         // Everything else: toString.
         def serialized
-        // A device picker reads back from configure/json as an {id: label} map; the update
-        // endpoint takes the ids. Sent as the map's toString ("[9:Lamp]") the hub answers 500.
-        def val = (rawVal instanceof Map && isCapability) ? rawVal.keySet().collect { it?.toString() } : rawVal
+        // The update endpoint takes a device picker's ids; sent as a map's or list's text
+        // ("[9:Lamp]", "[728]") the hub answers 500.
+        def val = isDevicePicker ? _devicePickerIds(rawVal) : rawVal
         if (val instanceof List) {
             if (isEnum) {
                 serialized = groovy.json.JsonOutput.toJson(val.collect { it?.toString() }.findAll { it != null })
@@ -9864,12 +9918,12 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         }
         body["${key}.multiple".toString()] = isMulti ? "true" : "false"
 
-        // For capability.* writes the UI also emits `deviceList=<keyname>`
+        // For device-picker writes the UI also emits `deviceList=<keyname>`
         // — a marker telling RM which form field is the device list being
         // modified. Without it, certain capabilities (notably
         // capability.pushableButton on button.push actions) fall into a
         // render path that errors with hasCapability not supported.
-        if (isCapability) {
+        if (isDevicePicker) {
             body["deviceList".toString()] = key
         }
     }
@@ -9881,7 +9935,8 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
 //
 // Rebuild a name->value map of an app's live settings from statusJson
 // appSettings, for re-submitting a full page form. Capability/device
-// settings report value=null even when devices ARE assigned -- the live
+// settings report value=null (or, for some driver-specific pickers, the id list's text) even when
+// devices ARE assigned -- the live
 // ids sit in deviceIdsForDeviceList (with a deviceList id->label map
 // alongside). Rebuilding a form from `value` alone re-submits
 // settings[<name>]="" which, combined with _action_update=Done, actively
@@ -9998,7 +10053,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.5.1"
+    return "4.5.3"
 }
 
 
@@ -10260,7 +10315,7 @@ The destructive/confirm-tier write tools require these steps (ordinary writes ne
 
 **hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests.
 
-**hub_update_firmware** - Installs the hub's pending platform/firmware update, then the hub self-reboots (5-10 min full downtime). Confirm a pending update via hub_get_info (platformUpdate) first; backup <24h + confirm=true required to apply; poll progress with statusOnly=true. Only when user explicitly requests.
+**hub_update_firmware** - Installs the hub's pending platform/firmware update, then the hub self-reboots (5-10 min full downtime). Confirm a pending update via hub_get_info (platformUpdate; when its `available` is null, the hub's alerts or Settings > Check for Updates in the web UI) first; backup <24h + confirm=true required to apply; poll progress with statusOnly=true. Only when user explicitly requests.
 
 **hub_shutdown** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
 
@@ -10422,11 +10477,11 @@ Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime,
 - `platformHardwareId` — the raw internal platform id (e.g. "000D"). It is the same on different hub models, so it is NOT the model.
 
 **Always returned (regardless of the flags below):**
-- `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it).
+- `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it). `available` is null when the hub data has no pending-update flag (firmware 2.5.2.129 and later never send it); a pending update then shows as one of the hub's alerts (`includeHealthAlerts=true`) and on Settings > Check for Updates in the Hubitat web UI.
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
 - `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
 
-**`includeHealthAlerts=true`** (default false): returns the hub's full health-alerts block from /hub2/hubData — every /hub2/hubData alert flag plus the hub's message strings, under `healthAlerts`. Covers radio offline, backup failures, low memory, DB bloat, and weak mesh. `platformUpdate` and `safeMode` are returned whether or not this flag is set.
+**`includeHealthAlerts=true`** (default false): returns the hub's full health-alerts block from /hub2/hubData under `healthAlerts`: `active` lists the firing alerts (the alert item keys on firmware 2.5.2.129 and later, the alert flags before that), and `details` carries the hub's full alert data and messages. Covers radio offline, backup failures, low memory, DB bloat, and weak mesh. `platformUpdate` and `safeMode` are returned regardless of this flag.
 
 **`includeAppUpdate=true`** (default false): also checks GitHub for a newer MCP (Rule) Server APP version, returned under `appUpdate`. The check is ASYNCHRONOUS — the first call may return `latestVersion: 'unknown (check in progress)'`; call again in a few seconds. This is DISTINCT from `platformUpdate` (the hub's own firmware). To INSTALL a pending hub firmware update, use hub_update_firmware.
 
@@ -10818,7 +10873,7 @@ Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-
 
 ### hub_list_backups
 
-`scope=source` (default) lists auto-created code backups, each with a `backupKey`. `scope=hub_local` / `hub_cloud` / `hub` / `all` return whole-hub DB backups under `hubLocalBackups` / `hubCloudBackups`. A local backup's `name` and a cloud backup's `path` feed hub_restore_backup and hub_delete_backup.
+`scope=source` (default) lists auto-created code backups, each with a `backupKey`. `scope=hub_local` / `hub_cloud` / `hub` / `all` return whole-hub DB backups under `hubLocalBackups` / `hubCloudBackups`. A local backup's `name` and a cloud backup's `path` feed hub_restore_backup and hub_delete_backup. Local entries carry `size`, `platformVersion` and `fullBackup`; a full backup (`fullBackup:true`, a .tar.gz that also holds File Manager files and the radio data flagged by `hasZigbee` / `hasZWave`) restores only from the Hubitat web UI.
 
 ### hub_get_backup
 
@@ -10831,7 +10886,7 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - Native rule restore requires confirmed absence from the app inventory before recreating an unreadable rule. If the config read fails and absence cannot be confirmed, inspect the rule/inventory and retry when readable.
 - A native rule snapshot (type `rm-rule`) replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id.
 
-- `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub.
+- `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub. A full local backup (`fullBackup:true`) is refused: Hubitat restores those only through its own full-restore flow.
 - `scope=hub_uploaded` -- upload an external `.lzf` fetched from `backupUrl`, then restore (open-world).''',
 
         file_manager: '''## File Manager
@@ -10940,7 +10995,7 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds, uptimeFormatted. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
 - `trends`: recent history points {timestamp, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv).
 - Trend history is sparse/stale: the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls and reset if that CSV is cleared. Call recordSnapshot=true periodically to build a trend — it appends one row to the performance-history CSV (rolling 500-row window) and is the tool's ONLY write side-effect (default false = read-only).
-- `healthAlerts`: the hub's own active health alerts pulled from /hub2/hubData — {safeMode, active (currently-firing alert flags such as hubLowMemory / hubLargeDatabase / zwaveOffline / localBackupFailed / weakZigbee), details (full alert-flag map + the hub's message strings)}. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and safeMode. Complements the locally-derived warnings on `current` (and may differ in threshold from them). null if /hub2/hubData was unreadable.
+- `healthAlerts`: the hub's own active health alerts pulled from /hub2/hubData — {safeMode, active (currently-firing alerts: the alert item keys on firmware 2.5.2.129 and later, flags such as hubLowMemory / zwaveOffline / localBackupFailed / weakZigbee before that), details (the hub's full alert data + message strings)}. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and safeMode. Complements the locally-derived warnings on `current` (and may differ in threshold from them). null if /hub2/hubData was unreadable.
 
 **hub_get_memory_history:**
 - Free OS memory and CPU-load history (the platform's own timestamped ring buffer; each entry has freeMemoryKB and cpuLoad5min)
@@ -11495,7 +11550,7 @@ Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Ins
 `walkStep` is the lowest-level escape hatch: drive the RM wizard when the high-level `addTrigger`/`addAction` helpers don't cover the capability you need (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, features added in a later firmware). Each single-step call returns a structured snapshot -- schema before/after, schema diff (inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, action/trigger list-count change (disambiguates 'committed' from 'broke and lost the row'), and a health check.
 
 Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}, navigate?:{targetPage}, validateEnum?:<bool>, hrefContext?:{fromPage,hrefName,hrefParams?,hrefIndex?}, steps?:[...]}` where `page` is e.g. `selectTriggers`/`selectActions`/`doActPage`/`mainPage`/`periodic` and `operation` is one of:
-- `drive` -- **preferred**: run an ordered `steps=[...]` list (each item a single-step spec) in ONE call. The tool performs them in sequence, carrying the page forward across `navigate`/`done`, and stops at the first failed step (`stopOnError=false` to continue). A step that omits `page` inherits the page the previous step ended on. Returns `{steps:[{step, operation, page, success, diff, valueEcho, silentRejection, commitSignal, opResult, health}, ...], stepsRequested, stepsRun, lastStepOperation, success, health}`; on a halt the aggregate also carries a top-level `error` + `repairHints` naming the failed step. A finished drive fails when a step fails (the top-level `error` and `repairHints` name it) or when the rule ends with a structural issue the drive introduced, listed in `structuralIssues` (for example a block it opened and never closed: add the closer, or restore). Structural issues that were already present before the drive are listed in `preExistingStructuralIssues` and do not fail it, so building inside an already-open block across calls is allowed. That exemption needs a structural baseline read before the first step; if the read fails, pre-existing issues cannot be told apart from new ones and fail the drive, and the result carries `baselineUnavailable` with the reason, so compare with `hub_get_rule_health` before re-running. `healthUnverified:true` (with `success:false` and `partial:true`) marks a finished drive with at least one mutating step whose final health check the time budget skipped: its steps are committed, so check `hub_get_rule_health` rather than re-running the drive. A drive the budget pauses between steps instead returns `status:'in_progress'` with `stepsRemaining`. End the drive with a `done` step to fire the mainPage Done finalize (the `updateRule`-equivalent that re-initializes subscriptions) — the same finalize a single-step `done` gets. This automates the manual loop below.
+- `drive` -- **preferred**: run an ordered `steps=[...]` list (each item a single-step spec) in ONE call. The tool performs them in sequence, carrying the page forward across `navigate`/`done`, and stops at the first failed step (`stopOnError=false` to continue). A step that omits `page` inherits the page the previous step ended on. Returns `{steps:[{step, operation, page, success, diff, valueEcho, silentRejection, commitSignal, opResult, health}, ...], stepsRequested, stepsRun, lastStepOperation, success, health}`; on a halt the aggregate also carries a top-level `error` + `repairHints` naming the failed step. A finished drive fails when a step fails (the top-level `error` and `repairHints` name it) or when the rule ends with a structural issue the drive introduced, listed in `structuralIssues` (for example a block it opened and never closed: add the closer, or restore). Structural issues that were already present before the drive are listed in `preExistingStructuralIssues` and do not fail it, so building inside an already-open block across calls is allowed. That exemption needs a structural baseline read before the first step; if the read fails, pre-existing issues cannot be told apart from new ones and fail the drive, and the result carries `baselineUnavailable` with the reason, so compare with `hub_get_rule_health` before re-running. `healthUnverified:true` (with `success:false` and `partial:true`) marks a finished drive with at least one mutating step whose final health check the time budget skipped: its steps are committed, so check `hub_get_rule_health` rather than re-running the drive. A drive the budget pauses between steps instead returns `status:'in_progress'` with `stepsRemaining`. End the drive with a `done` step to fire the mainPage Done finalize (the `updateRule`-equivalent that re-initializes subscriptions) — the same finalize a single-step `done` gets. A drive finalizes only when every step ran and succeeded; one ending in `done` that failed, was paused, or ran past a failure under `stopOnError=false` returns `mainPageDoneSkipped:true` and leaves the app's update lifecycle unrun. This automates the manual loop below.
 - `introspect` -- fetch schema; no mutation.
 - `write` -- write one field's value (exactly one key per call; `hrefContext` for sub-pages).
 - `click` -- click a regular button (`cancelCapab`, `hasAll`, `moreCond`, ...).
