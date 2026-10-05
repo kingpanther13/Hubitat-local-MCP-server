@@ -69,6 +69,23 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
         !fake.clicks().contains("cancelST")
     }
 
+    def "a multi-condition snapshot is rebuilt on a rule with none, clearing the insert the editor reopens with"() {
+        given:
+        fake.withTokens([])
+        fake.pendingInsert = true
+        def snap = snapshot([1, "OR", 2],
+            [rCapab_1: "Mode", modes1: ["3"], rCapab_2: "Mode", modes2: ["4"]],
+            ["1": "Mode is 3", "2": "Mode is 4"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == true
+        fake.renderedExpression() == ["Mode is 3", "OR", "Mode is 4"]
+        fake.clicks().contains("cancelInsert")
+    }
+
     def "a live expression the snapshot did not have is removed"() {
         given:
         fake.seedSwitch(1, "on").withTokens([1])

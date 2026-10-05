@@ -13744,6 +13744,8 @@ private Set _rmPageInputNames(Map cfg) {
 private void _rmTokEnterEditor(Integer appId, Map cache = null) {
     _rmTokClick(appId, "editST", "editST", cache)
     def names = _rmPageInputNames(_rmTokClick(appId, "editToken", "editToken", cache))
+    // An expression just built through the new-expression selector reopens with an empty insert pending.
+    if (names.contains("cancelInsert")) names = _rmPageInputNames(_rmTokClick(appId, "cancelInsert", "cancelInsert", cache))
     if (!names.contains("doneToken")) {
         throw new IllegalStateException("the Required Expression token editor did not open (STPage shows ${names.sort().join(', ')})")
     }
@@ -13801,6 +13803,12 @@ private boolean _rmTokTrimTo(Integer appId, List target, Map cache = null) {
 // deleteCon). Used only for conditions this edit created. Returns the ids whose settings are gone.
 private List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
     if (!ids) return []
+    // RM ignores deleteCon until Manage Conditions is opened from STPage the way the UI does (pred:true).
+    try {
+        _rmNavigateToPage(appId, "STPage", "selectConditions", 0, "name", [pred: true])
+    } catch (Exception navExc) {
+        mcpLog("warn", "rm-native", "Required Expression edit: opening Manage Conditions on app ${appId} failed (${navExc.message})")
+    }
     ids.each { id ->
         try {
             _rmClickAppButton(appId, id.toString(), "deleteCon", "selectConditions", null)

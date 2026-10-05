@@ -37,6 +37,8 @@ class FakeRmExpressionEditor {
     Closure onUpdateRule = null      // return a status (>=400 rejects the click)
     Closure onClick = null           // observes every btn click: (name, stateAttribute)
     Set<Integer> deleteConIgnored = [] as Set
+    boolean pendingInsert = false    // live RM: an expression built via cond=a reopens the token editor with an insert pending
+    boolean conditionsOpened = false // Manage Conditions opened from STPage with pred:true (live RM ignores deleteCon otherwise)
     String mainExtra = null          // extra mainPage paragraph (e.g. a **Broken Action** marker)
 
     FakeRmExpressionEditor seedSwitch(Integer id, String state, Integer dev = 8) {
@@ -93,6 +95,9 @@ class FakeRmExpressionEditor {
     Map handlePost(String path, Map body) {
         if (path == "/installedapp/btn") return click(body.name?.toString(), body.stateAttribute?.toString())
         if (path == "/installedapp/update/json") {
+            if (body.any { k, v -> k.toString().startsWith("params_for_action_href_name|selectConditions|") && v.toString().contains('"pred":true') }) {
+                conditionsOpened = true
+            }
             body.each { k, v ->
                 def m = (k.toString() =~ /^settings\[(.+)\]$/)
                 if (m.matches()) write((m[0] as List)[1].toString(), v)
@@ -105,7 +110,10 @@ class FakeRmExpressionEditor {
         onClick?.call(name, attr)
         switch (attr ?: name) {
             case "editST": if (mode == "committed" && editorOpens) mode = "edit"; break
-            case "editToken": if (mode == "edit") mode = "token"; break
+            case "editToken":
+                if (mode == "edit") mode = "token"
+                if (mode == "token" && pendingInsert) { insertPos = tokens.size(); mode = "insert"; pendingInsert = false }
+                break
             case "doneToken": if (mode == "token") mode = "edit"; break
             case "doneST": if (mode in ["edit", "token", "committed", "sealed"]) mode = tokens ? "committed" : "noRE"; break
             case "cancelST": tokens = []; mode = "noRE"; break
@@ -114,7 +122,7 @@ class FakeRmExpressionEditor {
             case "cancelInsert": if (mode == "insert") mode = "token"; break
             case "deleteCon":
                 def id = name as Integer
-                if (!deleteConIgnored.contains(id)) {
+                if (conditionsOpened && !deleteConIgnored.contains(id)) {
                     conds.remove(id)
                     settings.keySet().removeAll { it ==~ /^(rCapab_|rDev_|state_|not)${id}$|^modes${id}$/ }
                 }
