@@ -6,14 +6,14 @@ import support.ToolSpecBase
 
 /**
  * _rmBackupRuleSnapshot writes configure/json to File Manager. The hub's app.appType record
- * carries the type's OAuth client credentials and passwords (live-verified on Rule-5.1), so the
- * snapshot keeps only the type's name and namespace.
+ * carries the type's OAuth client credentials and passwords (live-verified on Rule-5.1). The
+ * snapshot drops exactly those four fields and keeps the rest of the record.
  */
 class RmBackupSnapshotCredentialsSpec extends ToolSpecBase {
 
     List uploads = []
 
-    def "rule backups drop the appType credentials and keep the type identity"() {
+    def "rule backups drop the four appType credential fields and keep every other field"() {
         given:
         def captured = uploads
         script.metaClass.uploadHubFile = { String fn, byte[] b -> captured << b }
@@ -40,7 +40,7 @@ class RmBackupSnapshotCredentialsSpec extends ToolSpecBase {
         then:
         uploads.size() == 1
         snap.appType == 'rule_machine'
-        snap.configJson.app.appType == [name: 'Rule-5.1', namespace: 'hubitat']
+        snap.configJson.app.appType == [name: 'Rule-5.1', namespace: 'hubitat', author: 'Hubitat']
         snap.configJson.settings == [ruleEnable: true]
         ['client-id-value', 'client-secret-value', 'enc-value', 'src-value'].every { !written.contains(it) }
     }
