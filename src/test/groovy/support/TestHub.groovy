@@ -36,6 +36,8 @@ class TestHub implements Hub {
     // location.hub.hardwareID — internal platform id ("000D" on both a C-7 and a C-8 Pro).
     // hub_get_info surfaces it as platformHardwareId; the real model comes from /hub/details/json.
     String hardwareID
+    // location.hub.data — the hub's data map; firmware 2.5.2 carries zigbeeChannel here ("0x19 (25)").
+    Map data
 
     // --- RUNTIME-ONLY (not on Hub interface — property-access only, resolved
     // via Groovy's dynamic property dispatch when tools read e.g.
@@ -43,5 +45,4 @@ class TestHub implements Hub {
     // and the radio tools in libraries/mcp-diagnostics-lib.groovy) ---
     String zwaveVersion
     Integer zigbeeChannel
-    Map data
 }

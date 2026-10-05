@@ -362,7 +362,13 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         and: "no update flag is not the same as no update"
         result.platformUpdate.available == null
         result.platformUpdate.currentVersion == '2.5.2.129'
-        result.platformUpdate.note.contains('hub_update_firmware')
+        result.platformUpdate.note.contains('Check for Updates')
+    }
+
+    def "alertItems with no key are skipped and duplicate keys are listed once"() {
+        expect:
+        script._healthAlertsFromHub2([alerts: [alertItems: [[key: 'b'], [message: 'no key'], [key: 'a'], [key: 'b']]]]).active == ['a', 'b']
+        script._healthAlertsFromHub2([alerts: [alertItems: []]]).active == []
     }
 
     def "hub_get_info reads the Zigbee channel from the hub data map when the Hub object lacks it"() {
@@ -376,7 +382,7 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         def result = script.toolGetHubInfo([:])
 
         then:
-        result.zigbeeChannel == '0x19 (25)'
+        result.zigbeeChannel == 25
         !result.containsKey('zwaveVersion')
     }
 

@@ -3320,6 +3320,10 @@ class TestRunner:
         # Config read-back: the read-only details surface still answers after the write.
         details = self.client.call_tool("hub_get_radio_details", {"radio": "zwave"})
         assert isinstance(details, dict), f"hub_get_radio_details read-back did not return an object: {details}"
+        # The Hub object has no zwaveVersion on current firmware; the details JSON's firmware fills it.
+        zw_fw = (details.get("zwaveData") or {}).get("firmwareVersion") if isinstance(details.get("zwaveData"), dict) else None
+        if zw_fw:
+            assert details.get("zwaveVersion") not in (None, "unavailable"), f"zwaveVersion must be filled when the details carry firmware {zw_fw}: {details}"
 
     @test("diagnostics")
     def test_set_zigbee_enabled_idempotent(self) -> None:
@@ -3329,6 +3333,14 @@ class TestRunner:
             "hub_set_zigbee", {"enabled": True}, "hub_set_zigbee(enabled=true)")
         details = self.client.call_tool("hub_get_radio_details", {"radio": "zigbee"})
         assert isinstance(details, dict), f"hub_get_radio_details read-back did not return an object: {details}"
+        # The Hub object has no zigbeeChannel on current firmware; the details JSON's channel fills it.
+        zb_channel = (details.get("zigbeeData") or {}).get("channel") if isinstance(details.get("zigbeeData"), dict) else None
+        if zb_channel is not None:
+            assert details.get("zigbeeChannel") not in (None, "unavailable"), \
+                f"zigbeeChannel must be filled when the details carry channel {zb_channel}: {details}"
+            info = self.client.call_tool("hub_get_info")
+            assert info.get("zigbeeChannel") in (zb_channel, "unavailable"), \
+                f"hub_get_info must report the same Zigbee channel as the radio details ({zb_channel}): {info.get('zigbeeChannel')}"
 
     @test("diagnostics")
     def test_call_zwave_repair_start_then_cancel(self) -> None:
@@ -10081,6 +10093,29 @@ class TestRunner:
         if leftover:
             self._delete_native(leftover)
             raise AssertionError(f"an argument-refused create left rule {leftover} behind")
+
+        # The same holds for an action argument only the action builder used to check (a dimmer level).
+        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
+        act_label = f"{PREFIX}CreateRefusedAct_{_run_artifact_suffix()}_{self._native_rule_fixture_seq}"
+        try:
+            act_refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "name": act_label,
+                    "addActions": [
+                        {"capability": "log", "message": "E2E create refused action"},
+                        {"capability": "dimmer", "action": "setLevel"},
+                    ],
+                    "confirm": True,
+                }})
+            raise AssertionError(f"a create with an argument-refused action must be refused, got: {act_refused}")
+        except McpToolError as exc:
+            assert "No rule was created" in str(exc) and "actions[1]" in str(exc), \
+                f"the action-argument refusal must name the item and say no rule was created: {exc}"
+        leftover = self._find_app_id_by_label(act_label)
+        if leftover:
+            self._delete_native(leftover)
+            raise AssertionError(f"an action-argument-refused create left rule {leftover} behind")
 
         # Fail-closed create across sections: the clean trigger lands, a trigger only the live wizard
         # can refuse (a capability outside its picker) stops the create, and the Required Expression

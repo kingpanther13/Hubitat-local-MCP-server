@@ -244,6 +244,54 @@ class ToolBackupSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' }
     }
 
+    @spock.lang.Unroll
+    def "scope=hub_local full-backup check: #label"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/localBackups') { params ->
+            if (listBody == null) throw new RuntimeException("list unreadable")
+            listBody
+        }
+
+        when:
+        Exception refusal = null
+        try { script.toolRestoreItemBackup([scope: 'hub_local', fileName: fileName, confirm: true]) }
+        catch (IllegalArgumentException e) { refusal = e }
+
+        then:
+        (refusal != null) == refused
+        hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' } == !refused
+
+        where:
+        label                                     | fileName      | listBody                                    | refused
+        'the list marks it full (any name)'       | 'odd.lzf'     | '[{"name":"odd.lzf","fullBackup":true}]'    | true
+        'the list wins over a .tar.gz name'       | 'db.tar.gz'   | '[{"name":"db.tar.gz","fullBackup":false}]' | false
+        'list unreadable, .tar.gz name'           | 'x.tar.gz'    | null                                        | true
+        'list unreadable, .lzf name'              | 'x.lzf'       | null                                        | false
+        'list readable without it, .tar.gz name'  | 'gone.tar.gz' | '[]'                                        | true
+    }
+
+    @spock.lang.Unroll
+    def "the full-backup refusal reaches a client as an isError result (useGateways=#useGateways)"() {
+        given:
+        enableWrite()
+        settingsMap.useGateways = useGateways
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+
+        when:
+        def r = useGateways ?
+            script.handleGateway('hub_manage_backup', 'hub_restore_backup', [scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true]) :
+            script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('is a full local backup')
+        !hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' }
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "scope=hub_local without confirm throws the destructive gate"() {
         given:
         settingsMap.enableWrite = true   // Write master on, but NO recent backup -> confirm gate fails

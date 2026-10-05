@@ -76,7 +76,7 @@ The destructive/confirm-tier write tools require these steps (ordinary writes ne
 
 **hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests.
 
-**hub_update_firmware** - Installs the hub's pending platform/firmware update, then the hub self-reboots (5-10 min full downtime). Confirm a pending update via hub_get_info (platformUpdate) first; backup <24h + confirm=true required to apply; poll progress with statusOnly=true. Only when user explicitly requests.
+**hub_update_firmware** - Installs the hub's pending platform/firmware update, then the hub self-reboots (5-10 min full downtime). Confirm a pending update via hub_get_info (platformUpdate; when its `available` is null, the hub's alerts or Settings > Check for Updates in the web UI) first; backup <24h + confirm=true required to apply; poll progress with statusOnly=true. Only when user explicitly requests.
 
 **hub_shutdown** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
 
@@ -238,7 +238,7 @@ Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime,
 - `platformHardwareId` — the raw internal platform id (e.g. "000D"). It is the same on different hub models, so it is NOT the model.
 
 **Always returned (regardless of the flags below):**
-- `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it). `available` is null when the hub data cannot say: firmware 2.5.2.129 and later no longer report a pending update there, so check with hub_update_firmware.
+- `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it). `available` is null when the hub data cannot say: firmware 2.5.2.129 and later have no pending-update flag there, and a pending update shows as one of the hub's alerts (`includeHealthAlerts=true`) and on Settings > Check for Updates in the Hubitat web UI.
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
 - `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
 

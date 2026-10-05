@@ -758,7 +758,7 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
             // fullBackup entries (.tar.gz: database + File Manager + radio data) are listed with the
             // database-only .lzf ones but restore only through Hubitat's full-restore flow.
             out.local = (parsed instanceof List) ? parsed.collect {
-                [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.fileSize ?: it.size,
+                [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.fileSize != null ? it.fileSize : it.size,
                  fullBackup: it.fullBackup == true, hasZWave: it.hasZWave == true, hasZigbee: it.hasZigbee == true,
                  platformVersion: it.platformVersion]
             } : []
@@ -775,7 +775,8 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
     return out
 }
 
-// A full local backup as the hub lists it (fullBackup:true); the .tar.gz name decides when the list is unreadable.
+// A full local backup as the hub lists it (fullBackup:true); the .tar.gz name decides when the list
+// is unreadable or does not list the file.
 private boolean _isFullLocalHubBackup(String fileName) {
     try {
         def raw = hubInternalGet("/hub2/localBackups")
