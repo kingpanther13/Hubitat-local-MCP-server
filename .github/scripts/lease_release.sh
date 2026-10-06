@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Release test hub lease.
 #
-# Usage:  lease_release.sh <by-identifier>
+# Usage:  lease_release.sh [<by-identifier>]
 # Env:    WATCHDOG_URL — the watchdog v3 cloud OAuth URL with access_token. The lease is the File
 #                        Manager file test-hub-lease.json, read and written through the watchdog.
 #
@@ -10,8 +10,9 @@
 # hold it (or it is already empty). A run must NEVER clear a DIFFERENT run's live lease --
 # e.g. a slow or cancelled run releasing after another run has legitimately claimed would
 # otherwise blank the new holder's live value. A degraded/error read (`jq -e`) falls to
-# "unreadable" -> leave it alone; the 30-min TTL bounds it. With NO argument it clears nothing:
-# without the holder's identity it cannot tell its own lease from a human's.
+# "unreadable" -> leave it alone; the 30-min TTL bounds it. With NO argument (a base-workflow
+# call that predates this arg) it falls back to the old UNCONDITIONAL clear, so a
+# pull_request_target run executing main's workflow file still releases its own lease.
 #
 # Always exits 0 even if the call fails — the lease has a 30-min TTL safety net, and this
 # script runs in `if: always()` steps where a non-zero exit would mask the real test failure.
@@ -32,8 +33,9 @@ clear_lease() {
   fi
 }
 
+# Legacy / no-identity call (base-workflow before the arg is wired in): unconditional clear.
 if [ -z "$BY" ]; then
-  echo "::warning::lease_release.sh called without the holder identity; leaving the lease alone (30-min TTL)."
+  clear_lease
   exit 0
 fi
 

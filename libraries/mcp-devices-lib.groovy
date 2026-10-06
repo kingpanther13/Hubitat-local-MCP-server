@@ -5336,9 +5336,11 @@ def toolCallDeviceSwap(args) {
         def toDeps = toBefore?.dependents
         String toNote = (toDeps == 0) ?
             "Device ${toId} now carries the old device's identity ('${toAfter.label}'); nothing used it before the swap, so it can be removed once you confirm the automations behave." :
+            (toBefore?.onlySelf ?
+                "Device ${toId} now carries the old device's identity ('${toAfter.label}'); only this MCP server's device selection used it, nothing else, so it can be removed once you confirm the automations behave." :
             (toDeps == null ?
                 "Device ${toId} now carries the old device's identity ('${toAfter.label}'); apps that used it now run on the OLD hardware -- check hub_list_device_dependents(deviceId=${toId}) before removing it." :
-                "Device ${toId} now carries the old device's identity ('${toAfter.label}'), and the ${toDeps} app(s) that used it now run on the OLD hardware -- re-point them (hub_list_device_dependents(deviceId=${toId})) before removing it.")
+                "Device ${toId} now carries the old device's identity ('${toAfter.label}'), and the ${toDeps} app(s) that used it now run on the OLD hardware -- re-point them (hub_list_device_dependents(deviceId=${toId})) before removing it."))
         def result = [success: true,
                       swapped: [from: fromId, to: toId],
                       identityExchanged: true,
@@ -5447,14 +5449,12 @@ private Map _deviceSwapSnapshot(String deviceId) {
         try {
             if (parsed.appsUsingCount != null) dependents = parsed.appsUsingCount as Integer
         } catch (NumberFormatException ignored) { }
-        // This server's own device allowlist is not an automation using the device.
+        // True when the only app using the device is this server, through its own device selection.
         def selfId = app?.id?.toString()
-        if (dependents != null && selfId && (parsed.appsUsing instanceof List) &&
-                (parsed.appsUsing as List).any { it instanceof Map && it.id?.toString() == selfId }) {
-            dependents = Math.max(0, dependents - 1)
-        }
+        boolean onlySelf = dependents == 1 && selfId && (parsed.appsUsing instanceof List) &&
+            (parsed.appsUsing as List).any { it instanceof Map && it.id?.toString() == selfId }
         def dev = (parsed.device instanceof Map) ? parsed.device : [:]
-        return [dependents: dependents, dni: dev.deviceNetworkId?.toString(),
+        return [dependents: dependents, onlySelf: onlySelf, dni: dev.deviceNetworkId?.toString(),
                 createTime: dev.createTime?.toString(), label: dev.label?.toString()]
     } catch (Exception e) {
         mcpLog("warn", "device-swap", "snapshot read failed for device ${deviceId} (${e.message}) -- swap verification degraded")

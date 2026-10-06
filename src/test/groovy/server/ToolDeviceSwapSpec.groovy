@@ -706,9 +706,9 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         label                                  | body                                                                                 | expected
         'empty response -> null'               | ''                                                                                   | null
         'non-Map JSON -> null'                 | '[1,2,3]'                                                                            | null
-        'count from appsUsing when no count'   | '{"appsUsing":[{"id":1},{"id":2}],"device":{"deviceNetworkId":"X","label":"L"}}'     | [dependents: 2, dni: 'X', createTime: null, label: 'L']
-        'non-numeric appsUsingCount ignored'   | '{"appsUsing":[{"id":1}],"appsUsingCount":"42+"}'                                    | [dependents: 1, dni: null, createTime: null, label: null]
-        'no dependent data -> unknown, not 0'  | '{"device":{"deviceNetworkId":"X"}}'                                                 | [dependents: null, dni: 'X', createTime: null, label: null]
+        'count from appsUsing when no count'   | '{"appsUsing":[{"id":1},{"id":2}],"device":{"deviceNetworkId":"X","label":"L"}}'     | [dependents: 2, onlySelf: false, dni: 'X', createTime: null, label: 'L']
+        'non-numeric appsUsingCount ignored'   | '{"appsUsing":[{"id":1}],"appsUsingCount":"42+"}'                                    | [dependents: 1, onlySelf: false, dni: null, createTime: null, label: null]
+        'no dependent data -> unknown, not 0'  | '{"device":{"deviceNetworkId":"X"}}'                                                 | [dependents: null, onlySelf: false, dni: 'X', createTime: null, label: null]
     }
 
     @spock.lang.Unroll

@@ -106,7 +106,6 @@ rel_check "already empty -> keep"   "$rel_empty"              ci-run-7  KEEP
 rel_check "-32603 read -> keep"     '{"error":{"code":-32603,"message":"Internal error"}}' ci-run-7 KEEP
 rel_check "failed read -> keep"     "$(jq -nc '{result:{content:[{text:({success:false,error:"could not be read"}|tojson)}],isError:true}}')" ci-run-7 KEEP
 rel_check "504 read-fail -> keep"   '__FAIL__'                ci-run-7  KEEP
-rel_check "no identity -> keep"     "$(mk_held ci-run-7)"     ""        KEEP
 rm -rf "$STUBDIR"
 
 # ---------- acquire-side dead-holder reclaim guard ----------

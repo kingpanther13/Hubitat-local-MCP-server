@@ -4,8 +4,8 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 /**
- * Swap's dependent counts leave out this server's own device allowlist entry: the MCP app lists a
- * selected device in appsUsing, but it is not an automation that uses the device.
+ * Swap counts every app using a device, this server included when the device is in its device
+ * selection. When this server is the only one, the snapshot says so, so the note can point it out.
  */
 class DeviceSwapSelfReferenceSpec extends ToolSpecBase {
 
@@ -13,17 +13,21 @@ class DeviceSwapSelfReferenceSpec extends ToolSpecBase {
         appExecutor.getApp() >> new TestChildApp(id: 99999L, label: 'MCP')
     }
 
-    def "the server's own allowlist entry is not counted as a dependent"() {
+    def "the snapshot marks a device only this server uses"() {
         given:
         hubGet.register('/device/fullJson/55') { params -> body }
 
-        expect:
-        script._deviceSwapSnapshot('55').dependents == expected
+        when:
+        def snap = script._deviceSwapSnapshot('55')
+
+        then:
+        snap.dependents == count
+        snap.onlySelf == onlySelf
 
         where:
-        body                                                               || expected
-        '{"appsUsing":[{"id":1},{"id":99999}],"appsUsingCount":2}'         || 1
-        '{"appsUsing":[{"id":99999}],"appsUsingCount":1}'                  || 0
-        '{"appsUsing":[{"id":1},{"id":2}],"appsUsingCount":2}'             || 2
+        body                                                               || count | onlySelf
+        '{"appsUsing":[{"id":99999}],"appsUsingCount":1}'                  || 1     | true
+        '{"appsUsing":[{"id":1},{"id":99999}],"appsUsingCount":2}'         || 2     | false
+        '{"appsUsing":[{"id":1}],"appsUsingCount":1}'                      || 1     | false
     }
 }
