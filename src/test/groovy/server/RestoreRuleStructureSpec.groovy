@@ -518,7 +518,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs()
         hubGet.register('/app/ruleBuilderJson/200') { params -> '{"actionList":["1"]}' }
         hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
-        script.metaClass._collectLiveApps = { -> [:] }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[{"data":{"id":21,"type":"Rule Machine","installed":true},"children":[]}]}' }
 
         when:
         def out = script._rmRestoreFromBackup([fileName: "f.json", restoredAppId: 200], nativeSnapshot(), false)
