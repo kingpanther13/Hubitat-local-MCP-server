@@ -5157,7 +5157,8 @@ def toolCallDeviceSwap(args) {
     def fromBefore = _deviceSwapSnapshot(fromId)
     def toBefore = _deviceSwapSnapshot(toId)
     // Without both identities the outcome cannot be checked, and an unchecked swap cannot be safely retried.
-    def unread = [[fromId, fromBefore], [toId, toBefore]].findAll { it[1] == null }.collect { it[0] }
+    def unread = [[fromId, fromBefore], [toId, toBefore]]
+        .findAll { it[1] == null || (it[1].dni == null && it[1].createTime == null) }.collect { it[0] }
     if (unread) {
         return [success: false,
                 error: "Device(s) ${unread.join(', ')} could not be read before the swap, so its outcome could not be verified. Nothing was swapped.".toString(),

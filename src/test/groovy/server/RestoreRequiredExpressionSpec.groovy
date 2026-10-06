@@ -165,6 +165,87 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
         fake.conds.keySet() == fake.tokens as Set
     }
 
+    def "a failed rebuild of a snapshot starting with a paren keeps the committed first condition, not the paren"() {
+        given:
+        fake.withTokens([])
+        def snap = snapshot(["(", 2, "OR", 3, ")"],
+            [rCapab_2: "Mode", modes2: ["3"], modes3: ["4"]],
+            ["2": "Mode is 3", "3": "Mode is 4"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == false
+        out.requiredExpressionPartial == true
+        fake.renderedExpression() == ["Mode is 3"]
+        fake.mode == "committed"
+    }
+
+    def "a rebuild that only fails at its last click is finished, not undone"() {
+        given: "the rebuild's own updateRule is rejected once"
+        fake.seedSwitch(1, "on").withTokens([1])
+        int calls = 0
+        fake.onUpdateRule = { (++calls == 1) ? 500 : null }
+        def snap = snapshot([1, "OR", 2],
+            [rCapab_1: "Mode", modes1: ["3"], rCapab_2: "Mode", modes2: ["4"]],
+            ["1": "Mode is 3", "2": "Mode is 4"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == true
+        fake.renderedExpression() == ["Mode is 3", "OR", "Mode is 4"]
+        fake.mode == "committed"
+    }
+
+    def "a back-out that cannot put the pre-restore expression back says so and keeps its conditions"() {
+        given: "token deletes fail, so the editor cannot be set back"
+        fake.seedSwitch(1, "on").withTokens([1])
+        fake.onClick = { String n, String a -> if (a == "deleteToken") throw new RuntimeException("hub busy") }
+        def snap = snapshot([2, "OR", 3],
+            [rCapab_2: "Mode", modes2: ["3"], modes3: ["4"]],
+            ["2": "Mode is 3", "3": "Mode is 4"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == false
+        out.preRestoreExpressionKept == false
+        out.requiredExpressionError.contains("may be partly rebuilt")
+        out.leftoverConditionIds
+    }
+
+    def "a rebuild that commits nothing says the rule runs ungated"() {
+        given: "the snapshot's only condition has no saved capability"
+        fake.withTokens([])
+        def snap = snapshot([2], [modes2: ["3"]], ["2": "Mode is 3"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == false
+        out.requiredExpressionError.contains("ungated")
+        fake.tokens == []
+    }
+
+    def "an unreadable read-back is reported as unreadable, never as an empty expression"() {
+        given:
+        fake.withTokens([])
+        int reads = 0
+        hubGet.register('/app/ruleBuilderJson/100') { params -> (++reads > 1) ? null : fake.ruleBuilderJson() }
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, modeNightSnapshot())
+
+        then:
+        out.requiredExpressionRestored == false
+        out.requiredExpressionError.contains("could not be read back")
+    }
+
     def "a condition any expression still uses is never deleted"() {
         given:
         fake.seedSwitch(1, "on").seedMode(2, ["3"]).withTokens([1])

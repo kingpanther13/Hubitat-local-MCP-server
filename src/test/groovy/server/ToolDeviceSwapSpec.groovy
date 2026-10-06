@@ -356,6 +356,23 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         2            | 'inconsistent' || 'did not cleanly trade'
     }
 
+    def "a target that reads without any identity is refused before the click"() {
+        given:
+        enableWriteWithBackup()
+        registerDevices()
+        def calls = wireSwapStubs(beforeCount: 1, fetches: [pageJson()])
+        hubGet.register('/device/fullJson/202') { params -> '{"appsUsing":[]}' }
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('202')
+        !result.error.contains('101')
+        !calls.any { it.step in ['write', 'click', 'fetch', 'delete'] }
+    }
+
     def "a device that cannot be read before the swap is refused before anything is opened or clicked"() {
         given:
         enableWriteWithBackup()

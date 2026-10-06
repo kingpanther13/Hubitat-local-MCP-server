@@ -127,6 +127,42 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         !result.containsKey("removedConditionIds")
     }
 
+    def "an editor that will not open and an original that cannot be confirmed is reported as such"() {
+        given:
+        fake.editorOpens = false
+        int reads = 0
+        hubGet.register('/app/ruleBuilderJson/100') { params -> (++reads > 1) ? null : fake.ruleBuilderJson() }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.success == false
+        result.originalPreserved == false
+        result.partial == true
+        result.error.contains("could not be confirmed afterwards")
+    }
+
+    def "a switch to the new expression that fails rolls back, removes what it created and reports the original kept"() {
+        given: "the first delete of an original token fails once"
+        boolean failed = false
+        fake.onClick = { String n, String a ->
+            if (a == "deleteToken" && n == "0" && fake.tokens.size() == 2 && !failed) { failed = true; throw new RuntimeException("hub busy") }
+        }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.success == false
+        result.requiredExpressionReplaced == false
+        result.requiredExpressionRestored == true
+        result.originalPreserved == true
+        !result.partial
+        fake.tokens == [1]
+        !fake.conds.containsKey(2)
+    }
+
     def "a current expression that cannot be read refuses with nothing changed"() {
         given:
         hubGet.register('/app/ruleBuilderJson/100') { params -> throw new RuntimeException("timeout") }
@@ -158,14 +194,26 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
 
     def "a replace that is live is not reported as unchanged when marking the predCapabs clear fails"() {
         given:
-        script.metaClass._rmMarkPredClearPending = { Integer id -> throw new RuntimeException("state write failed") }
+        int marks = 0
+        script.metaClass._rmMarkPredClearPending = { Integer id -> marks++; throw new RuntimeException("state write failed") }
 
         when:
         def result = script._rmReplaceRequiredExpression(100, switchSpec())
 
         then:
+        marks == 1
         result.success == true
         fake.tokens == [2]
+    }
+
+    def "a rollback to an empty original changes nothing"() {
+        when:
+        def out = script._rmRevertRequiredExpression(100, [], "x.")
+
+        then:
+        out.requiredExpressionRestored == false
+        fake.posts.isEmpty()
+        fake.tokens == [1]
     }
 
     def "the spec is validated before any click -- a bad operators list throws with no hub write"() {

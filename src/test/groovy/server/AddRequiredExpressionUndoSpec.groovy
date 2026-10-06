@@ -55,6 +55,53 @@ class AddRequiredExpressionUndoSpec extends ToolSpecBase {
         out.error.contains("could not be switched back off")
     }
 
+    def "a walk that throws after switching the gate on switches it back off and rethrows as is"() {
+        given:
+        def boom = new IllegalStateException("condition 2 refused")
+        wire([null, "true", ""], [], null, boom)
+
+        when:
+        script._rmAddRequiredExpression(100, [conditions: []])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.is(boom)
+        writes == [["mainPage", "useST", false]]
+    }
+
+    def "a walk that throws and a gate that will not switch off carries the ungated warning on the error"() {
+        given:
+        wire([null, "true"], [], null, new IllegalStateException("condition 2 refused"))
+
+        when:
+        script._rmAddRequiredExpression(100, [conditions: []])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("condition 2 refused")
+        ex.message.contains("could not be switched back off")
+    }
+
+    def "an unknown prior gate is never switched, but an empty gate left on is reported"() {
+        given: "the pre-read fails, then the gate reads on with nothing committed"
+        writes = []
+        int reads = 0
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            if (++reads == 1) throw new RuntimeException("timeout")
+            groovy.json.JsonOutput.toJson([app: [id: 100], configPage: [name: "mainPage", sections: []], settings: [useST: "true"]])
+        }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> '{"eval":{}}' }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String page, String key, Object value, List applied, String hint = null, List skipped = null, Map cache = null -> writes << [page, key, value] }
+        script.metaClass._rmAddRequiredExpressionWalk = { Integer appId, Map spec -> [success: false, error: "x"] }
+
+        when:
+        def out = script._rmAddRequiredExpression(100, [conditions: []])
+
+        then:
+        writes.isEmpty()
+        out.useSTLeftOn == true
+    }
+
     def "a validation throw before any write leaves the gate as it found it"() {
         given:
         wire([null, null], [], null, new IllegalArgumentException("bad spec"))

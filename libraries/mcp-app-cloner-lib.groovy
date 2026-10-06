@@ -832,8 +832,9 @@ Map _rmNativeExportForBackup(Integer appId) {
 
 // Restore through Hubitat's own App Cloner import: an exact copy (settings and app state) as a NEW
 // app, then the old app is deleted. Returns [fallback: reason] for the settings replay when the
-// export cannot be used: unparseable, no parent to seed the import, or a device that no longer
-// exists (an import would not reuse it).
+// export cannot be used: unparseable, no Rule Machine rule left to seed the import, or a device that
+// no longer exists (an import would not reuse it). Throws IllegalArgumentException, before anything
+// is created, when the old rule cannot be deleted because of app protection.
 private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exists, String fileName) {
     def parsed
     try { parsed = new groovy.json.JsonSlurper().parseText(snapshot.nativeExport.toString()) } catch (Exception e) {
@@ -859,20 +860,43 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         if (hint == null) return [fallback: "no Rule Machine rule was found to seed the App Cloner import"]
     }
     // The old rule is deleted after the import, so its protection is checked before anything is created.
-    if (exists) _requireUnprotectedAppDeletion(savedId)
-    def imp = toolImportNativeApp([jsonContent: snapshot.nativeExport, parentHintAppId: hint, stageDisabled: true, confirm: true])
+    if (exists) {
+        try { _requireUnprotectedAppDeletion(savedId) } catch (IllegalArgumentException protExc) {
+            throw new IllegalArgumentException("Cannot restore rule ${savedId} as a new copy, because the old rule could not then be deleted: ${protExc.message} Pass preserveRuleId:true to restore it in place instead.".toString(), protExc)
+        }
+    }
+    def label = snapshot?.appLabel ?: "rule ${savedId}"
+    def imp
+    try {
+        imp = toolImportNativeApp([jsonContent: snapshot.nativeExport, parentHintAppId: hint, stageDisabled: true, confirm: true])
+    } catch (Exception impExc) {
+        mcpLog("error", "rm-native", "Restore of app ${savedId}: the App Cloner import threw (${impExc.message})")
+        imp = [success: false, clonerAppId: -1, error: impExc.message ?: impExc.toString()]
+    }
     Integer newId = imp?.newAppId as Integer
     if (newId == null) {
-        return [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, restoredVia: "nativeImport",
-                error: "The App Cloner import of the backup did not produce a new app: ${imp?.error ?: imp?.note}".toString(),
-                note: "Nothing was deleted. Retry, or pass preserveRuleId:true to restore rule ${savedId} in place by settings replay.".toString()]
+        def out = [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, restoredVia: "nativeImport", backupFile: fileName]
+        if (imp?.clonerAppId == null) {
+            // The import never started, so nothing was created.
+            out.error = "The App Cloner import of the backup could not start: ${imp?.error ?: imp?.note}".toString()
+            out.note = "Nothing was created or deleted. Retry, or pass preserveRuleId:true to restore rule ${savedId} in place by settings replay.".toString()
+            return out
+        }
+        // The import ran, but its copy was not found: it may exist, enabled and running.
+        out.partial = true
+        out.error = "The App Cloner import of the backup ran, but its new app could not be identified: ${imp?.error ?: imp?.note}".toString()
+        out.note = ("A copy labelled '${label}' may now exist under Rule Machine, enabled. Find it with hub_list_apps(scope='instances') and disable or delete it before anything else. " +
+            (exists ? "Rule ${savedId} was NOT deleted. " : "") + "Do not retry the restore until you have checked.").toString()
+        return out
     }
     if (imp?.success != true) {
-        // A copy exists but may not be disabled, so the old rule stays and the copy is the one to remove.
+        // A copy exists but may not be disabled, so the caller decides what stays.
         def failed = [success: false, partial: true, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, importedAppId: newId,
                       restoredVia: "nativeImport", backupFile: fileName,
                       error: "The backup was imported as app ${newId}, but staging it failed: ${imp?.error ?: imp?.note}".toString(),
-                      note: "Rule ${savedId} was NOT deleted, and app ${newId} may be running alongside it. Delete app ${newId} (hub_delete_native_app) to go back to rule ${savedId}, or delete rule ${savedId} to keep the copy. Do not retry the restore before one of them is gone.".toString()]
+                      note: (exists ?
+                          "Rule ${savedId} was NOT deleted, and app ${newId} may be running alongside it. Delete app ${newId} (hub_delete_native_app) to go back to rule ${savedId}, or delete rule ${savedId} to keep the copy. Do not retry the restore before one of them is gone." :
+                          "App ${newId} is the restored rule, but it may not be disabled as intended. Check it with hub_get_app_config(appId=${newId}); do not retry the restore, which would create another copy.").toString()]
         if (imp?.stageFailures) failed.stageFailures = imp.stageFailures
         return failed
     }
@@ -896,7 +920,10 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     def reenableFailed = []
     if (snapshot?.configJson?.app?.disabled != true) {
         def failed = (imp.stagedDisabled ?: [newId]).findAll { id ->
-            toolSetAppDisabled([appId: id, disabled: false])?.success != true
+            try { toolSetAppDisabled([appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
+                mcpLog("warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
+                true
+            }
         }
         if (failed) {
             reenableFailed = failed
@@ -1120,6 +1147,11 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         structure = [structureRestored: false, structureError: stExc.message ?: stExc.toString()]
     }
     if (structure) out.putAll(structure)
+    if (out.leftoverConditionIds && structure?.removedConditionIds) {
+        def gone = (structure.removedConditionIds as List)*.toString()
+        out.leftoverConditionIds = (out.leftoverConditionIds as List).findAll { !gone.contains(it.toString()) }
+        if (!out.leftoverConditionIds) out.remove("leftoverConditionIds")
+    }
     if (structure?.structureRestored == false) {
         out.success = false
         out.partial = true
