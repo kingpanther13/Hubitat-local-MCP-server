@@ -7962,7 +7962,8 @@ class TestRunner:
             on = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
                 "args": {"appId": int(app_id), "confirm": True, "settings": {"useST": True}}})
-            assert on.get("success") is True, f"switching useST on failed: {on}"
+            # The write reports success:false because its own health check flags the ungated rule.
+            assert "useST" in (on.get("settingsApplied") or []), f"switching useST on did not land: {on}"
             health = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
             assert health.get("ok") is False and any("UNGATED" in str(i) for i in (health.get("issues") or [])), \
@@ -9195,14 +9196,12 @@ class TestRunner:
                 f"rule is not healthy and gated after the failed replace: {health}"
 
             # An unknown mode name is refused before any click, so the rule stays exactly as it was.
-            try:
-                refused = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule",
-                    "args": {"appId": int(app_id), "confirm": True, "replaceRequiredExpression": {
-                        "conditions": [{"capability": "Mode", "state": f"{PREFIX}NoSuchMode"}]}}})
-                raise AssertionError(f"a replace naming an unknown mode was not refused: {refused}")
-            except McpToolError as exc:
-                assert "NoSuchMode" in str(exc), f"the refusal does not name the unknown mode: {exc}"
+            refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": int(app_id), "confirm": True, "replaceRequiredExpression": {
+                    "conditions": [{"capability": "Mode", "state": f"{PREFIX}NoSuchMode"}]}}})
+            assert refused.get("success") is False and "NoSuchMode" in str(refused.get("error")),                 f"a replace naming an unknown mode was not refused by name: {refused}"
+            assert "No changes were made" in str(refused.get("restoreHint")), refused
             blob = str(self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
             assert "is off" in blob, f"the refused replace changed the expression: {blob[:600]}"
