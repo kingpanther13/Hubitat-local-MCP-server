@@ -5,13 +5,20 @@ def toolListHubApps(args) {
     def cursor = args?.cursor
     def result = [:]
     try {
+        // /hub2/userAppTypes is the Apps Code registry: every user code DEFINITION with its
+        // class id + usedBy, including child-app templates that have zero running instances.
+        // Its id semantics and completeness are relied on elsewhere (self-admin class-id
+        // resolution, HPM orphan detection), so it stays the primary source here. It omits
+        // `menu` and the built-in types entirely, so both are layered on from /hub2/appsList
+        // (the payload the Apps admin page itself loads) via _appTypeEnrichment().
         def responseText = hubInternalGet("/hub2/userAppTypes")
         if (responseText) {
+            def parsed = null
+            boolean notJson = false
+            // Narrow the catch to the parse itself -- a failure in enrichment/projection below is a
+            // real bug and must not masquerade as "Response was not JSON".
             try {
-                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                result.apps = parsed
-                result.count = parsed instanceof List ? parsed.size() : 0
-                result.source = "hub_api"
+                parsed = new groovy.json.JsonSlurper().parseText(responseText)
             } catch (Exception parseErr) {
                 // Response was not JSON - return what we can. apps=[] keeps the cursor
                 // block + downstream shape consistent so a paginating caller doesn't
@@ -20,6 +27,29 @@ def toolListHubApps(args) {
                 result.rawResponse = responseText?.take(2000)
                 result.source = "hub_api_raw"
                 result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+                notJson = true
+            }
+            if (!notJson) {
+                if (parsed instanceof List) {
+                    def enrich = _appTypeEnrichment()
+                    def types = []
+                    // Community (user-installed) code definitions: system/isBuiltIn=false,
+                    // menu looked up from the appsList catalog (null when undeclared/unlisted).
+                    parsed.each { t -> if (t instanceof Map) types << _projectAppType(t, false, enrich) }
+                    // Built-in types never appear in the code registry; append them so a caller
+                    // can answer "community vs built-in" over ALL app types in one call.
+                    enrich.builtIn.each { t -> if (t instanceof Map) types << _projectAppType(t, true, enrich) }
+                    result.apps = types
+                    result.count = types.size()
+                    result.source = "hub_api"
+                    if (enrich.note) result.note = enrich.note
+                } else {
+                    // Unexpected non-array JSON shape: pass it through rather than guess.
+                    result.apps = parsed
+                    result.count = 0
+                    result.source = "hub_api"
+                    result.note = "/hub2/userAppTypes returned an unexpected (non-array) shape; passing it through unprojected. Hubitat firmware may have changed the endpoint format."
+                }
             }
         } else {
             result.apps = []
@@ -47,6 +77,74 @@ def toolListHubApps(args) {
 
     mcpLog("info", "hub-admin", "Listed hub apps (source: ${result.source})")
     return result
+}
+
+def _appTypeEnrichment() {
+    // Read /hub2/appsList once to supply what the Apps Code registry cannot: the `menu` tab
+    // (Apps/Automations/Integrations) each app type declares and the catalog of built-in
+    // (systemAppTypes) types. Returns menu lookups keyed by both class id and namespace+name
+    // (the appsList catalog and the code registry share the app-type class id; ns+name is a
+    // fallback), the built-in type list, and a `note` when the enrichment could not be read
+    // (best-effort: a failure just leaves community menus null and omits built-in types).
+    def out = [menuById: [:], menuByNsName: [:], builtIn: [], note: null]
+    try {
+        def txt = hubInternalGet("/hub2/appsList")
+        def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        if (parsed instanceof Map && (parsed.userAppTypes != null || parsed.systemAppTypes != null)) {
+            def catalog = []
+            def notes = []
+            // Enrich from whichever list is valid. appsList supplies only the `menu` tab and the
+            // built-in catalog; community types themselves come from /hub2/userAppTypes, so a missing
+            // appsList.userAppTypes only nulls their menu -- it does NOT drop them from the listing.
+            if (parsed.userAppTypes instanceof List) catalog += parsed.userAppTypes
+            else notes << "community app types are still listed (from the code registry) but without their menu tab"
+            if (parsed.systemAppTypes instanceof List) catalog += parsed.systemAppTypes
+            else notes << "built-in (system) app types are omitted this call"
+            if (notes) out.note = "/hub2/appsList did not return a usable list this call; " + notes.join("; ") + "."
+            catalog.each { e ->
+                if (e instanceof Map) {
+                    if (e.id != null) out.menuById[e.id.toString()] = e.menu
+                    if (e.namespace != null && e.name != null) {
+                        def ns = e.namespace.toString()
+                        if (!out.menuByNsName.containsKey(ns)) out.menuByNsName[ns] = [:]
+                        out.menuByNsName[ns][e.name.toString()] = e.menu
+                    }
+                }
+            }
+            if (parsed.systemAppTypes instanceof List) out.builtIn = parsed.systemAppTypes.findAll { it instanceof Map }
+        } else {
+            out.note = "Built-in vs community split and menu tab unavailable this call: /hub2/appsList returned an unexpected shape. Community app types are listed without a menu tab."
+        }
+    } catch (Exception e) {
+        out.note = "Built-in vs community split and menu tab unavailable this call (${e.message}). Community app types are listed without a menu tab."
+        mcpLog("warn", "hub-admin", "hub_list_apps could not enrich app types from /hub2/appsList: ${e.message}")
+    }
+    return out
+}
+
+def _projectAppType(Map t, boolean builtIn, Map enrich) {
+    // Project one app-type entry: preserve every native field the hub returned, add the
+    // built-in-vs-community flags (system / isBuiltIn), and guarantee a `menu` key. `menu` is
+    // the Apps/Automations/Integrations tab an app declares in its definition() block: taken
+    // inline when the entry already carries it (built-in appsList entries do), else resolved
+    // from the enrichment maps by class id then namespace+name. A type that declares none — or
+    // that the appsList catalog does not list (e.g. a child-app template) — is surfaced as null
+    // (no invented default).
+    def out = [:]
+    out.putAll(t)
+    out.system = builtIn
+    out.isBuiltIn = builtIn
+    if (!out.containsKey("menu")) {
+        def m = null
+        if (enrich != null) {
+            m = enrich.menuById?.get(t?.id?.toString())
+            if (m == null && t?.namespace != null && t?.name != null) {
+                m = enrich.menuByNsName?.get(t.namespace.toString())?.get(t.name.toString())
+            }
+        }
+        out.menu = m
+    }
+    return out
 }
 
 def toolListHubDrivers(args) {
@@ -279,7 +377,8 @@ private String stripAppConfigHtml(value) {
     }
     // Decode the common HTML entities Hubitat escapes user-typed names with: a
     // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
-    // Decode &amp; LAST so a single-encoded "&lt;" resolves correctly.
+    // Decode &amp; LAST so a double-encoded entity doesn't collapse (e.g. "&amp;lt;"
+    // must stay "&lt;", not become "<").
     if (s.contains("&")) {
         s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
              .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
@@ -553,6 +652,9 @@ def toolGetAppConfig(args) {
             classLocation: appTypeRaw.classLocation,
             deprecated: appTypeRaw.deprecated == true,
             system: appTypeRaw.system == true,
+            // Apps/Automations/Integrations tab the type declares in its definition()
+            // block; null when it declares none (no invented default).
+            menu: appTypeRaw.menu,
             documentationLink: appTypeRaw.documentationLink
         ]
     }
@@ -579,6 +681,9 @@ def toolGetAppConfig(args) {
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
     def sections = []
+    // Framework-standard mode inputs (type="mode") found on this page, collected into the
+    // structured modeInputs hint below (semantics are app-specific -- see where it's assembled).
+    def modeInputs = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
         def section = [
@@ -621,6 +726,15 @@ def toolGetAppConfig(args) {
             if (i.type == "password") {
                 if (i.name) passwordInputNames << i.name.toString()
                 if (input.containsKey("value")) input.value = redactedPw
+            }
+            if (i.type == "mode") {
+                // A type="mode" input carries no defaultValue; its configured value lives in the page
+                // JSON settings[name] as a comma-joined string (e.g. "Day,Night").
+                def rawModes = (parsed.settings instanceof Map) ? parsed.settings[i.name] : null
+                def modes = null
+                if (rawModes instanceof List) modes = rawModes.collect { it?.toString() }.findAll { it }
+                else if (rawModes != null) modes = rawModes.toString().split(",").collect { it.trim() }.findAll { it }
+                modeInputs << [name: input.name, modes: modes, section: section.title]
             }
             section.inputs << input
         }
@@ -685,6 +799,15 @@ def toolGetAppConfig(args) {
         childApps: children,
         endpoint: path
     ]
+    // Structured hint: framework-standard mode inputs (type="mode") this page renders. Their
+    // SEMANTICS are app-specific -- a "only run during these modes" restriction, OR per-mode
+    // overrides (observed live: Day Lights uses type="mode" for per-mode brightness overrides,
+    // not a restriction). Per-page only, and ABSENCE is not proof the app ignores mode (it may
+    // gate via its own settings model or handler logic). Full caveats in the served guide.
+    if (modeInputs) {
+        result.modeInputs = modeInputs
+        result.modeInputsNote = "Framework-standard mode input(s) (type='mode') on this page. Semantics are app-specific -- a 'only run during these modes' restriction OR per-mode overrides -- read the input titles/settings to interpret; `modes` is the configured list. Per-page only; absence does NOT mean the app ignores mode: some built-ins gate via mode-ID settings, not a type='mode' input (e.g. Room Lights). See hub_get_tool_guide(section='builtin_app_tools_apps') for the per-built-in key reference."
+    }
     // Sub-pages this page links to. Their inputs are not in `sections`; read one with
     // pageName=<page>, or drive it with hub_set_native_app walkStep (navigate, write, done).
     def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
@@ -2798,11 +2921,11 @@ def _getAllToolDefinitions_partCodeManagement() {
         // get_hub_details merged into hub_get_info (core tool)
         [
             name: "hub_list_apps",
-            description: """List apps on the hub — running instances or installed app code/types (see scope). Per-app event history: hub_list_device_events with appId. Requires the Read master.""",
+            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app code library / available app types.", default: "instances"],
+                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
@@ -2811,7 +2934,7 @@ def _getAllToolDefinitions_partCodeManagement() {
         ],
         [
             name: "hub_list_drivers",
-            description: "List device driver types on the hub. Requires Read master.",
+            description: "List device driver types on the hub.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2822,7 +2945,7 @@ def _getAllToolDefinitions_partCodeManagement() {
         ],
         [
             name: "hub_list_libraries",
-            description: "List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library's id, then read its source with hub_get_source(type='library', id=N); the source is omitted here to keep the list lean. Requires Read master.",
+            description: "List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library's id, then read its source with hub_get_source(type='library', id=N)[[FLAT_TRIM]]; the source is omitted here to keep the list lean[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2833,7 +2956,7 @@ def _getAllToolDefinitions_partCodeManagement() {
         // Hub Admin App/Driver Source Read Tools
         [
             name: "hub_get_source",
-            description: "Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool's sourceFile mode. Requires Read master.",
+            description: "Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool's sourceFile mode.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3050,11 +3173,11 @@ A transport drop can lose the response while the hub still commits this write; v
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
         [
             name: "hub_get_app_config",
-            description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page. Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.). Read-only.
+            description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.
 
 Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
 
-Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]] Requires Read master.""",
+Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3071,7 +3194,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
             name: "hub_list_app_pages",
             description: """List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]
 
-Use before hub_get_app_config on multi-page apps to avoid guessing page names. Requires Read master.""",
+Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3083,7 +3206,7 @@ Use before hub_get_app_config on multi-page apps to avoid guessing page names. R
         // Installed Apps Integration (built-in + user app visibility)
         [
             name: "hub_list_device_dependents",
-            description: """List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] — critical before device cleanup, troubleshooting, or reassignment. Requires the Read master.""",
+            description: """List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] — critical before device cleanup, troubleshooting, or reassignment.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [

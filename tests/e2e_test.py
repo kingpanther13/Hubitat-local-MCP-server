@@ -2523,6 +2523,12 @@ class TestRunner:
             f"Expected 36 default tools (13 core + 23 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
+        # Gateway mode: a write-bearing gateway leads with the guide-first sentence, a read gateway does not.
+        by_name = {t.get("name"): t for t in tools}
+        assert by_name["hub_manage_rooms"].get("description", "").startswith("MUST call hub_get_tool_guide first."), \
+            f"hub_manage_rooms must lead with the guide-first sentence: {by_name['hub_manage_rooms'].get('description', '')[:120]!r}"
+        assert not by_name["hub_read_rooms"].get("description", "").startswith("MUST call hub_get_tool_guide first."), \
+            "hub_read_rooms is read-only and must not carry the guide-first sentence"
 
     @test("infrastructure")
     def test_tools_list_titles(self) -> None:
@@ -2720,6 +2726,8 @@ class TestRunner:
 
             # serverInstructions is the flat branch: it must NOT tell the client to call a gateway.
             instr = self.client.discover().get("instructions", "")
+            assert instr.startswith("MUST call hub_get_tool_guide first."), \
+                f"flat-mode instructions must lead with the guide-first sentence: {instr[:120]!r}"
             assert "flat catalog" in instr.lower(), f"flat-mode instructions missing 'flat catalog': {instr!r}"
             assert "call a gateway" not in instr.lower(), \
                 f"flat-mode instructions must not steer the client into a gateway call: {instr!r}"
@@ -3495,6 +3503,40 @@ class TestRunner:
         result = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
         assert "attributes" in result or "currentStates" in result, \
             "hub_get_device response missing attributes"
+
+    @test("devices")
+    def test_get_device_zwave_manufacturer_name(self) -> None:
+        """A numeric Z-Wave data.manufacturer id resolves to a brand name in details mode.
+
+        Deterministic on any hub (the CI hub has no Z-Wave radio): a BAT_E2E_ virtual device gets
+        dataValues manufacturer="634" (0x027A = Zooz) PLUS a Z-Wave marker (inClusters) -- resolution
+        is gated on the device data carrying a Z-Wave marker, so a numeric id alone is not labelled.
+        The raw id is preserved for chaining and manufacturerName ("Zooz") is added beside it.
+        """
+        label = f"{PREFIX}ZwaveMfr"
+        dev_id = self._create_virtual_switch_device(label)
+        assert dev_id, f"could not create virtual device {label}"
+        dni = self._last_created_dni
+        try:
+            # updateDataValue writes arbitrary keys onto device.data; the inClusters marker makes the
+            # resolver treat the record as Z-Wave (a bare numeric id with no marker stays unlabelled).
+            self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id,
+                "dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70"}})
+            result = self.client.call_tool("hub_get_device", {
+                "deviceId": dev_id, "mode": "details", "sections": ["data"]})
+            data = (result.get("sections") or {}).get("data") or {}
+            assert str(data.get("manufacturer")) == "634", \
+                f"raw manufacturer id must be preserved beside manufacturerName: {data}"
+            assert data.get("manufacturerName") == "Zooz", \
+                f"manufacturer 634 (0x027A) must resolve to Zooz: {data}"
+        finally:
+            if dni:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": dni, "confirm": True})
+                except (McpError, McpToolError):
+                    pass
 
     @test("devices")
     def test_device_configuration_matrix(self) -> None:
@@ -11897,9 +11939,11 @@ class TestRunner:
                     print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4f: installed_app_reads (2 tests) -- hub_get_app_config's thin app-summary
-    # mode (/installedapp/json/<id>) plus its RM disabled-action marking, and the
-    # per-app events mode of hub_list_device_events (/installedapp/eventsJson/<id>).
+    # GROUP 4f: installed_app_reads (4 tests) -- the thin app-summary mode of
+    # hub_get_app_config (/installedapp/json/<id>) plus its RM disabled-action
+    # marking, its modeInputs projection, the app-type catalog fields (menu tab +
+    # built-in vs community) on hub_list_apps(types), and the per-app events mode of
+    # hub_list_device_events (/installedapp/eventsJson/<id>).
     # -----------------------------------------------------------------------
 
     @test("installed_app_reads")
@@ -12000,6 +12044,91 @@ class TestRunner:
                 f"selectActions legend reported as a disabled action: {listed}"
         finally:
             self._delete_native(app_id)
+
+    @test("installed_app_reads")
+    def test_get_app_config_mode_inputs(self) -> None:
+        # modeInputs surfaces each type='mode' input on a config page with its CONFIGURED list
+        # (issue #431 item 3; the review-2 fix reads `modes` from the page JSON settings[name], not
+        # the always-null defaultValue). A Notifier carries a `modes` type='mode' RESTRICT input on
+        # its moreOptions sub-page; set it, then read it back and assert the list is the one written.
+        modes = self.client.call_tool("hub_list_modes").get("modes") or []
+        assert len(modes) >= 1, "hub_list_modes returned no modes -- cannot set a mode restriction"
+        want = [m["name"] for m in modes[:2]]
+
+        label = f"{PREFIX}NotifierModes"
+        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appType": "notifier", "name": label, "confirm": True}})
+        app_id = (created or {}).get("appId") or self._find_app_id_by_label(label)
+        assert app_id, f"notifier create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        try:
+            # Navigate to the moreOptions sub-page and write the type='mode' `modes` restriction.
+            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": app_id,
+                         "walkStep": {"page": "moreOptions", "operation": "write", "write": {"modes": want}},
+                         "confirm": True}})
+            # Read the sub-page back; modeInputs[].modes must equal the configured list (not null).
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "moreOptions"}})
+            mode_inputs = cfg.get("modeInputs") or []
+            entry = next((mi for mi in mode_inputs if mi.get("name") == "modes"), None)
+            assert entry is not None, \
+                f"moreOptions did not surface a `modes` type='mode' input in modeInputs: {cfg.get('modeInputs')}"
+            assert sorted(entry.get("modes") or []) == sorted(want), \
+                f"modeInputs modes must equal the configured list {want}, got: {entry.get('modes')}"
+            assert cfg.get("modeInputsNote"), f"modeInputs present without a modeInputsNote: {cfg}"
+        finally:
+            self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
+
+    @test("installed_app_reads")
+    def test_list_apps_types_menu_and_builtin_flags(self) -> None:
+        # scope='types' surfaces, for every installed app type, the built-in-vs-community
+        # flag (issue #431 item 6) and the admin-UI menu tab it declares (item 5). The
+        # community types come from the Apps Code registry; the built-in types and every
+        # `menu` value are layered on from /hub2/appsList. A live hub always ships built-in
+        # app types (Rule Machine, Room Lighting, ...), so both halves are exercised here.
+        result = self.client.call_tool(
+            "hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "types"}})
+        assert isinstance(result, dict), f"scope='types' did not return an object: {result!r}"
+        apps = result.get("apps")
+        assert isinstance(apps, list) and apps, f"scope='types' returned no app types: {result}"
+
+        # Every entry carries the three added fields; system/isBuiltIn agree and are booleans,
+        # and the menu key is always present (value may be null when a type declares none).
+        for a in apps:
+            assert isinstance(a, dict), f"app-type entry is not an object: {a!r}"
+            assert isinstance(a.get("system"), bool), f"entry missing bool system: {a}"
+            assert isinstance(a.get("isBuiltIn"), bool), f"entry missing bool isBuiltIn: {a}"
+            assert a.get("system") == a.get("isBuiltIn"), f"system != isBuiltIn: {a}"
+            assert "menu" in a, f"entry missing menu key: {a}"
+
+        # #6: built-in types were appended (system=true) and community types are present
+        # (system=false -- the MCP server itself is a user-installed app type).
+        assert any(a.get("system") is True for a in apps), \
+            f"no built-in app type surfaced -- appsList enrichment likely failed: {result.get('note')}"
+        assert any(a.get("system") is False for a in apps), \
+            f"no community app type surfaced: {apps}"
+
+        # #5: the menu tab is wired through -- at least one type (built-in types reliably
+        # declare one on tab-aware firmware) reports a recognized Apps/Automations/Integrations
+        # value, and every non-null menu is one of those three (never an invented default).
+        menus = {a.get("menu") for a in apps}
+        valid = {"Apps", "Automations", "Integrations"}
+        assert menus & valid, \
+            f"no app type reported a recognized menu tab: {sorted(m for m in menus if m)}"
+        assert all((m is None or m in valid) for m in menus), \
+            f"unexpected menu value(s): {sorted(m for m in menus if m and m not in valid)}"
+
+        # And the same fields are reachable per-app via hub_get_app_config on a real app
+        # (the MCP server's own instance): the appType summary carries system + a menu key.
+        cfg = self.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_get_app_config", "args": {"appId": str(self.client.app_id)}})
+        app_type = (cfg.get("app") or {}).get("appType") if isinstance(cfg, dict) else None
+        assert isinstance(app_type, dict), f"hub_get_app_config returned no appType summary: {cfg}"
+        assert isinstance(app_type.get("system"), bool), f"appType.system missing/!bool: {app_type}"
+        assert "menu" in app_type, f"appType summary missing menu key: {app_type}"
 
     @test("installed_app_reads")
     def test_list_app_events_structural(self) -> None:
@@ -12452,6 +12581,63 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("hub_variables")
+    def test_hub_get_variable_dependents_round_trip(self) -> None:
+        # hub_get_variable(includeDependents=true) answers "which apps reference this hub variable" by
+        # driving the Settings > Hub Variables "Show In Use Apps" reveal (the same in-use registry that
+        # gates hub_delete_variable). An RM rule that references the variable registers as a consumer;
+        # an unreferenced variable has none; an unknown name is a validation error.
+        # The reference is a Variable TRIGGER (a single-page trigger reveal), NOT a setVariable action:
+        # multi-step ACTION-editor reveals are the path issue #479 tears down on 4.4.5+, so a trigger
+        # keeps this fixture robust regardless of the e2e client's protocol era.
+        used_var = f"{PREFIX}DepVar"
+        unused_var = f"{PREFIX}DepVarUnused"
+        self._create_hub_variable_visible(used_var, "Number", "0")
+        self._create_hub_variable_visible(unused_var, "Number", "0")
+        app_id = self._create_native_rule("VarDependent", {
+            "addTriggers": [{"capability": "Variable", "variable": used_var, "comparator": "*changed*"}],
+            "addActions": [{"capability": "log", "message": "var dependent fixture"}]})
+        try:
+            # The referencing rule appears in appsUsing as {id, label}.
+            dep = self.client.call_tool("hub_read_variables", {
+                "tool": "hub_get_variable", "args": {"name": used_var, "includeDependents": True}})
+            apps = dep.get("appsUsing") or []
+            ids = {str(a.get("id")) for a in apps}
+            assert str(app_id) in ids, \
+                f"referencing rule {app_id} not listed in appsUsing for {used_var}: {dep}"
+            assert dep.get("count") == len(apps), f"count/appsUsing length mismatch: {dep}"
+            assert any("VarDependent" in (a.get("label") or "") for a in apps), \
+                f"appsUsing carries no readable label for the consuming rule: {dep}"
+            assert "webCoRE" in (dep.get("coverageNote") or ""), \
+                f"coverageNote missing the registered-apps-only caveat: {dep}"
+
+            # A variable with no referencing apps (not in the in-use registry) returns an empty list,
+            # not an error. (An empty appsUsing means NOT in use -- never "in use but unreadable", which
+            # is reported as dependentsError instead.)
+            empty = self.client.call_tool("hub_read_variables", {
+                "tool": "hub_get_variable", "args": {"name": unused_var, "includeDependents": True}})
+            assert empty.get("appsUsing") == [] and empty.get("count") == 0, \
+                f"unreferenced variable should have no dependents: {empty}"
+
+            # includeDependents is opt-in: a plain get carries no appsUsing.
+            plain = self.client.call_tool("hub_read_variables", {
+                "tool": "hub_get_variable", "args": {"name": used_var}})
+            assert "appsUsing" not in plain, \
+                f"hub_get_variable returned appsUsing without includeDependents: {plain}"
+
+            # Unknown variable -> validation error the caller can correct and retry.
+            try:
+                self.client.call_tool("hub_read_variables", {
+                    "tool": "hub_get_variable",
+                    "args": {"name": f"{PREFIX}NoSuchDepVar", "includeDependents": True}})
+                raise AssertionError("hub_get_variable accepted an unknown variable name")
+            except (McpToolError, McpError) as exc:
+                assert "not found" in str(exc).lower(), f"unexpected error for unknown variable: {exc}"
+        finally:
+            self._delete_native(app_id)
+            self._delete_variable_safe(used_var)
+            self._delete_variable_safe(unused_var)
+
+    @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
         # hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation contract
         # LIVE with NO mesh state change -- every rejection fires before any hub call and surfaces as an
@@ -12763,6 +12949,40 @@ class TestRunner:
             f"hub_list_modes response missing modes/currentMode: {list(result.keys()) if isinstance(result, dict) else type(result)}"
 
     @test("system_tools")
+    def test_get_network_settings(self) -> None:
+        # The network config read is folded into hub_get_info as the opt-in includeNetwork flag
+        # (issue #431 item 3). Reads /hub2/networkConfiguration into a `network` block. MUST NEVER
+        # return the Wi-Fi password -- only the SSID. The current LAN address is NOT in the block
+        # (hub_get_info reports it as the top-level localIP), so the block carries no currentLanAddress.
+        info = self.client.call_tool("hub_get_info", {"includeNetwork": True})
+        assert isinstance(info, dict), f"hub_get_info returned {type(info).__name__}"
+        net = info.get("network")
+        assert isinstance(net, dict), f"hub_get_info(includeNetwork) missing the network block: {sorted(info.keys())}"
+        assert net.get("success") is True, f"network block did not succeed: {net}"
+        # Live network fields present and shaped as expected.
+        assert net.get("ipMode") in ("dhcp", "static", "unknown"), \
+            f"ipMode should be dhcp|static|unknown, got: {net.get('ipMode')}"
+        for key in ("activeDnsServers", "staticNameServers", "dhcpNameServers"):
+            assert isinstance(net.get(key), list), f"{key} should be a list, got: {net.get(key)!r}"
+        # The projection carries the config knobs (values may be null on a given hub, but the keys exist).
+        for key in ("staticGateway", "staticSubnetMask", "ethernetAutoneg", "wifiSsid",
+                    "hasEthernet", "hasWiFi", "currentWifiAddress"):
+            assert key in net, f"network block missing {key}: {sorted(net.keys())}"
+        # The block never carries a currentLanAddress field (the LAN address is the top-level localIP).
+        assert "currentLanAddress" not in net, \
+            f"network block must not carry the LAN address (it is the top-level localIP): {sorted(net.keys())}"
+        # SECURITY: no secret-shaped key, and no secret value, may ever appear.
+        for key in net:
+            low = key.lower()
+            assert "password" not in low and "psk" not in low, \
+                f"network block leaked a secret-shaped key: {key}"
+        serialized = json.dumps(net).lower()
+        assert "psk" not in serialized, f"network block contains a psk token: {net}"
+        # includeNetwork is opt-in: a plain hub_get_info omits the block.
+        plain = self.client.call_tool("hub_get_info")
+        assert "network" not in plain, f"hub_get_info returned a network block without includeNetwork: {sorted(plain.keys())}"
+
+    @test("system_tools")
     def test_hub_backup_reads(self) -> None:
         # NON-DESTRUCTIVE coverage only for the hub-DB backup surface (issue #259 item #1).
         # Per owner direction the destructive ops (restore/delete/upload/schedule) are NEVER
@@ -12793,6 +13013,33 @@ class TestRunner:
         assert isinstance(total, int) and total == len(src["backups"]), \
             f"shared source-backup count contract failed: {src}"
         assert total <= 20, f"shared source-backup retention contract failed: {src}"
+
+    @test("system_tools")
+    def test_get_backup_schedule_read(self) -> None:
+        # The automatic-backup schedule read is folded into hub_list_backups (issue #431 item #1):
+        # a hub-scope listing attaches a `schedule` block. Unlike the destructive schedule WRITE
+        # (folded into hub_create_backup), reading it live is safe and touches nothing. Assert the
+        # schedule fields come back AND that the cloud-backup password is NEVER present (the
+        # reporter's explicit exclusion).
+        listing = self.client.call_tool(
+            "hub_manage_backup", {"tool": "hub_list_backups", "args": {"scope": "hub"}}
+        )
+        assert isinstance(listing, dict), f"hub_list_backups returned {type(listing).__name__}"
+        sched = listing.get("schedule")
+        assert isinstance(sched, dict), \
+            f"hub_list_backups(scope=hub) missing the schedule block: {sorted(listing.keys())}"
+        for key in ("localBackupFrequency", "cloudBackupFrequency", "hour", "minute"):
+            assert key in sched, f"schedule block missing {key!r}: {sorted(sched.keys())}"
+        assert isinstance(sched.get("localBackupEnabled"), bool), \
+            f"localBackupEnabled must be a bool: {sched}"
+        assert isinstance(sched.get("cloudBackupEnabled"), bool), \
+            f"cloudBackupEnabled must be a bool: {sched}"
+        # The password must NEVER be returned, under any spelling.
+        leaked = [k for k in sched if "password" in k.lower()]
+        assert not leaked, f"schedule block leaked a password field: {leaked}"
+        # scope=source must NOT carry a schedule block.
+        src = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {}})
+        assert "schedule" not in src, f"scope=source should not carry a schedule block: {sorted(src.keys())}"
 
     @test("system_tools")
     def test_backup_gate_list_fallback(self) -> None:
@@ -15469,7 +15716,11 @@ class TestRunner:
     # keyless writes run, and these tests flip it on/off themselves. CRITICAL: every test that turns
     # the gate ON restores it OFF in finally -- a stuck gate would block every later write test. The
     # reactive hint has no toggle (always on) and points each failed write at THAT tool's own section.
+    # Keys are per guide section and rotate hourly: a write carries the key of its own tool's section
+    # (_guideSectionForTool; best_practice_reference for tools without one), so tests read it live.
     # -----------------------------------------------------------------------
+
+    _BPS_KEY_PREFIX = "I-HAVE-READ-THE-GUIDE-"
 
     def _set_bps(self, **toggles) -> None:
         """Set the issue-#299 gate toggle via the gate-exempt settings tool."""
@@ -15479,12 +15730,40 @@ class TestRunner:
         })
         assert res.get("success") is True, f"failed to set BPS toggles {toggles}: {res}"
 
-    def _read_bps_key(self) -> str:
-        """Read the acknowledgment key from the guide section -- the ONLY place it is published."""
-        guide = self.client.call_tool("hub_get_tool_guide", {"section": "best_practice_reference"})
+    def _read_bps_key(self, section: str = "best_practice_reference") -> str:
+        """Read a guide section's acknowledgment key -- the ONLY place it is published."""
+        guide = self.client.call_tool("hub_get_tool_guide", {"section": section})
         text = guide.get("content", "") if isinstance(guide, dict) else str(guide)
-        m = re.search(r"Acknowledgment key:\s*(\S+)", text)
-        return m.group(1) if m else ""
+        m = re.search(r"^Acknowledgment key:\s*(\S+)\s*$", text, re.MULTILINE)
+        assert m, f"guide section {section} published no acknowledgment key: {text[:200]!r}"
+        assert m.group(1).startswith(f"{self._BPS_KEY_PREFIX}{section}-"), \
+            f"section {section} published a key not bound to it: {m.group(1)}"
+        return m.group(1)
+
+    def _assert_bps_blocked(self, gateway: str, tool: str, args: dict, section: str) -> None:
+        """Gate ON: the write is refused, the refusal points at `section`, and carries no key."""
+        try:
+            result = self.client.call_tool(gateway, {"tool": tool, "args": args})
+        except McpError as e:
+            msg = str(e)
+            assert "Mandatory best-practice" in msg, f"{tool} failed, but not at the gate: {msg}"
+            assert f"section='{section}'" in msg, f"{tool} block does not point at {section}: {msg}"
+            assert self._BPS_KEY_PREFIX not in msg, f"{tool} block LEAKED a key: {msg}"
+            return
+        if isinstance(result, dict) and result.get("appId"):
+            self.created_native_app_ids.append(str(result["appId"]))
+        raise AssertionError(f"gate ON but {tool} with bestPracticeKey="
+                             f"{args.get('bestPracticeKey')!r} was not blocked; it returned: {str(result)[:500]}")
+
+    def _section_key_after_refusals(self, gateway: str, tool: str, section: str, args: dict) -> str:
+        """Gate ON: `tool` is refused keyless AND with the generic best_practice_reference key;
+        returns `section`'s own key, the only one that should unlock it."""
+        generic = self._read_bps_key()
+        key = self._read_bps_key(section)
+        assert key != generic, f"{section} and best_practice_reference share a key: {key}"
+        self._assert_bps_blocked(gateway, tool, args, section)
+        self._assert_bps_blocked(gateway, tool, {**args, "bestPracticeKey": generic}, section)
+        return key
 
     @test("best_practice_gating")
     def test_bps_gate_blocks_then_unlocks(self) -> None:
@@ -15494,8 +15773,8 @@ class TestRunner:
         self._set_bps(enableMandatoryBPS=True)
         try:
             # 1. WRITE WITHOUT KEY -> blocked with a guide pointer; the key is NOT leaked.
+            # hub_create_variable has no dedicated section, so best_practice_reference's key unlocks it.
             key = self._read_bps_key()
-            assert key, "could not extract the acknowledgment key from the guide section"
             try:
                 self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_create_variable",
@@ -15503,9 +15782,9 @@ class TestRunner:
                 raise AssertionError("gate ON but a write WITHOUT the key was not blocked")
             except McpError as e:
                 msg = str(e)
-                assert "best_practice_reference" in msg, f"block message missing the guide pointer: {msg}"
+                assert "section='best_practice_reference'" in msg, f"block message missing the guide pointer: {msg}"
                 assert "bestPracticeKey" in msg, f"block message missing the param name: {msg}"
-                assert key not in msg, f"block message LEAKED the acknowledgment key: {msg}"
+                assert self._BPS_KEY_PREFIX not in msg, f"block message LEAKED an acknowledgment key: {msg}"
             # 2. WRITE WITH KEY -> succeeds (a real mutation past the gate).
             self.created_variable_names.append(var_name)
             created = self.client.call_tool("hub_manage_variables", {
@@ -15616,7 +15895,7 @@ class TestRunner:
             assert guide.get("success") is True, f"guide read blocked under the gate: {guide}"
             assert "Acknowledgment key" in guide.get("content", ""), \
                 f"guide section missing the acknowledgment-key line: {guide}"
-            assert self._read_bps_key(), "could not extract the key from the reachable guide"
+            self._read_bps_key()
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -15637,9 +15916,9 @@ class TestRunner:
             self._set_bps(enableMandatoryBPS=False)
 
     @test("best_practice_gating")
-    def test_reactive_bps_device_command_links_to_device_authorization(self) -> None:
+    def test_reactive_bps_device_command_links_to_its_section(self) -> None:
         """Reactive hints are ALWAYS on (no toggle): a failed hub_call_device_command gains a
-        pointer to ITS own section (device_authorization), naming the failing tool -- proving the
+        pointer to ITS own section (hub_admin_write_devices), naming the failing tool -- proving the
         best-practice content is actually returned and is tool-specific, not a generic page."""
         self._set_bps(enableMandatoryBPS=False)  # ensure the gate isn't masking the tool's own error
         try:
@@ -15649,7 +15928,7 @@ class TestRunner:
             raise AssertionError("bogus device command should have errored")
         except McpError as e:
             msg = str(e)
-            assert "device_authorization" in msg, f"reactive hint missing the device_authorization section: {msg}"
+            assert "hub_admin_write_devices" in msg, f"reactive hint missing the hub_admin_write_devices section: {msg}"
             assert "get_tool_guide" in msg, f"reactive hint missing the guide pointer: {msg}"
             assert "hub_call_device_command" in msg, f"reactive hint should name the failing sub-tool: {msg}"
             assert "best_practice_reference" not in msg, f"hint should be tool-specific, not the generic page: {msg}"
@@ -15749,22 +16028,15 @@ class TestRunner:
 
     @test("best_practice_gating")
     def test_bps_gate_wrong_and_numeric_key_blocked(self) -> None:
-        """Gate ON: a wrong STRING key and a NUMERIC key both hit the same block; the key never leaks."""
+        """Gate ON: a wrong STRING key, a NUMERIC key, and a genuine key from ANOTHER section all hit
+        the same block on a best_practice_reference write; no key ever leaks."""
         self._set_bps(enableMandatoryBPS=True)
         try:
-            key = self._read_bps_key()
-            assert key, "could not read the acknowledgment key from the guide"
-            for bad in ["not-the-key", 12345]:
-                try:
-                    self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_create_variable",
-                        "args": {"name": "BAT_E2E_BPS_WrongKey", "type": "String", "value": "v",
-                                 "confirm": True, "bestPracticeKey": bad}})
-                    raise AssertionError(f"gate ON but wrong key {bad!r} was not blocked")
-                except McpError as e:
-                    msg = str(e)
-                    assert "Mandatory best-practice" in msg, f"wrong key {bad!r} did not hit the gate: {msg}"
-                    assert key not in msg, f"block leaked the key for {bad!r}: {msg}"
+            other_section_key = self._read_bps_key("set_rule_reference")
+            for bad in ["not-the-key", 12345, other_section_key]:
+                self._assert_bps_blocked("hub_manage_variables", "hub_create_variable", {
+                    "name": "BAT_E2E_BPS_WrongKey", "type": "String", "value": "v",
+                    "confirm": True, "bestPracticeKey": bad}, "best_practice_reference")
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -15782,8 +16054,9 @@ class TestRunner:
             except McpError as e:
                 msg = str(e)
                 assert "Mandatory best-practice" in msg, f"expected the gate block: {msg}"
+                assert "section='hub_admin_write_devices'" in msg, f"gate block should name the tool's section: {msg}"
                 assert "reference and best practices" not in msg, f"gate message was double-coached: {msg}"
-                assert 'section="device_authorization"' not in msg, f"gate leaked a per-tool reactive pointer: {msg}"
+                assert 'section="hub_admin_write_devices"' not in msg, f"gate leaked a per-tool reactive pointer: {msg}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -15812,6 +16085,8 @@ class TestRunner:
         res = self.client.call_tool("hub_get_tool_guide", {"section": "best_practice_reference"})
         content = res.get("content", "") if isinstance(res, dict) else str(res)
         assert "Acknowledgment key" in content, f"missing the key line: {content[:200]!r}"
+        assert "- hub_set_rule -> set_rule_reference" in content, \
+            f"missing the tool -> section key map: {content[:600]!r}"
         assert "native Rule Machine" in content, f"missing the native-RM best practice: {content[:400]!r}"
         assert "hub_list_devices" in content, f"missing the device-resolution best practice: {content[:400]!r}"
         assert "hub_create_backup" in content, f"missing the destructive-backup best practice: {content[:400]!r}"
@@ -15829,6 +16104,72 @@ class TestRunner:
             content = res.get("content", "")
             assert "##" in content and len(content) > 80, f"guide section {sec} returned trivial content: {content[:120]!r}"
 
+    def _bps_fixture_cleanup(self, app_id, gateway: str = "hub_manage_rule_machine") -> None:
+        """finally-block cleanup for the gate tests: gate OFF first, then the fixture. A cleanup
+        failure never replaces an active test error; with no test error it is raised."""
+        unwinding = sys.exc_info()[0] is not None
+        cleanup_errors: list[Exception] = []
+        gate_off_error: Exception | None = None
+        for _ in range(2):
+            try:
+                self._set_bps(enableMandatoryBPS=False)
+                gate_off_error = None
+                break
+            except Exception as exc:
+                gate_off_error = exc
+        if gate_off_error is not None:
+            cleanup_errors.append(RuntimeError(
+                "could not turn the best-practice gate OFF (retried once): the gate was LEFT ON, "
+                f"so later write tests will fail at it. Last error: {gate_off_error}"))
+        if app_id:
+            try:
+                self._delete_native(app_id, gateway=gateway)
+            except Exception as exc:
+                cleanup_errors.append(exc)
+        if cleanup_errors:
+            if unwinding:
+                print("  [WARN] cleanup failed while preserving the primary test error: " +
+                      " | ".join(str(exc) for exc in cleanup_errors))
+            else:
+                raise cleanup_errors[0]
+
+    @test("best_practice_gating")
+    def test_bps_gate_set_rule_unlocked_only_by_set_rule_reference_key(self) -> None:
+        """hub_set_rule is refused keyless and with the generic key, the refusal pointing at
+        set_rule_reference; that section's key then creates a real rule."""
+        app_id = None
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            key = self._section_key_after_refusals(
+                "hub_manage_rule_machine", "hub_set_rule", "set_rule_reference",
+                {"name": f"{PREFIX}BPS_SetRule_Refused", "confirm": True})
+            app_id = self._create_native_rule("BPS_SetRule", {"bestPracticeKey": key})
+        finally:
+            self._bps_fixture_cleanup(app_id)
+
+    @test("best_practice_gating")
+    def test_bps_gate_set_native_app_unlocked_only_by_builtin_app_tools_crud_key(self) -> None:
+        """hub_set_native_app is refused keyless and with the generic key, the refusal pointing at
+        builtin_app_tools_crud; that section's key then creates a real app."""
+        label = f"{PREFIX}BPS_NativeApp_{_run_artifact_suffix()}_{time.time_ns()}"
+        args = {"appType": "rule_machine", "name": label, "confirm": True}
+        app_id = None
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            key = self._section_key_after_refusals(
+                "hub_manage_native_rules_and_apps", "hub_set_native_app", "builtin_app_tools_crud", args)
+            cw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_set_native_app", "args": {**args, "bestPracticeKey": key}}),
+                lambda: self._find_app_id_by_label(label),
+                "keyed hub_set_native_app create",
+            )
+            app_id = cw["evidence"] if cw["relayDropped"] else cw["response"].get("appId")
+            assert app_id, f"keyed hub_set_native_app create did not commit: {cw}"
+            self.created_native_app_ids.append(str(app_id))
+        finally:
+            self._bps_fixture_cleanup(app_id, gateway="hub_manage_native_rules_and_apps")
+
     @test("best_practice_gating")
     def test_guide_full_call_pages_instead_of_hitting_the_size_guard(self) -> None:
         """Issue #392: the documented no-section call used to return the response_too_large
@@ -15838,6 +16179,9 @@ class TestRunner:
         assert not first.get("response_too_large"), f"full-guide call still trips the size guard: {first!r}"
         assert first.get("success") is True, f"full-guide call failed: {first!r}"
         assert len(first.get("content", "")) > 1000, "first page carried no real content"
+        assert "Acknowledgment keys are published only when a single section is read." in first["content"]
+        assert not re.search(r"I-HAVE-READ-THE-GUIDE-\w+-[0-9a-f]{8}", first["content"]), \
+            "the full-guide read published a key"
         # The point of the no-section call: discover the key space. Both levels, on page one.
         assert "set_rule_reference" in (first.get("availableSections") or [])
         sub_map = first.get("availableSubSections") or {}
@@ -16281,6 +16625,8 @@ class TestRunner:
         instructions = result.get("instructions")
         assert isinstance(instructions, str) and instructions.strip(), \
             f"Expected non-empty instructions string, got: {instructions!r}"
+        assert instructions.startswith("MUST call hub_get_tool_guide first."), \
+            f"gateway-mode instructions must lead with the guide-first sentence: {instructions[:120]!r}"
         assert "gateway" in instructions.lower(), f"gateway-mode instructions missing the gateway convention: {instructions!r}"
         assert "pagination" in instructions.lower(), f"instructions missing the pagination hint: {instructions!r}"
         # The direct-tool clarification (the #319 addition) must be present in gateway mode.
@@ -16345,6 +16691,20 @@ class TestRunner:
         tool = self.client.call_tool("hub_get_tool_guide", {"section": "performance"})
         assert content.get("text") == tool.get("content"), \
             "resources/read guide text differs from hub_get_tool_guide's content for the same section"
+
+    @test("protocol")
+    def test_guide_publishes_section_and_labelled_keys(self) -> None:
+        """A gated guide section read as a resource leads with its own acknowledgment key, and a
+        parent section read through hub_get_tool_guide publishes its gated sub-sections' keys."""
+        read = self.client._send("resources/read", {"uri": "hubitat://guide/set_rule_reference"})
+        text = read.get("contents", [{}])[0].get("text", "")
+        first_line = text.split("\n", 1)[0]
+        assert first_line == "Acknowledgment key: " + self._read_bps_key("set_rule_reference"), \
+            f"set_rule_reference resource does not lead with its key: {first_line!r}"
+        parent = self.client.call_tool("hub_get_tool_guide", {"section": "builtin_app_tools"})
+        content = parent.get("content", "") if isinstance(parent, dict) else str(parent)
+        assert "Acknowledgment key (builtin_app_tools_crud): " in content, \
+            f"builtin_app_tools does not publish its builtin_app_tools_crud key: {content[:300]!r}"
 
     @test("protocol")
     def test_resources_read_live_context(self) -> None:
@@ -17719,8 +18079,8 @@ def main() -> None:
     except McpError as exc:
         _m = str(exc)
         assert "Mandatory best-practice" in _m, f"expected the gate block, got: {exc}"
-        assert "best_practice_reference" in _m, f"gate block should point at the guide section: {exc}"
-        assert "bps-ack-299" not in _m, f"gate block must not leak the key: {exc}"
+        assert "section='hub_admin_write_devices'" in _m, f"gate block should point at the tool's guide section: {exc}"
+        assert "I-HAVE-READ-THE-GUIDE-" not in _m, f"gate block must not leak a key: {exc}"
     print("Best-practice gate: default-ON behaviour verified on the live hub (keyless write blocked)")
     client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",

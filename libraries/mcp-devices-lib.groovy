@@ -1604,6 +1604,62 @@ private _deviceConfigurationPublicValue(value, key = '') {
     return value
 }
 
+// Z-Wave Alliance manufacturer IDs. Canonical form is hex (e.g. 0x027A = Zooz), but Hubitat
+// surfaces device.data.manufacturer as a bare DECIMAL string ("634" = 0x027A). Curated set of
+// common home-automation brands, keyed by the integer id. Runtime data in a helper -- it does
+// not touch the flat tool-catalog budget. An unlisted id resolves to null (no name invented).
+// Returned via a getter because the Hubitat sandbox rejects `private static final` at script scope.
+private Map getZwaveManufacturers() {
+    return [
+        0x0000: 'Silicon Labs', 0x000C: 'HomeSeer', 0x001D: 'Leviton', 0x0039: 'Honeywell',
+        0x003B: 'Schlage', 0x0060: 'Everspring', 0x0063: 'GE/Jasco', 0x0086: 'Aeotec',
+        0x0090: 'Kwikset', 0x0109: 'Vision Security', 0x010F: 'Fibaro', 0x0129: 'Yale',
+        0x0131: 'Zipato', 0x013C: 'Philio', 0x0138: 'First Alert', 0x014A: 'Ecolink',
+        0x014F: 'GoControl/Linear', 0x0154: 'POPP', 0x0159: 'Qubino', 0x0184: 'Dragon Tech',
+        0x0234: 'Logic Group', 0x0258: 'NEO Coolcam', 0x027A: 'Zooz', 0x031E: 'Inovelli',
+        0x0346: 'Ring', 0x0371: 'Aeotec', 0x0460: 'Shelly'
+    ]
+}
+
+// Resolve a Z-Wave manufacturer id to a brand name, or null when it is unknown or not a bare
+// numeric id (an already-resolved brand string is left for the caller to keep untouched).
+// Handles the Hubitat decimal wire form ("634") and "0x"-prefixed hex ("0x027A"). A bare,
+// unprefixed string is read as hex ONLY when it contains an a-f digit ("027A"); an all-digit
+// string ("0063") is read as decimal, not hex.
+private String _zwaveManufacturerName(id) {
+    if (id == null) return null
+    String s = id.toString().trim()
+    if (!s) return null
+    Integer code = null
+    try {
+        if (s.length() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) code = Integer.parseInt(s.substring(2), 16)
+        else if (s ==~ /(?i)[0-9a-f]*[a-f][0-9a-f]*/) code = Integer.parseInt(s, 16)
+        else if (s ==~ /\d+/) code = Integer.parseInt(s, 10)
+        else return null
+    } catch (Exception ignored) {
+        return null
+    }
+    return getZwaveManufacturers()[code]
+}
+
+// Add a resolved manufacturerName beside a bare numeric manufacturer id in a device data map,
+// preserving the raw value for chaining. Non-maps, missing/name-form manufacturer values, and
+// unknown ids pass through unchanged; an existing manufacturerName is never overwritten. The id
+// table is Z-Wave Alliance, so resolve only when the data carries a Z-Wave marker -- otherwise a
+// non-Z-Wave device whose data happens to hold a numeric 'manufacturer' (e.g. "0") is mislabelled.
+private _withResolvedManufacturer(value) {
+    if (!(value instanceof Map) || !value.containsKey('manufacturer') || value.containsKey('manufacturerName')) return value
+    if (!value.containsKey('zwNodeInfo') && !value.containsKey('inClusters')) return value
+    String name = _zwaveManufacturerName(value.get('manufacturer'))
+    if (name == null) return value
+    def copy = [:]
+    value.each { k, v ->
+        copy.put(k, v)
+        if (k == 'manufacturer') copy.put('manufacturerName', name)
+    }
+    return copy
+}
+
 private Map _publicDevicePreference(Map entry) {
     def copy = [:]
     entry.each { key, value ->
@@ -2035,7 +2091,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                 value = _deviceConfigurationPublicValue(fj?.commands)
                 break
             case 'data':
-                value = _deviceConfigurationPublicValue(d.get('data'))
+                value = _withResolvedManufacturer(_deviceConfigurationPublicValue(d.get('data')))
                 break
             case 'state':
                 value = _deviceConfigurationPublicValue(fj?.deviceState)
@@ -5504,13 +5560,13 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance_devices')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
-                    scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled (full detail/currentStates). 'all' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]
+                    scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled[[FLAT_TRIM]] (full detail/currentStates)[[/FLAT_TRIM]]. 'all' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]
                 ]
             ]
         ],
         [
             name: "hub_get_device",
-            description: """Inspect one device. Default summary gives capabilities, current attributes and commands. Use mode='configuration' before updates to discover editable fields, saved preferences, types/defaults/options and driver information; mode='details' exposes configuration and other device information by section. Read status distinguishes unavailable information from unset values.""",
+            description: """Inspect one device. Default summary gives capabilities, current attributes and commands. Use mode='configuration' before updates[[FLAT_TRIM]] to discover editable fields, saved preferences, types/defaults/options and driver information; mode='details' exposes configuration and other device information by section[[/FLAT_TRIM]].[[FLAT_TRIM]] Read status distinguishes unavailable information from unset values.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -5518,9 +5574,9 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     mode: [type: "string", enum: ["summary", "configuration", "details"], default: "summary",
                            description: "summary: concise capabilities/attributes/commands; configuration: valid editable fields and preference definitions/current values; details: all available information in selectable sections."],
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
-                               description: "details mode only: non-empty section selection. Omit for all sections. Large histories remain reachable through read-tool references."],
-                    fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names. For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names."],
-                    cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON. Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads."]
+                               description: "details mode only: non-empty section selection. Omit for all sections.[[FLAT_TRIM]] Large histories remain reachable through read-tool references.[[/FLAT_TRIM]]"],
+                    fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names.[[FLAT_TRIM]] For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names.[[/FLAT_TRIM]]"],
+                    cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON.[[FLAT_TRIM]] Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads.[[/FLAT_TRIM]]"]
                 ],
                 required: ["deviceId"]
             ]
@@ -5545,7 +5601,7 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
                     comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
                     stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger. Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
                 ],
                 required: ["attribute"]
             ]
@@ -5554,7 +5610,7 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
             name: "hub_call_device_command",
             description: """Send a command (e.g. on, off, setLevel) to one device, or to SEVERAL at once via `commands`. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead.
 
-For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N. Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_get_device_attribute's deviceIds form.[[FLAT_TRIM]] The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
+For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N.[[FLAT_TRIM]] Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_get_device_attribute's deviceIds form. The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -5589,7 +5645,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator, as on hub_get_device_attribute. Default eq.", default: "eq"],
                         stableForMs: [type: "integer", description: "Debounce ms; match must hold this long before converging. Default 0, < timeoutMs.", default: 0, minimum: 0],
                         timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. BLOCKS a hub thread for the full timeout, so keep it tight.", default: 5000, minimum: 100, maximum: 30000],
-                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger. Target cadence: read latency is subtracted from the sleep down to a floor of half the interval; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.", default: 250, minimum: 50, maximum: 5000]
+                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: read latency is subtracted from the sleep down to a floor of half the interval; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.[[/FLAT_TRIM]]", default: 250, minimum: 50, maximum: 5000]
                     ], required: ["attribute"]]
                 ]
 
@@ -5622,7 +5678,7 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
             name: "hub_update_device",
             description: """Update device configuration and driver preferences. Read hub_get_device(mode='configuration') first for current values, valid options, and availability.
 
-Only modify devices user explicitly requested. Pre-flight: read configuration, choose the exact patch, obtain the update_device guide key. Writes require Write master. Identity, driver, dashboard, mesh and assistant changes additionally require confirm=true and a backup less than 24 hours old. Saved preferences do not invoke device commands. Per-property changes/errors report partial success; inspect readback before retrying.""",
+Only modify devices user explicitly requested. Pre-flight: read configuration, choose the exact patch, obtain the update_device guide key.[[FLAT_TRIM]] Writes require Write master.[[/FLAT_TRIM]] Identity, driver, dashboard, mesh and assistant changes additionally require confirm=true and a backup less than 24 hours old. Saved preferences do not invoke device commands. Per-property changes/errors report partial success; inspect readback before retrying.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -5634,24 +5690,24 @@ Only modify devices user explicitly requested. Pre-flight: read configuration, c
                     enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
                     dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
                         additionalProperties: [type: "string"]],
-                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it. Null, blank strings, empty arrays and clear combined with value are rejected. Booleans, numbers and nonempty multiple-enum arrays retain native types. If configuration reports multiple:null for an unset enum, check its driver declaration or pre-clear metadata and supply {value:...,multiple:true/false}; cardinality is never guessed."],
+                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it.[[FLAT_TRIM]] Null, blank strings, empty arrays and clear combined with value are rejected.[[/FLAT_TRIM]] Booleans, numbers and nonempty multiple-enum arrays retain native types.[[FLAT_TRIM]] If configuration reports multiple:null for an unset enum, check its driver declaration or pre-clear metadata and supply {value:...,multiple:true/false}; cardinality is never guessed.[[/FLAT_TRIM]]"],
                     showOnHome: [type: "boolean", description: "Show this device on the hub Home page.[[FLAT_TRIM]] Also counts it in the quick status-bar summaries (climate/lights/locks/etc.)[[/FLAT_TRIM]]"],
                     defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column[[FLAT_TRIM]] (Devices/Rooms pages)[[/FLAT_TRIM]], e.g. \"switch\"; \"\" selects None."],
                     tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]],
-                    deviceTypeId: [type: "integer", minimum: 1, description: "Driver selection ID from configuration driver options. Changes behavior; requires confirm and recent backup."],
-                    zigbeeId: [type: "string", description: "Existing Zigbee device identity; unavailable on components or linked devices. Requires confirm and recent backup."],
+                    deviceTypeId: [type: "integer", minimum: 1, description: "Driver selection ID from configuration driver options. Changes behavior[[FLAT_TRIM]]; requires confirm and recent backup[[/FLAT_TRIM]]."],
+                    zigbeeId: [type: "string", description: "Existing Zigbee device identity; unavailable on components or linked devices.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
                     notes: [type: "string", description: "Device note; empty string clears it."],
                     maxEvents: [type: "integer", minimum: 1, maximum: 2000, description: "Stored events per event type. Reducing retention can remove older history."],
                     maxStates: [type: "integer", minimum: 1, maximum: 2000, description: "Stored states per attribute. Reducing retention can remove older history."],
                     spammyThreshold: [type: "integer", minimum: 100, maximum: 2000, description: "Events per hour that trigger the too-many-events alert."],
                     defaultIcon: [type: "string", description: "Native custom icon identifier; empty string removes the override."],
-                    dashboardIds: [type: "array", items: [type: "integer", minimum: 1], description: "Replace native dashboard assignments using configuration option IDs; [] clears. Requires confirm and recent backup."],
+                    dashboardIds: [type: "array", items: [type: "integer", minimum: 1], description: "Replace native dashboard assignments using configuration option IDs; [] clears.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
                     meshEnabled: [type: "boolean", description: "Share through Hub Mesh.[[FLAT_TRIM]] When native selection is available; requires confirm and recent backup.[[/FLAT_TRIM]]"],
                     retryEnabled: [type: "boolean", description: "Enable native command retry when available for this device."],
                     meshFullSync: [type: "boolean", description: "Regularly sync a linked device.[[FLAT_TRIM]] When Hub Mesh refresh is enabled; requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    homeKitEnabled: [type: "boolean", description: "Native Apple HomeKit assignment when supported/enabled. Requires confirm and recent backup."],
-                    amazonAlexaEnabled: [type: "boolean", description: "Native Amazon Alexa assignment when installed and supported. Requires confirm and recent backup."],
-                    googleHomeEnabled: [type: "boolean", description: "Native Google Home assignment when installed and supported. Requires confirm and recent backup."],
+                    homeKitEnabled: [type: "boolean", description: "Native Apple HomeKit assignment when supported/enabled.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
+                    amazonAlexaEnabled: [type: "boolean", description: "Native Amazon Alexa assignment when installed and supported.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
+                    googleHomeEnabled: [type: "boolean", description: "Native Google Home assignment when installed and supported.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Explicit approval for driver, identity, dashboard, mesh or assistant changes; also requires a hub backup within 24 hours."]
                 ],
                 required: ["deviceId"]

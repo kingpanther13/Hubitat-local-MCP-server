@@ -290,6 +290,13 @@ def toolGetHubInfo(args = null) {
         }
     }
 
+    // Opt-in hub network configuration (the read counterpart of hub_set_system_settings(network:...)).
+    // Off by default: it adds a /hub2/networkConfiguration round-trip. The block omits the current LAN
+    // address -- hub_get_info already reports it as localIP (PII-gated), so this block does not duplicate it.
+    if (args?.includeNetwork == true) {
+        info.network = _readHubNetworkSettings()
+    }
+
     // A client that saw only a generic error for a write can learn here whether it ran.
     info.recentWrites = _mrtrRecentOperations()
     return info
@@ -1067,6 +1074,104 @@ def toolGetHsmStatus() {
     ]
 }
 
+// READ the hub's current network configuration -- the `network` block hub_get_info(includeNetwork=true)
+// folds in, and the read counterpart of hub_set_system_settings(network:...). Reads GET
+// /hub2/networkConfiguration (the JSON the Settings -> Network page loads via
+// reloadNetworkConfiguration()/processNetworkConfiguration(); field names RE'd from
+// resources/hub2-source/vue-hub2.min.js, see that folder's README endpoint inventory). SECURITY: the
+// endpoint returns the joined WiFi SSID (wifiNetwork) but NEVER the password/psk, and this helper
+// projects an explicit allowlist of fields -- a psk-like key would be dropped even if a future firmware
+// added one. The current LAN address is deliberately omitted: hub_get_info already reports it as localIP.
+// A degraded read returns the structured {success:false,error,note} block, never a throw.
+private Map _readHubNetworkSettings() {
+    // (a) HTTP round-trip: a throw here is an unreachable endpoint or a firmware lacking the
+    // /hub2/networkConfiguration surface -- NOT a body that came back and failed to parse.
+    String raw
+    try {
+        raw = hubInternalGet("/hub2/networkConfiguration")
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration request failed: ${e.message}")
+        return [success: false,
+                error: "Could not read network configuration (/hub2/networkConfiguration): ${e.message}",
+                note: "The endpoint was unreachable or the firmware predates it; verify the hub responds. " +
+                      "See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+    if (!raw?.trim()) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration returned an empty body")
+        return [success: false,
+                error: "The /hub2/networkConfiguration response was empty.",
+                note: "The hub may be busy or mid-reboot; retry shortly. " +
+                      "See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(raw)
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration body did not parse as JSON: ${e.message}")
+        return [success: false,
+                error: "The /hub2/networkConfiguration response did not parse as JSON: ${e.message}",
+                note: "The hub returned a non-JSON body (transient error or a changed response shape); retry. " +
+                      "See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+    if (!(parsed instanceof Map)) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration parsed to a non-object shape")
+        return [success: false,
+                error: "Unexpected /hub2/networkConfiguration response; it parsed as JSON but not as an object.",
+                note: "The endpoint returned an unrecognized shape. See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+    // An empty or error object ({} or {success:false,...}) would otherwise project to success:true with
+    // every field null and dnsList:[] -- indistinguishable from a real "no DNS". Require at least one
+    // recognized network key before trusting the shape.
+    def knownKeys = ["usingStaticIP", "lanAddr", "wlanAddr", "dnsServers", "staticIP", "staticGateway",
+                     "staticSubnetMask", "staticNameServers", "dhcpNameServers", "useDNSFallover",
+                     "lanAutoneg", "hasEthernet", "hasWiFi", "wifiNetwork", "wifiDriversInstalled",
+                     "restartBonjourOnSchedule", "hubVersion"]
+    if (!knownKeys.any { parsed.containsKey(it) }) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration had none of the expected network keys")
+        return [success: false,
+                error: "The /hub2/networkConfiguration response carried none of the expected network fields.",
+                note: "The hub returned an empty or unexpected object (transient error or a changed response shape); retry. See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+
+    // Normalize a DNS list the hub may send as an array OR a comma/space-joined string into a clean list.
+    def dnsList = { v ->
+        if (v instanceof List) return v.collect { it?.toString() }.findAll { it }
+        if (v instanceof String && v.trim()) return v.split(/[,\s]+/).findAll { it }.toList()
+        return []
+    }
+
+    // usingStaticIP must be a real Boolean to decide the mode. A missing/null/non-Boolean value means
+    // the hub did not report it -- report ipMode "unknown" rather than silently claiming "dhcp".
+    def rawStatic = parsed.usingStaticIP
+    String ipMode = (rawStatic instanceof Boolean) ? (rawStatic ? "static" : "dhcp") : "unknown"
+    // EXPLICIT allowlist projection -- never a passthrough. The endpoint returns the SSID (wifiNetwork)
+    // but no password; projecting a fixed field set guarantees no secret leaks even if firmware changes.
+    return [
+        success: true,
+        ipMode: ipMode,
+        currentWifiAddress: parsed.wlanAddr,
+        activeDnsServers: dnsList(parsed.dnsServers),
+        // Static-IP config (the hub reports the saved values whether or not static is the active mode).
+        staticIp: parsed.staticIP,
+        staticGateway: parsed.staticGateway,
+        staticSubnetMask: parsed.staticSubnetMask,
+        staticNameServers: dnsList(parsed.staticNameServers),
+        // DHCP config.
+        dhcpNameServers: dnsList(parsed.dhcpNameServers),
+        useDNSFallover: parsed.useDNSFallover,
+        // Ethernet / WiFi (SSID only).
+        ethernetAutoneg: parsed.lanAutoneg,
+        hasEthernet: parsed.hasEthernet,
+        hasWiFi: parsed.hasWiFi,
+        wifiSsid: parsed.wifiNetwork,
+        wifiDriversInstalled: parsed.wifiDriversInstalled,
+        restartBonjourOnSchedule: parsed.restartBonjourOnSchedule,
+        hubVersion: parsed.hubVersion,
+        note: "The Wi-Fi password is never returned (wifiSsid only). The current LAN address is reported as localIP on hub_get_info. Change these with hub_set_system_settings(network:...). " +
+              "See hub_get_tool_guide(section='hub_admin_write_system')."
+    ]
+}
+
 def toolSetHsm(armCommand) {
     def validCommands = ["armAway", "armHome", "armNight", "disarm"]
     if (!validCommands.contains(armCommand)) {
@@ -1335,7 +1440,8 @@ def _getAllToolDefinitions_partSystem() {
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
-                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate. The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.", default: false]
+                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.[[FLAT_TRIM]] The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.[[/FLAT_TRIM]]", default: false],
+                    includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
                 ]
             ]
         ],
@@ -1372,7 +1478,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. See hub_get_tool_guide(section='hub_admin_write_system').",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands.[[FLAT_TRIM]] See hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
@@ -1440,7 +1546,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_reboot",
-            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware. Requires Write master.[[FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -1453,7 +1559,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
         ],
         [
             name: "hub_shutdown",
-            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot. Requires Write master.[[FLAT_TRIM]]
+            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -1466,7 +1572,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automaticall
         ],
         [
             name: "hub_update_firmware",
-            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop). Requires Write master.[[FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
 
 PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -1485,7 +1591,7 @@ def _readOnlyToolNames_partSystem() {
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
-        // Hub state reads
+        // Hub state reads (hub_get_info folds in the network-config read via includeNetwork)
         "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_hub_mesh"
     ]
 }

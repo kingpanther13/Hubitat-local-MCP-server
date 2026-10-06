@@ -1718,15 +1718,14 @@ def test_check_tool_guide_pointers_library_delegated_section_counts(monkeypatch,
 # ---------------------------------------------------------------------------
 
 _GENERATED_SERVER = """\
-def hubBpsGuideKey() { 'selftest-secret-key' }
-
 def getToolGuideSections() {
     return [
-        best_practice_reference: '''Acknowledgment key: native Rule Machine.''',
+        best_practice_reference: '''If you are calling one of these tools, you must read its section for that section's key:
+native Rule Machine.''',
         set_rule_reference: '''setVariable modeName discrete events Variable comparison lowercase
 Extended per-capability spec shapes selectTriggers nested subExpression expressionNotLive subscriptionsNotLive''',
         device_authorization: '''## Device Authorization (CRITICAL)
-Key is selftest-secret-key.''',
+Body.''',
         virtual_devices: _virtualDevicesGuideSection(),
     ]
 }
@@ -1754,7 +1753,6 @@ def _rendered_guide():
 def test_check_tool_guide_generated_matching_file_no_findings(monkeypatch, tmp_path):
     _write_generated_tree(monkeypatch, tmp_path)
     rendered = _rendered_guide()
-    assert "selftest-secret-key" not in rendered
     # CRLF on disk (a Windows checkout) is not drift.
     (tmp_path / "TOOL_GUIDE.md").write_bytes(rendered.replace("\n", "\r\n").encode("utf-8"))
     assert sl.check_tool_guide_generated() == []
@@ -1786,7 +1784,8 @@ def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypa
 
 
 @pytest.mark.parametrize("anchor", [
-    "Acknowledgment key", "native Rule Machine",
+    "If you are calling one of these tools, you must read its section for that section's key:",
+    "native Rule Machine",
     "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
     "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
     "expressionNotLive", "subscriptionsNotLive",

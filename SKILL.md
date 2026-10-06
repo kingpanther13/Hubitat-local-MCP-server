@@ -116,7 +116,7 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 | `hub_read_files` | 2 | File Manager list + read (read-only) |
 | `hub_read_rooms` | 2 | Room list + get (read-only) |
 | `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, rule local variables, Visual Rules Builder rule list/read (read-only) |
-| `hub_read_variables` | 3 | Hub connector and rule engine variable list/get + change history (read-only) |
+| `hub_read_variables` | 3 | Hub connector and rule engine variable list/get (+ opt-in dependents) + change history (read-only) |
 | `hub_read_dashboards` | 2 | Dashboard list + get config by id, covering both Easy and legacy Hubitat® Dashboards (read-only) |
 
 Manage gateways (`hub_manage_*`, contain at least one write):
@@ -126,7 +126,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history + Hub Mesh variable share/link/unlink) |
 | `hub_manage_rooms` | 5 | Room CRUD |
 | `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, and destructive ops by target via `hub_call_destructive_ops` (radio reset/wipe + firmware, network disconnect, cloud-controller disable/enable) (write) |
-| `hub_manage_backup` | 4 | Backup management — list code + whole-hub DB backups, get code-backup source, restore (apps/drivers/rule snapshots), delete whole-hub DB backups (write) |
+| `hub_manage_backup` | 4 | Backup management — list code + whole-hub DB backups (+ auto-backup schedule), get code-backup source, restore (apps/drivers/rule snapshots), delete whole-hub DB backups (write) |
 | `hub_manage_code` | 10 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library) (write) |
 | `hub_manage_devices` | 11 | Device command/swap/replace/create/update (writes, incl. Hub Mesh device link/unlink) + list/get devices, attributes, events, Hub Mesh (reads) |
 | `hub_manage_logs` | 5 | Logs, performance stats, hub jobs, debug tools (read + clear/set-level write) |

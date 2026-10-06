@@ -65,7 +65,11 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         then: 'the traversal terminates and loses nothing -- concatenated pages are the whole guide, byte for byte'
         cursor == null
         pages.size() > 1
-        pages.join('') == script.getToolGuideSections().collect { k, v -> v }.join('\n\n---\n\n')
+        pages.join('') == 'Acknowledgment keys are published only when a single section is read.\n\n' +
+            script.getToolGuideSections().collect { k, v -> v }.join('\n\n---\n\n')
+
+        and: 'no section key rides the full guide'
+        !pages.join('').contains('I-HAVE-READ-THE-GUIDE')
     }
 
     def "the last page omits nextCursor entirely -- a present-but-null key loops a contract-following client forever"() {
@@ -103,8 +107,8 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         when: 'the largest section, comfortably inside one page'
         def result = dispatch([section: 'set_rule_reference'])
 
-        then: 'whole section, and none of the pagination fields'
-        (result.payload.content as String) == (script.getToolGuideSections()['set_rule_reference'] as String)
+        then: 'whole section (behind its acknowledgment key), and none of the pagination fields'
+        (result.payload.content as String) == script._guideSectionServed('set_rule_reference', script.getToolGuideSections()['set_rule_reference'] as String)
         !(result.payload as Map).containsKey('nextCursor')
         !(result.payload as Map).containsKey('offset')
         !(result.payload as Map).containsKey('totalChars')
@@ -160,7 +164,7 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
 
         then:
         inline.success == true
-        (inline.content as String) == (script.getToolGuideSections()['set_rule_reference'] as String)
+        (inline.content as String) == script._guideSectionServed('set_rule_reference', script.getToolGuideSections()['set_rule_reference'] as String)
         !(inline as Map).containsKey('nextCursor')
         !(inline as Map).containsKey('offset')
         !(inline as Map).containsKey('totalChars')

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+BACKUP_KEY = "I-HAVE-READ-THE-GUIDE-backup-0badf00d"
 
 # Every curl invocation is replaced; these tests cannot contact a hub.
 TRANSPORT = r'''
@@ -50,8 +51,17 @@ elif name == "hub_set_mcp_developer_mode":
     if scenario == "lost_response":
         sys.exit(22)
     emit({"success": scenario != "refused"})
+elif name == "hub_get_tool_guide":
+    assert params["arguments"] == {"section": "backup"}
+    if scenario == "guide_fails":
+        sys.stderr.write("curl: (22) The requested URL returned error: 502\n")
+        sys.exit(22)
+    key_line = "" if scenario == "guide_no_key" else "Acknowledgment key: I-HAVE-READ-THE-GUIDE-backup-0badf00d\n"
+    emit({"success": True, "section": "backup",
+          "content": key_line + "Pass this value.\n\n## Backup System"})
 elif name == "hub_create_backup":
-    emit({"success": True})
+    # The tests assert the key from the call log; this only plays the mock refusal.
+    emit({"success": not (scenario == "mock_backup_refused" and params["arguments"].get("mock"))})
 elif name == "hub_manage_mcp":
     assert params["arguments"]["tool"] == "hub_update_mcp_settings"
     assert params["arguments"]["args"]["settings"] == {"enableCustomRuleEngine": True, "useGateways": True}
@@ -71,6 +81,48 @@ else:
     ("string_boolean", False, False),
 ])
 def test_setup_bootstraps_only_verified_off_state(tmp_path, scenario, succeeds, bootstrap):
+    result, calls = run_setup(tmp_path, scenario)
+    assert (result.returncode == 0) == succeeds, result.stdout + result.stderr
+    names = [call["name"] for call in calls]
+    assert names.count("hub_set_mcp_developer_mode") == int(bootstrap)
+    if succeeds:
+        assert names[-3:] == ["hub_get_tool_guide", "hub_create_backup", "hub_manage_mcp"]
+        assert backup_args(calls)[0]["bestPracticeKey"] == BACKUP_KEY
+        if bootstrap:
+            assert names[:3] == ["hub_get_info", "hub_set_mcp_developer_mode", "hub_get_info"]
+    else:
+        assert "hub_create_backup" not in names
+        assert "hub_manage_mcp" not in names
+
+
+@pytest.mark.parametrize("scenario, guide_calls, keyed, mocks, warning", [
+    ("guide_fails", 2, False, [True], "curl: (22)"),
+    ("guide_no_key", 1, False, [True], "no key line"),
+    ("mock_backup_refused", 1, True, [True, False], None),
+])
+def test_setup_backup_survives_guide_and_mock_failures(tmp_path, scenario, guide_calls, keyed, mocks, warning):
+    result, calls = run_setup(tmp_path, scenario)
+    assert result.returncode == 0, result.stdout + result.stderr
+    names = [call["name"] for call in calls]
+    assert names.count("hub_get_tool_guide") == guide_calls
+    assert names[-1] == "hub_manage_mcp"
+    backups = backup_args(calls)
+    assert [b.get("mock", False) for b in backups] == mocks
+    assert len(backups) == 1 or "mock" not in backups[-1]
+    for backup in backups:
+        assert backup.get("bestPracticeKey") == (BACKUP_KEY if keyed else None)
+        assert ("bestPracticeKey" in backup) == keyed
+    if warning:
+        assert "::warning::" in result.stdout and warning in result.stdout
+    else:
+        assert "::warning::" not in result.stdout
+
+
+def backup_args(calls):
+    return [call["arguments"] for call in calls if call["name"] == "hub_create_backup"]
+
+
+def run_setup(tmp_path, scenario):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     curl = bindir / "curl"
@@ -87,17 +139,8 @@ def test_setup_bootstraps_only_verified_off_state(tmp_path, scenario, succeeds, 
              "HUBITAT_APP_ID": "194"},
         capture_output=True, text=True, check=False,
     )
-    assert (result.returncode == 0) == succeeds, result.stdout + result.stderr
     calls = [json.loads(line) for line in (tmp_path / "calls").read_text().splitlines()]
-    names = [call["name"] for call in calls]
-    assert names.count("hub_set_mcp_developer_mode") == int(bootstrap)
-    if succeeds:
-        assert names[-2:] == ["hub_create_backup", "hub_manage_mcp"]
-        if bootstrap:
-            assert names[:3] == ["hub_get_info", "hub_set_mcp_developer_mode", "hub_get_info"]
-    else:
-        assert "hub_create_backup" not in names
-        assert "hub_manage_mcp" not in names
+    return result, calls
 
 
 WORKFLOWS = [

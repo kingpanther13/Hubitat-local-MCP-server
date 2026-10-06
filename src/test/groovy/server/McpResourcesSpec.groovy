@@ -135,6 +135,21 @@ class McpResourcesSpec extends ToolSpecBase {
         response.result.cacheScope == 'private'
     }
 
+    def "a guide resource serves exactly what hub_get_tool_guide serves, acknowledgment keys included -- #section"() {
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 6, method: 'resources/read',
+                                 params: [uri: "hubitat://guide/${section}".toString()]])
+
+        then:
+        response.error == null
+        def text = response.result.contents[0].text as String
+        text == script.toolGetToolGuide(section).content
+        text.startsWith('Acknowledgment key')
+
+        where:
+        section << ['best_practice_reference', 'set_rule_reference', 'hub_admin_write']
+    }
+
     def "resources/read refuses guide sections when the Read master is off, mirroring hub_get_tool_guide"() {
         // hub_get_tool_guide is a read tool: with the Read master off it is hidden from
         // tools/list and rejected at dispatch, so serving the same content here would be

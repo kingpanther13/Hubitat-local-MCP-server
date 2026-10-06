@@ -1917,7 +1917,10 @@ def check_tool_guide_generated() -> list[dict]:
                      message=f"tools/build-tool-guide.py cannot render getToolGuideSections(): {exc}")]
     # Parity alone cannot catch guidance removed from both source and regenerated output.
     anchors = {
-        "best_practice_reference": ["Acknowledgment key", "native Rule Machine"],
+        "best_practice_reference": [
+            "If you are calling one of these tools, you must read its section for that section's key:",
+            "native Rule Machine",
+        ],
         "set_rule_reference": [
             "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
             "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",

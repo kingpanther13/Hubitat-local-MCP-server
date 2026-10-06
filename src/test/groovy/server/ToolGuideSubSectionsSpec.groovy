@@ -161,15 +161,16 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         when: 'the parent key goes through the same dispatcher'
         def parent = script.toolGetToolGuide('set_rule_reference')
 
-        then: 'it is unchanged -- whole section, no parentSection -- and now advertises its sub-keys'
+        then: 'whole section behind its acknowledgment key, no parentSection -- and it advertises its sub-keys'
         parent.success == true
         parent.section == 'set_rule_reference'
         parent.parentSection == null
-        (parent.content as String) == (script.getToolGuideSections()['set_rule_reference'] as String)
+        (parent.content as String) == script._guideSectionServed('set_rule_reference', script.getToolGuideSections()['set_rule_reference'] as String)
+        (parent.content as String).endsWith(script.getToolGuideSections()['set_rule_reference'] as String)
         (parent.subSections as List).contains('set_rule_reference_conditions')
 
-        and: 'every block the sub-section serves is verbatim parent text, and the sub-section costs under half of it'
-        script.guideSectionBlocks(sub.content).every { (parent.content as String).contains(it as String) }
+        and: 'every block of the sub-section body is verbatim parent text (the served key header is not body), and the sub-section costs under half of it'
+        script.guideSectionBlocks(script.guideSubSectionLookup('set_rule_reference_conditions').content).every { (parent.content as String).contains(it as String) }
         (sub.content as String).length() < (parent.content as String).length() / 2
     }
 

@@ -46,7 +46,7 @@ class ToolBackupSpec extends ToolSpecBase {
 
     // ---------- hub_list_backups scope ----------
 
-    def "scope=hub_local fetches /hub2/localBackups into hubLocalBackups"() {
+    def "scope=hub_local fetches /hub2/localBackups into hubLocalBackups and folds in the schedule"() {
         when:
         def r = script.toolListItemBackups([scope: 'hub_local'])
 
@@ -55,6 +55,15 @@ class ToolBackupSpec extends ToolSpecBase {
         r.hubLocalBackups.size() == 1
         r.hubLocalBackups[0].name == 'local-1.lzf'
         r.hubCloudBackups == null
+
+        and: 'the automatic-backup schedule is folded in (and never carries the password)'
+        r.schedule.localBackupFrequency == 1
+        r.schedule.cloudBackupFrequency == 0
+        r.schedule.hour == 3                 // from databaseCleanupTimeHour
+        r.schedule.minute == 0               // from databaseCleanupJobMinute
+        r.schedule.localBackupEnabled == true
+        r.schedule.cloudBackupEnabled == false
+        !r.schedule.keySet().any { it.toLowerCase().contains('password') }
     }
 
     def "scope=hub_local reads the hub's fileSize and marks full local backups"() {
@@ -67,24 +76,27 @@ class ToolBackupSpec extends ToolSpecBase {
         when:
         def r = script.toolListItemBackups([scope: 'hub_local'])
 
-        then:
+        then: 'the fileSize/full-backup marking holds AND the schedule still folds in'
         r.hubLocalBackups.collect { it['size'] } == ['3 MB', '40 MB']
         r.hubLocalBackups.collect { it.fullBackup } == [false, true]
         r.hubLocalBackups[1].hasZigbee == true
         r.hubLocalBackups[1].hasZWave == true
         r.hubLocalBackups[0].platformVersion == '2.5.2.129'
+        r.schedule.localBackupFrequency == 1
+        r.schedule.hour == 3
     }
 
-    def "scope=hub_cloud fetches /hub2/cloudBackups into hubCloudBackups"() {
+    def "scope=hub_cloud fetches /hub2/cloudBackups into hubCloudBackups and folds in the schedule"() {
         when:
         def r = script.toolListItemBackups([scope: 'hub_cloud'])
 
         then:
         r.hubCloudBackups.size() == 1
         r.hubCloudBackups[0].path == 'cloud/abc.lzf'
+        r.schedule.localBackupFrequency == 1
     }
 
-    def "scope=all returns the source section AND both hub-DB sections"() {
+    def "scope=all returns the source section AND both hub-DB sections AND the schedule"() {
         when:
         def r = script.toolListItemBackups([scope: 'all'])
 
@@ -92,16 +104,48 @@ class ToolBackupSpec extends ToolSpecBase {
         r.containsKey('backups')          // source-code section preserved
         r.hubLocalBackups != null
         r.hubCloudBackups != null
+        r.schedule != null
+        r.schedule.hour == 3
     }
 
-    def "default scope=source does not touch the hub-DB endpoints"() {
+    def "a non-numeric schedule field preserves the backups and reports partial (does not abort the listing)"() {
+        given: 'the hub returns a malformed (non-numeric) frequency in /hub2/backup/json'
+        hubGet.register('/hub2/backup/json') { params -> '{"localBackupFrequency":"oops","cloudBackupFrequency":0,"databaseCleanupTimeHour":3,"databaseCleanupJobMinute":0}' }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub_local'])
+
+        then: 'the malformed schedule becomes a partial/error, not a thrown abort that loses the backups'
+        noExceptionThrown()
+        r.hubLocalBackups.size() == 1
+        r.schedule == null
+        r.partial == true
+        r.hubBackupErrors.any { it.toLowerCase().contains('schedule') }
+    }
+
+    def "a failed schedule read folds into hubBackupErrors + partial, never failing the listing"() {
+        given:
+        hubGet.register('/hub2/backup/json') { params -> throw new RuntimeException('boom') }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub_local'])
+
+        then: 'the listing still returns the hub-DB backups; the schedule failure is recorded as partial'
+        r.hubLocalBackups.size() == 1
+        !r.containsKey('schedule')
+        r.partial == true
+        r.hubBackupErrors.any { it.toLowerCase().contains('schedule') }
+    }
+
+    def "default scope=source does not touch the hub-DB endpoints (no schedule block)"() {
         when:
         def r = script.toolListItemBackups([:])
 
         then:
         r.containsKey('backups')
         r.hubLocalBackups == null
-        hubGet.calls.every { !(it.path in ['/hub2/localBackups', '/hub2/cloudBackups']) }
+        !r.containsKey('schedule')
+        hubGet.calls.every { !(it.path in ['/hub2/localBackups', '/hub2/cloudBackups', '/hub2/backup/json']) }
     }
 
     def "an invalid scope is rejected"() {
@@ -180,6 +224,43 @@ class ToolBackupSpec extends ToolSpecBase {
         r.scheduleUpdated == true
         r.message.toLowerCase().contains('schedule')
         posted.path == '/hub2/updateBackupSchedule'
+    }
+
+    // ---------- folded schedule block on hub_list_backups (read-only) ----------
+
+    def "the schedule block reports cloudBackupEnabled + entitlements when cloud is on, and never the password"() {
+        given: 'a schedule with cloud backup enabled and entitlements present'
+        hubGet.register('/hub2/backup/json') { params ->
+            '{"localBackupFrequency":7,"cloudBackupFrequency":14,"databaseCleanupTimeHour":2,"databaseCleanupJobMinute":30,"backupPassword":"s3cret","hasCloudBackupEntitlements":true,"hasCloudRestoreEntitlements":true}'
+        }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub'])
+
+        then:
+        r.schedule.cloudBackupFrequency == 14
+        r.schedule.cloudBackupEnabled == true
+        r.schedule.hour == 2
+        r.schedule.minute == 30
+        r.schedule.hasCloudBackupEntitlements == true
+        r.schedule.hasCloudRestoreEntitlements == true
+
+        and: 'the cloud-backup password is never surfaced even when the hub returns one'
+        !r.schedule.keySet().any { it.toLowerCase().contains('password') }
+        !r.schedule.values().contains('s3cret')
+    }
+
+    def "the schedule block reaches the hub through the MCP dispatch surface"() {
+        when:
+        def response = mcpDriver.callTool('hub_list_backups', [scope: 'hub_local'])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        response.result?.isError != true
+        inner.schedule.localBackupFrequency == 1
+        inner.schedule.hour == 3
+        !inner.schedule.keySet().any { it.toLowerCase().contains('password') }
     }
 
     def "create without confirm throws"() {
