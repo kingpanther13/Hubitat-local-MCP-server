@@ -1863,6 +1863,32 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "hub_delete_variable renders the page after the confirm, so the armed delete runs once and nothing stays pending"() {
+        given: 'the hub deletes the variable only when the page renders after the confirm click'
+        enableWrite()
+        boolean armed = false
+        boolean deleted = false
+        script.metaClass.getGlobalVar = { String n -> deleted ? null : [name: 'condemned', type: 'String', value: 'bye', deviceId: null, attribute: null] }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            if (btnName == 'delConfirm') armed = true
+            return [status: 200]
+        }
+        hubGet.register('/installedapp/configure/json/1424/hubVar') { params -> if (armed) { deleted = true; armed = false }; '{}' }
+        script.metaClass._primeHubVarsWizard = { Integer appId, String ctx -> }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> false }
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'condemned', confirm: true])
+
+        then: 'one click sequence, and no delete left armed for a later same-named variable'
+        result.success == true
+        buttonClicks == ['condemned', 'delConfirm']
+        !armed
+    }
+
     def "hub_delete_variable hub-namespace wizard sequence: deleteGV then delConfirm"() {
         given:
         enableWrite()

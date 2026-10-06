@@ -12451,6 +12451,19 @@ class TestRunner:
             raise AssertionError(f"{var_name} still retrievable after hub-namespace delete")
         except (McpToolError, McpError) as exc:
             assert "not found" in str(exc).lower(), f"unexpected error after delete: {exc}"
+
+        # The delete must leave nothing armed on the Hub Variables page: a same-named variable
+        # created afterwards survives the page's next render (includeDependents renders it).
+        recreated = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_create_variable",
+            "args": {"name": var_name, "type": "String", "value": "round-trip-v2", "confirm": True}})
+        assert recreated.get("success") is True, f"re-creating {var_name} after its delete failed: {recreated}"
+        self.client.call_tool("hub_read_variables", {
+            "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
+        survived = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_get_variable", "args": {"name": var_name}})
+        assert survived.get("value") == "round-trip-v2",             f"the re-created {var_name} did not survive a render of the Hub Variables page after the earlier delete: {survived}"
+        self._delete_variable_safe(var_name)
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
 
