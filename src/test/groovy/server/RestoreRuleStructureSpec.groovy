@@ -142,7 +142,8 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
     def "an extra action RM refuses to remove is reported, never as restored"() {
         given:
         script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip = false ->
-            calls << "action ${idx}".toString(); [success: false, error: "would unbalance the rule"]
+            calls << "action ${idx}".toString()
+            throw new IllegalArgumentException("removeAction(${idx}) blocked: removing it would introduce a new structural-balance issue. RM is not touched.")
         }
         def snap = snapshotState(actionList: ["1"], capabsfalse: [:])
         liveStates([[actionList: ["1", "2"], capabsfalse: [:]]])
