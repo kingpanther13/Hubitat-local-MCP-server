@@ -343,6 +343,33 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         'Use Required Expression off'          | ""     | [:]                    || false
     }
 
+    def "auto: the committed token count is returned with the verdict"() {
+        given:
+        seedHealthy(100, [eval: ["0": [1, "AND", 2]]])
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
+        }
+
+        expect:
+        script._rmCheckRuleHealth(100).requiredExpressionTokens == 3
+    }
+
+    def "configPage: useST on with the expression unread is reported as unchecked, not as clean"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100, "configPage")
+
+        then:
+        h.checkErrors.any { it.contains("ungated rule is not ruled out") }
+        !h.issues.any { it.contains("runs UNGATED") }
+    }
+
     def "auto: empty {} (nonexistent id) is ignored as a JSON source and falls back to HTML"() {
         given:
         settingsMap.enableRead = true

@@ -18,6 +18,11 @@
 #                                       held-lease budget: a down hub won't free a lease, so
 #                                       waiting it out just burns ~10min per run.
 #         LEASE_POLL_INTERVAL_S       — seconds between polls while waiting (default 30).
+#         LEASE_ALLOW_MISSING         — 1 only for the one-time bootstrap of a hub never leased: an
+#                                       unreadable lease file then reads as free. Everywhere else an
+#                                       unreadable file is polled, never claimed over -- the hub names
+#                                       no cause for a failed read, so a live lease that fails to read
+#                                       looks exactly like a missing file.
 #
 # Exits 0 on successful claim. While the lease is read as held and not expired, this WAITS
 # (polling) and claims it the moment it frees, the holder's TTL lapses, OR the holding CI run is
@@ -76,18 +81,17 @@ mcp_call() {
 }
 
 get_lease_value() {
-  # Prints the lease JSON (nothing when released) + exit 0 for a successful read, or for the
-  # watchdog's own "could not be read" answer -- a hub never leased has no lease file yet, so it
-  # reads as released and the first claim creates the file. Any OTHER response exits non-zero so
-  # the caller polls (read-fail path) and never falsely claims: a JSON-RPC error, a transport
-  # failure, a non-JSON body. `jq -e` keeps an error envelope from collapsing to "" and reading as
-  # "released", which would double-book the single hub. (The hub names no cause for a missing
-  # file, so a read failure on an existing file looks the same; the empty-break below still needs a
-  # confirming second read.)
+  # Prints the lease JSON (nothing when released) + exit 0 for a successful read. The release
+  # writes {} and never deletes the file, so a leased hub always has it; the watchdog's "could not
+  # be read" answer reads as free ONLY under LEASE_ALLOW_MISSING=1 (bootstrapping a hub never
+  # leased). Any OTHER response exits non-zero so the caller polls (read-fail path) and never
+  # falsely claims: a failed read, a JSON-RPC error, a transport failure, a non-JSON body. `jq -e`
+  # keeps an error envelope from collapsing to "" and reading as "released", which would
+  # double-book the single hub.
   local resp text content
   resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_read_file","arguments":{"fileName":"test-hub-lease.json"}}}')" || return 1
   text="$(printf '%s' "$resp" | jq -e -r '.result.content[0].text')" || return 1
-  if printf '%s' "$text" | jq -e '.success == false and ((.error // "") | test("could not be read"))' >/dev/null 2>&1; then
+  if [ "${LEASE_ALLOW_MISSING:-}" = "1" ] && printf '%s' "$text" | jq -e '.success == false and ((.error // "") | test("could not be read"))' >/dev/null 2>&1; then
     return 0
   fi
   printf '%s' "$text" | jq -e '.success == true' >/dev/null 2>&1 || return 1

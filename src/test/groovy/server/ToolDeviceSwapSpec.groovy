@@ -245,6 +245,23 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         !result.note.contains('can be removed')
     }
 
+    def "a leftover Swap Device instance is reported on a failed outcome too"() {
+        given:
+        enableWriteWithBackup()
+        registerDevices()
+        def compat = [['202': 'BAT Swap Target']]
+        wireSwapStubs(beforeCount: 1, deleteFails: true, outcome: 'unchanged',
+            fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), ''])
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == false
+        result.leftoverSwapInstance == SWAP_APP_ID
+        result.warning.contains('Do NOT open it')
+    }
+
     def "a Swap Device instance that will not delete is reported, since rendering it swaps again"() {
         given:
         enableWriteWithBackup()
@@ -656,6 +673,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         'non-Map JSON -> null'                 | '[1,2,3]'                                                                            | null
         'count from appsUsing when no count'   | '{"appsUsing":[{"id":1},{"id":2}],"device":{"deviceNetworkId":"X","label":"L"}}'     | [dependents: 2, dni: 'X', createTime: null, label: 'L']
         'non-numeric appsUsingCount ignored'   | '{"appsUsing":[{"id":1}],"appsUsingCount":"42+"}'                                    | [dependents: 1, dni: null, createTime: null, label: null]
+        'no dependent data -> unknown, not 0'  | '{"device":{"deviceNetworkId":"X"}}'                                                 | [dependents: null, dni: 'X', createTime: null, label: null]
     }
 
     @spock.lang.Unroll

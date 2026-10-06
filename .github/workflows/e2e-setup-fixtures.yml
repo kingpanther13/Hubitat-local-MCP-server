@@ -96,6 +96,7 @@ jobs:
       - name: Acquire test hub lease
         env:
           WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+          LEASE_ALLOW_MISSING: "1"   # bootstraps a hub never leased; e2e runs never set this
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/lease_acquire.sh "fixtures-${{ github.run_id }}"
 

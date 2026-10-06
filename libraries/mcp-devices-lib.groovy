@@ -5251,15 +5251,22 @@ def toolCallDeviceSwap(args) {
         def fromAfter = _deviceSwapSnapshot(fromId)
         def toAfter = _deviceSwapSnapshot(toId)
         def outcome = _deviceSwapIdentityOutcome(fromBefore, toBefore, fromAfter, toAfter)
+        def leftover = { Map r ->
+            if (!instanceDeleted) {
+                r.leftoverSwapInstance = appId
+                r.warning = "The transient Swap Device instance ${appId} could not be deleted. Do NOT open it in the hub UI: every render of its page swaps the two devices again. Delete it with hub_delete_native_app(appId=${appId}, force=true).".toString()
+            }
+            return r
+        }
         if (outcome == "unchanged") {
-            return [success: false,
+            return leftover([success: false,
                     error: "The Swap Device action was clicked but neither device changed identity -- nothing was swapped.",
-                    note: "Both devices kept their own label and network id. Check that both still exist and are compatible (hub_get_device), then retry."]
+                    note: "Both devices kept their own label and network id. Check that both still exist and are compatible (hub_get_device), then retry."])
         }
         if (outcome != "exchanged") {
-            return [success: false, verified: false,
+            return leftover([success: false, verified: false,
                     error: "The Swap Device action was clicked but the swap could not be confirmed (${outcome == 'unreadable' ? 'a device could not be read back' : 'the two devices did not cleanly trade identities'}).",
-                    note: "Inspect devices ${fromId} and ${toId} with hub_get_device before doing anything else. Do NOT simply retry: if the swap did take, running it again swaps the devices back."]
+                    note: "Inspect devices ${fromId} and ${toId} with hub_get_device before doing anything else. Do NOT simply retry: if the swap did take, running it again swaps the devices back."])
         }
         mcpLog("info", "device-swap", "Swap ${fromId} -> ${toId} complete; identities exchanged; post-click render ${instanceGone ? 'threw' : 'ran'}; instance ${instanceDeleted ? 'deleted' : 'NOT deleted'}")
         def toDeps = toBefore?.dependents
@@ -5277,17 +5284,18 @@ def toolCallDeviceSwap(args) {
                       fromDeviceDependents: beforeCount,
                       toDeviceDependents: toDeps,
                       note: "The hub exchanged the two devices' identities (name, label, network id, driver, room, current state; event history stays with the id). Every app that referenced device ${fromId} still references id ${fromId}, which now carries the replacement's identity ('${fromAfter.label}') and hardware. ${toNote} Running the swap again would swap them back.".toString()]
-        if (!instanceDeleted) {
-            result.leftoverSwapInstance = appId
-            result.warning = "The transient Swap Device instance ${appId} could not be deleted. Do NOT open it in the hub UI: every render of its page swaps the two devices again. Delete it with hub_delete_native_app(appId=${appId}, force=true).".toString()
-        }
-        return result
+        return leftover(result)
     } catch (Exception e) {
         mcpLogError("device-swap", "hub_call_device_swap ${fromId} -> ${toId} failed", e)
-        _deviceSwapCleanup(appId)
-        return [success: false,
+        boolean closed = _deviceSwapCleanup(appId)
+        def failed = [success: false,
                 error: "Device swap failed: ${e.message}",
-                note: "The swap may not have committed -- verify with hub_list_device_dependents(deviceId=${fromId}). The transient Swap Device instance was closed."]
+                note: "The swap may or may not have committed: app references stay on their ids either way, so compare devices ${fromId} and ${toId} with hub_get_device (label and network id) -- if they traded, the swap ran. Do NOT retry before checking; a second swap swaps them back.".toString()]
+        if (!closed) {
+            failed.leftoverSwapInstance = appId
+            failed.warning = "The transient Swap Device instance ${appId} could not be deleted. Do NOT open it in the hub UI: every render of its page swaps the two devices again. Delete it with hub_delete_native_app(appId=${appId}, force=true).".toString()
+        }
+        return failed
     }
 }
 
@@ -5370,8 +5378,8 @@ private Map _deviceSwapSnapshot(String deviceId) {
         if (!responseText) return null
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)
         if (!(parsed instanceof Map)) return null
-        def appsUsing = (parsed.appsUsing instanceof List) ? parsed.appsUsing : []
-        Integer dependents = appsUsing.size()
+        // Unknown stays null: a missing count must not read as "nothing uses this device".
+        Integer dependents = (parsed.appsUsing instanceof List) ? (parsed.appsUsing as List).size() : null
         try {
             if (parsed.appsUsingCount != null) dependents = parsed.appsUsingCount as Integer
         } catch (NumberFormatException ignored) { }

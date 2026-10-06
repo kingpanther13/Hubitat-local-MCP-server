@@ -9496,8 +9496,12 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             }
             // "Use Required Expression" switched on with no committed expression: RM runs the rule
             // as if there were no gate at all.
-            if (ruleFormat == "rm" && requiredExpressionTokens == 0 && cfg?.settings?.useST?.toString() == "true") {
-                issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(addRequiredExpression=...), or turn useST off if no gate is wanted.".toString()
+            if (cfg?.settings?.useST?.toString() == "true") {
+                if (ruleFormat == "rm" && requiredExpressionTokens == 0) {
+                    issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(addRequiredExpression=...), or turn useST off if no gate is wanted.".toString()
+                } else if (requiredExpressionTokens == null) {
+                    checkErrors << "Required Expression is enabled (useST) but the committed expression was not read, so an ungated rule is not ruled out -- re-check with source='auto'.".toString()
+                }
             }
             // Scan for the broken-state strings RM emits in its rendered output. Read BOTH
             // formats the hub serves: the body-element format the live UI renderer uses
@@ -9634,6 +9638,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         checkErrors: checkErrors
     ]
     if (predicate != null) result.predicate = predicate
+    if (requiredExpressionTokens != null) result.requiredExpressionTokens = requiredExpressionTokens
     return result
 }
 

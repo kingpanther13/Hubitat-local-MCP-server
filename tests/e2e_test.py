@@ -8016,6 +8016,7 @@ class TestRunner:
             # response is resolved by reading the hub: the old rule gone and a same-label rule present.
             label = ((self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}) or {}).get("app") or {}).get("label")
+            assert label, f"rule {app_id} has no readable label to find its restored copy by"
 
             def _replaced() -> str | None:
                 for _ in range(20):

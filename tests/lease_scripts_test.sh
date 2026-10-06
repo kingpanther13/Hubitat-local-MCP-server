@@ -49,7 +49,11 @@ read_ok() { jq -nc --arg c "$1" '{result:{content:[{text:({success:true,fileName
 check "held lease"          "$(read_ok "$(jq -nc '{by:"ci-run-X",until:1}')")"                    HELD
 check "released ({})"       "$(read_ok '{}')"                                                     RELEASED
 check "released (empty)"    "$(read_ok '')"                                                       RELEASED
-check "file never written"  "$(jq -nc '{result:{content:[{text:({success:false,error:"File '"'"'test-hub-lease.json'"'"' could not be read: test-hub-lease.json"}|tojson)}],isError:true}}')" RELEASED
+unreadable="$(jq -nc '{result:{content:[{text:({success:false,error:"File '"'"'test-hub-lease.json'"'"' could not be read: test-hub-lease.json"}|tojson)}],isError:true}}')"
+check "unreadable file"     "$unreadable"                                                         POLL
+LEASE_ALLOW_MISSING=1
+check "unreadable, bootstrap" "$unreadable"                                                       RELEASED
+unset LEASE_ALLOW_MISSING
 check "other tool failure"  "$(jq -nc '{result:{content:[{text:({success:false,error:"Hub Security authentication failed"}|tojson)}],isError:true}}')" POLL
 check "-32603 error"        '{"error":{"code":-32603,"message":"Internal error"}}'               POLL
 check "-32602 error"        '{"error":{"code":-32602,"message":"Invalid params"}}'                POLL
