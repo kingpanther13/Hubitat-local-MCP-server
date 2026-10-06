@@ -1080,11 +1080,33 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         }
         return [(key): ids]
     }
+    // Finish the way the app type commits: Rule Machine's updateRule, or for an app without that
+    // button (Basic Rule, Button Controller) the page's Done -- clicking updateRule there stores it
+    // as a pending action delete and the page then fails to load.
+    String commitButton = reg.containsKey("commitButton") ? reg.commitButton : _resolveCommitButton(snapshot?.configJson?.app?.appType?.name?.toString())
+    boolean isRm = savedAppType == "rule_machine"
+    def settingsCleared = []
+    def clearMiss = null
+    def commitMiss = null
     String step = "settings replay"
     try {
         _rmUpdateAppSettings(ruleId, replaySettings, savedSchema)
-        step = "the final updateRule click"
-        _rmClickAppButton(ruleId, "updateRule")
+        if (exists && !isRm) {
+            // A replay writes back only the backup's keys; a key the app gained later would stay and
+            // mix with the restored values. Rule Machine's own removal handles its rows (reconcile below).
+            try { settingsCleared = _rmClearSettingsNotInBackup(ruleId, savedSettings) } catch (Exception clearExc) {
+                mcpLog("warn", "rm-native", "restore of app ${ruleId}: emptying settings the backup did not have failed (${clearExc.message})")
+                clearMiss = clearExc.message ?: clearExc.toString()
+            }
+        }
+        if (commitButton) {
+            step = "the final ${commitButton} click".toString()
+            _rmClickAppButton(ruleId, commitButton)
+        } else {
+            step = "the closing Done"
+            def done = _rmSubmitMainPageDone(ruleId)
+            if (done?.done != true) commitMiss = done?.reason ?: "the page's Done did not commit"
+        }
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
         return [
@@ -1096,9 +1118,9 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             restoredVia: "settingsReplay",
             nativeImportSkipped: nativeSkipped,
             error: "Restore applied partially; failed during ${step}: ${e.message}",
-            note: (step == "settings replay"
-                ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
-                : "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or call hub_set_rule(appId=${ruleId}, button='updateRule').")
+            note: (step.startsWith("the final") || step == "the closing Done"
+                ? "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or call hub_set_native_app(appId=${ruleId}${commitButton ? ", button='" + commitButton + "'" : ''})."
+                : "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying.").toString()
         ]
     }
 
@@ -1119,6 +1141,18 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             + skippedDevices.collect { sd -> [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] },
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
+    if (settingsCleared) {
+        out.settingsCleared = settingsCleared
+        out.note = "${out.note} Settings the app gained after the backup were emptied: ${settingsCleared.join(', ')}.".toString()
+    }
+    if (clearMiss) {
+        out.partial = true
+        out.note = "${out.note} Settings the app gained after the backup could not be emptied (${clearMiss}); compare hub_get_app_config(appId=${ruleId}, includeSettings=true) with hub_get_backup.".toString()
+    }
+    if (commitMiss) {
+        out.partial = true
+        out.note = "${out.note} The app's closing Done did not commit (${commitMiss}); open the app and click Done.".toString()
+    }
     if (nativeSkipped) {
         out.nativeImportSkipped = nativeSkipped
         out.note = "${out.note} The backup's App Cloner copy was not used: ${nativeSkipped}.".toString()
@@ -1133,19 +1167,22 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     // A Required Expression lives in RM app state, which the settings replay cannot write: bring it
     // back to the snapshot's expression explicitly, and never report success over a missing gate.
-    def reOutcome
-    try {
-        reOutcome = _rmRestoreRequiredExpression(ruleId, snapshot)
-    } catch (Exception reExc) {
-        reOutcome = [requiredExpressionRestored: false, requiredExpressionError: reExc.message ?: reExc.toString()]
+    // Both live in Rule Machine's own app state; other app types have neither.
+    def reOutcome = [:]
+    def structure = [:]
+    if (isRm) {
+        try {
+            reOutcome = _rmRestoreRequiredExpression(ruleId, snapshot)
+        } catch (Exception reExc) {
+            reOutcome = [requiredExpressionRestored: false, requiredExpressionError: reExc.message ?: reExc.toString()]
+        }
+        try {
+            structure = _rmReconcileRuleStructure(ruleId, snapshot)
+        } catch (Exception stExc) {
+            structure = [structureRestored: false, structureError: stExc.message ?: stExc.toString()]
+        }
     }
     if (reOutcome) out.putAll(reOutcome)
-    def structure
-    try {
-        structure = _rmReconcileRuleStructure(ruleId, snapshot)
-    } catch (Exception stExc) {
-        structure = [structureRestored: false, structureError: stExc.message ?: stExc.toString()]
-    }
     if (structure) out.putAll(structure)
     if (out.leftoverConditionIds && structure?.removedConditionIds) {
         def gone = (structure.removedConditionIds as List)*.toString()
@@ -1171,6 +1208,29 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         out.note = "${out.note} Required Expression confirmed to match the backup.".toString()
     }
     return out
+}
+
+// Empty every non-button setting the app has that the backup does not, through the same update
+// endpoint as the replay (an emptied setting reads as unset; the hub keeps no way to delete one).
+// Returns the keys emptied.
+List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
+    def status = _rmFetchStatusJson(appId)
+    if (!(status?.appSettings instanceof List)) return []
+    def saved = savedSettings.keySet().collect { it.toString() } as Set
+    def extra = (status.appSettings as List).findAll { rec ->
+        def n = rec?.name?.toString()
+        n && !saved.contains(n) && rec?.type?.toString() != "button" && rec?.value != null && rec?.value != ""
+    }
+    if (!extra) return []
+    def body = [id: appId.toString()]
+    extra.each { rec ->
+        def n = rec.name.toString()
+        body["settings[${n}]".toString()] = ""
+        if (rec.type) body["${n}.type".toString()] = rec.type.toString()
+        body["${n}.multiple".toString()] = (rec.multiple == true).toString()
+    }
+    _rmPostSettings(appId, body)
+    return extra.collect { it.name.toString() }.sort()
 }
 
 // True only when the hub positively says the device is gone (404 or an empty object). An empty or

@@ -5233,7 +5233,7 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
 // [done: false, reason: <why>] so callers can surface the miss: for
 // commitButton:null app types (Basic Rule, Button Controller) the Done
 // is the session's ONLY lifecycle event, so a silent miss matters there.
-private Map _rmSubmitMainPageDone(Integer appId) {
+Map _rmSubmitMainPageDone(Integer appId) {
     // Most app types commit on mainPage -- fetch it directly so the common path stays a SINGLE config
     // render (no per-edit regression). Button Rule-5.1's commit page is 'selectActions' instead, so a
     // mainPage fetch fails there ("Cannot find page 'mainPage'"); ONLY on that miss do we probe the app

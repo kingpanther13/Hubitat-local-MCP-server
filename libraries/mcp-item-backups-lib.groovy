@@ -1099,7 +1099,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     path: [type: "string", description: "scope=hub_cloud: `path` from hub_list_backups."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf to upload+restore."],
-                    preserveRuleId: [type: "boolean", description: "Keep the rule id.[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay instead of the default exact App Cloner re-import as a new app. A replay writes back only the backup's settings; settings added after the backup stay on the app.[[/FLAT_TRIM]]"],
+                    preserveRuleId: [type: "boolean", description: "Keep the rule id.[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay instead of the default exact App Cloner re-import as a new app. A replay empties settings the app gained after the backup (settingsCleared).[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
                 ],
                 required: ["confirm"]

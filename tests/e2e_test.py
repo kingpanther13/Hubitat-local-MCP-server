@@ -6986,6 +6986,29 @@ class TestRunner:
                 assert "updateRule" not in str(edited.get("configPageError") or ""), \
                     f"Basic Rule edit poisoned the render with the updateRule error: {edited}"
                 assert edited.get("success") is not False, f"Basic Rule edit reported failure: {edited}"
+
+            # Restoring that edit's baseline in place puts the Basic Rule back as it was: settings it
+            # gained afterwards are emptied, and it is finished with Done, never the updateRule click
+            # that a Basic Rule stores as a pending action delete and then fails to render.
+            backup_key = None if ew["relayDropped"] else (ew["response"].get("backup") or {}).get("backupKey")
+            if not backup_key:
+                listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {}}) or {}
+                backup_key = next((b.get("backupKey") for b in (listed.get("backups") or [])
+                                   if str(b.get("id")) == str(app_id)), None)
+            assert backup_key, f"no baseline backup was recorded for Basic Rule {app_id}"
+            switch_id = self._ensure_perm_fixture("switch_a")
+            for step in ({"trigCapab": "Switch"}, {"switchDev": [int(switch_id)]}, {"trigger": "Turns on"}):
+                self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_set_native_app", "args": {"appId": app_id, "settings": step, "confirm": True}})
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
+            assert restored.get("success") is True, f"Basic Rule restore failed: {restored}"
+            assert {"trigger", "switchDev"} <= set(restored.get("settingsCleared") or []),                 f"the restore did not empty the settings the Basic Rule gained after its backup: {restored}"
+            rb = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            assert not (rb.get("app") or {}).get("configPageError") and not rb.get("configPageError"),                 f"the Basic Rule page does not load after the restore: {rb}"
+            assert not (rb.get("settings") or {}).get("trigger"),                 f"the Basic Rule still carries the trigger set after its backup: {rb.get('settings')}"
         finally:
             # DELETE inline (not just via the global-cleanup backstop) so an
             # assertion failure above doesn't strand the fixture mid-run. A 504 here

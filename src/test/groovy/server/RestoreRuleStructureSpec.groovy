@@ -260,6 +260,68 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.note.contains("deleted since the backup")
     }
 
+    def "a Basic Rule restore empties the settings it gained after the backup and finishes with Done, never updateRule"() {
+        given: "a Basic Rule whose trigger was set after the backup"
+        def replays = []
+        def posts = []
+        def done = []
+        def rmPaths = []
+        script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
+        script.metaClass._rmUpdateAppSettings = { Integer id, Map st, Map schema -> replays << st }
+        script.metaClass._rmPostSettings = { Integer id, Map body, Map cache = null -> posts << body; [status: 200] }
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> done << id; [done: true] }
+        script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> rmPaths << "expression"; [:] }
+        script.metaClass._rmReconcileRuleStructure = { Integer id, Map snap -> rmPaths << "reconcile"; [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100},"configPage":{"sections":[]},"settings":{}}' }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            groovy.json.JsonOutput.toJson([appSettings: [
+                [name: "trigCapab", type: "enum", value: ""], [name: "comments", type: "textarea", value: ""],
+                [name: "btnDefault", type: "button", value: ""], [name: "action1", type: "enum", value: ""],
+                [name: "trigger", type: "enum", value: "Turns on"],
+                [name: "switchDev", type: "capability.switch", multiple: true, value: "796"]]])
+        }
+        def snapshot = [ruleId: 100, appType: "basic_rule",
+                        configJson: [app: [id: 100, appType: [name: "Basic Rule-1.0"]], configPage: [sections: []], settings: [trigCapab: "", comments: ""]],
+                        statusJson: [appSettings: [[name: "trigCapab", type: "enum"], [name: "comments", type: "textarea"]]]]
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], snapshot, true)
+
+        then: "the newer keys are emptied, and the empty and button keys are left alone"
+        out.settingsCleared == ["switchDev", "trigger"]
+        posts.size() == 1
+        posts[0]["settings[trigger]"] == ""
+        posts[0]["settings[switchDev]"] == ""
+        posts[0]["switchDev.multiple"] == "true"
+        !posts[0].containsKey("settings[action1]")
+
+        and: "the app is finished with its Done, and no Rule Machine-only step runs"
+        done == [100]
+        !calls.contains("updateRule")
+        rmPaths.isEmpty()
+        out.success == true
+    }
+
+    def "a Rule Machine restore still finishes with updateRule and keeps its Rule Machine steps"() {
+        given:
+        def rmPaths = []
+        script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
+        script.metaClass._rmUpdateAppSettings = { Integer id, Map st, Map schema -> }
+        script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> rmPaths << "expression"; [:] }
+        script.metaClass._rmReconcileRuleStructure = { Integer id, Map snap -> rmPaths << "reconcile"; [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100},"configPage":{"sections":[]},"settings":{}}' }
+        def snapshot = [ruleId: 100, appType: "rule_machine", configJson: [configPage: [sections: []], settings: [tstate1: "on"]],
+                        statusJson: [appSettings: [[name: "tstate1", type: "enum"]]]]
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], snapshot, true)
+
+        then:
+        calls.contains("updateRule")
+        rmPaths == ["expression", "reconcile"]
+        !out.containsKey("settingsCleared")
+    }
+
     def "a rule restore whose triggers do not match the backup is NOT reported as success"() {
         given:
         script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
