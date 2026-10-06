@@ -1221,7 +1221,10 @@ List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
     def saved = savedSettings.keySet().collect { it.toString() } as Set
     def extra = (status.appSettings as List).findAll { rec ->
         def n = rec?.name?.toString()
-        n && !saved.contains(n) && rec?.type?.toString() != "button" && rec?.value != null && rec?.value != ""
+        // A device picker reports its devices in deviceIdsForDeviceList, with a null value.
+        boolean hasValue = (rec?.value != null && rec?.value != "") ||
+            (rec?.deviceIdsForDeviceList instanceof List && !(rec.deviceIdsForDeviceList as List).isEmpty())
+        n && !saved.contains(n) && rec?.type?.toString() != "button" && hasValue
     }
     if (!extra) return []
     def body = [id: appId.toString()]

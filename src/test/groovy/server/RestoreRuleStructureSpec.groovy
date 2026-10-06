@@ -278,7 +278,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
                 [name: "trigCapab", type: "enum", value: ""], [name: "comments", type: "textarea", value: ""],
                 [name: "btnDefault", type: "button", value: ""], [name: "action1", type: "enum", value: ""],
                 [name: "trigger", type: "enum", value: "Turns on"],
-                [name: "switchDev", type: "capability.switch", multiple: true, value: "796"]]])
+                [name: "switchDev", type: "capability.switch", multiple: true, value: null, deviceIdsForDeviceList: ["796"]]]])
         }
         def snapshot = [ruleId: 100, appType: "basic_rule",
                         configJson: [app: [id: 100, appType: [name: "Basic Rule-1.0"]], configPage: [sections: []], settings: [trigCapab: "", comments: ""]],
