@@ -650,7 +650,8 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         then: 'runtime failure is a structured envelope, not a throw'
         result.success == false
         result.error.contains('hub went away mid-write')
-        result.note.contains('hub_list_device_dependents')
+        result.note.contains('hub_get_device')
+        result.note.contains('Do NOT retry')
 
         and: 'the cleanup contract held — the transient instance was deleted, nothing was clicked'
         !calls.any { it.step == 'click' }
