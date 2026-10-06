@@ -36,7 +36,7 @@ import time
 import uuid
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 _INSTALL_HINT = "pip install -r tests/sdk-conformance-requirements.txt"
 
@@ -380,6 +380,9 @@ class ModernMrtrScenario:
     """Prove automatic state-only continuation with one high-level SDK call."""
 
     GATEWAY = "hub_manage_rule_machine"
+    # The best-practice gate wants each write to carry its own guide section's key.
+    BPS_SECTIONS: ClassVar[dict[str, str]] = {"hub_set_rule": "set_rule_reference",
+                                              "hub_delete_native_app": "builtin_app_tools_crud"}
 
     def __init__(self, config: dict, trace: RequestTrace) -> None:
         self.config = config
@@ -412,13 +415,13 @@ class ModernMrtrScenario:
             f"{self.GATEWAY} is absent from the modern tools/list catalog"
         )
 
-        guide_result = await client.call_tool(
-            "hub_get_tool_guide", {"section": "best_practice_reference"},
-        )
-        guide_payload = _tool_payload(guide_result, "best-practice guide read")
-        bps_key = extract_bps_acknowledgment_key(guide_payload.get("content"))
+        bps_keys = {}
+        for tool, section in self.BPS_SECTIONS.items():
+            guide_result = await client.call_tool("hub_get_tool_guide", {"section": section})
+            guide_payload = _tool_payload(guide_result, f"{section} guide read")
+            bps_keys[tool] = extract_bps_acknowledgment_key(guide_payload.get("content"))
         try:
-            await self._prove_once(client, bps_key)
+            await self._prove_once(client, bps_keys)
             return
         except Exception as first_error:
             # The proof runs right after the full e2e suite, whose accumulated load can
@@ -440,9 +443,9 @@ class ModernMrtrScenario:
             self.trace.mark_capacity_recovery()
             print("         [CAPACITY] bounce verified -- retrying the MRTR proof once "
                   "on a fresh fixture")
-        await self._prove_once(client, bps_key)
+        await self._prove_once(client, bps_keys)
 
-    async def _prove_once(self, client: Client, bps_key: str) -> None:
+    async def _prove_once(self, client: Client, bps_keys: dict[str, str]) -> None:
         """One full pass: fixture create -> slow MRTR edit -> readback -> exact cleanup."""
         fixture_name = f"BAT_E2E_SDK_MRTR_{uuid.uuid4().hex[:12]}"
         fixture_id: str | None = None
@@ -453,7 +456,7 @@ class ModernMrtrScenario:
                 "args": {
                     "name": fixture_name,
                     "confirm": True,
-                    "bestPracticeKey": bps_key,
+                    "bestPracticeKey": bps_keys["hub_set_rule"],
                 },
             })
             create_payload = _tool_payload(created, "fixture create")
@@ -472,7 +475,7 @@ class ModernMrtrScenario:
                     "appId": fixture_id,
                     "addActions": requested_actions,
                     "confirm": True,
-                    "bestPracticeKey": bps_key,
+                    "bestPracticeKey": bps_keys["hub_set_rule"],
                 },
             })
             logical_elapsed = time.monotonic() - started
@@ -520,7 +523,7 @@ class ModernMrtrScenario:
         finally:
             cleanup_error = await cleanup_preserving_primary(
                 lambda: self._cleanup_fixture(
-                    client, fixture_name, fixture_id, bps_key,
+                    client, fixture_name, fixture_id, bps_keys["hub_delete_native_app"],
                 ),
                 primary_error,
             )

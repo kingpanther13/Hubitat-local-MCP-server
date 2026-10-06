@@ -292,7 +292,7 @@ def mainPage() {
         section("Best-Practice Guidance") {
             paragraph "Surfaces this project's best practices to the AI. Reactive hints are always on: a failed write tool's error gains a pointer to that tool's own guide section. The acknowledgment gate below is ON by default."
             input "enableMandatoryBPS", "bool", title: "Require Best-Practice Guide Acknowledgment (write tools)",
-                  description: "ON by default. When ON, every write tool is blocked until the AI reads hub_get_tool_guide(section='best_practice_reference') and passes the acknowledgment key it publishes as the bestPracticeKey argument. Reads, the guide, and this settings tool stay reachable, so the AI can never lock itself out. Turn OFF for clients that can't carry the extra context.",
+                  description: "ON by default. When ON, each write tool is blocked until the AI reads that tool's hub_get_tool_guide section (best_practice_reference lists which section covers which tool) and passes the acknowledgment key published at its top as the bestPracticeKey argument. Each section has its own key, rotating hourly. Reads, the guide, and this settings tool stay reachable, so the AI can never lock itself out. Turn OFF for clients that can't carry the extra context.",
                   defaultValue: true, submitOnChange: true
         }
 
@@ -1647,15 +1647,19 @@ def _mrtrClientErrorHint() {
     return "If a write returns a client-side error with no result body, the hub is still running it or has already finished it. Wait about 15 seconds, then call hub_get_info and check recentWrites for that tool (running, paused_resuming, finished, finished_with_error). Read the target before repeating the call: a repeat is only safe when the write shows as failed or absent and the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops')."
 }
 
+private String _guideFirstInstruction() {
+    return "${guideFirstSentence()} Before calling a write tool, read that tool's guide section. ".toString()
+}
+
 def serverInstructions() {
     // Flat mode advertises every tool individually and BLOCKS gateway-name calls
     // ("useGateways is OFF"), so the gateway guidance would send a flat client
     // straight into an error (worse: hub_manage_virtual_device / hub_manage_mode
     // match the hub_manage_* pattern but are direct tools, not gateways).
     if (settings.useGateways == false) {
-        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
+        return _guideFirstInstruction() + "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
     }
-    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
+    _guideFirstInstruction() + "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
 }
 
 // Protocol versions this server can speak, newest first. Single source for the
@@ -1861,7 +1865,8 @@ def _guideResourceUriPrefix() { "hubitat://guide/" }
 // mode/HSM header data in the context snapshot is part of hub_list_devices' own
 // format='context' output (the tool serves it under the same gate), not a reach into
 // hub_list_modes / hub_get_hsm_status. (The best-practice acknowledgment gate is a
-// different, write-only gate and does not apply to resources at all.)
+// different, write-only gate and does not apply to resources; a guide resource publishes
+// the same acknowledgment keys as its hub_get_tool_guide section.)
 def _contextResourcesEnabled() { !getHiddenToolNames().contains("hub_list_devices") }
 def _guideResourcesEnabled() { !getHiddenToolNames().contains("hub_get_tool_guide") }
 
@@ -1959,7 +1964,7 @@ def handleResourcesRead(msg) {
                 return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} mirrors hub_get_tool_guide and ${_resourceGateCause()}.", [uri: uri])
             }
             return jsonRpcResult(msg.id, [
-                contents: [[uri: uri, mimeType: "text/markdown", text: sections[section]]],
+                contents: [[uri: uri, mimeType: "text/markdown", text: _guideSectionServed(section, sections[section])]],
                 ttlMs: cacheHintTtlMs(), cacheScope: "private"
             ])
         }
@@ -2107,7 +2112,7 @@ def handleToolsCall(msg) {
             executionArgs.__reqT0 = reqT0
         }
 
-        _mrtrValidateAccess(toolName, reactiveToolName, executionArgs)
+        _mrtrValidateAccess(toolName, reactiveToolName, executionArgs, false)
         if (detached) {
             Map scheduled = _mrtrScheduleSlice(stateId, rec, claim, executionArgs)
             if (scheduled.accepted == true) {
@@ -2385,11 +2390,11 @@ def _mrtrReadTools() {
 
 private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set }
 
-private def _executeWithDeviceReadContext(tool, Map args, Map context) {
+private def _executeWithDeviceReadContext(tool, Map args, Map context, boolean bpsChecked = false) {
     Map previous = deviceReadContext
     if (context != null) context.outerTool = tool?.toString()
     deviceReadContext = context
-    try { return executeTool(tool, args) }
+    try { return executeTool(tool, args, bpsChecked) }
     finally { deviceReadContext = previous }
 }
 
@@ -2729,7 +2734,9 @@ private Map _mrtrWithLeafArguments(Map rec, Map outerArgs, Map nextLeafArgs) {
     return next
 }
 
-private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
+// checkKey=false on continuations: their stored args carry the initial call's key, which may
+// have rotated since; the initial call already passed the gate.
+private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boolean checkKey = true) {
     String outer = outerToolName?.toString()
     String leaf = leafToolName?.toString()
     def leafArgs = _mrtrLeafArguments(outer, leaf, outerArgs)
@@ -2746,8 +2753,11 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
     if (getEffectiveDisabledTools().contains(leaf)) {
         throw new IllegalArgumentException("${leaf} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
     }
-    if (!readLeaf && settings.enableMandatoryBPS != false && leafArgs?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
-        throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
+    if (checkKey && !readLeaf && settings.enableMandatoryBPS != false) {
+        String bpsSection = _bpsSectionForTool(leaf)
+        if (!hubBpsKeyAccepted(bpsSection, leafArgs?.bestPracticeKey)) {
+            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, leafArgs?.bestPracticeKey))
+        }
     }
 }
 
@@ -4056,7 +4066,7 @@ def runMrtrAutoContinue(Map job = [:]) {
     Map executionArgs = _mrtrCopyMap(rec.nextArguments as Map)
     mcpLog("info", "mrtr", "Server-side continuation of ${leaf} at generation ${generation}: no client request resumed it")
     try {
-        _mrtrValidateAccess(rec.outerTool, leaf, executionArgs)
+        _mrtrValidateAccess(rec.outerTool, leaf, executionArgs, false)
         if (_mrtrDetachedWorkerTools().contains(leaf)) {
             _mrtrScheduleSlice(stateId, rec, claim, executionArgs)
             return
@@ -4136,7 +4146,8 @@ private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
     if (leaf == "hub_import_native_app") return _mrtrImportNativeAppSlice(rec, executionArgs)
     Map context = rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null
-    def result = _executeWithDeviceReadContext(rec.outerTool, executionArgs, context)
+    // Every caller validated access first; a continuation's stored key may have rotated since.
+    def result = _executeWithDeviceReadContext(rec.outerTool, executionArgs, context, true)
     // Execution-local provenance bounds terminal retention without adding response fields
     // or copying the snapshot payload into persisted continuation records.
     if (context?.fetchedAt instanceof Number) rec.readSnapshotFetchedAt = context.fetchedAt
@@ -5447,7 +5458,7 @@ def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempoten
     return ann
 }
 
-def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
+def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChecked = false) {
     def gwConfig = getGatewayConfig()
     def config = gwConfig[gatewayName]
     if (!config) {
@@ -5463,7 +5474,8 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
         // gated centrally in executeTool on re-entry; this closes the catalog surface.
         // Strip [[FLAT_TRIM]] marker tokens but KEEP the content -- gateway catalog
         // mode is the disclosure surface where full descriptions belong (size cap
-        // does not apply per-tool here, only the per-response cap).
+        // does not apply per-tool here, only the per-response cap). The transform also
+        // prefixes write leaves with the guide-first sentence.
         def hidden = getHiddenToolNames()
         def visibleSubTools = config.tools.findAll { !hidden.contains(it) }
         def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
@@ -5592,7 +5604,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
         }
     }
 
-    return executeTool(toolName, safeArgs)
+    return executeTool(toolName, safeArgs, bpsChecked)
 }
 
 // Flat-mode schema trim (issue #181). Heavy tool descriptions can wrap prose
@@ -5666,14 +5678,41 @@ def stripFlatTrim(String text, boolean dropContent) {
         .replaceAll(/\[\[\/?FLAT_TRIM\]\]/, "")
 }
 
-def applyDescriptionTransform(List tools, boolean dropContent) {
+// guideFirst=false only for the search corpus, so the shared sentence does not skew BM25 ranking.
+def applyDescriptionTransform(List tools, boolean dropContent, boolean guideFirst = true) {
     tools.each { tool ->
-        if (tool?.description instanceof String) {
-            tool.description = stripFlatTrim(tool.description as String, dropContent)
+        // CharSequence, not String: gateway entries build their description as a GString.
+        if (tool?.description instanceof CharSequence) {
+            String description = stripFlatTrim(tool.description.toString(), dropContent)
+            tool.description = guideFirst ?
+                _withGuideFirst(tool.name as String, description, tool.inputSchema?.properties?.tool?.enum) : description
         }
         _stripFlatTrimDeep(tool?.inputSchema, dropContent)
     }
     return tools
+}
+
+def guideFirstSentence() {
+    return "MUST call hub_get_tool_guide first."
+}
+
+// A gateway counts as a write surface when any listed sub-tool writes; visibleSubTools narrows it.
+boolean _isWriteSurface(String name, visibleSubTools = null) {
+    if (!name) return false
+    Set readOnly = getReadOnlyToolNames()
+    def gateway = getGatewayConfig().get(name)
+    if (gateway != null) {
+        List subTools = (visibleSubTools instanceof List) ? visibleSubTools : gateway.tools
+        return subTools.any { !readOnly.contains(it) }
+    }
+    return !readOnly.contains(name)
+}
+
+// Idempotent: lists that pass through the transform twice keep a single sentence.
+String _withGuideFirst(String name, String description, visibleSubTools = null) {
+    String sentence = guideFirstSentence()
+    if (description == null || description.startsWith(sentence) || !_isWriteSurface(name, visibleSubTools)) return description
+    return "${sentence} ${description}".toString()
 }
 
 // Walk EVERY description in a schema, not just the top-level properties. A marker inside a
@@ -5760,11 +5799,12 @@ def getToolDefinitions() {
             // fat schema (already lazily disclosed by its gateway).
             if (base.name == 'hub_set_rule') {
                 // The selector REPLACES the schema that applyDescriptionTransform already
-                // walked, so it has to be stripped itself -- otherwise every trim marker
+                // walked, so it has to be stripped itself -- otherwise every trim
                 // marker in the selector's own descriptions ships raw in the flat catalog
                 // (caught by the flat-mode no-leak specs, and it is the flat wire an LLM
                 // actually reads).
-                def flatTool = applyDescriptionTransform([_setRuleFlatTool()], true)[0]
+                // The name lets the transform classify the selector as the write tool it fronts.
+                def flatTool = applyDescriptionTransform([_setRuleFlatTool() + [name: base.name]], true)[0]
                 base = base + [description: flatTool.description, inputSchema: flatTool.inputSchema]
             }
             base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
@@ -5809,9 +5849,9 @@ def getToolDefinitions() {
     }
 
     // Gateway-mode tools/list returns the gateway entries (short prose + sub-tool
-    // summaries) plus any base tools. None of those descriptions currently carry
-    // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
-    // if a future author adds one to a base-tool description.
+    // summaries) plus any base tools. The transform strips [[FLAT_TRIM]] marker
+    // tokens (base-tool descriptions carry them) and prefixes write surfaces with
+    // the guide-first sentence.
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
     Set writeLeaves = _mrtrWriteTools()
     return transformed.collect { tool ->
@@ -5869,7 +5909,8 @@ def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
     return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
 }
 
-def executeTool(toolName, args) {
+// bpsChecked: the key was already validated for this slice's initial call (continuations).
+def executeTool(toolName, args, boolean bpsChecked = false) {
     // opToken is GONE (replaced by standard MCP requestState continuation). A client
     // still sending one is running the removed idempotent-replay protocol and would
     // otherwise lose its duplicate-commit protection silently -- fail loud instead.
@@ -5905,16 +5946,15 @@ def executeTool(toolName, args) {
     }
 
     // ---- Mandatory best-practice acknowledgment gate (issue #299) ----
-    // When enableMandatoryBPS is ON, every write tool requires the caller to first read
-    // hub_get_tool_guide(section='best_practice_reference') and pass the acknowledgment key
-    // it publishes as the bestPracticeKey argument. The block message names ONLY how to get
-    // the key, never the key itself, so the LLM must actually read the guide. ON by default:
+    // When enableMandatoryBPS is ON, every write tool requires the acknowledgment key of its
+    // own guide section (_bpsSectionForTool) as the bestPracticeKey argument. The block message
+    // names the section, never the key, so the LLM must actually read it. ON by default:
     // `!= false` so null/unset/true = active and only an explicit false disables it, mirroring
     // the #113 master-gate convention (the Spock harness + the e2e env setup pin it false so the
     // suites' keyless writes run). Reuses the isGatewayName + read/write partition already
     // computed above -- gateway names short-circuit (sub-tools gate on re-entry). Two tools are
-    // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; the only
-    // way to discover the key) and hub_update_mcp_settings (the toggle-off escape hatch).
+    // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; it
+    // publishes the keys) and hub_update_mcp_settings (the toggle-off escape hatch).
     // hub_set_rule / hub_set_native_app schema-only probes stay reachable like the
     // Write master above.
     if (!isGatewayName && settings.enableMandatoryBPS != false
@@ -5922,9 +5962,11 @@ def executeTool(toolName, args) {
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))
             && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args ?: [:]))
-            && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])) {
-        if (args?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
-            throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
+            && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
+            && !bpsChecked) {
+        String bpsSection = _bpsSectionForTool(toolName)
+        if (!hubBpsKeyAccepted(bpsSection, args?.bestPracticeKey)) {
+            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, args?.bestPracticeKey))
         }
     }
 
@@ -6238,7 +6280,7 @@ def executeTool(toolName, args) {
                     hint: hint
                 ]
             }
-            return handleGateway(toolName, args.tool, args.args, (args instanceof Map) ? args.__reqT0 : null)
+            return handleGateway(toolName, args.tool, args.args, (args instanceof Map) ? args.__reqT0 : null, bpsChecked)
 
         default:
             throw new IllegalArgumentException("Unknown tool: ${_externalToolName(toolName as String)}")
@@ -10019,11 +10061,80 @@ def currentVersion() {
 
 
 // ---- Best-practice acknowledgment + reactive hints (issue #299) ----
-// Single source of truth for the acknowledgment key the enableMandatoryBPS gate validates.
-// The same literal is ALSO typed into the best_practice_reference guide body below (a Groovy
-// '''-string cannot interpolate ${...}, and switching it to a """ string would hide the key
-// from sandbox-lint's section-key parser) -- ExecuteToolMandatoryBpsGateSpec asserts the two copies stay in sync.
-def hubBpsGuideKey() { 'bps-ack-299' }
+// Current acknowledgment key for a guide section. Stateless: app.id (per-install), the section name
+// and the current hour. No state/atomicState touch. Reuses _mrtrSha256.
+def hubBpsGuideKey(String section, Long atMs = null) {
+    long bucket = ((atMs != null ? atMs : now()) as long).intdiv(3600000L)
+    String digest = _mrtrSha256("${app?.id}:${section}:${bucket}".toString())
+    return "I-HAVE-READ-THE-GUIDE-${section}-${digest.substring(0, 8)}".toString()
+}
+
+// Current OR previous hour's key (grace so a read just before rotation is not stranded).
+boolean hubBpsKeyAccepted(String section, value) {
+    if (value == null) return false
+    String v = value.toString()
+    long t = now() as long
+    return v == hubBpsGuideKey(section, t) || v == hubBpsGuideKey(section, t - 3600000L)
+}
+
+// Section whose key a write tool must carry.
+String _bpsSectionForTool(toolName) { _guideSectionForTool(toolName) ?: 'best_practice_reference' }
+
+// The gate's refusal. Names the section and why the offered value failed, never a key.
+String _bpsBlockMessage(String section, value) {
+    String v = value?.toString() ?: ''
+    String prefix = 'I-HAVE-READ-THE-GUIDE-'
+    String rest = v.startsWith(prefix) ? v.substring(prefix.length()) : ''
+    String offeredSection = rest.lastIndexOf('-') > 0 ? rest.substring(0, rest.lastIndexOf('-')) : ''
+    String why = ''
+    if (v.startsWith('bps-ack-')) {
+        why = " The key format changed; a cached bps-ack key no longer works."
+    } else if (offeredSection == section) {
+        why = " The key you passed doesn't match this section's current or previous hour's key: it expired (keys rotate hourly), was mistyped, or came from another hub. Read the section again."
+    } else if (offeredSection ==~ /[a-z_]+/) {
+        why = " The key you passed belongs to section '${offeredSection}', not this tool's section."
+    }
+    return ("Mandatory best-practice acknowledgment is enabled for write tools.${why} Read hub_get_tool_guide(section='${section}') " +
+        "and pass the acknowledgment key published at the top of that section as the bestPracticeKey argument on this call. " +
+        "The key rotates hourly and appears only in the guide.").toString()
+}
+
+// Sections that publish a key: best_practice_reference plus every section a write tool maps to.
+// Off the request path, so it is safe to cache with the other code-derived tool metadata.
+Set _bpsGatedSections() {
+    def cached = _toolMetadataGet("bpsGatedSections")
+    if (cached != null) return cached as Set
+    def readOnly = getReadOnlyToolNames()
+    Set gated = ['best_practice_reference'] as Set
+    _toolCatalogIndexes().names.each { name ->
+        def section = readOnly.contains(name) ? null : _guideSectionForTool(name)
+        if (section) gated << section
+    }
+    return _toolMetadataPut("bpsGatedSections", gated) as Set
+}
+
+// A guide section as served: the key(s) it publishes on top (its own if gated, its gated parent's
+// if a sub-section, one per gated sub-section if a parent), then the body.
+String _guideSectionServed(String key, String body) {
+    Set gated = _bpsGatedSections()
+    def registry = getToolGuideSubSections()
+    List lines = []
+    if (gated.contains(key)) lines << "Acknowledgment key: ${hubBpsGuideKey(key)}".toString()
+    def parent = registry.keySet().find { registry[it].containsKey(key) }
+    if (parent && gated.contains(parent)) lines << "Acknowledgment key (${parent}): ${hubBpsGuideKey(parent as String)}".toString()
+    def subs = registry[key]
+    if (subs instanceof Map) {
+        subs.keySet().each { sub ->
+            if (gated.contains(sub)) lines << "Acknowledgment key (${sub}): ${hubBpsGuideKey(sub as String)}".toString()
+        }
+    }
+    if (!lines) return body
+    String receipt = "It is a read-receipt, not a secret: published here deliberately by the MCP server, it rotates hourly (the previous hour's value is still accepted) and grants no privileges."
+    lines << (lines.size() > 1
+        ? "Each labelled key unlocks the write tools of the section it names (best_practice_reference maps each write tool to its section); pass that exact value as the bestPracticeKey argument. ${receipt}".toString()
+        : "Pass this exact value as the bestPracticeKey argument on the write tools this section covers. ${receipt}".toString())
+    return lines.join("\n") + "\n\n" + (body ?: '')
+}
 
 // Map a (write) tool to the hub_get_tool_guide section that documents IT (issue #299). This is the
 // reactive hint's whole point: on an error, point the LLM at the FAILING tool's own reference, not
@@ -10033,7 +10144,9 @@ def hubBpsGuideKey() { 'bps-ack-299' }
 // keys in getToolGuideSections() / getToolGuideSubSections(); the groupings mirror where each
 // family already cites hub_get_tool_guide(section=...) in its descriptions/errors. Returns null
 // for tools with no dedicated section -- those get NO reactive hint (a generic pointer is exactly
-// what this feature must avoid).
+// what this feature must avoid). The map also selects the gate's required key (null ->
+// best_practice_reference), so it must match best_practice_reference's tool list, and a sub-section
+// that publishes a key must map every write tool it documents to that key (both drift guards).
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
     if (t == 'hub_set_rule') return 'set_rule_reference'
@@ -10048,11 +10161,13 @@ def _guideSectionForTool(toolName) {
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
-    if (t in ['hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter']) return 'hub_admin_write_radios'
-    if (t in ['hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write_devices'
+    if (t in ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
+              'hub_call_matter']) return 'hub_admin_write_radios'
+    if (t in ['hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
+              'hub_create_device']) return 'hub_admin_write_devices'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
               'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
-    if (t in ['hub_call_device_command', 'hub_get_device_attribute']) return 'device_authorization'
+    if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
 }
@@ -10113,14 +10228,61 @@ def getToolGuideSections() {
 
         best_practice_reference: '''## Best-Practice Reference
 
-Acknowledgment key: bps-ack-299
-
 The "Require Best-Practice Guide Acknowledgment" gate is ON by default. While it is on, every write
-tool requires you to pass this exact key as the `bestPracticeKey` argument on the call --
-e.g. `bestPracticeKey: "bps-ack-299"`. Read this section once, then include that argument on each
-write for the rest of the session. Reads, hub_get_tool_guide, and hub_update_mcp_settings are
-never gated, so you can always reach this guide and (if needed) toggle the gate off. The key is
-published only here, so supplying it proves you consulted these practices before writing.
+tool requires the `bestPracticeKey` argument on the call (through a gateway, inside its `args`),
+carrying the acknowledgment key published at the top of the guide section that covers that tool.
+Each section has its own key, so a key from one section does not unlock a tool another section
+covers. Keys rotate hourly and the previous hour's key is still accepted: when a key is refused,
+read the section again. A key is a read-receipt, not a secret, and grants no privileges. Reads,
+hub_get_tool_guide, and hub_update_mcp_settings are never gated, so you can always reach this guide
+and (if needed) toggle the gate off.
+
+If you are calling one of these tools, you must read its section for that section's key:
+- hub_create_backup -> backup
+- hub_restore_backup -> backup
+- hub_clone_native_app -> builtin_app_tools_crud
+- hub_delete_native_app -> builtin_app_tools_crud
+- hub_export_native_app -> builtin_app_tools_crud
+- hub_import_native_app -> builtin_app_tools_crud
+- hub_set_native_app -> builtin_app_tools_crud
+- hub_call_rule -> builtin_app_tools_rules
+- hub_set_app_disabled -> builtin_app_tools_rules
+- hub_set_rule_paused -> builtin_app_tools_rules
+- hub_set_rule_private_boolean -> builtin_app_tools_rules
+- hub_clone_dashboard -> dashboards
+- hub_create_dashboard -> dashboards
+- hub_delete_dashboard -> dashboards
+- hub_update_dashboard -> dashboards
+- hub_delete_file -> file_manager
+- hub_write_file -> file_manager
+- hub_call_destructive_ops -> hub_admin_write_destructive
+- hub_delete_device -> hub_admin_write_destructive
+- hub_delete_item -> hub_admin_write_destructive
+- hub_delete_room -> hub_admin_write_destructive
+- hub_reboot -> hub_admin_write_destructive
+- hub_shutdown -> hub_admin_write_destructive
+- hub_update_firmware -> hub_admin_write_destructive
+- hub_call_device_command -> hub_admin_write_devices
+- hub_call_device_replace -> hub_admin_write_devices
+- hub_call_device_swap -> hub_admin_write_devices
+- hub_create_device -> hub_admin_write_devices
+- hub_call_matter -> hub_admin_write_radios
+- hub_call_zigbee -> hub_admin_write_radios
+- hub_call_zwave -> hub_admin_write_radios
+- hub_set_zigbee -> hub_admin_write_radios
+- hub_set_zwave -> hub_admin_write_radios
+- hub_clone_custom_rule -> rules
+- hub_create_custom_rule -> rules
+- hub_delete_custom_rule -> rules
+- hub_export_custom_rule -> rules
+- hub_import_custom_rule -> rules
+- hub_update_custom_rule -> rules
+- hub_set_rule -> set_rule_reference
+- hub_update_device -> update_device
+- hub_manage_virtual_device -> virtual_devices
+- hub_delete_visual_rule -> visual_rule_reference
+- hub_set_visual_rule -> visual_rule_reference
+Every other write tool uses this section's key.
 
 Reactive hints are always on (no toggle): when a write tool errors, the error gains a one-line
 pointer to THAT tool's own guide section -- follow it for the failing tool's reference.
@@ -11005,7 +11167,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
     - **Thermostat Scheduler** — BOTH mechanisms: `modesR` (type='mode', NAMES, `moreOptions` sub-page) = RESTRICT; and `schedTypeL:"Hub Modes"` (main page) = per-mode SETTINGS (per-mode period keys). modeInputs catches `modesR` only.
     - **Simple Automation Rules** — `modes` (classic restrict input, NAMES).
     - **Button Controller** — no app-level mode key; each child Button Rule gates via Rule Machine conditions (capability "Mode"). Inspect the child rule, not the parent.
-    - **Basic Rules** — a Vue JSON app (not a classic config page); mode conditions live in its rule model, not in settings.
+    - **Basic Rules** — a classic dynamicPage app; read it with hub_get_app_config. Mode is a TRIGGER here: `trigCapab:"System Mode"` plus `mode` (type='mode', NAMES, titled "Becomes") fires the rule when the mode becomes one of them -- not a restriction, even though modeInputs catches it. "Set mode" is one of its actions.
     - **Rule Machine** — first-class, always-inspectable mode restriction + "Mode" conditions (use the RM tools).
     Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
   - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps

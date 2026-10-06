@@ -1440,7 +1440,7 @@ def _getAllToolDefinitions_partSystem() {
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
-                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate. The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.", default: false],
+                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.[[FLAT_TRIM]] The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.[[/FLAT_TRIM]]", default: false],
                     includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
                 ]
             ]
@@ -1546,7 +1546,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_reboot",
-            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware. Requires Write master.[[FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -1559,7 +1559,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
         ],
         [
             name: "hub_shutdown",
-            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot. Requires Write master.[[FLAT_TRIM]]
+            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -1572,7 +1572,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automaticall
         ],
         [
             name: "hub_update_firmware",
-            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop). Requires Write master.[[FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
 
 PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [

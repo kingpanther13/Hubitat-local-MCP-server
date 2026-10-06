@@ -207,7 +207,7 @@ class MrtrCleanupSpec extends ToolSpecBase {
             paths << path
             [status: 302, data: '']
         }
-        script.metaClass.executeTool = { String tool, Map args ->
+        script.metaClass.executeTool = { String tool, Map args, boolean bpsChecked = false ->
             NOW_OVERRIDE.set({ at + 2000L })
             script.runMrtrCleanup()
             assert jobs().isEmpty()

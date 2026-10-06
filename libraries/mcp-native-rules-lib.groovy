@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`). Requires the Read master.[[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -15,7 +15,7 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_call_rule",
-            description: "Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation). Requires the Write master. Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for action semantics.",
+            description: "Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for action semantics.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -27,7 +27,7 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_rule_paused",
-            description: "Pause or resume one or more Rule Machine rules in one call (paused rules don't fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once — one RMUtils dispatch, e.g. a staged-migration cutover. Requires the Write master.",
+            description: "Pause or resume one or more Rule Machine rules in one call (paused rules don't fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once — one RMUtils dispatch, e.g. a staged-migration cutover.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -39,7 +39,7 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_rule_private_boolean",
-            description: "Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires the Write master.",
+            description: "Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -180,7 +180,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label. Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -192,7 +192,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
         ],
         [
             name: "hub_list_rule_local_variables",
-            description: "List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.",
+            description: "List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -220,7 +220,7 @@ Requires Write master + confirm=true + recent hub backup.""",
         ],
         [
             name: "hub_set_app_disabled",
-            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_set_rule_paused instead. Write master only — no confirm/backup needed; the disabled flag is read-back verified.",
+            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_set_rule_paused instead. Write master only — no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]].",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -9550,7 +9550,7 @@ def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditO
 // in getToolDefinitions()'s useGateways==false branch.
 def _setRuleFlatTool() {
     return [
-        description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. Eligible slow writes use automatic MCP 2026-07-28 request-to-request continuation. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation.""",
+        description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation.""",
         inputSchema: [
             type: "object",
             properties: [

@@ -2919,7 +2919,7 @@ def _getAllToolDefinitions_partCodeManagement() {
         // get_hub_details merged into hub_get_info (core tool)
         [
             name: "hub_list_apps",
-            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId. Requires the Read master.""",
+            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2932,7 +2932,7 @@ def _getAllToolDefinitions_partCodeManagement() {
         ],
         [
             name: "hub_list_drivers",
-            description: "List device driver types on the hub. Requires Read master.",
+            description: "List device driver types on the hub.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2943,7 +2943,7 @@ def _getAllToolDefinitions_partCodeManagement() {
         ],
         [
             name: "hub_list_libraries",
-            description: "List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library's id, then read its source with hub_get_source(type='library', id=N); the source is omitted here to keep the list lean. Requires Read master.",
+            description: "List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library's id, then read its source with hub_get_source(type='library', id=N)[[FLAT_TRIM]]; the source is omitted here to keep the list lean[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2954,7 +2954,7 @@ def _getAllToolDefinitions_partCodeManagement() {
         // Hub Admin App/Driver Source Read Tools
         [
             name: "hub_get_source",
-            description: "Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool's sourceFile mode. Requires Read master.",
+            description: "Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool's sourceFile mode.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3171,11 +3171,11 @@ A transport drop can lose the response while the hub still commits this write; v
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
         [
             name: "hub_get_app_config",
-            description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page. Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.). Read-only.
+            description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.
 
 Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
 
-Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]] Requires Read master.""",
+Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3192,7 +3192,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
             name: "hub_list_app_pages",
             description: """List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]
 
-Use before hub_get_app_config on multi-page apps to avoid guessing page names. Requires Read master.""",
+Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3204,7 +3204,7 @@ Use before hub_get_app_config on multi-page apps to avoid guessing page names. R
         // Installed Apps Integration (built-in + user app visibility)
         [
             name: "hub_list_device_dependents",
-            description: """List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] — critical before device cleanup, troubleshooting, or reassignment. Requires the Read master.""",
+            description: """List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] — critical before device cleanup, troubleshooting, or reassignment.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
