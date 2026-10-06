@@ -963,7 +963,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
     - **Thermostat Scheduler** — BOTH mechanisms: `modesR` (type='mode', NAMES, `moreOptions` sub-page) = RESTRICT; and `schedTypeL:"Hub Modes"` (main page) = per-mode SETTINGS (per-mode period keys). modeInputs catches `modesR` only.
     - **Simple Automation Rules** — `modes` (classic restrict input, NAMES).
     - **Button Controller** — no app-level mode key; each child Button Rule gates via Rule Machine conditions (capability "Mode"). Inspect the child rule, not the parent.
-    - **Basic Rules** — a Vue JSON app (not a classic config page); mode conditions live in its rule model, not in settings.
+    - **Basic Rules** — a classic dynamicPage app; read it with hub_get_app_config. Mode is a TRIGGER here: `trigCapab:"System Mode"` plus `mode` (type='mode', NAMES, titled "Becomes") fires the rule when the mode becomes one of them -- not a restriction, even though modeInputs catches it. "Set mode" is one of its actions.
     - **Rule Machine** — first-class, always-inspectable mode restriction + "Mode" conditions (use the RM tools).
     Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
   - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
