@@ -1118,9 +1118,11 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             restoredVia: "settingsReplay",
             nativeImportSkipped: nativeSkipped,
             error: "Restore applied partially; failed during ${step}: ${e.message}",
-            note: (step.startsWith("the final") || step == "the closing Done"
-                ? "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or call hub_set_native_app(appId=${ruleId}${commitButton ? ", button='" + commitButton + "'" : ''})."
-                : "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying.").toString()
+            note: (step == "settings replay"
+                ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
+                : (commitButton == "updateRule"
+                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or call hub_set_rule(appId=${ruleId}, button='updateRule')."
+                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or call hub_set_native_app(appId=${ruleId}${commitButton ? ", button='" + commitButton + "'" : ''}).")).toString()
         ]
     }
 

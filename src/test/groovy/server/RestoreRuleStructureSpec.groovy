@@ -268,7 +268,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rmPaths = []
         script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
         script.metaClass._rmUpdateAppSettings = { Integer id, Map st, Map schema -> replays << st }
-        script.metaClass._rmPostSettings = { Integer id, Map body, Map cache = null -> posts << body; [status: 200] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << body; [status: 200, location: null, data: ''] }
         script.metaClass._rmSubmitMainPageDone = { Integer id -> done << id; [done: true] }
         script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> rmPaths << "expression"; [:] }
         script.metaClass._rmReconcileRuleStructure = { Integer id, Map snap -> rmPaths << "reconcile"; [:] }
