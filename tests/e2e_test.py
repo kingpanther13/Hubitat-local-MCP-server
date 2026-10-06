@@ -9242,7 +9242,8 @@ class TestRunner:
                 "tool": "hub_set_rule",
                 "args": {"appId": int(app_id), "confirm": True, "replaceRequiredExpression": {
                     "conditions": [{"capability": "Mode", "state": f"{PREFIX}NoSuchMode"}]}}})
-            assert refused.get("success") is False and "NoSuchMode" in str(refused.get("error")),                 f"a replace naming an unknown mode was not refused by name: {refused}"
+            assert refused.get("success") is False and "NoSuchMode" in str(refused.get("error")), \
+                f"a replace naming an unknown mode was not refused by name: {refused}"
             assert "No changes were made" in str(refused.get("restoreHint")), refused
             blob = str(self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
