@@ -67,6 +67,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
                     classLocation: 'builtin',
                     deprecated: false,
                     system   : true,
+                    menu     : 'Automations',
                     documentationLink: null
                 ]
             ],
@@ -363,8 +364,81 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.childApps[0].id == 101
         result.childApps[0].label == 'Sub Rule'
 
+        and: 'appType summary carries built-in flag and the declared menu tab (#5/#6)'
+        result.app.appType.system == true
+        result.app.appType.menu == 'Automations'
+
         and: 'endpoint field present for debugging'
         result.endpoint == '/installedapp/configure/json/35'
+    }
+
+    def "appType.menu is null when the app type declares no menu"() {
+        given:
+        settingsMap.enableRead = true
+
+        and: 'hub returns an app whose appType omits the menu key'
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson(app: [
+                id        : 35,
+                trueLabel : 'My Rule',
+                label     : 'My Rule',
+                name      : 'Rule-5.1',
+                disabled  : false,
+                installed : true,
+                parentAppId: null,
+                appType: [
+                    name     : 'Community App',
+                    namespace: 'acme',
+                    author   : 'Third Party',
+                    system   : false
+                ]
+            ])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then: 'menu surfaces as null (no invented default) and system reflects community'
+        result.success == true
+        result.app.appType.system == false
+        result.app.appType.menu == null
+    }
+
+    def "surfaces modeInputs when the page renders a framework mode input, omits it otherwise (#431 item 8)"() {
+        given:
+        settingsMap.enableRead = true
+
+        and: 'a page with a type="mode" input (the configured value lives in settings[name], comma-joined)'
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([
+                settings: [mode1Override: 'Away,Night'],
+                configPage: [name: 'ModeOptions', title: 'Mode Options', install: false, refreshInterval: null, sections: [
+                    [title: 'Override 1', input: [
+                        [name: 'mode1Override', type: 'mode', title: 'Mode', description: null, multiple: false, required: false, options: ['Away', 'Day', 'Night']]
+                    ], body: []]
+                ]]
+            ])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then: 'the mode input is surfaced with its configured modes (read from settings[name]) + the caveat'
+        result.success == true
+        result.modeInputs.size() == 1
+        result.modeInputs[0].name == 'mode1Override'
+        result.modeInputs[0].modes == ['Away', 'Night']
+        result.modeInputs[0].section == 'Override 1'
+        result.modeInputsNote?.toLowerCase()?.contains('app-specific')
+
+        when: 'a page with no type="mode" input'
+        hubGet.register('/installedapp/configure/json/36') { params -> makeAppConfigJson() }
+        def plain = script.toolGetAppConfig([appId: 36])
+
+        then: 'modeInputs is omitted entirely (absence is not asserted as a boolean)'
+        plain.success == true
+        !plain.containsKey('modeInputs')
+        !plain.containsKey('modeInputsNote')
     }
 
     @spock.lang.Unroll

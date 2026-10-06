@@ -421,4 +421,172 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         result.containsKey('healthAlerts')
         result.healthAlerts == null
     }
+
+    // -------- includeNetwork: the folded network-config read --------
+    // The network-config read (GET /hub2/networkConfiguration) is folded into hub_get_info as the opt-in
+    // includeNetwork flag. Field names RE'd from resources/hub2-source/vue-hub2.min.js. The planted
+    // psk/wifiPassword keys below are NOT sent by the real endpoint; they prove the allowlist drops them.
+    // The endpoint returns the SSID (wifiNetwork) but NEVER the password. currentLanAddress is
+    // deliberately absent from the block -- hub_get_info already reports it as localIP.
+    private static final String NET_JSON = '''{
+        "hubVersion": 10,
+        "usingStaticIP": true,
+        "lanAddr": "192.168.1.50",
+        "wlanAddr": "192.168.1.51",
+        "wifiNetwork": "HomeNet",
+        "dnsServers": ["8.8.8.8", "1.1.1.1"],
+        "useDNSFallover": true,
+        "dhcpNameServers": ["9.9.9.9"],
+        "staticIP": "192.168.1.50",
+        "staticGateway": "192.168.1.1",
+        "staticSubnetMask": "255.255.255.0",
+        "staticNameServers": "208.67.222.222, 208.67.220.220",
+        "lanAutoneg": false,
+        "wifiDriversInstalled": true,
+        "hasEthernet": true,
+        "hasWiFi": true,
+        "restartBonjourOnSchedule": false,
+        "psk": "hunter2-should-never-leak",
+        "wifiPassword": "also-secret"
+    }'''
+
+    def "hub_get_info omits the network block unless includeNetwork=true"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        hubGet.register('/hub2/networkConfiguration') { params -> NET_JSON }
+
+        when:
+        def result = script.toolGetHubInfo([:])
+
+        then:
+        !result.containsKey('network')
+    }
+
+    def "hub_get_info includeNetwork projects the networkConfiguration into a network block"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        hubGet.register('/hub2/networkConfiguration') { params -> NET_JSON }
+
+        when:
+        def result = script.toolGetHubInfo([includeNetwork: true])
+
+        then: 'ip mode is derived from usingStaticIP'
+        def net = result.network
+        net.success == true
+        net.ipMode == 'static'
+
+        and: 'the current LAN address is NOT duplicated here (it is top-level localIP)'
+        !net.containsKey('currentLanAddress')
+        net.currentWifiAddress == '192.168.1.51'
+
+        and: 'DNS lists normalize whether the hub sent an array or a comma-joined string'
+        net.activeDnsServers == ['8.8.8.8', '1.1.1.1']
+        net.dhcpNameServers == ['9.9.9.9']
+        net.staticNameServers == ['208.67.222.222', '208.67.220.220']
+
+        and: 'static + dhcp config and the capability/ethernet flags'
+        net.staticIp == '192.168.1.50'
+        net.staticGateway == '192.168.1.1'
+        net.staticSubnetMask == '255.255.255.0'
+        net.useDNSFallover == true
+        net.ethernetAutoneg == false
+        net.hasEthernet == true
+        net.hasWiFi == true
+        net.wifiDriversInstalled == true
+        net.hubVersion == 10
+        net.wifiSsid == 'HomeNet'
+    }
+
+    def "hub_get_info includeNetwork NEVER returns the Wi-Fi password, even when the wire carries one"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        hubGet.register('/hub2/networkConfiguration') { params -> NET_JSON }
+
+        when:
+        def result = script.toolGetHubInfo([includeNetwork: true])
+
+        then: 'no secret-shaped key, and no secret value, anywhere in the projected block'
+        result.network.keySet().every { !it.toLowerCase().contains('psk') }
+        result.network.keySet().every { !it.toLowerCase().contains('password') }
+        def serialized = JsonOutput.toJson(result.network)
+        !serialized.contains('hunter2-should-never-leak')
+        !serialized.contains('also-secret')
+        result.network.note.toLowerCase().contains('password')
+    }
+
+    def "hub_get_info includeNetwork reports ipMode=unknown when usingStaticIP is not a Boolean"() {
+        given: 'the hub omits usingStaticIP -- must NOT be silently read as dhcp'
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        hubGet.register('/hub2/networkConfiguration') { params -> '{"lanAddr": "10.0.0.5"}' }
+
+        when:
+        def result = script.toolGetHubInfo([includeNetwork: true])
+
+        then:
+        result.network.success == true
+        result.network.ipMode == 'unknown'
+        result.network.activeDnsServers == []
+    }
+
+    def "hub_get_info includeNetwork derives ipMode from a real Boolean usingStaticIP"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        hubGet.register('/hub2/networkConfiguration') { params -> '{"usingStaticIP": false, "lanAddr": "10.0.0.5"}' }
+
+        when:
+        def result = script.toolGetHubInfo([includeNetwork: true])
+
+        then:
+        result.network.ipMode == 'dhcp'
+        !result.network.containsKey('currentLanAddress')
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_info includeNetwork returns a structured error block (never a throw) when the endpoint answers #label"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        hubGet.register('/hub2/networkConfiguration') { params -> response }
+
+        when:
+        def result = script.toolGetHubInfo([includeNetwork: true])
+
+        then:
+        noExceptionThrown()
+        result.network.success == false
+        result.network.error
+        result.network.note.contains('hub_admin_write_system')
+
+        where:
+        label                  | response
+        'an empty body'        | ''
+        'a JSON array'         | '[1, 2, 3]'
+        'a non-JSON HTML page' | '<html>Not Found</html>'
+    }
+
+    def "hub_get_info includeNetwork via dispatch returns the network block (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        hubGet.register('/hub2/networkConfiguration') { params -> NET_JSON }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [includeNetwork: true])
+
+        then:
+        def inner = mcpDriver.parseInner(response)
+        inner.network.success == true
+        inner.network.ipMode == 'static'
+        inner.network.wifiSsid == 'HomeNet'
+        !JsonOutput.toJson(inner.network).contains('hunter2-should-never-leak')
+
+        where:
+        useGateways << [true, false]
+    }
 }

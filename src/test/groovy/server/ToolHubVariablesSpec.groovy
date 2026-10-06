@@ -2188,6 +2188,390 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         script._hubVarPlatformInUse(null, 'GT1') == null
     }
 
+    @spock.lang.Unroll
+    def "_hubVarPlatformInUseStatus distinguishes unreadable from not-listed: '#name' -> #expected"() {
+        given:
+        def row = { String n, boolean used ->
+            used ? "<tr style='color:black'><td><div><a href='#' data-stateAttribute='inUse' aria-label='Show In Use Apps for ${n}' style='color:orange'>${n}</a></div></td><td>Number</td></tr>" :
+                   "<tr style='color:black'><td>${n}</td><td>Number</td></tr>"
+        }
+        def page = groovy.json.JsonOutput.toJson([configPage: [sections: [[body: [[type: 'paragraph',
+            description: "<table>${row('GT1', true)}${row('Idle', false)}</table>".toString()]]]]]])
+        hubGet.register('/installedapp/configure/json/1424') { params -> page }
+
+        expect:
+        script._hubVarPlatformInUseStatus(1424, name) == expected
+
+        where:
+        name      | expected
+        'GT1'     | 'inUse'      // Show-In-Use marker present
+        'Idle'    | 'notInUse'   // plain row present
+        'Missing' | 'notListed'  // page read fine, variable absent
+        null      | 'unreadable' // no var name
+    }
+
+    def "_hubVarPlatformInUseStatus is unreadable when the page GET throws, and the Boolean wrapper collapses both unknowns to null"() {
+        given:
+        hubGet.register('/installedapp/configure/json/1424') { params -> throw new RuntimeException('401') }
+
+        expect: 'the throwing GET is unreadable'
+        script._hubVarPlatformInUseStatus(1424, 'GT1') == 'unreadable'
+
+        and: 'the Boolean wrapper maps unreadable AND notListed both to null (delete-variable path unchanged)'
+        script._hubVarPlatformInUse(1424, 'GT1') == null
+    }
+
+    // ---- hub_get_variable includeDependents ----
+    // The reveal fixture mirrors the live capture off firmware 2.5.1.183: the per-variable reveal link
+    // (title='Show In Use Apps for <name>'), the revealed-panel marker (<b><name></b> is in use by these
+    // apps) and the consumer anchors (<a href='/installedapp/configure/<id>' title='Open <label>'>...).
+    // App labels render RAW (not entity-escaped), so the parse reads the label from the title attribute.
+    // The hub serves the page as configPage JSON with the HTML embedded in a body description, so the
+    // fixture wraps it that way too -- also exercising the decode-before-scan (JSON escapes must not leak).
+
+    private String wrapCfg(String html) {
+        return groovy.json.JsonOutput.toJson([configPage: [sections: [[body: [[type: 'paragraph', description: html]]]]]])
+    }
+
+    private String hubVarInUsePage(String escapedName, List apps) {
+        def anchors = apps.collect {
+            "\t<a href='/installedapp/configure/${it.id}' target='_blank' title='Open ${it.label}'>${it.label}</a>\n"
+        }.join('')
+        def html = "<table><tr><td><div class='submitOnChange app-button-link' data-stateAttribute='inUse' " +
+                   "title='Show In Use Apps for ${escapedName}'>${escapedName}</div></td><td>Boolean</td></tr></table>" +
+                   "<b>${escapedName}</b> is in use by these apps:${anchors}"
+        return wrapCfg(html)
+    }
+
+    def "hub_get_variable includeDependents reveals and parses the consuming apps"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            hubVarInUsePage('zzProbe', [[id: '21', label: 'zzVarDepProbeRule'], [id: '34', label: 'Kitchen Lights']])
+        }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << [btn: btnName, stateAttr: stateAttr, pageName: pageName]
+            [status: 200]
+        }
+
+        when:
+        def result = script.toolGetVariable([name: 'zzProbe', includeDependents: true])
+
+        then: 'the base variable read is unchanged'
+        result.name == 'zzProbe'
+        result.source == 'hub'
+
+        and: 'the reveal is clicked on hubVar, then dismissed with cancelDel'
+        buttonClicks*.btn == ['zzProbe', 'cancelDel']
+        buttonClicks[0] == [btn: 'zzProbe', stateAttr: 'inUse', pageName: 'hubVar']
+
+        and: 'both consumers parsed as {id,label}'
+        result.count == 2
+        result.appsUsing == [[id: '21', label: 'zzVarDepProbeRule'], [id: '34', label: 'Kitchen Lights']]
+        result.coverageNote.contains('webCoRE')
+    }
+
+    def "hub_get_variable omits dependents unless includeDependents=true"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> buttonClicks << btnName; [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'zzProbe'])
+
+        then: 'no reveal click, no appsUsing'
+        !result.containsKey('appsUsing')
+        !result.containsKey('coverageNote')
+        buttonClicks.isEmpty()
+    }
+
+    def "hub_get_variable includeDependents returns an empty list when the variable is registered but not in use"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params -> wrapCfg("<table><tr><td>Idle</td><td>Boolean</td></tr></table>") }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> buttonClicks << btnName; [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'Idle', includeDependents: true])
+
+        then: 'not-in-use short-circuits with no reveal click'
+        result.appsUsing == []
+        result.count == 0
+        buttonClicks.isEmpty()
+    }
+
+    def "hub_get_variable includeDependents still throws for an unknown variable, before any side effect"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> null }
+        stateMap.ruleVariables = [:]
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> buttonClicks << btnName; [status: 200] }
+
+        when:
+        script.toolGetVariable([name: 'nope', includeDependents: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Variable not found')
+        buttonClicks.isEmpty()
+    }
+
+    def "hub_get_variable includeDependents is ignored for a rule-engine variable (no dependents fields, no reveal click)"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> null }
+        stateMap.ruleVariables = [onlyRule: 'x']
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> buttonClicks << btnName; [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'onlyRule', includeDependents: true])
+
+        then: 'the in-use registry is hub-variable-only, so a rule-engine var gets no dependents fields'
+        result.source == 'rule_engine'
+        !result.containsKey('appsUsing')
+        !result.containsKey('coverageNote')
+        !result.containsKey('dependentsError')
+        buttonClicks.isEmpty()
+    }
+
+    def "hub_get_variable includeDependents reports a distinct 'page unreadable' dependentsError when the Hub Variables page cannot be read"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params -> throw new RuntimeException('401') }
+
+        when:
+        def result = script.toolGetVariable([name: 'zzProbe', includeDependents: true])
+
+        then: 'the base read still succeeds; the dependents failure names the unreadable page specifically'
+        result.source == 'hub'
+        !result.containsKey('appsUsing')
+        result.dependentsError.contains('in-use registry')
+        result.dependentsError.contains('the Hub Variables page was unreadable')
+        !result.dependentsError.contains('not listed')
+    }
+
+    def "hub_get_variable includeDependents reports a distinct 'not listed' dependentsError when the page reads but omits the variable"() {
+        given: 'the page reads fine, but names neither the in-use marker nor a plain row for this variable'
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            wrapCfg("<table><tr><td>someOtherVar</td><td>Number</td></tr></table>")
+        }
+
+        when:
+        def result = script.toolGetVariable([name: 'zzProbe', includeDependents: true])
+
+        then: 'the not-listed case is a DISTINCT dependentsError text, not the page-unreadable one'
+        result.source == 'hub'
+        !result.containsKey('appsUsing')
+        result.dependentsError.contains('in-use registry')
+        result.dependentsError.contains('the variable is not listed on the Hub Variables page')
+        !result.dependentsError.contains('unreadable')
+    }
+
+    def "hub_get_variable includeDependents treats a reveal that did not load as UNKNOWN, not empty"() {
+        given: 'the variable is marked in-use (reveal link present) but the reveal panel never renders'
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, component: component, msg: msg] }
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        // Page carries the "Show In Use Apps for probe" marker (so platformInUse=true) but NO revealed
+        // anchors and NO "is in use by these apps" panel -- i.e. the reveal click no-op'd.
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            wrapCfg("<table><tr><td><div data-stateAttribute='inUse' title='Show In Use Apps for probe'>probe</div></td><td>Boolean</td></tr></table>")
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'probe', includeDependents: true])
+
+        then: 'zero anchors with no loaded panel is UNKNOWN -> dependentsError, NOT appsUsing:[]'
+        !result.containsKey('appsUsing')
+        result.dependentsError.contains('in-use registry')
+
+        and: 'the never-rendered reveal is logged as a warning'
+        logs.any { it.level == 'warn' && it.component == 'variables' && it.msg.contains('never rendered') }
+    }
+
+    def "hub_get_variable includeDependents returns UNKNOWN when in-use but the panel lists no parseable consumers"() {
+        given: 'platformInUse=true and the panel for THIS variable renders, but with zero consumer anchors'
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, component: component, msg: msg] }
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._primeHubVarsWizard = { Integer appId, String context -> }
+        // Marker present (in-use + the panel renders for 'probe') but NO <a ...configure...> anchors.
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            wrapCfg("<table><tr><td><div data-stateAttribute='inUse' title='Show In Use Apps for probe'>probe</div></td><td>Boolean</td></tr></table>" +
+                    "<b>probe</b> is in use by these apps:")
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'probe', includeDependents: true])
+
+        then: 'a rendered-but-empty panel is a contradiction -> UNKNOWN, NOT appsUsing:[]'
+        !result.containsKey('appsUsing')
+        result.dependentsError.contains('in-use registry')
+
+        and: 'the empty-panel contradiction is logged as a warning'
+        logs.any { it.level == 'warn' && it.component == 'variables' && it.msg.contains('no consumer anchors parsed') }
+    }
+
+    def "hub_get_variable includeDependents ignores a reveal panel that names a different variable (parallel-call safety)"() {
+        given: "'probe' is in use, but the shared reveal shows ANOTHER variable's panel (a racing parallel call)"
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._primeHubVarsWizard = { Integer appId, String context -> }
+        // platformInUse=true for 'probe', but the revealed panel + anchor belong to 'other'.
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            wrapCfg("<table><tr><td><div data-stateAttribute='inUse' title='Show In Use Apps for probe'>probe</div></td><td>Boolean</td></tr></table>" +
+                    "<b>other</b> is in use by these apps:\t<a href='/installedapp/configure/77' target='_blank' title='Open OtherRule'>OtherRule</a>\n")
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'probe', includeDependents: true])
+
+        then: "another variable's panel is never read as ours -> UNKNOWN, not OtherRule"
+        !result.containsKey('appsUsing')
+        result.dependentsError.contains('in-use registry')
+    }
+
+    def "hub_get_variable includeDependents still dismisses the reveal (cancelDel) when the reveal click throws"() {
+        given: 'the reveal click fails (e.g. a 4xx), so the parse never runs'
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._primeHubVarsWizard = { Integer appId, String context -> }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            wrapCfg("<table><tr><td><div data-stateAttribute='inUse' title='Show In Use Apps for probe'>probe</div></td><td>Boolean</td></tr></table>")
+        }
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << btnName
+            if (btnName == 'probe') throw new RuntimeException('403')
+            [status: 200]
+        }
+
+        when:
+        def result = script.toolGetVariable([name: 'probe', includeDependents: true])
+
+        then: 'the finally still dismisses the reveal, and the failure is reported as UNKNOWN'
+        buttonClicks == ['probe', 'cancelDel']
+        !result.containsKey('appsUsing')
+        result.dependentsError.contains('in-use registry')
+    }
+
+    def "hub_get_variable includeDependents polls until the async reveal loads (first fetch unrevealed, later fetch revealed)"() {
+        given: 'the variable is in-use, but the revealed panel only renders on a later fetch (async click)'
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        // Stub the prime so its own configure/json GET is not miscounted as a reveal poll, and count only
+        // the GETs AFTER the reveal click -- so the test fails if the poll is reverted to a single fetch.
+        script.metaClass._primeHubVarsWizard = { Integer appId, String context -> }
+        String unrevealed = wrapCfg("<table><tr><td><div data-stateAttribute='inUse' title='Show In Use Apps for probe'>probe</div></td><td>Boolean</td></tr></table>")
+        boolean clicked = false
+        int getsAfterClick = 0
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            if (!clicked) return unrevealed   // platformInUse check: in-use marker, no revealed panel
+            getsAfterClick++
+            // First poll after the click -> still unrevealed; the second -> the panel with the anchor.
+            getsAfterClick <= 1 ? unrevealed : hubVarInUsePage('probe', [[id: '21', label: 'ProbeRule']])
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            if (btnName == 'probe') clicked = true
+            [status: 200]
+        }
+
+        when:
+        def result = script.toolGetVariable([name: 'probe', includeDependents: true])
+
+        then: 'the poll waited for the reveal and parsed the consumer -- not a false dependentsError'
+        !result.containsKey('dependentsError')
+        result.appsUsing == [[id: '21', label: 'ProbeRule']]
+
+        and: 'the reveal was polled more than once after the click'
+        getsAfterClick >= 2
+    }
+
+    def "hub_get_variable includeDependents matches an entity-escaped variable name and reads the raw app label"() {
+        given: 'the variable NAME is entity-escaped in the page; the app LABEL renders RAW (with a raw &)'
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            hubVarInUsePage('Tom &amp; Jerry', [[id: '9', label: 'Heat & Cool']])
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'Tom & Jerry', includeDependents: true])
+
+        then:
+        result.count == 1
+        result.appsUsing == [[id: '9', label: 'Heat & Cool']]
+    }
+
+    def "hub_get_variable includeDependents reads a raw app label containing < > & and '"() {
+        given: 'the hub renders consumer labels RAW, so the label carries literal < > & and a quote'
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            hubVarInUsePage('zzProbe', [[id: '2598', label: "X A&B <rule> it's"]])
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'zzProbe', includeDependents: true])
+
+        then: 'the label is read verbatim from the title attribute, tags and entities left intact'
+        result.count == 1
+        result.appsUsing == [[id: '2598', label: "X A&B <rule> it's"]]
+    }
+
+    def "hub_get_variable includeDependents decodes JSON-embedded HTML so escapes do not leak into labels"() {
+        given: 'a label carrying a double-quote the configPage JSON escapes on the wire'
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            hubVarInUsePage('zzProbe', [[id: '7', label: 'Say "Hi" Rule']])
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+
+        when:
+        def result = script.toolGetVariable([name: 'zzProbe', includeDependents: true])
+
+        then: 'the label is the clean HTML text, with no leaked JSON backslash-escapes'
+        result.appsUsing == [[id: '7', label: 'Say "Hi" Rule']]
+        !result.appsUsing[0].label.contains('\\')
+    }
+
+    def "hub_get_variable includeDependents via dispatch routes through the read gateway"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [name: n, type: 'Boolean', value: false] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            hubVarInUsePage('zzProbe', [[id: '21', label: 'zzVarDepProbeRule']])
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_variable', [name: 'zzProbe', includeDependents: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.name == 'zzProbe'
+        inner.count == 1
+        inner.appsUsing == [[id: '21', label: 'zzVarDepProbeRule']]
+    }
+
     def "hub_delete_variable refuses when a child rule uses the variable only as a %name% substitution"() {
         given:
         enableWrite()

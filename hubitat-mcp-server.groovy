@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.5.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.5.4 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -4692,7 +4692,7 @@ def getGatewayConfig() {
             tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector", "hub_list_variable_changes"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
-                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). Args: name",
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
                 hub_set_variable: "Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. Args: name, value",
                 hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form). A String value must be non-empty",
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if rules reference it]",
@@ -4702,7 +4702,7 @@ def getGatewayConfig() {
             ],
             searchHints: [
                 hub_list_variables: "show all global state connector",
-                hub_get_variable: "read fetch lookup global state",
+                hub_get_variable: "read fetch lookup global state which apps use reference depend on dependents consumers in use before rename delete",
                 hub_set_variable: "write update change store global state",
                 hub_create_variable: "add new hub variable global",
                 hub_delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable",
@@ -4752,12 +4752,12 @@ def getGatewayConfig() {
             description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
             tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
-                hub_list_apps: "List installed apps. scope='types' (installed app code library) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
+                hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
                 hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, cursor?",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
                 hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
-                hub_list_backups: "List auto-created source code backups",
+                hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all (hub scopes also return the automatic-backup schedule). Args: scope?, cursor?",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
                 hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?",
@@ -4770,7 +4770,7 @@ def getGatewayConfig() {
                 hub_get_source: "view read application driver library groovy code namespace include",
                 hub_list_libraries: "list show installed groovy libraries code namespace include shared modules discover library id",
                 hub_list_bundles: "list show installed bundles bundle manager hpm package zip containers code delivery discover bundle id apps drivers libraries",
-                hub_list_backups: "show saved previous versions revisions",
+                hub_list_backups: "list show backups code source whole hub database local cloud restore points schedule frequency automatic daily time when backups run",
                 hub_get_backup: "view read saved previous version revision",
                 hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
                 hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
@@ -4779,16 +4779,16 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_backup: [
-            description: "Hub-database backup management plus source-code backup restore (issue #259 item #1): list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, and restore source-code backups. Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops). Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
+            description: "Hub-database backup management plus source-code backup restore: list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, and restore source-code backups. Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops); hub_list_backups (hub scopes) reports the current schedule. Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
             tools: ["hub_list_backups", "hub_get_backup", "hub_restore_backup", "hub_delete_backup"],
             summaries: [
-                hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all. Args: scope?, cursor?",
+                hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all (hub scopes also return the automatic-backup schedule). Args: scope?, cursor?",
                 hub_get_backup: "Get source from a code backup. Args: backupKey",
                 hub_restore_backup: "Restore a code/rule backup (scope=source + backupKey) OR the whole hub DB (scope=hub_local + fileName | hub_cloud + cloudBackupPassword | hub_uploaded + backupUrl -- REBOOTS). Args: scope?, backupKey?/fileName?/cloudBackupPassword?/backupUrl?, confirm",
                 hub_delete_backup: "Delete a whole-hub DB backup. Args: location (local|cloud), fileName?/path?, confirm"
             ],
             searchHints: [
-                hub_list_backups: "list show backups code source whole hub database local cloud restore points",
+                hub_list_backups: "list show backups code source whole hub database local cloud restore points schedule frequency automatic daily time when backups run",
                 hub_get_backup: "view read saved previous version revision source",
                 hub_restore_backup: "restore revert roll back code rule whole hub database disaster recovery migration upload reboot",
                 hub_delete_backup: "delete remove prune hub database backup local cloud free space recovery point"
@@ -5028,16 +5028,16 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_variables: [
-            description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata, and watch the recent change timeline. All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
+            description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata (optionally the apps that reference it), and watch the recent change timeline. All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
             tools: ["hub_list_variables", "hub_get_variable", "hub_list_variable_changes"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
-                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). Args: name",
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
                 hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name?, sinceMs?, limit?"
             ],
             searchHints: [
                 hub_list_variables: "show all global state connector variables",
-                hub_get_variable: "read fetch lookup global state variable",
+                hub_get_variable: "read fetch lookup global state variable which apps use reference depend on dependents consumers in use before rename delete",
                 hub_list_variable_changes: "watch observe changes events recent variable timeline"
             ]
         ],
@@ -6087,7 +6087,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_manage_mode": return toolManageMode(args)
         case "hub_set_mode_manager": return toolSetModeManager(args)
         case "hub_list_variables": return toolListVariables(args)
-        case "hub_get_variable": return toolGetVariable(args.name)
+        case "hub_get_variable": return toolGetVariable(args)
         case "hub_set_variable": return toolSetVariable(args)
         case "hub_create_variable": return toolCreateVariable(args)
         case "hub_delete_variable": return toolDeleteHubVariable(args)
@@ -10053,7 +10053,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.5.3"
+    return "4.5.4"
 }
 
 
@@ -10491,7 +10491,19 @@ Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime,
 
 **`includeAppUpdate=true`** (default false): also checks GitHub for a newer MCP (Rule) Server APP version, returned under `appUpdate`. The check is ASYNCHRONOUS — the first call may return `latestVersion: 'unknown (check in progress)'`; call again in a few seconds. This is DISTINCT from `platformUpdate` (the hub's own firmware). To INSTALL a pending hub firmware update, use hub_update_firmware.
 
-**PII / Read master gating:** Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned ONLY when the Read master is enabled; otherwise they are omitted.
+**`includeNetwork=true`** (default false): attaches the hub's network config under `network` — the READ counterpart of `hub_set_system_settings(network:...)`, reading `/hub2/networkConfiguration`. Opt-in because it adds a round-trip. Fields:
+- `ipMode` — `dhcp` or `static`, or `unknown` when the hub did not report `usingStaticIP` (missing/null/non-Boolean).
+- `currentWifiAddress` — the hub's current Wi-Fi IP. (The current LAN address is NOT in this block — it is the top-level `localIP` field, PII-gated — so `network` does not duplicate it.)
+- `activeDnsServers` — the DNS servers in effect now (list).
+- `staticIp`, `staticGateway`, `staticSubnetMask`, `staticNameServers` — the SAVED static-IP config; reported whether or not static is the active mode.
+- `dhcpNameServers`, `useDNSFallover` — the saved DHCP DNS overrides.
+- `ethernetAutoneg`, plus the `hasEthernet` / `hasWiFi` / `wifiDriversInstalled` capability flags.
+- `wifiSsid` — the joined Wi-Fi SSID.
+- `restartBonjourOnSchedule`, `hubVersion`.
+
+**SECURITY:** the Wi-Fi password is NEVER returned — only the SSID (`wifiSsid`). The `network` block is an explicit field allowlist, so a `psk`-like key is dropped even if a future firmware returns one. On firmware without the endpoint (or an unreadable/empty/non-JSON body) `network` is a structured `{success:false, error, note}` block, not a throw.
+
+**PII / Read master gating:** Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned ONLY when the Read master is enabled; otherwise they are omitted. `includeNetwork` is reached through the same Read master.
 
 ### hub_list_modes
 
@@ -10881,6 +10893,8 @@ Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-
 
 `scope=source` (default) lists auto-created code backups, each with a `backupKey`. `scope=hub_local` / `hub_cloud` / `hub` / `all` return whole-hub DB backups under `hubLocalBackups` / `hubCloudBackups`. A local backup's `name` and a cloud backup's `path` feed hub_restore_backup and hub_delete_backup. Local entries carry `size`, `platformVersion` and `fullBackup`; a full backup (`fullBackup:true`, a .tar.gz that also holds File Manager files and the radio data flagged by `hasZigbee` / `hasZWave`) restores only from the Hubitat web UI.
 
+The hub scopes (`hub_local` / `hub_cloud` / `hub` / `all`) also return the current automatic-backup `schedule` block: `localBackupFrequency` and `cloudBackupFrequency` (both in DAYS, 0=off), the daily `hour`/`minute`, the `localBackupEnabled`/`cloudBackupEnabled` convenience flags, and the `hasCloudBackupEntitlements`/`hasCloudRestoreEntitlements` cloud flags. The cloud-backup password is **never** returned (it is a secret; the endpoint returns it as null anyway). A failed schedule read is reported under `hubBackupErrors` with `partial:true` rather than failing the listing. To CHANGE any of these fields, call hub_create_backup with a `schedule` object.
+
 ### hub_get_backup
 
 Reads the saved source from one backup -- use it to inspect or diff a prior version before restoring (to re-apply, use hub_restore_backup, not this tool). Large sources are omitted from the response (`sourceTooLargeForResponse=true`) with a File Manager download link instead.
@@ -11131,6 +11145,12 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - User apps have user=true (Awair, Ecobee, HPM, etc.)
   - Parent/child tree is flattened with parentId pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor.
 
+- **hub_list_apps (scope='types')** — enumerate the installed app-type catalog: community (user-installed Apps Code, listed first) AND built-in types, in one call
+  - Community entries preserve the code registry's native fields (id = code-class id, name, namespace, oauth, lastModified, usedBy, ...); built-in entries carry the hub's app-type fields. Both gain three added fields:
+  - **system** / **isBuiltIn** (booleans, same value) — true for a built-in Hubitat app type, false for a community/user-installed one. Answers "which of my installed app types are community vs built-in" without a per-app hub_get_app_config call.
+  - **menu** — the admin UI tab the app type declares in its definition() block: "Apps", "Automations", or "Integrations" (recent firmware splits the Apps page into these three tabs). null when the type declares no menu, or when a community type is not in the appsList catalog (e.g. a child-app template). Group types by menu to mirror the tab layout.
+  - Community types come from the Apps Code registry (/hub2/userAppTypes, preserving class ids + child-app templates); menu and the built-in types are layered on from one supplementary /hub2/appsList read. If that read fails, community types still list (menu null, no built-ins) with a note.
+
 - **hub_list_device_dependents** — find apps that reference a specific device
   - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
   - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
@@ -11138,6 +11158,18 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 
 - **hub_get_app_config** — read an installed app's configuration page (Read master required)
   - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
+  - appType summary carries system (built-in vs community) and menu (the app type's declared Apps/Automations/Integrations tab, null if undeclared) — for the same fields across ALL app types in one call, use hub_list_apps(scope='types')
+  - **modeInputs** (present only when the page renders framework-standard mode inputs, type="mode") — a list of {name, modes, section}, plus **modeInputsNote**. `modes` is each input's configured list. IMPORTANT — the SEMANTICS are app-specific: a `type="mode"` input can be a "only run during these modes" RESTRICTION, or per-mode OVERRIDES (e.g. Day Lights uses ten `type="mode"` inputs for per-mode brightness/color overrides, gated by its own `useModeOverrides` bool — not a restriction). Read the input titles/settings to tell which. It detects ONLY the standard input on the page you read; the input often lives on a SUB-PAGE (walk hub_list_app_pages), and it does NOT detect apps that gate on mode through their own settings model (e.g. Room Lighting's useModes/onConds) or handler logic (`if (location.mode in ...)`). So the ABSENCE of modeInputs is NOT proof the app ignores mode — for an arbitrary non-RM app that is app-specific and may require reading its source. Rule Machine rules have first-class, always-inspectable mode restriction; classic apps have no universal equivalent.
+  - **Mode gating in the common built-in apps** (per-app-type reference). There is NO hub-native "modes in use by" (unlike hub variables), so mode gating must be read per app, and each built-in stores it differently. Resolve mode IDs to names via hub_list_modes.
+    - **Notifier** — `modes` (type='mode', mode NAMES) on the `moreOptions` sub-page. RESTRICT ("only when mode is"). Caught by modeInputs when that sub-page is read.
+    - **Motion Lighting** — `onModes` / `offModes` (type='mode', NAMES) on `onOptions` / `offOptions`, gated by the `useModes` bool. RESTRICT (modes in which to DISABLE turning on/off). Caught by modeInputs on those sub-pages.
+    - **Room Lights** — `modes` as mode **IDs** (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`; NOT a type='mode' input — it is per-mode SETTINGS (behavior varies per mode) in the lighting-period model. NOT caught by modeInputs.
+    - **Thermostat Scheduler** — BOTH mechanisms: `modesR` (type='mode', NAMES, `moreOptions` sub-page) = RESTRICT; and `schedTypeL:"Hub Modes"` (main page) = per-mode SETTINGS (per-mode period keys). modeInputs catches `modesR` only.
+    - **Simple Automation Rules** — `modes` (classic restrict input, NAMES).
+    - **Button Controller** — no app-level mode key; each child Button Rule gates via Rule Machine conditions (capability "Mode"). Inspect the child rule, not the parent.
+    - **Basic Rules** — a Vue JSON app (not a classic config page); mode conditions live in its rule model, not in settings.
+    - **Rule Machine** — first-class, always-inspectable mode restriction + "Mode" conditions (use the RM tools).
+    Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
   - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
   - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting also have sub-pages linked from mainPage (RM: selectTriggers, selectActions; Room Lighting: onDevicesPage, onMeansPage, offMeansPage, with optionsOnPage/optionsOffPage one level deeper). Call hub_list_app_pages first -- it lists every sub-page the live page links to. Author RM rules with hub_set_rule's shortcuts; drive other apps' sub-pages with hub_set_native_app walkStep (navigate / write / done).
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
@@ -11668,6 +11700,13 @@ Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub
 
 The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked.
 
+**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) because it CLICKS the Settings → Hub Variables wizard reveal. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
+
+- **Source:** the hub's own in-use registry, surfaced through the Settings → Hub Variables wizard. There is no pure-GET dependents document for variables (unlike a device's `/device/fullJson` `appsUsing`), so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only.
+- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
+- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the reveal cannot be read, did not render, or renders in-use yet lists no consumers, the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
+- **Coverage caveat:** only apps that register Hub Variable use with the hub appear (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps — what the page shows in orange). Apps that never register their use, such as webCoRE pistons, are not covered; `coverageNote` says so.
+
 ### hub_create_variable
 
 Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.
@@ -11706,7 +11745,7 @@ Deleting a Hub Mesh **linked mirror** (a local copy of a peer's shared variable)
 
 ### hub_list_variable_changes
 
-Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This durable buffer retains the latest 200 subscribed changes across app and hub restarts. It is not a complete history — an empty or partial result does NOT mean the variable never changed. Names are rewritten on variable rename, and sinceMs includes events at the boundary. The hub's separate location-event history is available through hub_list_device_events with no deviceId; its retention and timestamps differ.
 
 ### hub_create_connector
 

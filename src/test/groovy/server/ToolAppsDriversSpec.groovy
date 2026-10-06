@@ -66,30 +66,62 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_list_apps returns parsed apps from the hub API"() {
+    // scope='types' keeps /hub2/userAppTypes as its primary source (the Apps Code registry:
+    // user code classes with class id + usedBy, incl. child-app templates). It layers `menu`
+    // and the built-in (systemAppTypes) types on from one supplementary /hub2/appsList read.
+    // App One is present in the appsList catalog (menu enriched by id); App Two is a child-app
+    // template absent from that catalog (menu stays null).
+    private static final String USER_APP_TYPES = '''[
+        {"id": 1, "name": "App One", "namespace": "acme", "usedBy": [{"id": 50}]},
+        {"id": 2, "name": "App Two", "namespace": "acme", "usedBy": []}
+    ]'''
+    private static final String APPS_LIST_ENRICH = '''{
+        "apps": [],
+        "userAppTypes": [
+            {"id": 1, "name": "App One", "namespace": "acme", "menu": "Integrations"}
+        ],
+        "systemAppTypes": [
+            {"id": 90, "name": "Rule Machine", "namespace": "hubitat", "menu": "Automations"}
+        ]
+    }'''
+
+    private void registerTypeEndpoints() {
+        hubGet.register('/hub2/userAppTypes') { params -> USER_APP_TYPES }
+        hubGet.register('/hub2/appsList') { params -> APPS_LIST_ENRICH }
+    }
+
+    def "hub_list_apps returns community code types enriched with menu, then appended built-in types"() {
         given:
         enableRead()
-        hubGet.register('/hub2/userAppTypes') { params ->
-            '[{"id": 1, "name": "App One"}, {"id": 2, "name": "App Two"}]'
-        }
+        registerTypeEndpoints()
 
         when:
         def result = script.toolListHubApps([:])
 
-        then:
+        then: 'community code types first (menu enriched from appsList), then built-in types'
         result.source == 'hub_api'
-        result.count == 2
-        result.apps*.name == ['App One', 'App Two']
+        result.count == 3
+        result.apps*.name == ['App One', 'App Two', 'Rule Machine']
+
+        and: '#6 — bulk built-in vs community flags (both aliases carry the same value)'
+        result.apps*.system == [false, false, true]
+        result.apps*.isBuiltIn == [false, false, true]
+
+        and: '#5 — menu enriched for a catalog type, null for an unlisted child template, inline for built-in'
+        result.apps*.menu == ['Integrations', null, 'Automations']
+
+        and: 'the Apps Code registry fields (class id + usedBy) survive untouched for community types'
+        def appOne = result.apps.find { it.name == 'App One' }
+        appOne.id == 1
+        appOne.usedBy == [[id: 50]]
     }
 
     @spock.lang.Unroll
-    def "hub_list_apps via dispatch returns parsed apps from the hub API (useGateways=#useGateways)"() {
+    def "hub_list_apps via dispatch returns menu + built-in split (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableRead()
-        hubGet.register('/hub2/userAppTypes') { params ->
-            '[{"id": 1, "name": "App One"}, {"id": 2, "name": "App Two"}]'
-        }
+        registerTypeEndpoints()
 
         when:
         def response = mcpDriver.callTool('hub_list_apps', [scope: 'types'])
@@ -99,11 +131,50 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.source == 'hub_api'
-        inner.count == 2
-        inner.apps*.name == ['App One', 'App Two']
+        inner.count == 3
+        inner.apps*.name == ['App One', 'App Two', 'Rule Machine']
+        inner.apps*.system == [false, false, true]
+        inner.apps*.isBuiltIn == [false, false, true]
+        inner.apps*.menu == ['Integrations', null, 'Automations']
 
         where:
         useGateways << [true, false]
+    }
+
+    def "hub_list_apps enriches community menu by namespace+name when the class id does not line up"() {
+        given: 'appsList keys the same type under a different id (matched by namespace+name)'
+        enableRead()
+        hubGet.register('/hub2/userAppTypes') { params ->
+            '[{"id": 1, "name": "App One", "namespace": "acme"}]'
+        }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps": [], "userAppTypes": [{"id": 777, "name": "App One", "namespace": "acme", "menu": "Apps"}], "systemAppTypes": []}'
+        }
+
+        when:
+        def result = script.toolListHubApps([:])
+
+        then:
+        result.apps*.menu == ['Apps']
+        result.apps*.system == [false]
+    }
+
+    def "hub_list_apps degrades to community-only with a note when appsList enrichment fails"() {
+        given: 'the code registry reads, but the enrichment endpoint is unavailable'
+        enableRead()
+        hubGet.register('/hub2/userAppTypes') { params -> USER_APP_TYPES }
+        hubGet.register('/hub2/appsList') { params -> throw new RuntimeException('appsList down') }
+
+        when:
+        def result = script.toolListHubApps([:])
+
+        then: 'community types still list (system=false, menu null); no built-ins; a note explains'
+        result.source == 'hub_api'
+        result.count == 2
+        result.apps*.name == ['App One', 'App Two']
+        result.apps*.system == [false, false]
+        result.apps*.menu == [null, null]
+        result.note.contains('menu tab unavailable')
     }
 
     def "hub_list_apps returns raw response when hub returns non-JSON"() {
