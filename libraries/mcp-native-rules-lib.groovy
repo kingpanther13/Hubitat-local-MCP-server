@@ -12986,16 +12986,22 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     } catch (Exception e) {
         if (_rmUndoUseSTAfterFailedAdd(appId, useSTBefore)) {
             mcpLog("error", "rm-native", "addRequiredExpression: app ${appId} may be left with Required Expression switched on and empty (runs ungated)")
-            def msg = "${e.message ?: e} ${_rmUseSTLeftOnText()}".toString()
+            def msg = "${_rmStripNotTouched(e.message ?: e.toString())} ${_rmUseSTLeftOnText()}".toString()
             throw (e instanceof IllegalArgumentException) ? new IllegalArgumentException(msg, e) : new IllegalStateException(msg, e)
         }
         throw e
     }
     if (out?.success != true && _rmUndoUseSTAfterFailedAdd(appId, useSTBefore)) {
         out.useSTLeftOn = true
-        out.error = "${out.error ?: 'addRequiredExpression failed.'} ${_rmUseSTLeftOnText()}".toString()
+        out.error = "${_rmStripNotTouched(out.error ?: 'addRequiredExpression failed.')} ${_rmUseSTLeftOnText()}".toString()
     }
     return out
+}
+
+// The "RM is not touched" marker classifies an error as a refusal before any change; it is untrue
+// once the gate was switched on and could not be switched back off.
+private String _rmStripNotTouched(String msg) {
+    (msg ?: "").replace(" RM is not touched.", "").replace("RM is not touched", "the rule WAS changed")
 }
 
 private String _rmUseSTLeftOnText() {

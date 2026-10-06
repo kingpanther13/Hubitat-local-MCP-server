@@ -82,6 +82,19 @@ class AddRequiredExpressionUndoSpec extends ToolSpecBase {
         ex.message.contains("could not be switched back off")
     }
 
+    def "a refusal's untouched marker is dropped once the gate is left on, so no restore hint says nothing changed"() {
+        given:
+        wire([null, "true"], [], null, new IllegalArgumentException("conditions[1] capability unsupported. RM is not touched."))
+
+        when:
+        script._rmAddRequiredExpression(100, [conditions: []])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        !ex.message.contains("RM is not touched")
+        ex.message.contains("could not be switched back off")
+    }
+
     def "an unknown prior gate is never switched, but an empty gate left on is reported"() {
         given: "the pre-read fails, then the gate reads on with nothing committed"
         writes = []

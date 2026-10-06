@@ -1186,7 +1186,10 @@ private boolean _rmDeviceGone(String id, Map cache) {
             gone = (parsed instanceof Map) && parsed.isEmpty()
         }
     } catch (Exception e) {
-        gone = (e.message ?: "").contains("404")
+        // Without a status, only the hub's own "status code: 404 ... Not Found" wording counts.
+        Integer status = _httpStatusOf(e)
+        def msg = e.message ?: ""
+        gone = (status != null) ? status == 404 : (msg ==~ /(?s).*status code:? 404\b.*/ && msg.contains("Not Found"))
     }
     cache.put(id, gone)
     return gone

@@ -9253,7 +9253,7 @@ class TestRunner:
             assert pre_replace_key, f"the replace returned no backup handle: {result}"
             restored = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": pre_replace_key, "confirm": True}})
+                "args": {"scope": "source", "backupKey": pre_replace_key, "confirm": True, "preserveRuleId": True}})
             assert restored.get("success") is True and restored.get("requiredExpressionRestored") is True, \
                 f"restoring the pre-replace backup did not bring the Required Expression back: {restored}"
             blob = str(self.client.call_tool("hub_read_apps_code", {

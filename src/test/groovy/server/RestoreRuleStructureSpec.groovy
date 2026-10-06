@@ -209,7 +209,8 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         where:
         label                        | body                                      || gone
         'empty object = deleted'     | '{}'                                      || true
-        '404 = deleted'              | new RuntimeException('HTTP 404')          || true
+        '404 = deleted'              | new RuntimeException('status code: 404, reason phrase: Not Found') || true
+        '404 in other text = kept'   | new RuntimeException('read timed out on port 4040, id 404') || false
         'a device = present'         | '{"device":{"id":55}}'                    || false
         'empty answer = kept'        | ''                                        || false
         'other failure = kept'       | new RuntimeException('read timed out')   || false
