@@ -51,6 +51,7 @@ echo "acquire parse (get_lease_value):"
 held_text="$(jq -nc '{name:"_TEST_HUB_LEASED_BY",type:"string",value:(({by:"ci-run-X",until:1}|tojson))}')"
 check "held lease"          "$(jq -nc --arg t "$held_text" '{result:{content:[{text:$t}]}}')"   HELD
 check "released (value '')" "$(jq -nc '{result:{content:[{text:({value:""}|tojson)}]}}')"        RELEASED
+check "released (value {})" "$(jq -nc '{result:{content:[{text:({value:"{}"}|tojson)}]}}')"      RELEASED
 check "-32603 error"        '{"error":{"code":-32603,"message":"Internal error"}}'               POLL
 check "-32602 not found"    '{"error":{"code":-32602,"message":"Invalid params: Variable not found: X"}}' MISSING
 check "-32602 other"        '{"error":{"code":-32602,"message":"Invalid params"}}'                POLL

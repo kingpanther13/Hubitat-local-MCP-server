@@ -31,9 +31,10 @@
 # post-write race-check shows another claim last.
 #
 # Lease shape (JSON, written into Hubitat Hub Variable `_TEST_HUB_LEASED_BY`, a String variable that
-# must already exist -- the watchdog cannot create one):
+# must already exist -- the watchdog cannot create one, and the hub drops a String variable created
+# empty, so create it with "{}"):
 #   {"by":"<who>","since":<epoch_ms>,"until":<epoch_ms>}
-# Empty string = released. See protocol in CLAUDE.md / issue #77 for context.
+# Empty string or {} = released. See protocol in CLAUDE.md / issue #77 for context.
 
 set -euo pipefail
 
@@ -83,12 +84,15 @@ get_lease_value() {
   local resp
   resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"action":"get","name":"_TEST_HUB_LEASED_BY"}}}')" || return 1
   if printf '%s' "$resp" | jq -e '(.error.message // "") | test("not found"; "i")' >/dev/null 2>&1; then
-    echo "::error::Hub variable _TEST_HUB_LEASED_BY does not exist on the test hub. Create it (type String) in Settings > Hub Variables; the watchdog cannot create one." >&2
+    echo "::error::Hub variable _TEST_HUB_LEASED_BY does not exist on the test hub. Create it (type String, value {}) in Settings > Hub Variables; the watchdog cannot create one." >&2
     return 2
   fi
   local text
   text="$(printf '%s' "$resp" | jq -e -r '.result.content[0].text')" || return 1
-  printf '%s' "$text" | jq -e -r '.value // ""' || return 1
+  local value
+  value="$(printf '%s' "$text" | jq -e -r '.value // ""')" || return 1
+  [ "$(printf '%s' "$value" | jq -c . 2>/dev/null)" = "{}" ] && value=""
+  printf '%s' "$value"
 }
 
 set_lease_value() {

@@ -92,7 +92,7 @@ jobs:
 
       # The runner refuses any hub without the _TEST_HUB_LEASED_BY hub variable the lease protocol
       # writes, so the hub is leased here first and released after, exactly as hub-e2e.yml does. On a
-      # fresh hub, create that String variable in Hub Variables first: the watchdog cannot create one.
+      # fresh hub, create that String variable (value {}) in Hub Variables first: the watchdog cannot create one.
       - name: Acquire test hub lease
         env:
           WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}

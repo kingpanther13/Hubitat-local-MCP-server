@@ -46,6 +46,7 @@ LEASE="$(curl -sS --fail --max-time 30 -X POST "$WATCHDOG_URL" \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"action":"get","name":"_TEST_HUB_LEASED_BY"}}}' 2>/dev/null \
   | jq -e -r '.result.content[0].text' 2>/dev/null | jq -e -r '.value // empty' 2>/dev/null)" || LEASE="__unreadable__"
+[ "$(printf '%s' "$LEASE" | jq -c . 2>/dev/null)" = "{}" ] && LEASE=""
 
 if [ "$LEASE" = "__unreadable__" ]; then
   echo "::warning::Could not read the lease before release; NOT clearing it (the 30-min TTL will bound it)."
