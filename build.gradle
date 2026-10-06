@@ -134,6 +134,9 @@ test {
     // metaclass methods on hubitat.helper.RMUtils / .NetworkUtils — concurrent
     // specs installing and uninstalling these at the same time would race.
     maxParallelForks = 1
+    // Each spec parses the inlined server plus every library (over 3 MB of Groovy); Gradle's 512m
+    // default runs out of heap in the parser.
+    maxHeapSize = '1g'
     // Forward harness-debug flags into the forked test JVM. Off by default;
     // enable via `./gradlew test -PharnessStrictMetaClass=true` when chasing
     // a metaClass-leak regression — turns the post-wipe check in
