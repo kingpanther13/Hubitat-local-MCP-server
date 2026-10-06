@@ -206,6 +206,40 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.tokens == [2]
     }
 
+    def "an unreadable baseline health check does not stop the replace"() {
+        given:
+        int calls = 0
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto" ->
+            if (++calls == 1) throw new RuntimeException("timeout")
+            [ok: true, issues: [], structuralIssues: [], brokenMarkerCounts: [:], checkErrors: []]
+        }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.success == true
+        fake.tokens == [2]
+    }
+
+    def "a switch rollback whose condition cleanup throws still reports the rollback"() {
+        given:
+        boolean failed = false
+        fake.onClick = { String n, String a ->
+            if (a == "deleteToken" && n == "0" && fake.tokens.size() == 2 && !failed) { failed = true; throw new RuntimeException("hub busy") }
+        }
+        script.metaClass._rmDeleteExpressionConditions = { Integer id, Collection ids -> throw new RuntimeException("deleteCon failed") }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.requiredExpressionRestored == true
+        result.originalPreserved == true
+        result.leftoverConditionIds == [2]
+        fake.tokens == [1]
+    }
+
     def "a rollback to an empty original changes nothing"() {
         when:
         def out = script._rmRevertRequiredExpression(100, [], "x.")

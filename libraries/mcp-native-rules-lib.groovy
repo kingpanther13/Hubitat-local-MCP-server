@@ -14302,7 +14302,11 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
                 "replaceRequiredExpression: app ${appId} shows a committed Required Expression but its token list reads empty. Nothing was changed -- inspect it via hub_get_app_config(appId=${appId}).").toString()
         ]
     }
-    def baselineHealth = _rmCheckRuleHealth(appId)
+    // An unreadable baseline counts every later issue as new, so the rollback errs toward the original.
+    def baselineHealth = null
+    try { baselineHealth = _rmCheckRuleHealth(appId) } catch (Exception baseExc) {
+        mcpLog("warn", "rm-native", "replaceRequiredExpression: baseline health of app ${appId} could not be read (${baseExc.message})")
+    }
 
     def rmCache = [:]
     def applied = []
@@ -14438,7 +14442,12 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
             "replaceRequiredExpression: switching app ${appId} to the new expression failed (${swapExc.message ?: swapExc}).",
             [success: false, requiredExpressionReplaced: false,
              conditionIndices: conditionIndices, settingsApplied: applied, settingsSkipped: skipped])
-        def removed = (restoreOut.requiredExpressionRestored == true) ? _rmDeleteExpressionConditions(appId, createdConditions()) : []
+        def removed = []
+        if (restoreOut.requiredExpressionRestored == true) {
+            try { removed = _rmDeleteExpressionConditions(appId, createdConditions()) } catch (Exception delExc) {
+                mcpLog("warn", "rm-native", "replaceRequiredExpression: removing the created conditions on app ${appId} failed (${delExc.message})")
+            }
+        }
         if (removed) restoreOut.removedConditionIds = removed
         def leftover = createdConditions().findAll { !(removed*.toString()).contains(it.toString()) }
         if (leftover) restoreOut.leftoverConditionIds = leftover
