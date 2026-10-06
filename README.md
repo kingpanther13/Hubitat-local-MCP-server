@@ -367,7 +367,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. |
 | `hub_list_captured_states` | List saved device state snapshots |
 
-Monitoring tools are gated by the Read master (ON by default).
+Monitoring tools are gated by the Read master (ON by default). The network config read is available through `hub_get_info` (`includeNetwork=true`); the automatic-backup schedule is included in `hub_list_backups` (hub scopes).
 
 </details>
 
@@ -411,7 +411,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | Tool | Description |
 |------|-------------|
 | `hub_list_variables` | List all hub connector and rule engine variables |
-| `hub_get_variable` | Get a variable value and metadata |
+| `hub_get_variable` | Get a variable value and metadata; `includeDependents=true` also lists the apps that reference a hub variable (in-use registry) |
 | `hub_list_variable_changes` | Latest 200 subscribed hub-variable changes, retained across restarts |
 
 </details>
@@ -469,7 +469,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | Tool | Description |
 |------|-------------|
 | `hub_list_variables` | List all hub connector and rule engine variables (also in `hub_read_variables`) |
-| `hub_get_variable` | Get a variable value and metadata (also in `hub_read_variables`) |
+| `hub_get_variable` | Get a variable value and metadata; `includeDependents=true` lists the apps that reference it — a pre-delete/rename preview (also in `hub_read_variables`) |
 | `hub_set_variable` | Set a variable value |
 | `hub_create_variable` | Create a new hub variable |
 | `hub_delete_variable` | Permanently delete a hub variable (DESTRUCTIVE) |
@@ -531,7 +531,7 @@ Source code is automatically backed up before any modify/delete operation.
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_backups` | List backups. Default `scope=source` lists auto-created code backups; `scope=hub_local`/`hub_cloud`/`hub`/`all` lists whole-hub database backups (also in `hub_read_apps_code`) |
+| `hub_list_backups` | List backups. Default `scope=source` lists auto-created code backups; `scope=hub_local`/`hub_cloud`/`hub`/`all` lists whole-hub database backups and the automatic-backup schedule (cloud password never returned) (also in `hub_read_apps_code`) |
 | `hub_get_backup` | Retrieve source from a code backup (also in `hub_read_apps_code`) |
 | `hub_restore_backup` | Restore app/driver to backed-up version (libraries: see `hub_update_library`). Rule snapshots (incl. Visual Rules) recreate a deleted rule. |
 | `hub_delete_backup` | Delete a whole-hub database backup (`location`: local or cloud) |
