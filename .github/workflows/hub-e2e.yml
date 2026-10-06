@@ -546,7 +546,7 @@ jobs:
     #   * Cancelling a SUPERSEDED run (new commit on the same branch) is the WORKFLOW-level
     #     per-branch group near the top of this file. It can't live here: `queue: max` and
     #     `cancel-in-progress: true` cannot be combined in one concurrency block.
-    #   * lease_acquire.sh still claims/releases _TEST_HUB_LEASED_BY, but it NO LONGER orders the
+    #   * lease_acquire.sh still claims/releases test-hub-lease.json, but it NO LONGER orders the
     #     queue (concurrency does). Its remaining job is to block when a HUMAN holds the lease by
     #     hand to take the hub for manual use -- which GitHub concurrency can't see. Because only the
     #     head-of-line run is in_progress, a head run waiting out a human-held lease blocks the whole

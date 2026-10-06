@@ -5048,7 +5048,7 @@ def getGatewayConfig() {
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
-                hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
+                hub_call_device_swap: "swap replace device exchange identities move automations new hardware retire failing hardware",
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
                 hub_update_device: "rename relabel move room device edit configuration preferences driver type zigbee history limits dashboard mesh retry homekit alexa google assistant tags",
                 hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
@@ -10294,7 +10294,7 @@ A malformed `waitFor` spec is rejected before the command fires, so the device i
 
 Drives the hub's built-in Swap Device tool; use to move automations onto new hardware or swap out a failing device without editing each automation.
 
-The hub exchanges the two device records' identities -- label, name, network id, notes and current state -- and leaves every app and rule reference on its id. Afterwards `from_device_id` (the id the apps use) is the replacement hardware, and `to_device_id` holds the old device's identity: remove it once the automations behave. The tool verifies the swap by that exchange and returns `swapped`, `identityExchanged`, the post-swap `fromDevice` / `toDevice`, and `appsRewired` (how many apps referenced `from_device_id`, which now drive the replacement). Running it again swaps the devices back, so never retry a swap whose outcome is unconfirmed -- inspect both devices with `hub_get_device` first.
+The hub exchanges the two device records' identities -- name, label, network id, driver, room, notes and current state; event history stays with the id -- and leaves every app and rule reference on its id. Afterwards `from_device_id` (the id its apps use) is the replacement hardware, and `to_device_id` holds the old device's identity, so any app that used `to_device_id` now runs on the OLD hardware. Check `hub_list_device_dependents` for BOTH ids before swapping. The tool verifies the swap by that exchange and returns `swapped`, `identityExchanged`, the post-swap `fromDevice` / `toDevice`, and `fromDeviceDependents` / `toDeviceDependents` (how many apps used each id before the swap); it suggests removing `to_device_id` only when nothing used it. Running it again swaps the devices back, so never retry a swap whose outcome is unconfirmed -- inspect both devices with `hub_get_device` first. The swap runs when the hub renders the transient Swap Device instance's page, and every render swaps again, so the tool renders it once and deletes it; a `leftoverSwapInstance` in the result must be deleted without opening its page.
 
 The hub only offers compatible replacement devices: an incompatible to_device_id fails with a structured error listing the compatible options. Child devices (including every MCP-created virtual device) are not eligible.
 

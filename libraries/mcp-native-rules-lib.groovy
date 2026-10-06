@@ -13165,7 +13165,16 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec, boolean preValidat
     def currentCondIdx = -1
     def cancelInFlightCondition = {
         cancelledByWalker = true
-        try { _rmClickAppButton(appId, "cancelCapab", null, "STPage", rmCache) }
+        // As the UI does: the button's stateAttribute, then a render that applies it. A bare click left
+        // state.cancelCapab pending, and the next add's cond=a consumed it, cancelling the NEW
+        // condition (live, fw 2.5.2.129).
+        try {
+            _rmClickAppButton(appId, "cancelCapab", "cancelCapab", "STPage", rmCache)
+            _rmCacheInvalidate(rmCache, appId)
+            try { _rmFetchConfigJson(appId, "STPage", rmCache) } catch (Exception renderExc) {
+                mcpLog("debug", "rm-native", "cancelCapab render on app ${appId} failed (${renderExc.message}); the next STPage read applies it")
+            }
+        }
         catch (Exception cancelExc) {
             wizardCleanupFailed = true
             wizardCleanupErr = cancelExc.message
@@ -13923,10 +13932,14 @@ private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String e
 // token editor. Confirmation compares the rendered expression (condition texts + operators).
 
 // condition id (String) -> condition text, from RM's capabsfalse / capabstrue state maps.
-// capabsfalse is the condition pool; capabstrue holds the TRIGGER texts, keyed by trigger index.
+// capabsfalse is the condition pool; capabstrue holds the TRIGGER texts, keyed by trigger index. A
+// text can carry the device's current value as markup ("Switch(<span>off</span>) is on"), which
+// changes with the device, so it is compared without markup or parenthesised values.
 private Map _rmConditionTexts(Map state) {
     def out = [:]
-    if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt -> out.put(id?.toString(), txt?.toString()) }
+    if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt ->
+        out.put(id?.toString(), txt?.toString()?.replaceAll(/<[^>]*>/, "")?.replaceAll(/\([^()]*\)/, "")?.replaceAll(/\s+/, " ")?.trim())
+    }
     return out
 }
 

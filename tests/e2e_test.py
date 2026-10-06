@@ -12061,7 +12061,8 @@ class TestRunner:
                 assert result.get("success") is True and result.get("identityExchanged") is True, \
                     f"swap of two free-standing switches did not report the identity exchange: {result}"
                 assert result.get("swapped") == {"from": src, "to": tgt}, result
-                assert (result.get("appsRewired") or 0) >= 1, result
+                assert (result.get("fromDeviceDependents") or 0) >= 1, result
+                assert "toDeviceDependents" in result, result
                 assert (result.get("fromDevice") or {}).get("label") == f"{PREFIX}Swap_Target", result
                 assert (result.get("toDevice") or {}).get("label") == f"{PREFIX}Swap_Source", result
                 after_src = self.client.call_tool("hub_read_devices", {
@@ -17335,7 +17336,7 @@ def _inject_device_id(obj: dict, dev_id: str) -> dict:
     return result
 
 
-TEST_HUB_LEASE_VARIABLE = "_TEST_HUB_LEASED_BY"
+TEST_HUB_LEASE_FILE = "test-hub-lease.json"
 
 
 def _refuse(reasons: list[str]) -> None:
@@ -17376,59 +17377,37 @@ def refuse_unless_ci_test_hub(hub_url: str) -> None:
 def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
                                   refuse_when_unreadable: bool = True) -> None:
     """The tell that identifies the hub rather than the transport: the CI lease protocol
-    (.github/scripts/lease_acquire.sh) writes the Hub Variable `_TEST_HUB_LEASED_BY` on the
+    (.github/scripts/lease_acquire.sh) writes the File Manager file `test-hub-lease.json` on the
     sacrificial hub and nowhere else. A hub without it has never been leased for e2e and is
     refused. One read, before the first sweep.
 
-    refuse_when_unreadable=False is the CLEANUP call: main() already proved this hub's identity
-    before the first write, so an unreadable variable at cleanup time is a fact about the relay,
-    not about the hub -- and refusing there strands every BAT_E2E_ artifact on the shared hub,
-    which is the failure the guard's retry loop was added for. A definitive answer still refuses
-    in both modes."""
-    # Three failure shapes, and only one of them is the hub speaking. The hub's own verdict for
-    # an absent variable is toolGetVariable's IllegalArgumentException, which handleToolsCall
-    # renders as an isError validation result whose text says "not found"; a lost response, an
-    # undecodable body, and any OTHER isError runtime fault leave the variable unknown and retry.
+    The hub's answer for a missing file names no cause, so a read that fails after the retries is
+    treated as "not proven" either way: refused before the first sweep, and only warned about at
+    CLEANUP (refuse_when_unreadable=False), where main() already proved this hub's identity and
+    refusing would strand every BAT_E2E_ artifact on the shared hub."""
     got = None
     last_exc: Exception | None = None
-    last_kind = "the hub was not heard"
     for attempt in range(4):
         try:
-            got = client.call_tool("hub_manage_variables", {
-                "tool": "hub_get_variable", "args": {"name": TEST_HUB_LEASE_VARIABLE}})
-            break
-        except RelayLostResponseError as exc:  # the response was lost; the hub said nothing
-            last_exc, last_kind = exc, "the response was lost in transport"
-        except McpToolError as exc:  # isError:true -- the validation verdict, or a runtime fault INSIDE the tool
-            if "not found" in str(exc):
-                _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
-                         f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
-            last_exc, last_kind = exc, "the tool faulted at runtime (isError), which says nothing about the variable"
-        except McpError as exc:
-            if str(exc).startswith("JSON-RPC error:"):
-                # A protocol-level refusal (an older server, or a malformed envelope) is still
-                # the hub speaking, never transport.
-                _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
-                         f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
-            # The only other McpError is an exhausted-retry decode failure, i.e. transport.
-            last_exc, last_kind = exc, "the response could not be decoded"
-        except Exception as exc:
-            last_exc, last_kind = exc, "the hub was not heard"
+            res = client.call_tool("hub_manage_files", {
+                "tool": "hub_read_file", "args": {"fileName": TEST_HUB_LEASE_FILE}})
+            if isinstance(res, dict) and res.get("success") is True and "content" in res:
+                got = res
+                break
+            last_exc = McpToolError(str(res)[:200])
+        except Exception as exc:  # a lost response, an isError result, or an undecodable body
+            last_exc = exc
         if attempt < 3:
-            print(f"  lease-variable read attempt {attempt + 1}/4 failed "
+            print(f"  lease-file read attempt {attempt + 1}/4 failed "
                   f"({type(last_exc).__name__}); retrying in 10s")
             time.sleep(10)
     if got is None:
-        reason = (f"hub variable {TEST_HUB_LEASE_VARIABLE!r} could not be read after 4 attempts -- "
-                  f"{last_kind} ({type(last_exc).__name__}: {str(last_exc)[:160]})")
+        reason = (f"lease file {TEST_HUB_LEASE_FILE!r} could not be read after 4 attempts "
+                  f"({type(last_exc).__name__}: {str(last_exc)[:160]})")
         if not refuse_when_unreadable:
-            print(f"  [WARN] lease variable unreadable ({reason}); identity was proven at start, sweeping")
+            print(f"  [WARN] {reason}; identity was proven at start, sweeping")
             return
-        _refuse([f"{reason}; an unreadable hub proves nothing"])
-    # Both of toolGetVariable's success branches echo the requested name back and carry a `value`
-    # key (null-valued or not), so either one missing means this is not that tool answering.
-    if not isinstance(got, dict) or got.get("name") != TEST_HUB_LEASE_VARIABLE or "value" not in got:
-        _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} is not present on this hub; only the sacrificial test hub carries the e2e lease variable"])
+        _refuse([f"{reason}; only the sacrificial test hub carries the e2e lease file"])
 
 
 def load_config() -> dict:

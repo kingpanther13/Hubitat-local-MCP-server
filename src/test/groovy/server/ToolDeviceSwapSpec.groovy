@@ -98,6 +98,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             }
             if (path == "/installedapp/delete/${SWAP_APP_ID}".toString()) {
                 calls << [step: 'delete', path: path]
+                if (fixture.deleteFails) throw new IllegalStateException("delete refused")
                 return [status: 200, location: null]
             }
             throw new IllegalStateException("Unstubbed hubInternalGetRaw: ${path}")
@@ -136,7 +137,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
                 if (after && fixture.outcome == 'unreadable') return ''
                 if (!after && id == '101' && fixture.beforeCount == 'unreadable') return ''
                 def i = identity(id, after)
-                JsonOutput.toJson([appsUsing: [], appsUsingCount: (id == '101' ? fixture.beforeCount : 0),
+                JsonOutput.toJson([appsUsing: [], appsUsingCount: (id == '101' ? fixture.beforeCount : (fixture.toCount ?: 0)),
                                    device: [id: id, deviceNetworkId: i.dni, createTime: i.createTime, label: i.label]])
             }
         }
@@ -168,8 +169,11 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         result.verified == true
         result.identityExchanged == true
         result.swapped == [from: '101', to: '202']
-        result.appsRewired == 3
-        !result.containsKey('remainingDependents')
+        result.fromDeviceDependents == 3
+        result.toDeviceDependents == 0
+        !result.containsKey('appsRewired')
+        !result.containsKey('leftoverSwapInstance')
+        result.note.contains('nothing used it before the swap')
         result.fromDevice == [id: '101', label: 'BAT Swap Target', deviceNetworkId: 'DNI-B']
         result.toDevice == [id: '202', label: 'BAT Swap Source', deviceNetworkId: 'DNI-A']
         result.note.contains('exchanged the two devices')
@@ -212,7 +216,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         then:
         result.success == true
         result.verified == true
-        result.appsRewired == 2
+        result.fromDeviceDependents == 2
 
         and: 'the swap action is the only click, and the delete GET fires AFTER it, never before'
         calls.findAll { it.step == 'click' }*.btn == ['swapDev']
@@ -221,6 +225,41 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         clickIdx >= 0
         deleteIdx > clickIdx
         calls[deleteIdx].path == "/installedapp/delete/${SWAP_APP_ID}".toString()
+    }
+
+    def "a target that apps used is reported, and its removal is not suggested"() {
+        given:
+        enableWriteWithBackup()
+        registerDevices()
+        def compat = [['202': 'BAT Swap Target']]
+        wireSwapStubs(beforeCount: 2, toCount: 4,
+            fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), ''])
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == true
+        result.toDeviceDependents == 4
+        result.note.contains('the 4 app(s) that used it now run on the OLD hardware')
+        !result.note.contains('can be removed')
+    }
+
+    def "a Swap Device instance that will not delete is reported, since rendering it swaps again"() {
+        given:
+        enableWriteWithBackup()
+        registerDevices()
+        def compat = [['202': 'BAT Swap Target']]
+        wireSwapStubs(beforeCount: 1, deleteFails: true,
+            fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), ''])
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == true
+        result.leftoverSwapInstance == SWAP_APP_ID
+        result.warning.contains('Do NOT open it')
     }
 
     def "hub_call_device_swap via dispatch returns the success envelope"() {
@@ -243,7 +282,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         inner.success == true
         inner.swapped.from == '101'
         inner.swapped.to == '202'
-        inner.appsRewired == 1
+        inner.fromDeviceDependents == 1
     }
 
     // -------- post-click verification outcomes --------

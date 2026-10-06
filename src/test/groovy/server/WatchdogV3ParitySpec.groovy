@@ -242,6 +242,17 @@ class WatchdogV3ParitySpec extends WatchdogV3Harness {
         calls == ['poll', 'get', 'hub_get_variable']
     }
 
+    def 'the e2e lease file is written through a held deployment; other files are not'() {
+        given:
+        persisted.packageDeployment = [hold: true]
+        List writes = []
+        script.metaClass.adminWriteFile = { Map args -> writes << args.fileName; [success: true] }
+        expect:
+        script.executeAdminTool('hub_write_file', [fileName: 'test-hub-lease.json', content: '{}', confirm: true]).success
+        !script.executeAdminTool('hub_write_file', [fileName: 'other.json', content: '{}', confirm: true]).success
+        writes == ['test-hub-lease.json']
+    }
+
     def 'package start and release run through the MCP envelope and a missing confirm is invalid params'() {
         when:
         def started = script.processJsonRpcMessage([jsonrpc: '2.0', id: 1, method: 'tools/call',

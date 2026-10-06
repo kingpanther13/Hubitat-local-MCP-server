@@ -5236,21 +5236,17 @@ def toolCallDeviceSwap(args) {
         mcpLog("info", "device-swap", "Clicking swap action '${buttons[0]}' on instance ${appId}")
         _rmClickAppButton(appId, buttons[0], null, "mainPage")
 
-        // Post-click: the swap action usually removes the transient instance
-        // itself, but a transient read failure on the verify re-fetch is
-        // indistinguishable from "instance gone", so the fetch only informs
-        // LOGGING and never gates cleanup. The delete ALWAYS runs: it is
-        // idempotent/harmless against an already-reaped instance, and
-        // _deviceSwapCleanup swallows + logs its own failure -- skipping the
-        // delete on a misread is the only way to leak an instance untraced.
+        // This render PERFORMS the swap: the click only arms it, and every render of the instance
+        // swaps the two devices again (live, fw 2.5.2.129: render 1 swapped, render 2 swapped back).
+        // Render exactly once, then delete the instance before anything can render it again.
         def instanceGone = false
         try {
             _rmFetchConfigJson(appId, "mainPage")
         } catch (Exception e) {
             instanceGone = true
-            mcpLog("warn", "device-swap", "post-click verify fetch threw ${e.class.simpleName}: ${e.message} -- treating instance as present for cleanup (the delete is harmless if it already self-removed)")
+            mcpLog("warn", "device-swap", "post-click render threw ${e.class.simpleName}: ${e.message} -- the identity read-back below decides whether the swap ran")
         }
-        _deviceSwapCleanup(appId)
+        boolean instanceDeleted = _deviceSwapCleanup(appId)
 
         def fromAfter = _deviceSwapSnapshot(fromId)
         def toAfter = _deviceSwapSnapshot(toId)
@@ -5265,15 +5261,26 @@ def toolCallDeviceSwap(args) {
                     error: "The Swap Device action was clicked but the swap could not be confirmed (${outcome == 'unreadable' ? 'a device could not be read back' : 'the two devices did not cleanly trade identities'}).",
                     note: "Inspect devices ${fromId} and ${toId} with hub_get_device before doing anything else. Do NOT simply retry: if the swap did take, running it again swaps the devices back."]
         }
-        mcpLog("info", "device-swap", "Swap ${fromId} -> ${toId} complete; identities exchanged; transient instance ${instanceGone ? 'self-removed (verify fetch threw)' : 'survived the click'}; cleanup delete issued either way")
+        mcpLog("info", "device-swap", "Swap ${fromId} -> ${toId} complete; identities exchanged; post-click render ${instanceGone ? 'threw' : 'ran'}; instance ${instanceDeleted ? 'deleted' : 'NOT deleted'}")
+        def toDeps = toBefore?.dependents
+        String toNote = (toDeps == 0) ?
+            "Device ${toId} now carries the old device's identity ('${toAfter.label}'); nothing used it before the swap, so it can be removed once you confirm the automations behave." :
+            (toDeps == null ?
+                "Device ${toId} now carries the old device's identity ('${toAfter.label}'); apps that used it now run on the OLD hardware -- check hub_list_device_dependents(deviceId=${toId}) before removing it." :
+                "Device ${toId} now carries the old device's identity ('${toAfter.label}'), and the ${toDeps} app(s) that used it now run on the OLD hardware -- re-point them (hub_list_device_dependents(deviceId=${toId})) before removing it.")
         def result = [success: true,
                       swapped: [from: fromId, to: toId],
                       identityExchanged: true,
                       verified: true,
                       fromDevice: [id: fromId, label: fromAfter.label, deviceNetworkId: fromAfter.dni],
                       toDevice: [id: toId, label: toAfter.label, deviceNetworkId: toAfter.dni],
-                      note: "The hub exchanged the two devices' identities. Every app that referenced device ${fromId} still references id ${fromId}, which now carries the replacement's label ('${fromAfter.label}'), network id and hardware. Device ${toId} now carries the old device's identity ('${toAfter.label}') and can be removed once you confirm the automations behave. Running the swap again would swap them back."]
-        if (beforeCount != null) result.appsRewired = beforeCount
+                      fromDeviceDependents: beforeCount,
+                      toDeviceDependents: toDeps,
+                      note: "The hub exchanged the two devices' identities (name, label, network id, driver, room, current state; event history stays with the id). Every app that referenced device ${fromId} still references id ${fromId}, which now carries the replacement's identity ('${fromAfter.label}') and hardware. ${toNote} Running the swap again would swap them back.".toString()]
+        if (!instanceDeleted) {
+            result.leftoverSwapInstance = appId
+            result.warning = "The transient Swap Device instance ${appId} could not be deleted. Do NOT open it in the hub UI: every render of its page swaps the two devices again. Delete it with hub_delete_native_app(appId=${appId}, force=true).".toString()
+        }
         return result
     } catch (Exception e) {
         mcpLogError("device-swap", "hub_call_device_swap ${fromId} -> ${toId} failed", e)
@@ -5439,14 +5446,16 @@ private List _deviceSwapActionButtons(Map cfg) {
 // reap a pending (installed:false) instance -- verified live on fw 2.5.0.143; only
 // /installedapp/delete/<id> does. Never throws: cleanup runs on failure paths where
 // the original error must win.
-private void _deviceSwapCleanup(Integer appId) {
+private boolean _deviceSwapCleanup(Integer appId) {
     try {
         hubInternalGetRaw("/installedapp/delete/${appId}")
         mcpLog("info", "device-swap", "Transient Swap Device instance ${appId} deleted")
+        return true
     } catch (Exception e) {
-        // error (not warn) so the orphan-leak case is queryable at the default
-        // error-only MCP log level.
-        mcpLogError("device-swap", "Delete of Swap Device instance ${appId} failed -- a leftover transient instance is harmless but can be removed from the hub's Apps list", e)
+        // error (not warn) so the orphan-leak case is queryable at the default error-only MCP log level.
+        // Not harmless: rendering a leftover instance's page performs the swap again.
+        mcpLogError("device-swap", "Delete of Swap Device instance ${appId} failed -- opening it in the hub UI would swap the devices again", e)
+        return false
     }
 }
 
@@ -5649,9 +5658,9 @@ PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zi
         ],
         [
             name: "hub_call_device_swap",
-            description: """⚠️ DESTRUCTIVE: Swap a device — apps and rules using from_device_id run on to_device_id's hardware afterwards. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices' identities (label, name, network id, state): app references stay on from_device_id, which now IS the replacement, and to_device_id takes over the old device's identity.[[/FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Swap a device — apps and rules using from_device_id run on to_device_id's hardware afterwards. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices' identities (name, label, network id, driver, room, current state; event history stays): app references stay on both ids, so from_device_id's apps run on the replacement and to_device_id's apps on the old device.[[/FLAT_TRIM]]
 
-Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the blast radius with hub_list_device_dependents(deviceId=from_device_id) — every app listed moves to it; 3) confirm with the user.""",
+Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_device_dependents on both ids — from_device_id's apps move to the new hardware, to_device_id's to the old; 3) confirm with the user.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -5745,7 +5754,7 @@ def _toolDisplayMeta_partDevices() {
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
         hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
-        hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
+        hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
         hub_update_device: [title: "Update Device Properties", summary: "Update applicable device identity, preferences, display, driver, history limits, or integration assignments."],
         hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."],

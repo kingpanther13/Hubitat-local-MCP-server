@@ -152,6 +152,12 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         script._rmReconcileRuleStructure(100, [statusJson: [appSettings: []]]) == [:]
     }
 
+    def "expression texts compare without the device's current value"() {
+        expect:
+        script._rmConditionTexts([capabsfalse: ["1": "Switch A(<span style='color:black'>off</span>) is on"]]) ==
+            script._rmConditionTexts([capabsfalse: ["1": "Switch A is on"]])
+    }
+
     def "expression texts come from the condition pool only, never the same-numbered trigger"() {
         expect:
         script._rmConditionTexts([capabstrue: ["1": "A turns on"], capabsfalse: ["1": "Mode is Night"]]) == ["1": "Mode is Night"]
