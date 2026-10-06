@@ -320,6 +320,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
         then:
         result.success == false
+        result.verified == true
         result.error.contains('nothing was swapped')
         result.note.contains('hub_get_device')
 
@@ -352,8 +353,23 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         where:
         beforeCount  | outcome        || errorText
         2            | 'unreadable'   || 'could not be read back'
-        'unreadable' | 'exchanged'    || 'could not be read back'
         2            | 'inconsistent' || 'did not cleanly trade'
+    }
+
+    def "a device that cannot be read before the swap is refused before anything is opened or clicked"() {
+        given:
+        enableWriteWithBackup()
+        registerDevices()
+        def calls = wireSwapStubs(beforeCount: 'unreadable', fetches: [pageJson()])
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('101')
+        result.error.contains('Nothing was swapped')
+        !calls.any { it.step in ['write', 'click', 'fetch', 'delete'] }
     }
 
     // -------- ineligible source (oldDev eligibility pre-check) --------
@@ -640,7 +656,8 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             calls << [step: 'click', btn: btn]
             [status: 200]
         }
-        hubGet.register('/device/fullJson/101') { params -> JsonOutput.toJson([appsUsing: [], appsUsingCount: 1]) }
+        hubGet.register('/device/fullJson/101') { params -> JsonOutput.toJson([appsUsing: [], appsUsingCount: 1, device: [deviceNetworkId: 'DNI-A']]) }
+        hubGet.register('/device/fullJson/202') { params -> JsonOutput.toJson([appsUsing: [], device: [deviceNetworkId: 'DNI-B']]) }
         // Eligibility pre-check passes (101 offered); the oldDev write then throws.
         hubGet.register(CONFIGURE_PATH) { params -> pageJson() }
 

@@ -23,7 +23,7 @@ class AddRequiredExpressionUndoSpec extends ToolSpecBase {
         script.metaClass._rmWriteSettingOnPage = { Integer appId, String page, String key, Object value, List applied, String hint = null, List skipped = null, Map cache = null ->
             writes << [page, key, value]
         }
-        script.metaClass._rmAddRequiredExpressionWalk = { Integer appId, Map spec, boolean pv, boolean skip ->
+        script.metaClass._rmAddRequiredExpressionWalk = { Integer appId, Map spec ->
             if (walkThrows) throw walkThrows
             walkResult
         }
@@ -31,7 +31,7 @@ class AddRequiredExpressionUndoSpec extends ToolSpecBase {
 
     def "a failed add that switched the gate on switches it back off"() {
         given:
-        wire([null, "true"], [], [success: false, error: "condition refused"])
+        wire([null, "true", ""], [], [success: false, error: "condition refused"])
 
         when:
         def out = script._rmAddRequiredExpression(100, [conditions: []])
@@ -39,6 +39,20 @@ class AddRequiredExpressionUndoSpec extends ToolSpecBase {
         then:
         out.success == false
         writes == [["mainPage", "useST", false]]
+        !out.containsKey('useSTLeftOn')
+    }
+
+    def "a gate that will not switch back off is reported, since the rule then runs ungated"() {
+        given:
+        wire([null, "true"], [], [success: false, error: "condition refused"])
+
+        when:
+        def out = script._rmAddRequiredExpression(100, [conditions: []])
+
+        then:
+        writes == [["mainPage", "useST", false]]
+        out.useSTLeftOn == true
+        out.error.contains("could not be switched back off")
     }
 
     def "a validation throw before any write leaves the gate as it found it"() {

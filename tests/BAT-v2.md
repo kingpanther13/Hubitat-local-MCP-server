@@ -4307,7 +4307,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 **Expected**: `replaceRequiredExpression` returns `success=true`, `partial!=true`, and `requiredExpressionReplaced=true`. The Required Expression paragraph on mainPage now renders the NEW condition ('Mode is <ModeB>'), NOT the old one ('Mode is <ModeA>') and NOT the bare 'Define Required Expression' placeholder. `hub_get_rule_health` reports no broken markers. Same `appId` throughout -- no clone, no new rule. Manage Conditions may still list 'Mode is <ModeA>' as unused (the replaced condition stays in the pool, as with an edit in the RM UI); it is not part of the expression.
 
-**Failure modes**: the paragraph still shows the OLD condition ('Mode is <ModeA>') -- the delete did not take and the new condition was not built. The paragraph shows BOTH conditions or a "Broken Condition" marker -- the delete did not clear the prior formula. `success=false` with `originalPreserved=true` -- the new expression could not be built and the original was left in place (the safe outcome, but a failure for this scenario).
+**Failure modes**: the paragraph still shows the OLD condition ('Mode is <ModeA>') -- the edit did not take. The paragraph shows BOTH conditions or a "Broken Condition" marker -- the old tokens were not removed after the new expression was built. `success=false` with `originalPreserved=true` -- the new expression could not be built and the original was left in place (the safe outcome, but a failure for this scenario).
 
 ### T650 — replaceRequiredExpression on a rule with no Required Expression is refused, not silently added
 

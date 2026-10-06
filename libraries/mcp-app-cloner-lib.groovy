@@ -819,7 +819,8 @@ private Map _rmReadBackupSnapshot(Map entry) {
 }
 
 // Hubitat's App Cloner export of an app, kept in its backup so a restore can bring back app
-// state (triggers, actions, expression) that a settings replay cannot.
+// state (triggers, actions, IF conditions) that a settings replay cannot. A rule with a Required
+// Expression is never exported (the cloner renders nothing for it).
 Map _rmNativeExportForBackup(Integer appId) {
     try {
         return [json: _appClonerExportJson(appId).json]
@@ -830,18 +831,21 @@ Map _rmNativeExportForBackup(Integer appId) {
 }
 
 // Restore through Hubitat's own App Cloner import: an exact copy (settings and app state) as a NEW
-// app, then the old app is deleted. Returns null to fall back to the settings replay when the
-// import cannot be seeded or the export names a device that no longer exists (an import would not
-// reuse it).
+// app, then the old app is deleted. Returns [fallback: reason] for the settings replay when the
+// export cannot be used: unparseable, no parent to seed the import, or a device that no longer
+// exists (an import would not reuse it).
 private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exists, String fileName) {
     def parsed
-    try { parsed = new groovy.json.JsonSlurper().parseText(snapshot.nativeExport.toString()) } catch (Exception e) { return null }
+    try { parsed = new groovy.json.JsonSlurper().parseText(snapshot.nativeExport.toString()) } catch (Exception e) {
+        mcpLog("warn", "rm-native", "Restore of app ${savedId}: the backup's App Cloner export does not parse (${e.message}); restoring by settings replay")
+        return [fallback: "the backup's App Cloner export could not be parsed"]
+    }
     def gone = [:]
     def deadDevices = ((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])
         .collect { it.toString() }.findAll { _rmDeviceGone(it, gone) }
     if (deadDevices) {
         mcpLog("info", "rm-native", "Restore of app ${savedId}: device(s) ${deadDevices} no longer exist, so the App Cloner import is skipped for the settings replay")
-        return null
+        return [fallback: "device(s) ${deadDevices.join(', ')} named by the App Cloner export no longer exist".toString()]
     }
     Integer hint = exists ? savedId : null
     if (hint == null) {
@@ -849,21 +853,36 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
             def kids = _appClonerSnapshotChildren(_discoverParentAppId(snapshot?.appType ?: "rule_machine"))
             hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
         } catch (Exception e) {
+            mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
             hint = null
         }
-        if (hint == null) return null
+        if (hint == null) return [fallback: "no Rule Machine rule was found to seed the App Cloner import"]
     }
+    // The old rule is deleted after the import, so its protection is checked before anything is created.
+    if (exists) _requireUnprotectedAppDeletion(savedId)
     def imp = toolImportNativeApp([jsonContent: snapshot.nativeExport, parentHintAppId: hint, stageDisabled: true, confirm: true])
     Integer newId = imp?.newAppId as Integer
-    if (imp?.success != true || newId == null) {
+    if (newId == null) {
         return [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, restoredVia: "nativeImport",
                 error: "The App Cloner import of the backup did not produce a new app: ${imp?.error ?: imp?.note}".toString(),
                 note: "Nothing was deleted. Retry, or pass preserveRuleId:true to restore rule ${savedId} in place by settings replay.".toString()]
     }
+    if (imp?.success != true) {
+        // A copy exists but may not be disabled, so the old rule stays and the copy is the one to remove.
+        def failed = [success: false, partial: true, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, importedAppId: newId,
+                      restoredVia: "nativeImport", backupFile: fileName,
+                      error: "The backup was imported as app ${newId}, but staging it failed: ${imp?.error ?: imp?.note}".toString(),
+                      note: "Rule ${savedId} was NOT deleted, and app ${newId} may be running alongside it. Delete app ${newId} (hub_delete_native_app) to go back to rule ${savedId}, or delete rule ${savedId} to keep the copy. Do not retry the restore before one of them is gone.".toString()]
+        if (imp?.stageFailures) failed.stageFailures = imp.stageFailures
+        return failed
+    }
     def out = [success: true, type: "rm-rule", ruleId: newId, originalRuleId: savedId, recreated: true,
                restoredVia: "nativeImport", backupFile: fileName]
     if (exists) {
-        def del = toolDeleteNativeApp([appId: savedId, confirm: true])
+        def del
+        try { del = toolDeleteNativeApp([appId: savedId, confirm: true]) } catch (Exception delExc) {
+            del = [success: false, error: delExc.message ?: delExc.toString()]
+        }
         if (del?.success != true) {
             out.success = false
             out.partial = true
@@ -932,9 +951,15 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     if (!reg) {
         throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
     }
+    String nativeSkipped = null
     if (!preserveRuleId && snapshot?.nativeExport) {
-        def nativeOut = _rmRestoreViaNativeImport(snapshot, savedId, exists, fileName?.toString())
-        if (nativeOut != null) return nativeOut
+        if (savedAppType != "rule_machine") {
+            nativeSkipped = "App Cloner restore is used for Rule Machine rules only"
+        } else {
+            def nativeOut = _rmRestoreViaNativeImport(snapshot, savedId, exists, fileName?.toString())
+            if (nativeOut?.fallback) nativeSkipped = nativeOut.fallback.toString()
+            else return nativeOut
+        }
     }
 
     def ruleId
@@ -1041,6 +1066,8 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             ruleId: ruleId,
             originalRuleId: savedId,
             failedStep: step,
+            restoredVia: "settingsReplay",
+            nativeImportSkipped: nativeSkipped,
             error: "Restore applied partially; failed during ${step}: ${e.message}",
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
@@ -1057,6 +1084,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         ruleId: ruleId,
         originalRuleId: savedId,
         recreated: !exists,
+        restoredVia: "settingsReplay",
         backupFile: fileName,
         settingsApplied: replaySettings.keySet().toList(),
         settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] }
@@ -1064,6 +1092,10 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             + skippedDevices.collect { sd -> [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] },
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
+    if (nativeSkipped) {
+        out.nativeImportSkipped = nativeSkipped
+        out.note = "${out.note} The backup's App Cloner copy was not used: ${nativeSkipped}.".toString()
+    }
     if (skippedDevices) {
         out.partial = true
         out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements with hub_set_rule if the rule needs them.".toString()

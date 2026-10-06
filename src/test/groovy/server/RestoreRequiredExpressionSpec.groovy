@@ -135,10 +135,56 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
 
         then:
         out.requiredExpressionRestored == false
-        out.originalPreserved == true
+        out.preRestoreExpressionKept == true
         out.requiredExpressionError.contains("left in place")
         fake.tokens == [1]
         fake.mode == "committed"
+
+        and: "the conditions the failed rebuild added are gone again"
+        fake.conds.keySet() == [1] as Set
+        !out.containsKey("leftoverConditionIds")
+    }
+
+    def "a failed multi-condition rebuild on a rule with none keeps the committed first condition and says so"() {
+        given:
+        fake.withTokens([])
+        def snap = snapshot([2, "OR", 3],
+            [rCapab_2: "Mode", modes2: ["3"], modes3: ["4"]],
+            ["2": "Mode is 3", "3": "Mode is 4"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == false
+        out.requiredExpressionPartial == true
+        !out.containsKey("preRestoreExpressionKept")
+        out.requiredExpressionError.contains("first condition")
+        fake.renderedExpression() == ["Mode is 3"]
+        fake.mode == "committed"
+        fake.conds.keySet() == fake.tokens as Set
+    }
+
+    def "a condition any expression still uses is never deleted"() {
+        given:
+        fake.seedSwitch(1, "on").seedMode(2, ["3"]).withTokens([1])
+
+        when:
+        def removed = script._rmDeleteExpressionConditions(100, [1, 2])
+
+        then:
+        removed*.toString() == ["2"]
+        fake.conds.keySet() == [1] as Set
+    }
+
+    def "conditions are not deleted when the rule's expressions cannot be read"() {
+        given:
+        fake.seedMode(2, ["3"]).withTokens([])
+        hubGet.register('/app/ruleBuilderJson/100') { params -> throw new RuntimeException("timeout") }
+
+        expect:
+        script._rmDeleteExpressionConditions(100, [2]) == []
+        fake.conds.containsKey(2)
     }
 
     def "a snapshot without expression state is not second-guessed"() {

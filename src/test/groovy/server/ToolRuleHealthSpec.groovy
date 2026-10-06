@@ -354,6 +354,22 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         script._rmCheckRuleHealth(100).requiredExpressionTokens == 3
     }
 
+    def "auto: a rule state without an eval map leaves the token count unknown, never zero"() {
+        given:
+        seedHealthy(100, [eval: null])
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
+        }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.requiredExpressionTokens == null
+        !h.issues.any { it.contains("runs UNGATED") }
+        h.checkErrors.any { it.contains("ungated rule is not ruled out") }
+    }
+
     def "configPage: useST on with the expression unread is reported as unchecked, not as clean"() {
         given:
         settingsMap.enableRead = true

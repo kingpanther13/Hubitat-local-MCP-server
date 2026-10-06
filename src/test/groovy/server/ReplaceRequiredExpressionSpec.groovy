@@ -99,6 +99,75 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         !fake.clicks().contains("cancelST")
     }
 
+    def "a failing condition inside a sub-expression is named by its path"() {
+        when:
+        def result = script._rmReplaceRequiredExpression(100, [conditions: [[capability: "Mode", modeIds: ["3"]],
+            [subExpression: [conditions: [[capability: "Mode", modeIds: ["2"]], [capability: "Switch", deviceIds: [8], state: "bogus"]], operator: "OR"]]],
+            operator: "AND"])
+
+        then:
+        result.success == false
+        result.originalPreserved == true
+        result.error.contains("conditions[1].subExpression.conditions[1]")
+        fake.tokens == [1]
+    }
+
+    def "a back-out that cannot confirm the original keeps the conditions it created and names them"() {
+        given: "token deletes fail, so the editor cannot be trimmed back"
+        fake.onClick = { String n, String a -> if (a == "deleteToken") throw new RuntimeException("hub busy") }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec("definitely_not_a_valid_state"))
+
+        then:
+        result.success == false
+        result.originalPreserved == false
+        result.leftoverConditionIds == [2]
+        fake.conds.containsKey(2)
+        !result.containsKey("removedConditionIds")
+    }
+
+    def "a current expression that cannot be read refuses with nothing changed"() {
+        given:
+        hubGet.register('/app/ruleBuilderJson/100') { params -> throw new RuntimeException("timeout") }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.success == false
+        result.originalPreserved == true
+        result.error.contains("could not read the current Required Expression")
+        fake.clicks().isEmpty()
+    }
+
+    def "a committed expression whose token list reads empty is refused with its own message"() {
+        given:
+        fake.tokens = []
+        fake.mode = "committed"
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.success == false
+        result.originalPreserved == true
+        result.error.contains("token list reads empty")
+        fake.clicks().isEmpty()
+    }
+
+    def "a replace that is live is not reported as unchanged when marking the predCapabs clear fails"() {
+        given:
+        script.metaClass._rmMarkPredClearPending = { Integer id -> throw new RuntimeException("state write failed") }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.success == true
+        fake.tokens == [2]
+    }
+
     def "the spec is validated before any click -- a bad operators list throws with no hub write"() {
         when:
         script._rmReplaceRequiredExpression(100, [
@@ -275,12 +344,12 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.tokens == [1]
     }
 
-    def "_rmAddRequiredExpression preValidated=true still rejects a malformed spec -- it skips only the deviceId hub probe, NOT shape validation"() {
+    def "_rmAddRequiredExpression rejects a malformed operators list before any wizard write"() {
         when:
         script._rmAddRequiredExpression(100, [
             conditions: [[capability: "Mode", modeIds: ["2"]], [capability: "Mode", modeIds: ["3"]]],
             operators: ["AND", "OR"]
-        ], true, true)
+        ])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -333,6 +402,59 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         repl.requiredExpressionRestored == true
         fake.tokens == [1]
         result.success == false
+    }
+
+    def "patches[]: a sole replace that breaks rule health is rolled back at the batch end"() {
+        given:
+        fake.onClick = { String n, String at -> if (n == "updateRule" && fake.tokens == [2]) fake.mainExtra = "**Broken Action**" }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[replaceRequiredExpression: switchSpec()]], confirm: true])
+
+        then:
+        def repl = result.patches.find { it.op == "replaceRequiredExpression" }
+        repl.requiredExpressionReplaced == false
+        repl.requiredExpressionRestored == true
+        fake.tokens == [1]
+    }
+
+    def "patches[]: with sibling ops a health problem is not pinned on the replace"() {
+        given:
+        fake.onClick = { String n, String at -> if (n == "updateRule" && fake.tokens == [2]) fake.mainExtra = "**Broken Action**" }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[button: "pausRule"], [replaceRequiredExpression: switchSpec()]], confirm: true])
+
+        then:
+        result.patches.find { it.op == "replaceRequiredExpression" }.requiredExpressionReplaced == true
+        fake.tokens == [2]
+    }
+
+    def "patches[]: a batch-end rollback that cannot complete is reported, never a false restored"() {
+        given:
+        fake.onUpdateRule = { 500 }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[replaceRequiredExpression: switchSpec()]], confirm: true])
+
+        then:
+        def repl = result.patches.find { it.op == "replaceRequiredExpression" }
+        repl.requiredExpressionRestored == false
+        result.success == false
+    }
+
+    def "a refused add leaves no pending cancel behind to kill the next add"() {
+        given:
+        fake.withTokens([])
+
+        when:
+        try { script._rmAddRequiredExpression(100, switchSpec("definitely_not_a_valid_state")) } catch (Exception ignored) { }
+        def good = script._rmAddRequiredExpression(100, switchSpec())
+
+        then:
+        good.success == true
+        fake.renderedExpression() == ["Switch 8 is on"]
+        !fake.cancelPending
     }
 
     def "patches[]: a second replaceRequiredExpression in one batch is refused (a rule has a single Required Expression)"() {
@@ -481,16 +603,9 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         result.health?.brokenMarkerCounts?.get("**Broken Condition**") == 1
     }
 
-    def "BUG-9: a preValidated spec with a non-Map condition still throws an actionable shape error"() {
-        given:
-        // skipDeviceExistence (the flag the replace delegate passes) must NOT skip the
-        // condition-shape guard -- only the deviceId existence HUB probe. A malformed
-        // conditions:[<non-Map>] must STILL get an actionable IllegalArgumentException, not a raw
-        // cast/null dump deep in the walker. No hub pages registered: the throw must precede any
-        // wizard read. Goes RED if the non-Map guard is moved back below the skipDeviceExistence
-        // early-return.
-        when: "a non-Map condition with preValidated=true (skipDeviceExistence)"
-        script._rmAddRequiredExpression(100, [conditions: ["not-a-map"]], true, true)
+    def "BUG-9: a non-Map condition throws an actionable shape error before any wizard read"() {
+        when: "a non-Map condition (no hub pages registered: the throw must precede any read)"
+        script._rmAddRequiredExpression(100, [conditions: ["not-a-map"]])
 
         then: "the shape guard throws an actionable error naming the bad index"
         def ex = thrown(IllegalArgumentException)

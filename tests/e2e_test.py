@@ -7957,11 +7957,32 @@ class TestRunner:
             assert added.get("success") is True, f"addAction that takes the snapshot failed: {added}"
             backup_key = (added.get("backup") or {}).get("backupKey")
             assert backup_key, f"addAction returned no backupKey: {added}"
+
+            # "Use Required Expression" switched on with nothing committed runs the rule ungated.
+            on = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": int(app_id), "confirm": True, "settings": {"useST": True}}})
+            assert on.get("success") is True, f"switching useST on failed: {on}"
+            health = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
+            assert health.get("ok") is False and any("UNGATED" in str(i) for i in (health.get("issues") or [])), \
+                f"health did not flag useST on with no committed expression: {health}"
+            # An expression added after the snapshot is removed by the restore, since the snapshot had none.
+            gate = self._call_slow_rule({
+                "appId": app_id,
+                "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+            })
+            assert gate.get("success") is True, f"addRequiredExpression after the snapshot failed: {gate}"
+
             restored = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
                 "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
             assert restored.get("success") is True, \
                 f"in-place restore of a rule with a device picker failed: {restored}"
+            assert restored.get("restoredVia") == "settingsReplay", restored
+            assert restored.get("requiredExpressionRemoved") is True, \
+                f"the expression added after the snapshot was not removed: {restored}"
             assert restored.get("recreated") is False and str(restored.get("ruleId")) == str(app_id), \
                 f"in-place restore unexpectedly created a replacement rule: {restored}"
             assert restored.get("failedStep") is None, restored
@@ -7981,6 +8002,49 @@ class TestRunner:
                 "tool": "hub_get_app_config", "args": {"appId": app_id}}))
             assert "restore-picker probe" not in blob, \
                 f"the post-snapshot log action is still on the rule after the restore: {blob[:600]}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_skips_a_deleted_device(self) -> None:
+        # A device deleted since the backup cannot be replayed: Rule Machine stops rendering a rule
+        # whose picker names a missing device. The restore leaves it out, names it in
+        # settingsSkipped and reports partial, instead of failing the whole replay.
+        label = f"{PREFIX}RestoreGone"
+        dev_id = self._create_virtual_switch_device(label)
+        assert dev_id, "failed to create the throwaway switch"
+        dni = self._last_created_dni
+        if dni:
+            self.created_device_dnis.append(dni)
+        app_id = self._create_native_rule("RestoreGone", {
+            "addActions": [{"capability": "switch", "action": "off", "deviceIds": [int(dev_id)]}],
+        })
+        try:
+            added = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": int(app_id), "confirm": True,
+                         "addAction": {"capability": "log", "message": "restore-gone probe"}}})
+            backup_key = (added.get("backup") or {}).get("backupKey")
+            assert added.get("success") is True and backup_key, f"addAction that takes the snapshot failed: {added}"
+            assert dni, f"no network id recorded for the throwaway switch {dev_id}"
+            gone = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "delete", "deviceNetworkId": dni, "confirm": True}),
+                lambda: not self._device_dni_present(dni, label),
+                f"delete throwaway switch {dni}")
+            assert gone["committed"] if gone["relayDropped"] else gone["response"].get("success") is True, \
+                f"the throwaway switch was not deleted: {gone}"
+            if dni in self.created_device_dnis:
+                self.created_device_dnis.remove(dni)
+
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
+            assert restored.get("partial") is True and restored.get("failedStep") is None, \
+                f"a restore naming a deleted device should replay the rest and report partial: {restored}"
+            skipped = [s for s in (restored.get("settingsSkipped") or []) if "no longer exist" in str(s.get("reason"))]
+            assert skipped and any(str(dev_id) in str(s.get("reason")) for s in skipped), \
+                f"the deleted device was not named in settingsSkipped: {restored}"
         finally:
             self._delete_native(app_id)
 
@@ -9104,9 +9168,8 @@ class TestRunner:
             blob = str(cfg).lower()
             assert "is off" in blob, \
                 f"rendered Required Expression does not show the new 'is off' condition: {str(cfg)[:600]}"
-            # The DIRECT replace call (line ~2607) bypasses the caching write helpers, so seed the cache
-            # with ITS OWN post-replace health -- else _assert_rule_healthy reads the STALE pre-replace
-            # health and the destructive delete+rebuild's health check (this assert's whole point) false-passes.
+            # The direct replace call bypasses the caching write helpers, so seed the cache with its own
+            # post-replace health -- else _assert_rule_healthy reads the stale pre-replace health and passes.
             self._cache_write_health(app_id, result)
             self._assert_rule_healthy(app_id)
             pre_replace_key = (result.get("backup") or {}).get("backupKey")
@@ -9130,6 +9193,19 @@ class TestRunner:
                 "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
             assert health.get("ok") is True and (health.get("predicate") or {}).get("hasPredicate") is True, \
                 f"rule is not healthy and gated after the failed replace: {health}"
+
+            # An unknown mode name is refused before any click, so the rule stays exactly as it was.
+            try:
+                refused = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_rule",
+                    "args": {"appId": int(app_id), "confirm": True, "replaceRequiredExpression": {
+                        "conditions": [{"capability": "Mode", "state": f"{PREFIX}NoSuchMode"}]}}})
+                raise AssertionError(f"a replace naming an unknown mode was not refused: {refused}")
+            except McpToolError as exc:
+                assert "NoSuchMode" in str(exc), f"the refusal does not name the unknown mode: {exc}"
+            blob = str(self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
+            assert "is off" in blob, f"the refused replace changed the expression: {blob[:600]}"
 
             # Restoring the pre-replace backup brings the original "is on" expression back.
             assert pre_replace_key, f"the replace returned no backup handle: {result}"

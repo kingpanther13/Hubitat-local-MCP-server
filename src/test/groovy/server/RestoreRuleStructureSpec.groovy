@@ -109,6 +109,36 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         calls.isEmpty()
     }
 
+    def "a condition an action's IF uses is never removed"() {
+        given:
+        def snap = snapshotState(capabsfalse: ["1": "Mode is Night"], eval: ["0": [1]])
+        liveStates([[capabsfalse: ["1": "Mode is Night", "5": "Switch A is on"], eval: ["0": [1], "3": [5]]]])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        out.structureRestored == true
+        !calls.any { it.startsWith("conditions") }
+    }
+
+    def "two extra triggers are both removed"() {
+        given:
+        def snap = snapshotState(capabstrue: ["1": "A turns on"], capabsfalse: [:])
+        liveStates([
+            [capabstrue: ["1": "A turns on", "2": "B turns on", "3": "C turns on"], capabsfalse: [:]],
+            [capabstrue: ["1": "A turns on"], capabsfalse: [:]]
+        ])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        out.structureRestored == true
+        out.removedTriggers as Set == ["2", "3"] as Set
+        calls.count { it.startsWith("trigger") } == 2
+    }
+
     def "a trigger or action the backup had and the rule lacks is named, never reported as restored"() {
         given:
         def snap = snapshotState(capabstrue: ["1": "A turns on", "2": "A turns off"], actionList: ["1", "2"])
@@ -156,6 +186,12 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         expect:
         script._rmConditionTexts([capabsfalse: ["1": "Switch A(<span style='color:black'>off</span>) is on"]]) ==
             script._rmConditionTexts([capabsfalse: ["1": "Switch A is on"]])
+    }
+
+    def "expression texts keep RM's raw comparators while dropping markup"() {
+        expect:
+        script._rmConditionTexts([capabsfalse: ["1": "Temp(<b>71</b>) < 70", "2": "Temp <= 80"]]) == ["1": "Temp < 70", "2": "Temp <= 80"]
+        script._rmConditionTexts([capabsfalse: ["1": "Temp < 70"]]) != script._rmConditionTexts([capabsfalse: ["1": "Temp > 70"]])
     }
 
     def "expression texts come from the condition pool only, never the same-numbered trigger"() {
@@ -294,7 +330,8 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
 
         then:
         out.ruleId == 100
-        out.restoredVia == null
+        out.restoredVia == "settingsReplay"
+        !out.containsKey("nativeImportSkipped")
         rec.imports.isEmpty()
         rec.deletes.isEmpty()
         rec.replays == [[tstate1: "on"]]
@@ -309,8 +346,73 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
 
         then:
         out.ruleId == 100
+        out.restoredVia == "settingsReplay"
+        out.nativeImportSkipped.contains("no longer exist")
+        out.note.contains("App Cloner copy was not used")
         rec.imports.isEmpty()
         rec.replays.size() == 1
+    }
+
+    def "a non-Rule Machine backup never takes the App Cloner path"() {
+        given:
+        def rec = nativeStubs()
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(appType: "room_lighting"))
+
+        then:
+        rec.imports.isEmpty()
+        out.restoredVia == "settingsReplay"
+        out.nativeImportSkipped.contains("Rule Machine rules only")
+    }
+
+    def "a protected old rule is refused before anything is imported"() {
+        given:
+        def rec = nativeStubs()
+        atomicStateMap.protectedAppsPolicy = [ids: ['100']]
+
+        when:
+        script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        thrown(IllegalArgumentException)
+        rec.imports.isEmpty()
+        rec.deletes.isEmpty()
+    }
+
+    def "an import that created a copy but failed staging keeps the old rule and never advises a retry over it"() {
+        given:
+        def rec = nativeStubs(importResult: [success: false, newAppId: 200, error: "could not disable 200", stageFailures: [[appId: 200]]])
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        out.success == false
+        out.partial == true
+        out.importedAppId == 200
+        out.ruleId == 100
+        out.stageFailures == [[appId: 200]]
+        out.note.contains("NOT deleted")
+        out.note.contains("Do not retry")
+        rec.deletes.isEmpty()
+        rec.enables.isEmpty()
+    }
+
+    def "an old-rule delete that throws is reported as a partial restore, never an exception"() {
+        given:
+        def rec = nativeStubs()
+        script.metaClass.toolDeleteNativeApp = { Map a -> throw new RuntimeException("snapshot failed") }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        out.success == false
+        out.partial == true
+        out.ruleId == 200
+        out.error.contains("snapshot failed")
+        rec.enables.isEmpty()
     }
 
     def "a restored copy that will not re-enable says how to re-enable it"() {
@@ -381,5 +483,24 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         tokens || exported
         []     || true
         [1]    || false
+    }
+
+    def "only a Rule Machine backup carries the App Cloner export"() {
+        given:
+        def uploads = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads[fn] = new String(b, "UTF-8") }
+        def exportCalls = []
+        script.metaClass._rmNativeExportForBackup = { Integer id -> exportCalls << id; [json: '{}'] }
+        hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100,"label":"r","appType":{"name":"Room Lights","namespace":"hubitat"}},"configPage":{"sections":[]},"settings":{}}' }
+        hubGet.register('/installedapp/statusJson/100') { params -> '{"appSettings":[],"appState":[]}' }
+
+        when:
+        script._rmBackupRuleSnapshot(100, "pre-test")
+        def snap = new groovy.json.JsonSlurper().parseText(uploads.values().first())
+
+        then:
+        snap.appType != "rule_machine"
+        snap.nativeExport == null
+        exportCalls.isEmpty()
     }
 }

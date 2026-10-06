@@ -3,23 +3,12 @@ package support
 import groovy.json.JsonOutput
 
 /**
- * Stateful stand-in for one Rule Machine 5.1 rule's Required Expression pages, modelled on the
- * live RM 5.1.8 wire format (captured from the UI on fw 2.5.2.129):
- *
- *  - committed : STPage shows cancelST / editST / stopOnST / evalOnBoot / doneST.
- *  - edit      : after editST -- oper / eraseRule / editToken / hasRule / doneST.
- *  - token     : after editToken -- the token editor (doneToken / doneST); its buttons are
- *                /installedapp/btn clicks named by token index with stateAttribute insertTok
- *                (insert at that index) or deleteToken.
- *  - insert    : after insertTok -- the newToken0 picker (operators, parens, `*`, condition ids).
- *  - cond      : a condition form (rCapab_<N> -> rDev_<N> -> state_<N> -> hasAll, or
- *                rCapab_<N> -> modes<N> -> hasAll), opened by newToken0=`*` or by cond=a.
- *  - noRE      : no committed expression -- the new-expression selector (cond / doneST).
- *
- * Cancelling a condition opened from a `*` token leaves a blank broken token and a broken
- * condition, as RM does. ruleBuilderJson serves eval['0'] (the token list) and the condition
- * texts; statusJson serves the settings. Clicks apply immediately (the live hub applies them on
- * the next render; every production path renders after a click).
+ * Stateful stand-in for one RM 5.1 rule's Required Expression pages (live RM 5.1.8 wire format,
+ * fw 2.5.2.129). Modes: committed, edit (after editST), token (after editToken; insertTok /
+ * deleteToken clicks named by token index), insert (the newToken0 picker), cond (a condition
+ * form, opened by `*` or cond=a), noRE. A cancelled `*` condition leaves a blank broken token; a
+ * cancelCapab click without its stateAttribute leaves the cancel pending, so it kills the next
+ * condition's hasAll, as on the live hub. Clicks apply immediately (production renders after each).
  */
 class FakeRmExpressionEditor {
     Integer appId = 100
@@ -40,6 +29,8 @@ class FakeRmExpressionEditor {
     boolean pendingInsert = false    // live RM: an expression built via cond=a reopens the token editor with an insert pending
     boolean conditionsOpened = false // Manage Conditions opened from STPage with pred:true (live RM ignores deleteCon otherwise)
     String mainExtra = null          // extra mainPage paragraph (e.g. a **Broken Action** marker)
+    boolean cancelPending = false    // a bare cancelCapab click left state.cancelCapab set
+    private HubInternalGetMock hubGet
 
     FakeRmExpressionEditor seedSwitch(Integer id, String state, Integer dev = 8) {
         conds[id] = [cap: "Switch", dev: dev, state: state, text: "Switch ${dev} is ${state}".toString()]
@@ -47,7 +38,12 @@ class FakeRmExpressionEditor {
         settings["rDev_${id}".toString()] = [(dev.toString()): "S${dev}".toString()]
         settings["state_${id}".toString()] = state
         nextSlot = Math.max(nextSlot, id + 1)
+        registerDevice(dev)
         return this
+    }
+
+    private void registerDevice(Integer dev) {
+        hubGet?.register("/device/fullJson/${dev}".toString()) { params -> '{"device":{"id":"' + dev + '","label":"S' + dev + '"},"id":"' + dev + '","name":"S' + dev + '"}' }
     }
 
     FakeRmExpressionEditor seedMode(Integer id, List modeIds) {
@@ -68,6 +64,7 @@ class FakeRmExpressionEditor {
 
     void install(def script, HubInternalGetMock hubGet) {
         def fake = this
+        this.hubGet = hubGet
         hubGet.register("/installedapp/configure/json/${appId}/STPage".toString()) { params -> fake.stPageJson() }
         hubGet.register("/installedapp/configure/json/${appId}/selectConditions".toString()) { params -> fake.pageJson("selectConditions", [], [:]) }
         hubGet.register("/installedapp/configure/json/${appId}/mainPage".toString()) { params -> fake.mainPageJson() }
@@ -80,7 +77,7 @@ class FakeRmExpressionEditor {
         }
         hubGet.register("/app/ruleBuilderJson/${appId}".toString()) { params -> fake.ruleBuilderJson() }
         hubGet.register("/installedapp/statusJson/${appId}".toString()) { params -> fake.statusJson() }
-        hubGet.register('/device/fullJson/8') { params -> '{"device":{"id":"8","label":"S8"},"id":"8","name":"S8"}' }
+        ([8] + conds.values().findAll { it.dev != null }.collect { it.dev as Integer }).unique().each { registerDevice(it) }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             fake.posts << [path: path, body: body]
             return fake.handlePost(path, body)
@@ -108,6 +105,8 @@ class FakeRmExpressionEditor {
 
     Map click(String name, String attr) {
         onClick?.call(name, attr)
+        if (name == "cancelCapab" && attr == null && mode == "cond") cancelPending = true
+        if (name in ["editST", "doneST", "cancelST"]) conditionsOpened = false
         switch (attr ?: name) {
             case "editST": if (mode == "committed" && editorOpens) mode = "edit"; break
             case "editToken":
@@ -118,7 +117,7 @@ class FakeRmExpressionEditor {
             case "doneST": if (mode in ["edit", "token", "committed", "sealed"]) mode = tokens ? "committed" : "noRE"; break
             case "cancelST": tokens = []; mode = "noRE"; break
             case "insertTok": if (mode == "token") { insertPos = name as Integer; mode = "insert" }; break
-            case "deleteToken": def i = name as Integer; if (i < tokens.size()) tokens.remove(i); break
+            case "deleteToken": def i = name as Integer; if (mode == "token" && i < tokens.size()) tokens.remove(i); break
             case "cancelInsert": if (mode == "insert") mode = "token"; break
             case "deleteCon":
                 def id = name as Integer
@@ -127,7 +126,10 @@ class FakeRmExpressionEditor {
                     settings.keySet().removeAll { it ==~ /^(rCapab_|rDev_|state_|not)${id}$|^modes${id}$/ }
                 }
                 break
-            case "hasAll": finishCondition(false); break
+            case "hasAll":
+                if (cancelPending) { cancelPending = false; finishCondition(true) }
+                else if (condComplete()) finishCondition(false)
+                break
             case "cancelCapab": finishCondition(true); break
             case "updateRule":
                 def st = onUpdateRule?.call()
@@ -146,6 +148,12 @@ class FakeRmExpressionEditor {
         def s = v.toString().trim()
         if (s.startsWith("[")) return (new groovy.json.JsonSlurper().parseText(s) as List).collect { it.toString() }
         return s ? s.split(",").collect { it.trim() } : []
+    }
+
+    boolean condComplete() {
+        def cap = settings["rCapab_${condIdx}".toString()]
+        if (cap == "Mode") return settings["modes${condIdx}".toString()] != null
+        return cap != null && settings["state_${condIdx}".toString()] != null
     }
 
     void finishCondition(boolean cancelled) {
@@ -224,18 +232,16 @@ class FakeRmExpressionEditor {
                 def n = condIdx
                 def ins = [[name: "rCapab_${n}".toString(), type: "enum", options: ["Switch", "Mode", "Motion"], value: settings["rCapab_${n}".toString()]]]
                 def cap = settings["rCapab_${n}".toString()]
-                boolean complete = false
                 if (cap == "Mode") {
                     ins << [name: "modes${n}".toString(), type: "enum", multiple: true,
                             options: ["1": "Day", "2": "Evening", "3": "Night", "4": "Away"], value: settings["modes${n}".toString()]]
-                    complete = settings["modes${n}".toString()] != null
                 } else if (cap != null) {
                     ins << [name: "rDev_${n}".toString(), type: "capability.switch", multiple: true, value: settings["rDev_${n}".toString()]]
                     if (settings["rDev_${n}".toString()] != null) {
                         ins << [name: "state_${n}".toString(), type: "enum", options: ["on", "off"], value: settings["state_${n}".toString()]]
-                        complete = settings["state_${n}".toString()] != null
                     }
                 }
+                boolean complete = condComplete()
                 if (cap != null) ins << [name: "not${n}".toString(), type: "bool"]
                 ins << [name: "cancelCapab", type: "button"]
                 if (complete) ins << [name: "hasAll", type: "button"]

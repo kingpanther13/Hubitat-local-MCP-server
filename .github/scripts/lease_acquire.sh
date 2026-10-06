@@ -38,8 +38,8 @@
 #
 # Lease shape (JSON, the content of File Manager file `test-hub-lease.json`):
 #   {"by":"<who>","since":<epoch_ms>,"until":<epoch_ms>}
-# Empty content or {} = released, and so is a file that does not exist yet (a hub never leased). See
-# protocol in CLAUDE.md / issue #77 for context.
+# Empty content or {} = released. A file that cannot be read is free only under LEASE_ALLOW_MISSING=1
+# (a hub never leased); otherwise it is polled. See protocol in CLAUDE.md / issue #77 for context.
 
 set -euo pipefail
 
@@ -89,12 +89,16 @@ get_lease_value() {
   # keeps an error envelope from collapsing to "" and reading as "released", which would
   # double-book the single hub.
   local resp text content
-  resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_read_file","arguments":{"fileName":"test-hub-lease.json"}}}')" || return 1
+  resp="$(mcp_call "$(jq -nc --arg f "$LEASE_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$f}}}')")" || return 1
   text="$(printf '%s' "$resp" | jq -e -r '.result.content[0].text')" || return 1
   if [ "${LEASE_ALLOW_MISSING:-}" = "1" ] && printf '%s' "$text" | jq -e '.success == false and ((.error // "") | test("could not be read"))' >/dev/null 2>&1; then
     return 0
   fi
-  printf '%s' "$text" | jq -e '.success == true' >/dev/null 2>&1 || return 1
+  if ! printf '%s' "$text" | jq -e '.success == true' >/dev/null 2>&1; then
+    # The watchdog answered but refused the read: name its reason, which a transport failure has not.
+    echo "::warning::lease read: the watchdog could not read ${LEASE_FILE}: $(printf '%s' "$text" | jq -r '.error // .' 2>/dev/null | head -c 300)" >&2
+    return 1
+  fi
   content="$(printf '%s' "$text" | jq -r '.content // ""')"
   if [ -z "$content" ] || [ "$(printf '%s' "$content" | jq -c . 2>/dev/null)" = "{}" ]; then
     return 0

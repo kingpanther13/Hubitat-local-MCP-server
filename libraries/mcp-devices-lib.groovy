@@ -5156,6 +5156,13 @@ def toolCallDeviceSwap(args) {
     // blast radius: the apps that referenced from_device_id now drive the replacement.
     def fromBefore = _deviceSwapSnapshot(fromId)
     def toBefore = _deviceSwapSnapshot(toId)
+    // Without both identities the outcome cannot be checked, and an unchecked swap cannot be safely retried.
+    def unread = [[fromId, fromBefore], [toId, toBefore]].findAll { it[1] == null }.collect { it[0] }
+    if (unread) {
+        return [success: false,
+                error: "Device(s) ${unread.join(', ')} could not be read before the swap, so its outcome could not be verified. Nothing was swapped.".toString(),
+                note: "Check the device(s) with hub_get_device, then retry."]
+    }
     def beforeCount = fromBefore?.dependents
     mcpLog("info", "device-swap", "Swap requested: ${fromId} -> ${toId}; ${beforeCount == null ? 'unknown' : beforeCount} dependent app(s) before swap")
 
@@ -5259,7 +5266,7 @@ def toolCallDeviceSwap(args) {
             return r
         }
         if (outcome == "unchanged") {
-            return leftover([success: false,
+            return leftover([success: false, verified: true,
                     error: "The Swap Device action was clicked but neither device changed identity -- nothing was swapped.",
                     note: "Both devices kept their own label and network id. Check that both still exist and are compatible (hub_get_device), then retry."])
         }
