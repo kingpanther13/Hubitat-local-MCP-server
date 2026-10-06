@@ -25,6 +25,11 @@ name: E2E setup permanent fixtures (manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      new_hub:
+        description: "The hub has never been leased (no lease file yet). Leave off otherwise: an unreadable lease is then waited on, never claimed."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -90,13 +95,13 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # The runner refuses any hub that has never been leased for e2e (it reads the
-      # test-hub-lease.json File Manager file the lease protocol writes through the watchdog), so a
-      # FRESH hub is leased here first -- that creates the file -- and released after, exactly as
-      # hub-e2e.yml does.
+      # test-hub-lease.json File Manager file the lease protocol writes through the watchdog), so the
+      # hub is leased here first and released after, exactly as hub-e2e.yml does. Only a new_hub
+      # dispatch reads a missing file as free, which creates it.
       - name: Acquire test hub lease
         env:
           WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
-          LEASE_ALLOW_MISSING: "1"   # bootstraps a hub never leased; e2e runs never set this
+          LEASE_ALLOW_MISSING: ${{ inputs.new_hub && '1' || '' }}
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/lease_acquire.sh "fixtures-${{ github.run_id }}"
 
