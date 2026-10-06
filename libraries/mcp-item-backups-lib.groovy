@@ -382,7 +382,7 @@ private Map _toolRestoreSourceBackup(args) {
     }
     if (earlyResult != null) return earlyResult
     if (ruleSnapshot != null) {
-        try { return _rmRestoreFromBackup(entry, ruleSnapshot, args?.preserveRuleId == true) }
+        try { return _rmRestoreFromBackup(entry, ruleSnapshot, args?.preserveRuleId != false, args.backupKey?.toString()) }
         catch (Exception e) {
             mcpLogError("hub-admin", "RM rule restore failed for key ${args.backupKey}", e)
             return [success: false, error: e.message, backupKey: args.backupKey, type: "rm-rule"]
@@ -1087,7 +1087,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_restore_backup",
-            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate; a Rule Machine backup with an App Cloner export restores as an exact copy with a NEW id unless preserveRuleId:true; without a usable export it restores in place -- read ruleId and restoredVia from the result). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
+            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate; a rule restores in place by default; preserveRuleId:false restores a Rule Machine backup that has an App Cloner export as an exact copy with a NEW id -- read ruleId and restoredVia from the result). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
 A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying.[[FLAT_TRIM]] See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -1099,7 +1099,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     path: [type: "string", description: "scope=hub_cloud: `path` from hub_list_backups."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf to upload+restore."],
-                    preserveRuleId: [type: "boolean", description: "Keep the rule id.[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay instead of the default exact App Cloner re-import as a new app. A replay empties settings the app gained after the backup (settingsCleared).[[/FLAT_TRIM]]"],
+                    preserveRuleId: [type: "boolean", description: "Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay; a replay empties settings the app gained after the backup (settingsCleared). false: restore a Rule Machine backup that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
                 ],
                 required: ["confirm"]

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Regression guard for the e2e lease scripts: acquire-side response parsing + release-side
 # compare-and-clear. Two bug classes it locks down:
-#   1. ACQUIRE false-empty -- a JSON-RPC ERROR envelope must NEVER read as "released". That
-#      false-empty let a run claim over a still-valid lease and double-booked the single shared hub.
-#   2. RELEASE over-clear -- lease_release.sh must clear the lease file ONLY when WE still hold it. A
-#      degraded read or a lease now held by ANOTHER run must be left alone (else a slow/cancelled run
-#      could wipe the new holder's live lease -- a milder replay of the same double-book).
-# The lease is File Manager file test-hub-lease.json, read and written through the watchdog's
-# hub_read_file / hub_write_file.
+#   1. ACQUIRE false-empty -- a JSON-RPC ERROR envelope (e.g. -32603 while the hub is busy) must
+#      NEVER read as "released". That false-empty
+#      let a run claim over a still-valid lease and double-booked the single shared test hub.
+#   2. RELEASE over-clear -- lease_release.sh must blank _TEST_HUB_LEASED_BY ONLY when WE still hold
+#      it. A degraded read or a lease now held by ANOTHER run must be left alone (else a slow/cancelled
+#      run could wipe the new holder's live lease -- a milder replay of the same double-book).
 #
+# The lease is read and written through the watchdog's hub_manage_variables (action get / set).
 # get_lease_value is extracted from lease_acquire.sh and run directly (re-extracted every run, so the
 # test can't drift from the shipped parser); lease_release.sh is driven end-to-end with a curl stub
 # on PATH. Pure shell + jq; no hub, no secrets.
@@ -27,12 +27,15 @@ type get_lease_value >/dev/null 2>&1 || { echo "could not load get_lease_value f
 fail=0
 
 # ---------- acquire-side parse guard ----------
-check() {  # check <name> <canned-response> <HELD|RELEASED|POLL>
-  local name="$1" want="$3" out got
+check() {  # check <name> <canned-response> <HELD|RELEASED|POLL|MISSING>
+  local name="$1" want="$3" out got rc=0
   CANNED_RESP="$2"                              # global: read by the stub (avoids colliding with
   mcp_call() { printf '%s' "$CANNED_RESP"; }    # get_lease_value's own `local resp`)
-  if out="$(get_lease_value 2>/dev/null)"; then
+  out="$(get_lease_value 2>/dev/null)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     [ -z "$out" ] && got=RELEASED || got=HELD
+  elif [ "$rc" -eq 2 ]; then
+    got=MISSING
   else
     got=POLL
   fi
@@ -45,34 +48,28 @@ check() {  # check <name> <canned-response> <HELD|RELEASED|POLL>
 }
 
 echo "acquire parse (get_lease_value):"
-read_ok() { jq -nc --arg c "$1" '{result:{content:[{text:({success:true,fileName:"test-hub-lease.json",content:$c}|tojson)}],isError:false}}'; }
-check "held lease"          "$(read_ok "$(jq -nc '{by:"ci-run-X",until:1}')")"                    HELD
-check "released ({})"       "$(read_ok '{}')"                                                     RELEASED
-check "released (empty)"    "$(read_ok '')"                                                       RELEASED
-unreadable="$(jq -nc '{result:{content:[{text:({success:false,error:"File '"'"'test-hub-lease.json'"'"' could not be read: test-hub-lease.json"}|tojson)}],isError:true}}')"
-check "unreadable file"     "$unreadable"                                                         POLL
-LEASE_ALLOW_MISSING=1
-check "unreadable, bootstrap" "$unreadable"                                                       RELEASED
-unset LEASE_ALLOW_MISSING
-check "other tool failure"  "$(jq -nc '{result:{content:[{text:({success:false,error:"Hub Security authentication failed"}|tojson)}],isError:true}}')" POLL
+held_text="$(jq -nc '{name:"_TEST_HUB_LEASED_BY",type:"string",value:(({by:"ci-run-X",until:1}|tojson))}')"
+check "held lease"          "$(jq -nc --arg t "$held_text" '{result:{content:[{text:$t}]}}')"   HELD
+check "released (value '')" "$(jq -nc '{result:{content:[{text:({value:""}|tojson)}]}}')"        RELEASED
 check "-32603 error"        '{"error":{"code":-32603,"message":"Internal error"}}'               POLL
-check "-32602 error"        '{"error":{"code":-32602,"message":"Invalid params"}}'                POLL
+check "-32602 not found"    '{"error":{"code":-32602,"message":"Invalid params: Variable not found: X"}}' MISSING
+check "-32602 other"        '{"error":{"code":-32602,"message":"Invalid params"}}'                POLL
 check "non-JSON 504 body"   '<html>504 Gateway Timeout</html>'                                    POLL
 
 # ---------- release-side compare-and-clear guard ----------
-# Drive the REAL lease_release.sh end-to-end with a curl stub on PATH: the read (hub_read_file)
-# returns a canned lease (or fails for __FAIL__), and a clear (hub_write_file of {}) is recorded. We
-# assert WHO gets cleared. The held fixtures use the real wire shape -- the lease JSON is the file
-# CONTENT string inside the tool result -- so the test exercises the same parse the script ships.
+# Drive the REAL lease_release.sh end-to-end with a curl stub on PATH: the read (action get)
+# returns a canned lease (or fails for __FAIL__), and a clear (action set, value:"") is
+# recorded. We assert WHO gets cleared. The held fixtures use the real wire shape -- {by,until} is a
+# JSON STRING inside .value -- so the test exercises the same parse the script ships.
 STUBDIR="$(mktemp -d)"
 cat > "$STUBDIR/curl" <<'STUB'
 #!/usr/bin/env bash
 payload=""
 while [ $# -gt 0 ]; do [ "$1" = "-d" ] && { payload="$2"; shift; }; shift; done
-if printf '%s' "$payload" | grep -q hub_read_file; then
+if printf '%s' "$payload" | grep -q '"action":"get"'; then
   [ "$REL_CANNED_GET" = "__FAIL__" ] && exit 22   # simulate curl --fail (e.g. 504)
   printf '%s' "$REL_CANNED_GET"
-elif printf '%s' "$payload" | grep -q hub_write_file; then
+elif printf '%s' "$payload" | grep -q '"action":"set"'; then
   echo CLEAR >> "$REL_CLEAR_LOG"                  # record that a clear was attempted
   printf '{"result":{"content":[{"text":"{\\"success\\":true}"}]}}'
 fi
@@ -95,8 +92,8 @@ rel_check() {  # rel_check <name> <canned-get> <by-arg> <CLEAR|KEEP>
   fi
 }
 
-mk_held() { jq -nc --arg by "$1" '{result:{content:[{text:({success:true,content:(({by:$by,until:99}|tojson))}|tojson)}]}}'; }
-rel_empty="$(jq -nc '{result:{content:[{text:({success:true,content:"{}"}|tojson)}]}}')"
+mk_held() { jq -nc --arg by "$1" '{result:{content:[{text:({value:(({by:$by,until:99}|tojson))}|tojson)}]}}'; }
+rel_empty="$(jq -nc '{result:{content:[{text:({value:""}|tojson)}]}}')"
 
 echo
 echo "release compare-and-clear (lease_release.sh):"
@@ -104,7 +101,6 @@ rel_check "held by us -> clear"     "$(mk_held ci-run-7)"     ci-run-7  CLEAR
 rel_check "held by other -> keep"   "$(mk_held ci-run-OTHER)" ci-run-7  KEEP
 rel_check "already empty -> keep"   "$rel_empty"              ci-run-7  KEEP
 rel_check "-32603 read -> keep"     '{"error":{"code":-32603,"message":"Internal error"}}' ci-run-7 KEEP
-rel_check "failed read -> keep"     "$(jq -nc '{result:{content:[{text:({success:false,error:"could not be read"}|tojson)}],isError:true}}')" ci-run-7 KEEP
 rel_check "504 read-fail -> keep"   '__FAIL__'                ci-run-7  KEEP
 rm -rf "$STUBDIR"
 

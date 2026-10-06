@@ -18,18 +18,14 @@ name: E2E setup permanent fixtures (manual)
 # the suite calls -- so a green run here is real evidence about fixture creation. The surrounding
 # checks (read-back, non-child assertion, priming) are this path's own and the suite does not run them.
 #
-# Scope: talks ONLY to MCP_URL (the server under test). It does not arm the watchdog, deploy code,
-# take the lease, or run a single test. It creates devices and flips one setting; it deletes nothing.
+# Scope: the fixtures go through MCP_URL (the server under test); the lease is read and written
+# through the watchdog, as in hub-e2e.yml. It does not arm the watchdog, deploy code, or run a single
+# test. It creates devices and flips one setting; it deletes nothing.
 # No `environment:` on purpose -- the hub secret is repo-level (the e2e job declares none either;
 # environments there exist only as the fork-PR approval gate).
 
 on:
   workflow_dispatch:
-    inputs:
-      new_hub:
-        description: "The hub has never been leased (no lease file yet). Leave off otherwise: an unreadable lease is then waited on, never claimed."
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -94,14 +90,12 @@ jobs:
             echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
           } >> "$GITHUB_ENV"
 
-      # The runner refuses any hub that has never been leased for e2e (it reads the
-      # test-hub-lease.json File Manager file the lease protocol writes through the watchdog), so the
-      # hub is leased here first and released after, exactly as hub-e2e.yml does. Only a new_hub
-      # dispatch reads a missing file as free, which creates it.
+      # The runner refuses any hub without the _TEST_HUB_LEASED_BY hub variable the lease protocol
+      # writes, so the hub is leased here first and released after, exactly as hub-e2e.yml does. On a
+      # fresh hub, create that String variable in Hub Variables first: the watchdog cannot create one.
       - name: Acquire test hub lease
         env:
           WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
-          LEASE_ALLOW_MISSING: ${{ inputs.new_hub && '1' || '' }}
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/lease_acquire.sh "fixtures-${{ github.run_id }}"
 

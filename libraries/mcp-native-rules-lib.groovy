@@ -4067,7 +4067,7 @@ private List _rmCollectActionIndices(Integer appId) {
 // failure that silently opened the gate would restore exactly that. Callers proceed on null (a
 // blip must not block edits on a healthy hub) but it is logged at WARN, the same separation
 // hub_set_app_disabled makes on this endpoint.
-private Boolean _rmIsAppDisabled(Integer appId) {
+Boolean _rmIsAppDisabled(Integer appId) {
     String why
     // Two attempts. A caller that gets null PROCEEDS (a blip must not block edits on a healthy
     // hub), so an unreadable first attempt is the one case where the gate silently stops
@@ -4856,7 +4856,7 @@ private List _rmClearActions(Integer appId) {
 // Note: RM may renumber actions when moves cross gaps — caller should
 // re-collect indices via _rmCollectActionIndices if subsequent moves
 // depend on positions.
-private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
+Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     def stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
     if (!stateAttr) throw new IllegalArgumentException("moveAction direction must be 'up' or 'down'")
     // Capture pre-move ORDERING from ruleBuilderJson's actionList (RM's own
@@ -9244,14 +9244,14 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // Reuse the newest same-rule edit baseline for one hour unless strict per-write
 // backups are enabled. Deletes call _rmBackupRuleSnapshot directly and a standalone
 // replaceRequiredExpression is exempted below, so both always get a fresh image.
+// A fresh snapshot is taken after the lock is released, since its App Cloner export is slow.
 Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
-    return _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
+    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
+    return reused ?: _rmBackupRuleSnapshot(ruleId, reason)
 }
 
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
-    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") {
-        return _rmBackupRuleSnapshot(ruleId, reason)
-    }
+    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") return null
 
     long nowMs = now()
     def mfst = _itemBackupManifest()
@@ -9303,7 +9303,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
             new LinkedHashMap(recent.value as Map)
     }
 
-    return _rmBackupRuleSnapshot(ruleId, reason)
+    return null
 }
 
 // Snapshot the current state of an RM rule into the hub's File Manager
@@ -9313,11 +9313,14 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
 // Entries get type="rm-rule" so hub_list_backups + hub_restore_backup
 // (the existing tools) handle them too — no separate RM-only backup
 // tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>[-<uuid>].
+// The reads and the App Cloner export run outside the backup lock; only the file and manifest
+// writes hold it.
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmBackupRuleSnapshotLocked(ruleId, reason) }
+    def built = _rmBuildRuleSnapshot(ruleId, reason)
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map) }
 }
 
-private Map _rmBackupRuleSnapshotLocked(Integer ruleId, String reason) {
+private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     def config
     def status
     try {
@@ -9459,6 +9462,10 @@ private Map _rmBackupRuleSnapshotLocked(Integer ruleId, String reason) {
         }
     }
 
+    return [snapshot: snapshot, config: config]
+}
+
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config) {
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -13847,13 +13854,15 @@ private Map _rmTokSetExpression(Integer appId, List target) {
             if (names.contains("editToken")) _rmTokClick(appId, "editToken", "editToken", cache)
             else _rmTokEnterEditor(appId, cache)
         }
+        // The target goes in front first and only the tokens after it are deleted, so the expression
+        // is never empty if a click fails part way.
+        target.eachWithIndex { tok, i -> _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
         for (int guard = 0; guard < 60; guard++) {
             def live = _rmReadExpressionTokens(appId)
             if (live == null) throw new IllegalStateException("the rule's expression state could not be read")
-            if (live.isEmpty()) break
-            _rmTokClick(appId, "0", "deleteToken", cache)
+            if (live.size() <= target.size()) break
+            _rmTokClick(appId, target.size().toString(), "deleteToken", cache)
         }
-        target.eachWithIndex { tok, i -> _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
         _rmTokLeaveEditor(appId, cache)
         _rmClickAppButton(appId, "updateRule")
         def live = _rmReadExpressionTokens(appId)
@@ -13891,12 +13900,14 @@ private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String e
 
 // condition id -> text from capabsfalse (the condition pool; capabstrue holds TRIGGER texts keyed by
 // trigger index, a separate id space whose numbers can repeat condition ids, so it is never merged in). A text can carry the device's current value as markup
-// ("Switch(<span>off</span>) is on"), so it is compared without tags or parenthesised values; the
-// tag pattern only matches real tags, so RM's raw `<` / `<=` comparators survive.
+// ("Switch(<span>off</span>) is on"), so that parenthesised markup is dropped before comparing; a
+// plain parenthesis (a device named "Lamp (Den)") stays. The tag pattern only matches real tags, so
+// RM's raw `<` / `<=` comparators survive.
 private Map _rmConditionTexts(Map state) {
     def out = [:]
     if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt ->
-        out.put(id?.toString(), txt?.toString()?.replaceAll(/<\/?[A-Za-z!][^>]*>/, "")?.replaceAll(/\([^()]*\)/, "")?.replaceAll(/\s+/, " ")?.trim())
+        out.put(id?.toString(), txt?.toString()?.replaceAll(/\(\s*<[A-Za-z][^>]*>[^()]*<\/[A-Za-z]+>\s*\)/, "")
+            ?.replaceAll(/<\/?[A-Za-z!][^>]*>/, "")?.replaceAll(/\s+/, " ")?.trim())
     }
     return out
 }
@@ -13952,8 +13963,27 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     }
     def extraConds = conds(live) - conds(snap) - inExpr
     if (extraConds) removed.conditions = _rmDeleteExpressionConditions(appId, extraConds.collect { it as Integer }).collect { it as Integer }
-    if (removed.triggers || removed.actions || removed.conditions) {
-        try { _rmClickAppButton(appId, "updateRule") } catch (Exception e) { failures << "updateRule (${e.message})".toString() }
+    // Actions the backup also has go back to its order, one move up at a time.
+    boolean moved = false
+    String orderError = null
+    def wantOrder = acts(snap)
+    for (int p = 0; wantOrder.size() > 1 && p < wantOrder.size() && !orderError; p++) {
+        def current = null
+        try { current = _rmOrderedActionIndices(appId)?.collect { it.toString() }?.findAll { wantOrder.contains(it) } } catch (Exception e) {
+            mcpLog("warn", "rm-native", "restore: reading the action order of app ${appId} failed (${e.message})")
+        }
+        if (current == null) { orderError = "the action order could not be read"; break }
+        int pos = current.indexOf(wantOrder[p])
+        while (pos > p && !orderError) {
+            def mv
+            try { mv = _rmMoveAction(appId, wantOrder[p] as Integer, "up") } catch (Exception e) { mv = [success: false, error: e.message] }
+            if (mv?.success != true) orderError = "moving action ${wantOrder[p]} up failed (${mv?.error ?: mv?.verifyHint ?: 'not confirmed'})".toString()
+            else { moved = true; pos-- }
+        }
+    }
+    String updateRuleError = null
+    if (removed.triggers || removed.actions || removed.conditions || moved) {
+        try { _rmClickAppButton(appId, "updateRule") } catch (Exception e) { updateRuleError = e.message ?: e.toString() }
     }
 
     def after = _rmReadRuleState(appId)
@@ -13980,6 +14010,15 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     if (extraTrigs || extraActsLeft || extraLeft) {
         out.extraRemaining = [triggers: extraTrigs, actions: extraActsLeft, conditions: extraLeft].findAll { k, v -> v }
         problems << "items the backup did not have could not be removed (${failures ? failures.join('; ') : out.extraRemaining})".toString()
+    }
+    def liveOrder = acts(after).findAll { wantOrder.contains(it) }
+    if (liveOrder != wantOrder.findAll { liveOrder.contains(it) }) {
+        out.actionOrder = [live: acts(after), backup: wantOrder]
+        problems << "the actions run in the order ${acts(after)}, not the backup's ${wantOrder}${orderError ? ' (' + orderError + ')' : ''}".toString()
+    }
+    if (updateRuleError) {
+        out.updateRuleFailed = true
+        problems << "the closing updateRule failed (${updateRuleError}), so the rule's subscriptions may not match -- click Update Rule".toString()
     }
     if (problems) {
         out.structureRestored = false
@@ -14063,6 +14102,27 @@ private boolean _rmReplayValueMatches(Object current, Object want) {
     return norm(current) == norm(want)
 }
 
+// Device ids the snapshot's condition settings (for condIds) name that no longer exist on the hub.
+List _rmExpressionDeadDevices(Map snapshot, List condIds) {
+    def ids = (condIds ?: []).collect { it.toString() } as Set
+    if (!ids) return []
+    def settings = (snapshot?.configJson?.settings ?: [:]) as Map
+    def recs = (snapshot?.statusJson?.appSettings ?: []).findAll { it instanceof Map }.collectEntries { [(it.name?.toString()): it] }
+    def devices = [] as LinkedHashSet
+    ((settings.keySet().collect { it.toString() }) + recs.keySet()).unique().each { String name ->
+        def m = name =~ /^[A-Za-z]+_?(\d+)$/
+        if (!m.matches() || !ids.contains((m[0] as List)[1].toString())) return
+        def rec = recs.get(name)
+        def v = settings.get(name)
+        // A picker the status read does not list is known by its {id: label} value.
+        if (!(rec ? _isDevicePickerType(rec.type?.toString()) : v instanceof Map)) return
+        def list = (rec?.deviceIdsForDeviceList instanceof List && rec.deviceIdsForDeviceList) ? rec.deviceIdsForDeviceList : _devicePickerIds(v)
+        (list instanceof List ? list : []).each { devices << it.toString() }
+    }
+    def cache = [:]
+    return devices.findAll { _rmDeviceGone(it, cache) }.toList()
+}
+
 // Make the rule's Required Expression match a backup snapshot. Returns [:] when the snapshot carries
 // no expression state (an older snapshot, a non-RM app) or neither side has an expression; else
 // requiredExpressionRestored true|false, plus requiredExpressionRemoved (the snapshot had none),
@@ -14100,6 +14160,15 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
     def liveState = _rmReadRuleState(appId)
     if (liveState == null) return [requiredExpressionRestored: false, requiredExpressionError: "the rule's expression state could not be read after the restore"]
     def liveTokens = (liveState.eval instanceof Map && (liveState.eval as Map)["0"] instanceof List) ? (liveState.eval as Map)["0"] as List : []
+    // A condition naming a deleted device cannot be rebuilt (the wizard takes the dead id and the
+    // condition never renders), so nothing is touched.
+    def deadDevices = _rmExpressionDeadDevices(snapshot, _rmTokenConditionIds(snapTokens))
+    if (deadDevices) {
+        def out = [requiredExpressionRestored: false,
+                   requiredExpressionError: "the backup's expression names device(s) ${deadDevices.join(', ')} that no longer exist, so it was not rebuilt; the rule's expression was left as it is".toString()]
+        if (!liveTokens.isEmpty()) out.preRestoreExpressionKept = true
+        return out
+    }
     boolean liveCommitted
     try { liveCommitted = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage")) } catch (Exception e) {
         return [requiredExpressionRestored: false, requiredExpressionError: "the rule's Required Expression page could not be read after the restore (${e.message})"]
@@ -14157,6 +14226,14 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
                 }
                 position++
             }
+            // The appended expression must read as the snapshot's before the old tokens go.
+            def appendedState = _rmReadRuleState(appId)
+            def appended = (appendedState?.eval instanceof Map && (appendedState.eval as Map)["0"] instanceof List) ? (appendedState.eval as Map)["0"] as List : null
+            if (appended == null || appended.size() < oldCount) throw new IllegalStateException("the expression could not be read back after the rebuild")
+            def appendedRendered = _rmRenderExpression(appended.drop(oldCount), _rmConditionTexts(appendedState))
+            if (appendedRendered != snapRendered) {
+                throw new IllegalStateException("the rebuilt expression reads '${appendedRendered.join(' ')}', not the snapshot's '${snapRendered.join(' ')}'")
+            }
             oldCount.times { _rmTokClick(appId, "0", "deleteToken", cache) }
             _rmTokLeaveEditor(appId, cache)
             _rmClickAppButton(appId, "updateRule")
@@ -14170,8 +14247,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
         if (committed && _rmRenderExpression(afterTokens, _rmConditionTexts(after ?: [:])) == snapRendered) {
             return [requiredExpressionRestored: true]
         }
-        return [requiredExpressionRestored: false,
-                requiredExpressionError: "the rebuilt expression reads '${_rmRenderExpression(afterTokens, _rmConditionTexts(after ?: [:])).join(' ')}', not the snapshot's '${snapRendered.join(' ')}'"]
+        throw new IllegalStateException("the rebuilt expression reads '${_rmRenderExpression(afterTokens, _rmConditionTexts(after ?: [:])).join(' ')}', not the snapshot's '${snapRendered.join(' ')}'")
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore: rebuilding the Required Expression of app ${appId} failed: ${e.message}")
         // A failure after the rebuild finished (a later click or a verify read) leaves the snapshot's

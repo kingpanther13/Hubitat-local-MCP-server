@@ -325,13 +325,12 @@ Map manualWriteBusyRefusal(String consequence) {
 // The e2e test-hub lease: CI reads and writes it through this watchdog before anything else runs,
 // so it never waits behind a package hold or another write (a stale hold is cleared only after the
 // lease is taken).
-String testHubLeaseFile() { "test-hub-lease.json" }
+String testHubLeaseVariable() { "_TEST_HUB_LEASED_BY" }
 
 boolean manualToolWrites(String toolName, Map args) {
-    if (toolName == "hub_write_file" && args?.fileName == testHubLeaseFile()) return false
     if (toolName == "hub_get_source") return args.noSave != true
     if (toolName == "hub_update_platform") return args.statusOnly != true
-    if (toolName == "hub_manage_variables") return args.action in ["set", "hub_set_variable"]
+    if (toolName == "hub_manage_variables") return args.action in ["set", "hub_set_variable"] && args.name != testHubLeaseVariable()
     return toolName in ["hub_update_app", "hub_set_mcp_developer_mode", "hub_update_mcp_settings", "hub_create_library",
         "hub_update_library", "hub_delete_item", "hub_force_delete_app", "hub_purge_e2e_artifacts",
         "hub_reboot", "hub_set_app_disabled", "hub_install_bundle", "hub_delete_bundle",
@@ -2492,9 +2491,9 @@ def backupFired(response, data) {
 }
 
 // hub_manage_variables: thin action-dispatch gateway exposing hub_get_variable / hub_set_variable
-// using the sandbox global-var API (getGlobalVar / setGlobalVar), a convenience read/write with a flat
-// {action,name,value} shape. (The e2e lease is a File Manager file, see testHubLeaseFile.) Copied
-// from toolGetVariable / toolSetVariable (hubitat-mcp-server.groovy).
+// using the sandbox global-var API (getGlobalVar / setGlobalVar), with a flat {action,name,value}
+// shape. The e2e lease scripts read and write _TEST_HUB_LEASED_BY through it (testHubLeaseVariable).
+// Copied from toolGetVariable / toolSetVariable (hubitat-mcp-server.groovy).
 def adminManageVariables(args) {
     def action = args?.action
     if (!action) {

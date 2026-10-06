@@ -6944,6 +6944,8 @@ class TestRunner:
             assert app_id, f"basic_rule create did not return an appId: {created}"
         self.created_native_app_ids.append(str(app_id))
 
+        app_live = True
+        recreated_id = None
         try:
             # The created Basic Rule renders a real classic configPage (proves it's not
             # a Vue-SPA redirect that would silently swallow writes).
@@ -7004,24 +7006,47 @@ class TestRunner:
                 "tool": "hub_restore_backup",
                 "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
             assert restored.get("success") is True, f"Basic Rule restore failed: {restored}"
-            assert {"trigger", "switchDev"} <= set(restored.get("settingsCleared") or []),                 f"the restore did not empty the settings the Basic Rule gained after its backup: {restored}"
+            assert {"trigger", "switchDev"} <= set(restored.get("settingsCleared") or []), \
+                f"the restore did not empty the settings the Basic Rule gained after its backup: {restored}"
             rb = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
-            assert not (rb.get("app") or {}).get("configPageError") and not rb.get("configPageError"),                 f"the Basic Rule page does not load after the restore: {rb}"
-            assert not (rb.get("settings") or {}).get("trigger"),                 f"the Basic Rule still carries the trigger set after its backup: {rb.get('settings')}"
+            assert not (rb.get("app") or {}).get("configPageError") and not rb.get("configPageError"), \
+                f"the Basic Rule page does not load after the restore: {rb}"
+            assert not (rb.get("settings") or {}).get("trigger"), \
+                f"the Basic Rule still carries the trigger set after its backup: {rb.get('settings')}"
+
+            # A deleted Basic Rule restores as a new app finished with Done, never updateRule.
+            dele = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True}})
+            del_key = (dele.get("backup") or {}).get("backupKey")
+            assert dele.get("success") is True and del_key, f"deleting the Basic Rule returned no backup: {dele}"
+            self._untrack_native_app(app_id)
+            app_live = False
+            back = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup", "args": {"scope": "source", "backupKey": del_key, "confirm": True}})
+            recreated_id = back.get("ruleId")
+            assert back.get("success") is True and back.get("recreated") is True and recreated_id, \
+                f"the deleted Basic Rule was not recreated: {back}"
+            rb = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(recreated_id)}})
+            assert not (rb.get("app") or {}).get("configPageError") and not rb.get("configPageError"), \
+                f"the recreated Basic Rule page does not load: {rb}"
         finally:
+            if recreated_id:
+                self._delete_native(int(recreated_id))
             # DELETE inline (not just via the global-cleanup backstop) so an
             # assertion failure above doesn't strand the fixture mid-run. A 504 here
             # must not mask a real failure from the try: verify by absence, and only
             # re-raise a genuinely-uncommitted delete (the id stays tracked otherwise).
-            dw = self._soft_write(
-                lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
-                    "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True}}),
-                lambda: not self._app_still_present(app_id),
-                "basic_rule delete",
-            )
-            if not dw["relayDropped"] or dw["committed"]:
-                self._untrack_native_app(app_id)
+            if app_live:
+                dw = self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                        "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True}}),
+                    lambda: not self._app_still_present(app_id),
+                    "basic_rule delete",
+                )
+                if not dw["relayDropped"] or dw["committed"]:
+                    self._untrack_native_app(app_id)
 
     @test("native_apps")
     def test_set_native_app_room_lighting_lifecycle(self) -> None:
@@ -8117,9 +8142,9 @@ class TestRunner:
     @test("native_apps")
     def test_rm_rule_restore_brings_back_a_removed_trigger(self) -> None:
         # Triggers live in RM state (capabstrue), so replaying a removed trigger's settings cannot
-        # bring it back. In place (preserveRuleId) the restore must NAME the missing trigger rather
-        # than report success; by default it restores through Hubitat's App Cloner import, an exact
-        # copy as a new rule that has the trigger again, and deletes the old rule.
+        # bring it back. In place (the default) the restore must NAME the missing trigger rather
+        # than report success; with preserveRuleId:false it restores through Hubitat's App Cloner
+        # import, an exact copy as a new rule that has the trigger again, and deletes the old rule.
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("RestoreTrig", {
             "addTriggers": [{"capability": "Switch", "deviceIds": [sw], "state": "on"},
@@ -8136,7 +8161,9 @@ class TestRunner:
 
             in_place = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
+            assert in_place.get("restoredVia") == "settingsReplay" and str(in_place.get("ruleId")) == str(app_id), \
+                f"the default restore did not stay in place: {in_place}"
             assert in_place.get("success") is False and in_place.get("partial") is True, \
                 f"an in-place restore that could not bring the removed trigger back reported success: {in_place}"
             assert any("turns off" in str(m.get("text")) for m in (in_place.get("missingTriggers") or [])), \
@@ -8159,7 +8186,7 @@ class TestRunner:
             rw = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_backup", {
                     "tool": "hub_restore_backup",
-                    "args": {"scope": "source", "backupKey": backup_key, "confirm": True}}),
+                    "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": False}}),
                 _replaced, "native rule restore")
             if rw["relayDropped"]:
                 assert rw["committed"], f"the native restore left no replacement for rule {app_id} after a relay 504"
@@ -8168,7 +8195,7 @@ class TestRunner:
                 restored = rw["response"]
                 new_id = restored.get("ruleId")
                 assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
-                    f"the default restore did not go through the App Cloner import: {restored}"
+                    f"preserveRuleId:false did not go through the App Cloner import: {restored}"
                 assert new_id and str(new_id) != str(app_id) and str(restored.get("originalRuleId")) == str(app_id), \
                     f"the native restore should create a new rule in place of {app_id}: {restored}"
             blob = str(self.client.call_tool("hub_read_apps_code", {
@@ -8177,9 +8204,103 @@ class TestRunner:
                 f"the restored rule does not carry both triggers: {blob[:600]}"
             assert not self._app_still_present(app_id), \
                 f"the old rule {app_id} is still installed after the native restore"
+            # The same backup restored again returns the copy instead of importing a second one.
+            again = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": False}})
+            assert again.get("alreadyRestored") is True and str(again.get("ruleId")) == str(new_id), \
+                f"a repeated native restore did not return the existing copy {new_id}: {again}"
         finally:
             if new_id:
                 self._delete_native(new_id)
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_puts_actions_back_in_order(self) -> None:
+        # Action order is RM state (actionList). A restore in place moves the backup's actions back
+        # into its order rather than reporting a reordered rule as restored.
+        first, second = "E2E restore order first", "E2E restore order second"
+        app_id = self._create_native_rule("RestoreOrder", {
+            "addActions": [{"capability": "log", "message": first}, {"capability": "log", "message": second}],
+        })
+
+        def _first_before_second() -> bool:
+            page = json.dumps(self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}).get("page", {}))
+            return 0 <= page.find(first) < page.find(second)
+
+        try:
+            moved = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": int(app_id), "confirm": True, "moveAction": {"index": 2, "direction": "up"}}})
+            backup_key = (moved.get("backup") or {}).get("backupKey")
+            assert backup_key, f"moveAction returned no backupKey: {moved}"
+            for _ in range(5):
+                if not _first_before_second():
+                    break
+                time.sleep(2.0)
+            assert not _first_before_second(), f"the move never landed, so there is no order to restore: {moved}"
+
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
+            assert restored.get("success") is True and restored.get("structureRestored") is True, \
+                f"the restore did not report the action order restored: {restored}"
+            assert _first_before_second(), f"the actions are still out of the backup's order: {restored}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_expression_by_device_name(self) -> None:
+        # A restored Required Expression is compared by condition text without the device's current
+        # value, which RM renders in parentheses. Devices whose names end in a parenthesis must still
+        # tell apart, and a backup whose expression names a deleted device is not rebuilt.
+        sw = {}
+        for key, name in (("gone", "Lamp (Gone)"), ("kitchen", "Lamp (Kitchen)"), ("den", "Lamp (Den)")):
+            dev = self._create_virtual_switch_device(f"{PREFIX}{name}")
+            assert dev, f"failed to create the {name} switch"
+            sw[key] = (int(dev), self._last_created_dni)
+            if self._last_created_dni:
+                self.created_device_dnis.append(self._last_created_dni)
+        app_id = self._create_native_rule("RestoreParen", {
+            "addRequiredExpression": {"conditions": [{"capability": "Switch", "deviceIds": [sw["gone"][0]], "state": "on"}]},
+        })
+
+        def _blob() -> str:
+            return str(self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}})).lower()
+
+        try:
+            keys = {}
+            for key in ("kitchen", "den"):
+                rep = self._call_slow_rule({"appId": int(app_id), "replaceRequiredExpression": {
+                    "conditions": [{"capability": "Switch", "deviceIds": [sw[key][0]], "state": "on"}]}})
+                assert rep.get("success") is True and (rep.get("backup") or {}).get("backupKey"), \
+                    f"replacing the expression with the {key} switch failed: {rep}"
+                keys[key] = rep["backup"]["backupKey"]
+            # keys["den"] holds the Kitchen expression, keys["kitchen"] the Gone one.
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": keys["den"], "confirm": True}})
+            assert restored.get("success") is True and restored.get("requiredExpressionRestored") is True, \
+                f"the Kitchen expression was not restored: {restored}"
+            blob = _blob()
+            assert "lamp (kitchen)" in blob and "lamp (den)" not in blob, \
+                f"the restored expression does not read Lamp (Kitchen): {blob[:600]}"
+
+            gone_dni = sw["gone"][1]
+            assert gone_dni, "no network id recorded for the Gone switch"
+            self.client.call_tool("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": gone_dni, "confirm": True})
+            if gone_dni in self.created_device_dnis:
+                self.created_device_dnis.remove(gone_dni)
+            refused = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": keys["kitchen"], "confirm": True}})
+            assert refused.get("requiredExpressionRestored") is False and refused.get("preRestoreExpressionKept") is True, \
+                f"an expression naming a deleted device should be left as it was: {refused}"
+            assert "no longer exist" in str(refused.get("requiredExpressionError")), refused
+            assert "lamp (kitchen)" in _blob(), "the Kitchen expression did not survive the refused rebuild"
+        finally:
             self._delete_native(app_id)
 
     @test("native_apps")
@@ -9251,6 +9372,9 @@ class TestRunner:
                 f"a replace with an invalid state should fail without replacing: {bad}"
             assert bad.get("originalPreserved") is True, \
                 f"the failed replace did not confirm the original expression was left in place: {bad}"
+            # The build fails before the original's tokens go, so no rollback ran.
+            assert bad.get("requiredExpressionRestored") is None, \
+                f"the failed replace rolled back instead of trimming its appended tokens: {bad}"
             blob = str(self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
             assert "is off" in blob, \
@@ -9651,7 +9775,9 @@ class TestRunner:
             d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
                           if str(k).startswith("numOp.") and v == "variable"), None)
             assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
-            assert d_settings.get(f"xVar3.{d_idx}") == num_src_name                     and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"),                     f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
+            assert d_settings.get(f"xVar3.{d_idx}") == num_src_name \
+                    and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"), \
+                f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
             add_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
                             if str(k).startswith("numOp.") and v == "add number"), None)
             assert add_idx is not None, f"no numOp.<N>='add number' persisted: {d_settings}"
@@ -12483,10 +12609,12 @@ class TestRunner:
         assert recreated.get("success") is True, f"re-creating {var_name} after its delete failed: {recreated}"
         dependents = self.client.call_tool("hub_read_variables", {
             "tool": "hub_get_variable", "args": {"name": var_name, "includeDependents": True}})
-        assert not dependents.get("dependentsError"),             f"the dependents read did not render the Hub Variables page, so the check below proves nothing: {dependents}"
+        assert not dependents.get("dependentsError"), \
+            f"the dependents read did not render the Hub Variables page, so the check below proves nothing: {dependents}"
         survived = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_get_variable", "args": {"name": var_name}})
-        assert survived.get("value") == "round-trip-v2",             f"the re-created {var_name} did not survive a render of the Hub Variables page after the earlier delete: {survived}"
+        assert survived.get("value") == "round-trip-v2", \
+            f"the re-created {var_name} did not survive a render of the Hub Variables page after the earlier delete: {survived}"
         self._delete_variable_safe(var_name)
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
@@ -17810,7 +17938,7 @@ def _inject_device_id(obj: dict, dev_id: str) -> dict:
     return result
 
 
-TEST_HUB_LEASE_FILE = "test-hub-lease.json"
+TEST_HUB_LEASE_VARIABLE = "_TEST_HUB_LEASED_BY"
 
 
 def _refuse(reasons: list[str]) -> None:
@@ -17851,37 +17979,59 @@ def refuse_unless_ci_test_hub(hub_url: str) -> None:
 def refuse_unless_leased_test_hub(client: HubitatMcpClient, *,
                                   refuse_when_unreadable: bool = True) -> None:
     """The tell that identifies the hub rather than the transport: the CI lease protocol
-    (.github/scripts/lease_acquire.sh) writes the File Manager file `test-hub-lease.json` on the
+    (.github/scripts/lease_acquire.sh) writes the Hub Variable `_TEST_HUB_LEASED_BY` on the
     sacrificial hub and nowhere else. A hub without it has never been leased for e2e and is
     refused. One read, before the first sweep.
 
-    The hub's answer for a missing file names no cause, so a read that fails after the retries is
-    treated as "not proven" either way: refused before the first sweep, and only warned about at
-    CLEANUP (refuse_when_unreadable=False), where main() already proved this hub's identity and
-    refusing would strand every BAT_E2E_ artifact on the shared hub."""
+    refuse_when_unreadable=False is the CLEANUP call: main() already proved this hub's identity
+    before the first write, so an unreadable variable at cleanup time is a fact about the relay,
+    not about the hub -- and refusing there strands every BAT_E2E_ artifact on the shared hub,
+    which is the failure the guard's retry loop was added for. A definitive answer still refuses
+    in both modes."""
+    # Three failure shapes, and only one of them is the hub speaking. The hub's own verdict for
+    # an absent variable is toolGetVariable's IllegalArgumentException, which handleToolsCall
+    # renders as an isError validation result whose text says "not found"; a lost response, an
+    # undecodable body, and any OTHER isError runtime fault leave the variable unknown and retry.
     got = None
     last_exc: Exception | None = None
+    last_kind = "the hub was not heard"
     for attempt in range(4):
         try:
-            res = client.call_tool("hub_manage_files", {
-                "tool": "hub_read_file", "args": {"fileName": TEST_HUB_LEASE_FILE}})
-            if isinstance(res, dict) and res.get("success") is True and "content" in res:
-                got = res
-                break
-            last_exc = McpToolError(str(res)[:200])
-        except Exception as exc:  # a lost response, an isError result, or an undecodable body
-            last_exc = exc
+            got = client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": TEST_HUB_LEASE_VARIABLE}})
+            break
+        except RelayLostResponseError as exc:  # the response was lost; the hub said nothing
+            last_exc, last_kind = exc, "the response was lost in transport"
+        except McpToolError as exc:  # isError:true -- the validation verdict, or a runtime fault INSIDE the tool
+            if "not found" in str(exc):
+                _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
+                         f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
+            last_exc, last_kind = exc, "the tool faulted at runtime (isError), which says nothing about the variable"
+        except McpError as exc:
+            if str(exc).startswith("JSON-RPC error:"):
+                # A protocol-level refusal (an older server, or a malformed envelope) is still
+                # the hub speaking, never transport.
+                _refuse([f"the hub answered: variable not present -- {TEST_HUB_LEASE_VARIABLE!r} "
+                         f"({str(exc)[:120]}); only the sacrificial test hub carries the e2e lease variable"])
+            # The only other McpError is an exhausted-retry decode failure, i.e. transport.
+            last_exc, last_kind = exc, "the response could not be decoded"
+        except Exception as exc:
+            last_exc, last_kind = exc, "the hub was not heard"
         if attempt < 3:
-            print(f"  lease-file read attempt {attempt + 1}/4 failed "
+            print(f"  lease-variable read attempt {attempt + 1}/4 failed "
                   f"({type(last_exc).__name__}); retrying in 10s")
             time.sleep(10)
     if got is None:
-        reason = (f"lease file {TEST_HUB_LEASE_FILE!r} could not be read after 4 attempts "
-                  f"({type(last_exc).__name__}: {str(last_exc)[:160]})")
+        reason = (f"hub variable {TEST_HUB_LEASE_VARIABLE!r} could not be read after 4 attempts -- "
+                  f"{last_kind} ({type(last_exc).__name__}: {str(last_exc)[:160]})")
         if not refuse_when_unreadable:
-            print(f"  [WARN] {reason}; identity was proven at start, sweeping")
+            print(f"  [WARN] lease variable unreadable ({reason}); identity was proven at start, sweeping")
             return
-        _refuse([f"{reason}; only the sacrificial test hub carries the e2e lease file"])
+        _refuse([f"{reason}; an unreadable hub proves nothing"])
+    # Both of toolGetVariable's success branches echo the requested name back and carry a `value`
+    # key (null-valued or not), so either one missing means this is not that tool answering.
+    if not isinstance(got, dict) or got.get("name") != TEST_HUB_LEASE_VARIABLE or "value" not in got:
+        _refuse([f"hub variable {TEST_HUB_LEASE_VARIABLE!r} is not present on this hub; only the sacrificial test hub carries the e2e lease variable"])
 
 
 def load_config() -> dict:

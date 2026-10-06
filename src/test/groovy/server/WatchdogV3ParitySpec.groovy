@@ -242,15 +242,15 @@ class WatchdogV3ParitySpec extends WatchdogV3Harness {
         calls == ['poll', 'get', 'hub_get_variable']
     }
 
-    def 'the e2e lease file is written through a held deployment; other files are not'() {
+    def 'the e2e lease variable is set through a held deployment; other variables are not'() {
         given:
         persisted.packageDeployment = [hold: true]
         List writes = []
-        script.metaClass.adminWriteFile = { Map args -> writes << args.fileName; [success: true] }
+        script.metaClass.adminManageVariables = { args -> writes << args.name; [success: true] }
         expect:
-        script.executeAdminTool('hub_write_file', [fileName: 'test-hub-lease.json', content: '{}', confirm: true]).success
-        !script.executeAdminTool('hub_write_file', [fileName: 'other.json', content: '{}', confirm: true]).success
-        writes == ['test-hub-lease.json']
+        script.executeAdminTool('hub_manage_variables', [action: 'set', name: '_TEST_HUB_LEASED_BY', value: '', confirm: true]).success
+        !script.executeAdminTool('hub_manage_variables', [action: 'set', name: 'other', value: '', confirm: true]).success
+        writes == ['_TEST_HUB_LEASED_BY']
     }
 
     def 'package start and release run through the MCP envelope and a missing confirm is invalid params'() {

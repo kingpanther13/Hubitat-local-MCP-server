@@ -50,6 +50,57 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         calls == ["trigger 2", "action 3", "action 2", "conditions [4]", "updateRule"]
     }
 
+    def "actions the backup also has go back to its order"() {
+        given:
+        def moves = []
+        def orders = [[2, 1], [1, 2]]
+        script.metaClass._rmOrderedActionIndices = { Integer appId -> orders.size() > 1 ? orders.remove(0) : orders[0] }
+        script.metaClass._rmMoveAction = { Integer appId, Integer idx, String dir -> moves << [idx, dir]; [success: true] }
+        def snap = snapshotState(actionList: ["1", "2"])
+        liveStates([[actionList: ["2", "1"]], [actionList: ["1", "2"]]])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        out.structureRestored == true
+        moves == [[1, "up"]]
+        calls == ["updateRule"]
+    }
+
+    def "an order the moves cannot restore is reported, never as restored"() {
+        given:
+        script.metaClass._rmOrderedActionIndices = { Integer appId -> [2, 1] }
+        script.metaClass._rmMoveAction = { Integer appId, Integer idx, String dir -> [success: false, verifyHint: "not confirmed"] }
+        def snap = snapshotState(actionList: ["1", "2"])
+        liveStates([[actionList: ["2", "1"]]])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        out.structureRestored == false
+        out.actionOrder == [live: ["2", "1"], backup: ["1", "2"]]
+        out.structureError.contains("not the backup's")
+    }
+
+    def "a failed closing updateRule is reported even when nothing extra remains"() {
+        given:
+        script.metaClass._rmClickAppButton = { Integer appId, String btn, String attr = null, String page = null, Map cache = null ->
+            throw new RuntimeException("500")
+        }
+        def snap = snapshotState(actionList: ["1"], capabsfalse: [:])
+        liveStates([[actionList: ["1", "2"], capabsfalse: [:]], [actionList: ["1"], capabsfalse: [:]]])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        out.structureRestored == false
+        out.updateRuleFailed == true
+        out.removedActions == ["2"]
+    }
+
     def "an extra IF/END-IF pair is removed as a set, past the per-row balance refusal"() {
         given: "rows 2 (IF) and 3 (END-IF) were added after the backup"
         def flags = []
@@ -354,12 +405,15 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
     }
 
     private Map nativeStubs(Map opts = [:]) {
-        def rec = [imports: [], deletes: [], enables: [], replays: []]
+        def rec = [imports: [], deletes: [], enables: [], replays: [], recorded: []]
         script.metaClass.toolImportNativeApp = { Map a -> rec.imports << a; opts.importResult ?: [success: true, newAppId: 200, stagedDisabled: [200]] }
         script.metaClass.toolDeleteNativeApp = { Map a -> rec.deletes << a.appId; opts.deleteResult ?: [success: true, backup: [backupKey: "rm-rule_100_pre"]] }
         script.metaClass.toolSetAppDisabled = { Map a -> rec.enables << a.appId; [success: true] }
         script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
         script.metaClass._rmUpdateAppSettings = { Integer id, Map st, Map schema -> rec.replays << st }
+        script.metaClass._rmNativeCopyMismatch = { Integer id, Map snap -> opts.mismatch }
+        script.metaClass._rmIsAppDisabled = { Integer id -> opts.liveDisabled == true }
+        script.metaClass._rmRecordNativeRestore = { String key, Integer id -> rec.recorded << [key, id] }
         script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> [:] }
         script.metaClass._rmReconcileRuleStructure = { Integer id, Map snap -> [:] }
         hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100},"configPage":{"sections":[]},"settings":{}}' }
@@ -372,7 +426,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs()
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "mcp-rm-backup-100-x.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "mcp-rm-backup-100-x.json"], nativeSnapshot(), false)
 
         then:
         out.success == true
@@ -395,7 +449,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs()
 
         when:
-        script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(configJson: [app: [id: 100, disabled: true], configPage: [sections: []], settings: [:]]))
+        script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(configJson: [app: [id: 100, disabled: true], configPage: [sections: []], settings: [:]]), false)
 
         then:
         rec.deletes == [100]
@@ -418,12 +472,100 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         rec.replays == [[tstate1: "on"]]
     }
 
+    def "by default a native backup restores in place"() {
+        given:
+        def rec = nativeStubs()
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        out.ruleId == 100
+        out.restoredVia == "settingsReplay"
+        rec.imports.isEmpty()
+    }
+
+    def "a copy that does not match the backup is deleted and the old rule kept"() {
+        given:
+        def rec = nativeStubs(mismatch: "actions [1] vs the backup's [1, 2]")
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
+
+        then:
+        out.success == false
+        out.ruleId == 100
+        out.error.contains("does not match")
+        rec.deletes == [200]
+        rec.recorded.isEmpty()
+        !out.containsKey("importedAppId")
+    }
+
+    def "the copy is recorded on the backup before the old rule is deleted"() {
+        given:
+        def rec = nativeStubs()
+
+        when:
+        script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false, "rm-rule_100_x")
+
+        then:
+        rec.recorded == [["rm-rule_100_x", 200]]
+        rec.deletes == [100]
+    }
+
+    def "a backup already restored returns its copy instead of importing again"() {
+        given:
+        def rec = nativeStubs()
+        hubGet.register('/app/ruleBuilderJson/200') { params -> '{"actionList":["1"]}' }
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
+        script.metaClass._collectLiveApps = { -> [:] }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json", restoredAppId: 200], nativeSnapshot(), false)
+
+        then:
+        out.success == true
+        out.alreadyRestored == true
+        out.ruleId == 200
+        rec.imports.isEmpty()
+    }
+
+    def "a rule disabled before the restore leaves its copy disabled"() {
+        given:
+        def rec = nativeStubs(liveDisabled: true)
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
+
+        then:
+        out.success == true
+        out.leftDisabled == true
+        rec.enables.isEmpty()
+        rec.deletes == [100]
+    }
+
+    def "the copy check compares trigger and action ids with the backup"() {
+        given:
+        hubGet.register('/app/ruleBuilderJson/200') { params -> body }
+        def snap = [statusJson: [appState: [[name: "capabstrue", value: ["1": "A on"]], [name: "actionList", value: ["1", "2"]]]]]
+
+        expect:
+        (script._rmNativeCopyMismatch(200, snap) == null) == matches
+
+        where:
+        body                                                                  || matches
+        '{"capabstrue":{"1":"A on"},"actionList":["1","2"],"broken":false}'  || true
+        '{"capabstrue":{"1":"A on"},"actionList":["2","1"],"broken":false}'  || false
+        '{"capabstrue":{},"actionList":["1","2"]}'                            || false
+        '{"capabstrue":{"1":"A on"},"actionList":["1","2"],"broken":true}'   || false
+    }
+
     def "an export that names a deleted device falls back to the settings replay"() {
         given:
         def rec = nativeStubs(deviceGone: true)
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.ruleId == 100
@@ -439,7 +581,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs()
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(appType: "room_lighting"))
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(appType: "room_lighting"), false)
 
         then:
         rec.imports.isEmpty()
@@ -454,7 +596,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> throw new RuntimeException("timeout") }
 
         when:
-        script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -469,7 +611,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs(importResult: [success: false, newAppId: 200, error: "could not disable 200", stageFailures: [[appId: 200]]])
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.success == false
@@ -489,7 +631,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         script.metaClass.toolDeleteNativeApp = { Map a -> throw new RuntimeException("snapshot failed") }
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.success == false
@@ -505,7 +647,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         script.metaClass.toolSetAppDisabled = { Map a -> [success: false] }
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.success == false
@@ -518,7 +660,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs(importResult: [success: false, isError: true, error: "Cannot read the child-app snapshot"])
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.success == false
@@ -533,7 +675,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs(importResult: [success: false, clonerAppId: 900, newAppId: null, error: "no new child appeared"])
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(appLabel: "Porch"))
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(appLabel: "Porch"), false)
 
         then:
         out.success == false
@@ -550,7 +692,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         script.metaClass.toolImportNativeApp = { Map a -> throw new RuntimeException("importNow rejected") }
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.success == false
@@ -569,7 +711,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/21') { params -> '{"app":{"id":21},"configPage":{"sections":[]},"settings":{},"childApps":[{"id":50}]}' }
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.success == true
@@ -589,7 +731,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/21') { params -> '{"app":{"id":21},"configPage":{"sections":[]},"settings":{},"childApps":[{"id":50}]}' }
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.partial == true
@@ -604,7 +746,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs()
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(nativeExport: "{not json"))
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(nativeExport: "{not json"), false)
 
         then:
         rec.imports.isEmpty()
@@ -618,7 +760,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         script.metaClass.toolSetAppDisabled = { Map a -> throw new RuntimeException("hub busy") }
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.success == false
@@ -650,7 +792,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def rec = nativeStubs(deleteResult: [success: false, hubMessage: "has children"])
 
         when:
-        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
 
         then:
         out.success == false

@@ -40,6 +40,29 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
         snapshot([1], [rCapab_1: "Mode", modes1: ["3"]], ["1": "Mode is 3"])
     }
 
+    def "condition texts drop the device's current value but keep a parenthesised device name"() {
+        expect:
+        script._rmConditionTexts([capabsfalse: ["3": "Lamp (Den)(<span style='color:black'>off</span>) is on", "4": "Lamp (Kitchen) is on", "5": "Temp < 70"]]) ==
+            ["3": "Lamp (Den) is on", "4": "Lamp (Kitchen) is on", "5": "Temp < 70"]
+    }
+
+    def "a snapshot condition naming a deleted device is not rebuilt and the live expression stays"() {
+        given:
+        fake.seedSwitch(1, "on").withTokens([1])
+        hubGet.register('/device/fullJson/9') { params -> '{}' }
+        def snap = snapshot([2], [rCapab_2: "Switch", rDev_2: ["9": "Gone"], state_2: "on"], ["2": "Gone is on"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == false
+        out.preRestoreExpressionKept == true
+        out.requiredExpressionError.contains("no longer exist")
+        fake.tokens == [1]
+        fake.posts.isEmpty()
+    }
+
     def "a snapshot expression is rebuilt on a rule that has none"() {
         given:
         fake.withTokens([])

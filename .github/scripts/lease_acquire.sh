@@ -2,10 +2,9 @@
 # Acquire test hub lease for a CI run.
 #
 # Usage:  lease_acquire.sh <by-identifier>
-# Env:    WATCHDOG_URL — the watchdog v3 cloud OAuth URL with access_token. The lease lives in a
-#                        File Manager file read and written through the WATCHDOG, never the MCP
-#                        server under test: a PR that breaks that server must not stop the watchdog
-#                        from installing over it.
+# Env:    WATCHDOG_URL — the watchdog v3 cloud OAuth URL with access_token. The lease is read and
+#                        written through the WATCHDOG, never the MCP server under test: a PR that
+#                        breaks that server must not stop the watchdog from installing over it.
 #         LEASE_WAIT_TIMEOUT_S        — max seconds to WAIT for a successfully-read but HELD
 #                                       lease to free before aborting (default 14400 = 4h).
 #                                       Native concurrency (the hub-e2e-serialized group) already
@@ -18,11 +17,6 @@
 #                                       held-lease budget: a down hub won't free a lease, so
 #                                       waiting it out just burns ~10min per run.
 #         LEASE_POLL_INTERVAL_S       — seconds between polls while waiting (default 30).
-#         LEASE_ALLOW_MISSING         — 1 only for the one-time bootstrap of a hub never leased: an
-#                                       unreadable lease file then reads as free. Everywhere else an
-#                                       unreadable file is polled, never claimed over -- the hub names
-#                                       no cause for a failed read, so a live lease that fails to read
-#                                       looks exactly like a missing file.
 #
 # Exits 0 on successful claim. While the lease is read as held and not expired, this WAITS
 # (polling) and claims it the moment it frees, the holder's TTL lapses, OR the holding CI run is
@@ -36,16 +30,15 @@
 # UNREADABLE past LEASE_UNREACHABLE_TIMEOUT_S (the fast-fail for a down hub/app), or if the
 # post-write race-check shows another claim last.
 #
-# Lease shape (JSON, the content of File Manager file `test-hub-lease.json`):
+# Lease shape (JSON, written into Hubitat Hub Variable `_TEST_HUB_LEASED_BY`, a String variable that
+# must already exist -- the watchdog cannot create one):
 #   {"by":"<who>","since":<epoch_ms>,"until":<epoch_ms>}
-# Empty content or {} = released. A file that cannot be read is free only under LEASE_ALLOW_MISSING=1
-# (a hub never leased); otherwise it is polled. See protocol in CLAUDE.md / issue #77 for context.
+# Empty string = released. See protocol in CLAUDE.md / issue #77 for context.
 
 set -euo pipefail
 
 BY="${1:?Usage: $0 <by-identifier>}"
 : "${WATCHDOG_URL:?WATCHDOG_URL env var required (watchdog v3 cloud OAuth URL with access_token)}"
-LEASE_FILE="test-hub-lease.json"
 
 LEASE_DURATION_MIN=30
 LEASE_WAIT_TIMEOUT_S="${LEASE_WAIT_TIMEOUT_S:-14400}"
@@ -81,37 +74,27 @@ mcp_call() {
 }
 
 get_lease_value() {
-  # Prints the lease JSON (nothing when released) + exit 0 for a successful read. The release
-  # writes {} and never deletes the file, so a leased hub always has it; the watchdog's "could not
-  # be read" answer reads as free ONLY under LEASE_ALLOW_MISSING=1 (bootstrapping a hub never
-  # leased). Any OTHER response exits non-zero so the caller polls (read-fail path) and never
-  # falsely claims: a failed read, a JSON-RPC error, a transport failure, a non-JSON body. `jq -e`
-  # keeps an error envelope from collapsing to "" and reading as "released", which would
-  # double-book the single hub.
-  local resp text content
-  resp="$(mcp_call "$(jq -nc --arg f "$LEASE_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$f}}}')")" || return 1
+  # Prints the lease value (may be "" when released) + exit 0 for a well-formed tools/call
+  # result. A missing variable exits 2: the watchdog cannot create it, so no claim could land.
+  # Any OTHER non-result response exits 1 so the caller polls (read-fail path) and never falsely
+  # claims: a JSON-RPC error, a transport failure, a non-JSON body. `jq -e` distinguishes a real
+  # result from an error envelope; without it a missing .result.content collapsed to "" and
+  # read as "released", double-booking the single hub.
+  local resp
+  resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"action":"get","name":"_TEST_HUB_LEASED_BY"}}}')" || return 1
+  if printf '%s' "$resp" | jq -e '(.error.message // "") | test("not found"; "i")' >/dev/null 2>&1; then
+    echo "::error::Hub variable _TEST_HUB_LEASED_BY does not exist on the test hub. Create it (type String) in Settings > Hub Variables; the watchdog cannot create one." >&2
+    return 2
+  fi
+  local text
   text="$(printf '%s' "$resp" | jq -e -r '.result.content[0].text')" || return 1
-  if [ "${LEASE_ALLOW_MISSING:-}" = "1" ] && printf '%s' "$text" | jq -e '.success == false and ((.error // "") | test("could not be read"))' >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! printf '%s' "$text" | jq -e '.success == true' >/dev/null 2>&1; then
-    # The watchdog answered but refused the read: name its reason, which a transport failure has not.
-    echo "::warning::lease read: the watchdog could not read ${LEASE_FILE}: $(printf '%s' "$text" | jq -r '.error // .' 2>/dev/null | head -c 300)" >&2
-    return 1
-  fi
-  content="$(printf '%s' "$text" | jq -r '.content // ""')"
-  if [ -z "$content" ] || [ "$(printf '%s' "$content" | jq -c . 2>/dev/null)" = "{}" ]; then
-    return 0
-  fi
-  printf '%s' "$content"
+  printf '%s' "$text" | jq -e -r '.value // ""' || return 1
 }
 
 set_lease_value() {
-  # Arg is the lease JSON; an empty object releases. Fails unless the watchdog confirms the write.
-  local body resp
-  body="$(jq -nc --arg c "$1" --arg f "$LEASE_FILE" \
-    '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$f,content:$c,confirm:true}}}')"
-  resp="$(mcp_call "$body")" || return 1
+  # Arg is the lease string; "" releases. Fails unless the watchdog confirms the write.
+  local resp
+  resp="$(mcp_call "$(jq -nc --arg v "$1" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"hub_manage_variables",arguments:{action:"set",name:"_TEST_HUB_LEASED_BY",value:$v,confirm:true}}}')")" || return 1
   printf '%s' "$resp" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1
 }
 
@@ -151,7 +134,9 @@ while :; do
   # a down hub never frees the lease, so waiting the full LEASE_WAIT_TIMEOUT_S there just burns
   # ~10min per run (and every queued run repeats it). Read failures therefore get their own
   # short LEASE_UNREACHABLE_TIMEOUT_S budget and fast-fail past it.
-  if ! CURRENT="$(get_lease_value)"; then
+  rc=0; CURRENT="$(get_lease_value)" || rc=$?
+  [ "$rc" -eq 2 ] && exit 1
+  if [ "$rc" -ne 0 ]; then
     NOW_S=$(( $(now_ms) / 1000 ))
     [ -z "$read_fail_since" ] && read_fail_since="$NOW_S"
     UNREACH_S=$(( NOW_S - read_fail_since ))
@@ -230,7 +215,7 @@ done
 NOW_MS="$(now_ms)"
 EXPIRES_MS=$((NOW_MS + LEASE_DURATION_MIN * 60 * 1000))
 
-# Build the lease JSON (the file content).
+# Build the lease JSON (the variable's string value).
 CLAIM_JSON="$(jq -nc \
   --arg  by    "$BY" \
   --argjson since "$NOW_MS" \
