@@ -139,6 +139,23 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         calls.count { it.startsWith("trigger") } == 2
     }
 
+    def "an extra action RM refuses to remove is reported, never as restored"() {
+        given:
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip = false ->
+            calls << "action ${idx}".toString(); [success: false, error: "would unbalance the rule"]
+        }
+        def snap = snapshotState(actionList: ["1"], capabsfalse: [:])
+        liveStates([[actionList: ["1", "2"], capabsfalse: [:]]])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        out.structureRestored == false
+        !out.removedActions
+        out.structureError
+    }
+
     def "a trigger or action the backup had and the rule lacks is named, never reported as restored"() {
         given:
         def snap = snapshotState(capabstrue: ["1": "A turns on", "2": "A turns off"], actionList: ["1", "2"])

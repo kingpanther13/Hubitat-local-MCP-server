@@ -5447,6 +5447,12 @@ private Map _deviceSwapSnapshot(String deviceId) {
         try {
             if (parsed.appsUsingCount != null) dependents = parsed.appsUsingCount as Integer
         } catch (NumberFormatException ignored) { }
+        // This server's own device allowlist is not an automation using the device.
+        def selfId = app?.id?.toString()
+        if (dependents != null && selfId && (parsed.appsUsing instanceof List) &&
+                (parsed.appsUsing as List).any { it instanceof Map && it.id?.toString() == selfId }) {
+            dependents = Math.max(0, dependents - 1)
+        }
         def dev = (parsed.device instanceof Map) ? parsed.device : [:]
         return [dependents: dependents, dni: dev.deviceNetworkId?.toString(),
                 createTime: dev.createTime?.toString(), label: dev.label?.toString()]
