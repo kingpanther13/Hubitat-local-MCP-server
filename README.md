@@ -1670,6 +1670,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.5.5** - feat: guide-first on every write tool and per-section rotating acknowledgment keys. PRs: [#501](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/501)
 - **v4.5.4** - feat: #431 read-gap tools — backup schedule, network settings, variable dependents, Z-Wave brand, app menu/mode metadata. PRs: [#487](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/487)
 - **v4.5.3** - build(deps): bump gradle/actions from 6.3.0 to 6.4.0 in the github-actions group ([#507](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/507), @app/dependabot); feat: optional redaction of OAuth access tokens in MCP responses. PRs: [#507](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/507), [#512](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/512)
 - **v4.5.2** - fix: native-app validation gaps and firmware 2.5.2 breaks. PRs: [#509](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/509)
