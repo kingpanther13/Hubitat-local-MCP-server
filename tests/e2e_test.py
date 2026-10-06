@@ -15448,9 +15448,9 @@ class TestRunner:
             self._set_bps(enableMandatoryBPS=False)
 
     @test("best_practice_gating")
-    def test_reactive_bps_device_command_links_to_device_authorization(self) -> None:
+    def test_reactive_bps_device_command_links_to_its_section(self) -> None:
         """Reactive hints are ALWAYS on (no toggle): a failed hub_call_device_command gains a
-        pointer to ITS own section (device_authorization), naming the failing tool -- proving the
+        pointer to ITS own section (hub_admin_write_devices), naming the failing tool -- proving the
         best-practice content is actually returned and is tool-specific, not a generic page."""
         self._set_bps(enableMandatoryBPS=False)  # ensure the gate isn't masking the tool's own error
         try:
@@ -15460,7 +15460,7 @@ class TestRunner:
             raise AssertionError("bogus device command should have errored")
         except McpError as e:
             msg = str(e)
-            assert "device_authorization" in msg, f"reactive hint missing the device_authorization section: {msg}"
+            assert "hub_admin_write_devices" in msg, f"reactive hint missing the hub_admin_write_devices section: {msg}"
             assert "get_tool_guide" in msg, f"reactive hint missing the guide pointer: {msg}"
             assert "hub_call_device_command" in msg, f"reactive hint should name the failing sub-tool: {msg}"
             assert "best_practice_reference" not in msg, f"hint should be tool-specific, not the generic page: {msg}"
@@ -15586,9 +15586,9 @@ class TestRunner:
             except McpError as e:
                 msg = str(e)
                 assert "Mandatory best-practice" in msg, f"expected the gate block: {msg}"
-                assert "section='device_authorization'" in msg, f"gate block should name the tool's section: {msg}"
+                assert "section='hub_admin_write_devices'" in msg, f"gate block should name the tool's section: {msg}"
                 assert "reference and best practices" not in msg, f"gate message was double-coached: {msg}"
-                assert 'section="device_authorization"' not in msg, f"gate leaked a per-tool reactive pointer: {msg}"
+                assert 'section="hub_admin_write_devices"' not in msg, f"gate leaked a per-tool reactive pointer: {msg}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -17633,7 +17633,7 @@ def main() -> None:
     except McpError as exc:
         _m = str(exc)
         assert "Mandatory best-practice" in _m, f"expected the gate block, got: {exc}"
-        assert "section='device_authorization'" in _m, f"gate block should point at the tool's guide section: {exc}"
+        assert "section='hub_admin_write_devices'" in _m, f"gate block should point at the tool's guide section: {exc}"
         assert "I-HAVE-READ-THE-GUIDE-" not in _m, f"gate block must not leak a key: {exc}"
     print("Best-practice gate: default-ON behaviour verified on the live hub (keyless write blocked)")
     client.call_tool("hub_manage_mcp", {

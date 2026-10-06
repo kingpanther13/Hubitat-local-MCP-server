@@ -62,6 +62,28 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         !body.contains('I-HAVE-READ-THE-GUIDE')
     }
 
+    def "a sub-section that publishes a key documents only write tools that take it (drift guard)"() {
+        given: 'each "### hub_*" heading names the tool(s) its block documents, e.g. "### hub_update_app / hub_update_driver"'
+        def gated = script._bpsGatedSections()
+        def readOnly = script.getReadOnlyToolNames()
+        def writeTools = script.getAllToolDefinitions().collect { it.name as String }.findAll { !readOnly.contains(it) } as Set
+        def mismatches = [:]
+        script.getToolGuideSubSections().each { parent, subs ->
+            subs.keySet().each { sub ->
+                def published = gated.contains(sub) ? sub : (gated.contains(parent) ? parent : null)
+                if (!published) return
+                rawBody(sub as String).readLines().findAll { it.startsWith('### ') }.each { heading ->
+                    (heading =~ /\bhub_\w+/).collect { it }.findAll { it in writeTools }.each { tool ->
+                        if (script._bpsSectionForTool(tool) != published) mismatches[tool] = "${sub} publishes ${published}".toString()
+                    }
+                }
+            }
+        }
+
+        expect:
+        mismatches == [:]
+    }
+
     def "a gated section or sub-section serves its key on top -- #section"() {
         when:
         def content = script.toolGetToolGuide(section).content as String
@@ -75,7 +97,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         content.endsWith(rawBody(section))
 
         where:
-        section << ['best_practice_reference', 'set_rule_reference', 'device_authorization',
+        section << ['best_practice_reference', 'set_rule_reference', 'hub_admin_write_devices',
                     'builtin_app_tools_crud', 'hub_admin_write_radios']
     }
 
@@ -101,7 +123,8 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         script.toolGetToolGuide(section).content == rawBody(section)
 
         where:
-        section << ['tool_access', 'performance', 'performance_overview', 'rooms', 'hub_admin_write_code']
+        section << ['tool_access', 'performance', 'performance_overview', 'rooms', 'hub_admin_write_code',
+                    'device_authorization']
     }
 
     def "a sub-section of a gated parent serves the parent's key -- #section"() {

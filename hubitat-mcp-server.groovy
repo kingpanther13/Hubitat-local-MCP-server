@@ -10090,7 +10090,7 @@ String _bpsBlockMessage(String section, value) {
     if (v.startsWith('bps-ack-')) {
         why = " The key format changed; a cached bps-ack key no longer works."
     } else if (offeredSection == section) {
-        why = " The key you passed has expired (keys rotate hourly); read the section again."
+        why = " The key you passed doesn't match this section's current or previous hour's key: it expired (keys rotate hourly), was mistyped, or came from another hub. Read the section again."
     } else if (offeredSection ==~ /[a-z_]+/) {
         why = " The key you passed belongs to section '${offeredSection}', not this tool's section."
     }
@@ -10145,7 +10145,8 @@ String _guideSectionServed(String key, String body) {
 // family already cites hub_get_tool_guide(section=...) in its descriptions/errors. Returns null
 // for tools with no dedicated section -- those get NO reactive hint (a generic pointer is exactly
 // what this feature must avoid). The map also selects the gate's required key (null ->
-// best_practice_reference), so it must match best_practice_reference's tool list (drift guard).
+// best_practice_reference), so it must match best_practice_reference's tool list, and a sub-section
+// that publishes a key must map every write tool it documents to that key (both drift guards).
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
     if (t == 'hub_set_rule') return 'set_rule_reference'
@@ -10160,11 +10161,13 @@ def _guideSectionForTool(toolName) {
     if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
-    if (t in ['hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter']) return 'hub_admin_write_radios'
-    if (t in ['hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write_devices'
+    if (t in ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
+              'hub_call_matter']) return 'hub_admin_write_radios'
+    if (t in ['hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
+              'hub_create_device']) return 'hub_admin_write_devices'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
               'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
-    if (t in ['hub_call_device_command', 'hub_get_device_attribute']) return 'device_authorization'
+    if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
 }
@@ -10250,7 +10253,6 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_create_dashboard -> dashboards
 - hub_delete_dashboard -> dashboards
 - hub_update_dashboard -> dashboards
-- hub_call_device_command -> device_authorization
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
 - hub_call_destructive_ops -> hub_admin_write_destructive
@@ -10260,11 +10262,15 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_reboot -> hub_admin_write_destructive
 - hub_shutdown -> hub_admin_write_destructive
 - hub_update_firmware -> hub_admin_write_destructive
+- hub_call_device_command -> hub_admin_write_devices
 - hub_call_device_replace -> hub_admin_write_devices
 - hub_call_device_swap -> hub_admin_write_devices
+- hub_create_device -> hub_admin_write_devices
 - hub_call_matter -> hub_admin_write_radios
 - hub_call_zigbee -> hub_admin_write_radios
 - hub_call_zwave -> hub_admin_write_radios
+- hub_set_zigbee -> hub_admin_write_radios
+- hub_set_zwave -> hub_admin_write_radios
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules

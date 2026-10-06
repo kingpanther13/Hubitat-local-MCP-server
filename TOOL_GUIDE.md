@@ -55,7 +55,6 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_create_dashboard -> dashboards
 - hub_delete_dashboard -> dashboards
 - hub_update_dashboard -> dashboards
-- hub_call_device_command -> device_authorization
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
 - hub_call_destructive_ops -> hub_admin_write_destructive
@@ -65,11 +64,15 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_reboot -> hub_admin_write_destructive
 - hub_shutdown -> hub_admin_write_destructive
 - hub_update_firmware -> hub_admin_write_destructive
+- hub_call_device_command -> hub_admin_write_devices
 - hub_call_device_replace -> hub_admin_write_devices
 - hub_call_device_swap -> hub_admin_write_devices
+- hub_create_device -> hub_admin_write_devices
 - hub_call_matter -> hub_admin_write_radios
 - hub_call_zigbee -> hub_admin_write_radios
 - hub_call_zwave -> hub_admin_write_radios
+- hub_set_zigbee -> hub_admin_write_radios
+- hub_set_zwave -> hub_admin_write_radios
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules

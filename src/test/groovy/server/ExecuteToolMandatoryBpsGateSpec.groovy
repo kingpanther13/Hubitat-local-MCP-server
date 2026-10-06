@@ -16,7 +16,8 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
     static final long T0 = 1234567890000L
     static final String BLOCK_HEAD = 'Mandatory best-practice acknowledgment is enabled for write tools.'
     static final String ANY_KEY = /I-HAVE-READ-THE-GUIDE-[a-z_]+-[0-9a-f]{8}/
-    static final List<String> WHY_STEMS = ['The key format changed', 'has expired', 'belongs to section']
+    static final String WRONG_CODE = "The key you passed doesn't match this section's current or previous hour's key: it expired (keys rotate hourly), was mistyped, or came from another hub. Read the section again."
+    static final List<String> WHY_STEMS = ['The key format changed', "doesn't match this section's", 'belongs to section']
 
     def setup() {
         // Representative writes; stubbed so a past-the-gate dispatch returns a sentinel instead
@@ -126,6 +127,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
             case 'unknown format': return 'not-the-key'
             case 'cached bps-ack': return 'bps-ack-0123abcd'
             case 'expired': return script.hubBpsGuideKey('set_rule_reference', T0 - 2 * HOUR) as String
+            case 'mistyped': return 'I-HAVE-READ-THE-GUIDE-set_rule_reference-0123abcd'
             case 'other section': return key('best_practice_reference')
         }
         throw new IllegalStateException(variant)
@@ -162,12 +164,13 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
         where:
         [chokepoint, variant] << [['executeTool', 'modern path'],
-                                  ['missing', 'unknown format', 'cached bps-ack', 'expired', 'other section']].combinations()
+                                  ['missing', 'unknown format', 'cached bps-ack', 'expired', 'mistyped', 'other section']].combinations()
         sentence = [
             'missing'       : null,
             'unknown format': null,
             'cached bps-ack': 'The key format changed; a cached bps-ack key no longer works.',
-            'expired'       : 'The key you passed has expired (keys rotate hourly); read the section again.',
+            'expired'       : WRONG_CODE,
+            'mistyped'      : WRONG_CODE,
             'other section' : "The key you passed belongs to section 'best_practice_reference', not this tool's section."
         ][variant]
     }

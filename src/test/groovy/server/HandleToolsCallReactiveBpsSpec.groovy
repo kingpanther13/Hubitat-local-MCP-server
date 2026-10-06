@@ -72,7 +72,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     // ---- THROWN-IAE path (-32602): pointer to the failing tool's section --------
 
-    def "a thrown device-command error points at device_authorization (the tool's section)"() {
+    def "a thrown device-command error points at hub_admin_write_devices (the tool's section)"() {
         given:
         script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null, st = true ->
             throw new IllegalArgumentException("Device not found: ${d}")
@@ -84,7 +84,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         then:
         response.result.isError == true
         mcpDriver.parseInner(response).error.contains('Device not found: 999')
-        mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="device_authorization")')
+        mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="hub_admin_write_devices")')
         mcpDriver.parseInner(response).error.contains('hub_call_device_command')
         and: "NOT the generic best-practice page"
         !mcpDriver.parseInner(response).error.contains('best_practice_reference')
@@ -196,7 +196,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         then:
         inner.success == false
         inner.bp_warning != null
-        inner.bp_warning.contains('hub_get_tool_guide(section="device_authorization")')
+        inner.bp_warning.contains('hub_get_tool_guide(section="hub_admin_write_devices")')
     }
 
     def "a successful result is never scanned (no bp_warning)"() {
@@ -257,7 +257,6 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         script._guideSectionForTool('hub_create_custom_rule') == 'rules'
         script._guideSectionForTool('hub_update_device') == 'update_device'
         script._guideSectionForTool('hub_manage_virtual_device') == 'virtual_devices'
-        script._guideSectionForTool('hub_call_device_command') == 'device_authorization'
 
         and: "where the section splits, the hint names the SUB-key holding that tool's own block -- the error is where an agent is most likely to follow the pointer, so it must not cost the whole parent"
         script._guideSectionForTool('hub_set_native_app') == 'builtin_app_tools_crud'
@@ -265,6 +264,8 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         script._guideSectionForTool('hub_delete_device') == 'hub_admin_write_destructive'
         script._guideSectionForTool('hub_call_zwave') == 'hub_admin_write_radios'
         script._guideSectionForTool('hub_call_device_swap') == 'hub_admin_write_devices'
+        script._guideSectionForTool('hub_call_device_command') == 'hub_admin_write_devices'
+        script._guideSectionForTool('hub_set_zwave') == 'hub_admin_write_radios'
 
         and: "every mapping resolves to something hub_get_tool_guide actually serves"
         def served = (script.getToolGuideSections().keySet() as Set) +

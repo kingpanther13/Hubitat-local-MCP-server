@@ -96,6 +96,19 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !catalogJson.contains(CLOSE_MARKER)
     }
 
+    def "flat-mode hub_restore_backup keeps its verify-before-retry warning"() {
+        // A blind retry of a lost restore response restores and reboots the whole hub a second
+        // time, so this sentence survives the flat trim even though other writes drop theirs.
+        given:
+        settingsMap.useGateways = false
+
+        when:
+        def restore = script.getToolDefinitions().find { it.name == 'hub_restore_backup' }
+
+        then:
+        restore.description.contains('A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying.')
+    }
+
     def "flat-mode tools/list with Developer Mode ON stays under the hub cap and leaks no FLAT_TRIM tokens"() {
         // hub_update_package is catalog-hidden unless enableDeveloperMode is true, so
         // the default-toggles guards above never serialize it -- its description carries
