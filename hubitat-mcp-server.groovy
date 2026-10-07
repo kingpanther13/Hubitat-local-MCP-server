@@ -2374,7 +2374,8 @@ def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device"] as Set
+            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
+            "hub_restore_backup"] as Set
 }
 
 // Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
@@ -2407,7 +2408,7 @@ def _mrtrReadContinuationActive() {
 private Set _mrtrDetachedWorkerTools() {
     return ["hub_set_rule", "hub_set_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_manage_virtual_device", "hub_update_device"] as Set
+            "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup"] as Set
 }
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
@@ -2430,6 +2431,12 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     // live relay-failure evidence and detached-worker coverage; app deletion can
     // target this server and library deletion has different verification semantics.
     if (leaf == "hub_delete_item") return leafArgs.type?.toString() == "driver"
+    // Only a rule snapshot restore: a hub DB restore reboots the hub, and an app code restore can
+    // recompile this server under its own worker.
+    if (leaf == "hub_restore_backup") {
+        return (leafArgs.scope == null || leafArgs.scope.toString() == "source") &&
+            leafArgs.backupKey?.toString()?.startsWith("rm-rule_")
+    }
     if (leaf == "hub_call_rule") {
         def ids = leafArgs.ruleId
         def idCount = (ids instanceof List) ? ids.size() : (ids == null ? 0 : 1)
@@ -11903,7 +11910,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, and `hub_update_device`. When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
 
 The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
